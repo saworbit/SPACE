@@ -240,8 +240,8 @@ This is an experimental platform exploring radical new storage architectures. We
 
 ## 📚 Learn More
 
-- **[Architecture Overview](docs/docs_architecture.md)** — Full system design
-- **[Patentable Concepts](docs/docs_patentable_concepts.md)** — Novel mechanisms
+- **[Architecture Overview](docs/architecture.md)** — Full system design
+- **[Patentable Concepts](docs/patentable_concepts.md)** — Novel mechanisms
 - **[API Documentation](https://docs.rs/space)** — Coming soon
 
 ---
