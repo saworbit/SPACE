@@ -1,0 +1,17 @@
+[package]
+name = "spacectl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "spacectl"
+path = "src/main.rs"
+
+[dependencies]
+common = { path = "../common" }
+capsule-registry = { path = "../capsule-registry" }
+nvram-sim = { path = "../nvram-sim" }
+anyhow = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }

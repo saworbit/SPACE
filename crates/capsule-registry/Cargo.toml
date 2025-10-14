@@ -1,0 +1,14 @@
+[package]
+name = "capsule-registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+nvram-sim = { path = "../nvram-sim" }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

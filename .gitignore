@@ -1,0 +1,21 @@
+# Rust
+/target/
+Cargo.lock
+
+# SPACE runtime files
+*.nvram
+*.nvram.segments
+*.metadata
+
+# Test files
+test.txt
+bigfile.bin
+output.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db"
