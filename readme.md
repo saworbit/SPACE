@@ -1,314 +1,275 @@
-# **SPACE – Storage Platform for Adaptive Computational Ecosystems**
+# 🚀 SPACE MVP - Storage Platform for Adaptive Computational Ecosystems
 
-*A pluggable, policy‑defined data fabric built for containers, accelerators and confidential compute.*
+> **One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
 
-| Status | Licence               |
-| ------ | --------------------- |
-|        | Apache 2.0 (intended) |
-
----
-
-## 1  Why SPACE exists – problem statement
-
-Modern workloads are scattered across VMs, containers, GPUs, DPUs and edge devices.  Traditional storage stacks split the world into block **or** file **or** object and bolt on security, scale and protection later.  SPACE starts over: **everything is an object**, every function is a container, and performance, space‑efficiency, security, mobility and self‑healing are built‑in, not bolted‑on.
-
-*Pain points we remove*
-
-- **Protocol silos** – no separate LUN / export / bucket worlds.
-- **Forklift upgrades** – micro‑services upgraded independently.
-- **Either/or trade‑offs** – encryption, snapshots and dedupe coexist without cost.
-- **Human‑led operations** – health agents correct faults before tickets open.
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
+[![Status](https://img.shields.io/badge/status-Early%20MVP-yellow.svg)](https://github.com/your-org/space)
 
 ---
 
-## 2  Design goals
+## 💡 The Big Idea
 
-1. **Universal namespace** – one 128‑bit object ID addressable via NVMe‑oF, S3, NFS v4.2, SMB 3.2 or CSI.
-2. **Stateless IO engines** – Rust + SPDK user‑space, migratable in seconds.
-3. **Metadata mesh** – strongly‑consistent, FoundationDB‑style KV shards.
-4. **Policy compiler** – declarative intent → executable workflows.
-5. **Zero‑trust security** – SPIFFE identities, mutual TLS, TPM attestation, per‑segment keys.
-6. **Composable hardware** – CPU, DPU, GPU or computational SSD selected at runtime.
-7. **Autonomous repair** – health agents isolate, rebuild, re‑balance without admin.
-8. **Edge‑ready** – single‑node build with eventual consistency toggle.
+Traditional storage forces you into boxes: **block** *or* **file** *or* **object**. Different APIs, separate data copies, endless complexity.
+
+**SPACE flips the script.** Everything is a **capsule** — a universal 128-bit ID that can be viewed through *any* protocol:
+
+```
+┌─────────────────────────────────────┐
+│   The Same Capsule, Three Views     │
+├─────────────────────────────────────┤
+│  📦 Block    →  NVMe-oF, iSCSI      │
+│  📄 File     →  NFS, SMB            │
+│  ☁️  Object   →  S3 API              │
+└─────────────────────────────────────┘
+```
+
+No copies. No conversions. Just pure, protocol-agnostic storage.
 
 ---
 
-## 3  High‑level architecture
+## ✨ What This MVP Proves
 
-```
-                   +----------------------- CONTROL PLANE -----------------------+
-                   | Operators | Policy | Service | Telemetry | CLI / GraphQL  |
-                   |  (CRDs)   |Compiler|  Mesh   |  Hub      | gRPC / REST    |
-                   +----+------+---+----+----+----+-----+-----+------+----------+
-                        |          |         |          |           |
-+-----------------------v----------v---------v----------v-----------v-----------+
-|                           SERVICE   MESH  (mTLS)                            |
-+------------+-----------+-----------+------------+-----------+---------------+
-             |           |                        |           |
-             v           v                        v           v
-   +---------+--+  +-----+-----+          +-------+----+  +---+----+
-   |  CSI       |  |  NFS/SMB |          |   S3      |  | NVMe‑oF |
-   +------+-----+  +-----+----+          +-----+-----+  +---+----+
-          |               |                     |            |
-          +---------------+---------------------+------------+
-                              |
-                              v
-+-----------------------------+----------------------------------------------+
-|                  eBPF POLICY GATEWAY  (SPIFFE)                             |
-+-----+--------------+----------------------------------------+-------------+
-      |              |                                        |
-      v              v                                        v
-+-----+----+  +------+-----+                          +-------+-----+
-| Block   |  |  File      |                          |  Object     |
-| Engine  |  |  Engine    |                          |  Engine     |
-+--+------+  +------+-----+                          +------+------+
-   |                 |                                      |
-   |  Rust + SPDK    |                                      |
-   +-----------------+-----------------+--------------------+
-                                |
-                                v
-+-------------------------------+----------------------------------------------+
-|         METADATA  MESH  (FoundationDB‑style KV, Paxos)                        |
-+-------------------------------+----------------------------------------------+
-           |           |                      |                     |
-           v           v                      v                     v
-     +-----+---+ +-----+---+           +------+----+         +------+-----+
-     | Flash   | |  Disk   |           | CXL Memory|         |  NVRAM Log |
-     +---------+ +---------+           +-----------+         +------------+
-```
+**Status:** Phase 1 Complete — Core storage layer working!
+
+✅ **Universal Capsule IDs** — 128-bit UUIDs as the single storage primitive  
+✅ **Persistent NVRAM Log** — Append-only durability with automatic fsync  
+✅ **Intelligent Segmentation** — Auto-split to 4MB chunks for efficiency  
+✅ **CLI Tool** — Create and read capsules from the command line  
+✅ **JSON Metadata** — Human-readable registry for debugging and inspection  
 
 ---
 
-## 4  Data flows
+## 🎯 Quick Start
 
-### 4.1 Write path – log‑structured with mirrored NVRAM
-
-```
-[App]
-  │  (mTLS)
-  ▼
-[Protocol Container]
-  │ lookup policy (labels)
-  ▼
-[eBPF Gateway]
-  │ enforce tenant / QoS
-  ▼
-[IO Engine]
-  │ compress + dedupe + encrypt
-  ├─► mirror to peer NVRAM (RDMA, <50 µs)
-  └─► append to local NVRAM        (<50 µs)
-      │ background flush trigger
-      ▼
-[Flusher] —► Erasure‑coded Flash/Disk Tier
+### Build
+```bash
+cargo build --release
 ```
 
-### 4.2 Read path – tier‑aware
-
+### Create a Capsule
+```bash
+# From a file
+echo "Hello SPACE!" > test.txt
+./target/release/spacectl create --file test.txt
 ```
-[App] ─► [Protocol Container] ─► [eBPF Gateway] ─► [IO Engine]
-                                             │
-                                             ├─ cache hit (NVRAM)
-                                             ├─ flash hit (direct)
-                                             └─ disk / cold tier → promote
+
+**Output:**
+```
+✅ Capsule created: 550e8400-e29b-41d4-a716-446655440000
+   Size: 13 bytes
+```
+
+### Read It Back
+```bash
+# Replace UUID with your capsule ID
+./target/release/spacectl read 550e8400-e29b-41d4-a716-446655440000 > output.txt
+```
+
+### Test Multi-Segment Storage
+```bash
+# Create 10MB file (3 segments @ 4MB each)
+dd if=/dev/urandom of=bigfile.bin bs=1M count=10
+
+./target/release/spacectl create --file bigfile.bin
+./target/release/spacectl read <capsule-uuid> > bigfile_out.bin
+
+# Verify integrity
+diff bigfile.bin bigfile_out.bin
 ```
 
 ---
 
-## 5  Reference pseudocode
+## 🏗️ Architecture
 
-### 5.1 Universal write pipeline
-
-```rust
-fn write_object(id: Uuid, data: &[u8], pol: &Policy) -> Result<()> {
-    let segments = segmenter::split(data, 4 * MIB);
-
-    let stream = segments.into_iter().map(|seg| {
-        let seg = compressor::adaptive(seg);
-        if dedupe::is_duplicate(&seg)? { return Ok(None) } // already stored
-        let ciphertext = crypto::encrypt_xts(seg, keyring::derive(&id));
-        Ok(Some(ciphertext))
-    });
-
-    // mirrored append – returns once ACK from peer arrived
-    nvram::mirrored_append(stream.flatten())?;
-    flusher::schedule(id, pol.erasure_profile);
-    Ok(())
-}
+```
+┌─────────────────────────────────────────────────────┐
+│                    spacectl (CLI)                   │
+│              Your interface to the fabric           │
+└────────────────────┬────────────────────────────────┘
+                     │
+┌────────────────────▼────────────────────────────────┐
+│              CapsuleRegistry                        │
+│    Manages capsule metadata & segment mappings     │
+├─────────────────────────────────────────────────────┤
+│              WritePipeline                          │
+│    Segments data → Encrypts → Dedupes → Stores     │
+└────────────────────┬────────────────────────────────┘
+                     │
+┌────────────────────▼────────────────────────────────┐
+│                 NvramLog                            │
+│        Durable append-only segment storage          │
+└─────────────────────────────────────────────────────┘
 ```
 
-### 5.2 Snapshot & Merkle root build
+### Data Flow (Write Path)
 
-```rust
-fn snapshot(volume: &Volume) -> SnapshotId {
-    let snap_id = metadata::fork_tree(volume.id);
-    merkle::seal_snapshot(snap_id); // hashes every new segment reference
-    snap_id
-}
 ```
-
-### 5.3 Policy compilation (simplified)
-
-```rust
-fn compile_policy(pol: &PolicySpec) -> Vec<WorkflowStep> {
-    use Action::*;
-    let mut steps = Vec::new();
-    if pol.replication.rpo == 0 {
-        steps.push(MetroSync { dest: pol.replication.target });
-    } else {
-        steps.push(AsyncFanout { dest: pol.replication.target,
-                                 max_lag: pol.replication.rpo });
-    }
-    if pol.snapshots.keep > 0 {
-        steps.push(SnapshotSchedule { freq: pol.snapshots.freq,
-                                      retain: pol.snapshots.keep });
-    }
-    steps
-}
-```
-
-### 5.4 Autonomous repair loop
-
-```rust
-async fn health_agent_loop() {
-    loop {
-        let alerts = telemetry::fetch_degraded_media().await;
-        for media in alerts {
-            if media.isolate().is_ok() {
-                rebuild::kick(media).await;
-            }
-        }
-        sleep(Duration::from_secs(15)).await;
-    }
-}
+Input File
+    │
+    ├─► Split into 4MB segments
+    │
+    ├─► Generate SegmentID
+    │
+    ├─► Append to NVRAM log (fsync)
+    │
+    └─► Update metadata registry
+         │
+         └─► Return CapsuleID to user
 ```
 
 ---
 
-## 6  Policy compiler & service mesh – sequence
+## 📁 Project Structure
 
 ```
-+----------+        submit intent        +--------------+
-| Operator | ───────────────────────────► |  API Server |
-+----------+                               +------+------+
-                                                │ create CRD
-                                                ▼
-                                         +------+------+
-                                         | Policy Ctrl |
-                                         +------+------+
-                                                │ compile rules
-                                                ▼
-                                         +------+------+
-                                         | Service Mesh|  (Envoy‑sidecars)
-                                         +------+------+
-                                                │ inject labels / mTLS certs
-                                                ▼
-                                         +------+------+
-                                         | IO Engines  |
-                                         +-------------+
+space/
+├── crates/
+│   ├── common/              # Shared types (CapsuleId, SegmentId, Segment)
+│   ├── capsule-registry/    # Metadata + write pipeline
+│   ├── nvram-sim/           # Persistent log storage simulator
+│   └── spacectl/            # Command-line interface
+├── docs/
+│   ├── docs_architecture.md # Full system design
+│   └── docs_patentable_concepts.md
+├── Cargo.toml               # Workspace configuration
+└── README.md                # You are here
+```
+
+### Runtime Files (Auto-Generated)
+
+```
+space.metadata         → Capsule-to-Segment mappings (JSON)
+space.nvram            → Raw segment data (binary)
+space.nvram.segments   → Segment offset index (JSON)
 ```
 
 ---
 
-## 7  Security & integrity
-
-- TPM‑backed secure boot & node attestation.
-- SPIFFE identities + mutual TLS enforced by eBPF gateway.
-- Per‑segment XTS‑AES‑256 keys; envelope keys in external KMS.
-- **Merkle tree per snapshot** for tamper proofing and ransomware roll‑back integrity.
-- Post‑quantum ready (Kyber hybrid key wrapping selectable by policy).
-- Immutable audit log (hash‑chained, external time‑stamp).
-- Confidential compute job‑slots (SGX/SEV enclaves run WASM/Python on‑disk data).
-
----
-
-## 8  Data protection & replication
-
-| Mode                     | Description                     | RPO     | RTO       |
-| ------------------------ | ------------------------------- | ------- | --------- |
-| **6+2 EC**               | Intra‑cluster erasure coding    | 0       | < minutes |
-| **Metro‑Sync**           | Intent‑log mirror via RDMA      | 0       | seconds   |
-| **Async Fan‑out**        | Snapshot deltas → cluster/S3    | minutes | minutes   |
-| **Namespace Federation** | Mount remote snapshot instantly | n/a     | seconds   |
-
----
-
-## 9  Space efficiency techniques
-
-| Feature            | Method                              | Runtime cost     |
-| ------------------ | ----------------------------------- | ---------------- |
-| Compression        | Entropy sample ⇒ LZ4 / Zstd / none  | < 1 µs/seg (DPU) |
-| Deduplication      | 8 KB fingerprints, GPU bloom filter | negligible       |
-| Snapshots & clones | Metadata redirect‑on‑write          | < 1 ms           |
-| Tiering            | Heat counter, metadata move         | none             |
-
----
-
-## 10  Hardware composability
-
-```
-+--------------+   hot‑plug  +-----------+
-| Computational|───────────►| SPACE BUS |
-|   SSD        |            +‑‑‑‑‑‑‑‑‑‑‑+
-+--------------+                 │ register offload
-                                 ▼
-                          +------+-------+
-                          | Offload Table|
-                          +------+-------+
-                                 │ same API used by CPU/DPU/GPU paths
-                                 ▼
-                          +------+-------+
-                          | IO Engines   |
-                          +--------------+
-```
-
-Feature parity is guaranteed: if an accelerator is absent, the CPU path runs the same Rust crate.
-
----
-
-## 11  Edge & disconnected sites
-
-- Single‑node build with embedded witness option.
-- Gossip replication; reconciles once links restore.
-- Eventual consistency toggle and local key escrow.
-
----
-
-## 12  Autonomous repair & observation loop
-
-```
-[Telemetry Hub] ─► [Health Agent] ─► isolate media ─► trigger rebuild
-      │                          ▲                      │
-      └──► [ML Anomaly Detector]─┘<─ snapshot & lock ────┘
-```
-
-*Time‑to‑detect aims < 30 s; rebuild bandwidth bound by network not drive IO.*
-
----
-
-## 13  Getting started (developer sandbox)
-
-*Requirements:* Linux host, Rust 1.78+, Docker 25+, `kubectl`, 16 GB RAM.
+## 🧪 Testing
 
 ```bash
-# Bootstrap dev sandbox
-git clone https://github.com/your‑org/space.git
-cd space
-make dev‑sandbox           # KIND cluster + local NVMe images
-cargo build --workspace    # compile Rust crates
-make run‑engines           # launch IO engines
-spacectl volume create demo --size 50Gi --protocol nfs
+# Run all tests
+cargo test
+
+# Run with output
+cargo test -- --nocapture
+
+# Integration tests only
+cargo test --test integration_test
 ```
 
----
-
-## 14  Contribution & IP notice
-
-This repository records **prior art** for the SPACE architecture.  By submitting pull requests you agree any contribution may be incorporated under Apache 2.0 and that **no patent licence** is granted unless explicitly stated.
-
-Discussions via GitHub Issues; code submissions require a Developer Certificate of Origin.
+**Test Coverage:**
+- ✅ Write/read round-trip
+- ✅ Multi-segment handling
+- ✅ Metadata persistence
+- ✅ NVRAM log recovery
 
 ---
 
-© 2025 Shane Wall & contributors.  Licensed under the Apache License, Version 2.0.
+## 🎨 Why This Matters
 
+### Traditional Storage Problems
+
+| Problem | SPACE Solution |
+|---------|----------------|
+| Protocol lock-in (block vs file vs object) | **One capsule, multiple views** |
+| Data duplication across tiers | **Single source of truth** |
+| Complex migration between protocols | **Instant protocol switching** |
+| Forklift upgrades required | **Microservice-based evolution** |
+| Security bolted on afterward | **Built-in encryption per segment** |
+
+### Future-Ready Architecture
+
+This MVP proves the core storage abstraction. Coming soon:
+
+🔐 **Per-segment encryption** (XTS-AES-256)  
+🗜️ **Adaptive compression** (LZ4/Zstd based on entropy)  
+📊 **Deduplication** (GPU-accelerated bloom filters)  
+⚡ **Protocol views** (NVMe-oF, NFS, S3)  
+🌐 **Replication** (Metro-sync, async fan-out)  
+
+---
+
+## 🗺️ Roadmap
+
+### ✅ Phase 1: Core Storage (COMPLETE)
+- [x] Capsule registry with persistent metadata
+- [x] NVRAM log simulator
+- [x] CLI for create/read operations
+- [x] 4MB automatic segmentation
+- [x] Integration tests
+
+### 🚧 Phase 2: Space Efficiency (IN PROGRESS)
+- [ ] List and delete commands
+- [ ] LZ4/Zstd adaptive compression
+- [ ] XTS-AES-256 encryption per segment
+- [ ] Range reads for block semantics
+- [ ] Basic deduplication
+
+### 🔮 Phase 3: Protocol Views
+- [ ] NVMe-oF block target (SPDK)
+- [ ] NFS v4.2 file export
+- [ ] S3-compatible object API
+- [ ] CSI driver for Kubernetes
+
+### 🌟 Phase 4: Enterprise Features
+- [ ] Metro-sync replication
+- [ ] Policy compiler
+- [ ] Erasure coding (6+2)
+- [ ] Hardware offload (DPU/GPU)
+- [ ] Confidential compute enclaves
+
+---
+
+## 🤝 Contributing
+
+This is an experimental platform exploring radical new storage architectures. We welcome:
+
+- 🐛 Bug reports and fixes
+- 💡 Architecture suggestions
+- 📖 Documentation improvements
+- 🧪 New test cases
+
+**Before submitting PRs:**
+1. Run `cargo fmt` and `cargo clippy`
+2. Ensure all tests pass
+3. Update documentation for new features
+
+---
+
+## 📚 Learn More
+
+- **[Architecture Overview](docs/docs_architecture.md)** — Full system design
+- **[Patentable Concepts](docs/docs_patentable_concepts.md)** — Novel mechanisms
+- **[API Documentation](https://docs.rs/space)** — Coming soon
+
+---
+
+## 📄 License
+
+Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE) or http://www.apache.org/licenses/LICENSE-2.0)
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work shall be licensed as above, without any additional terms or conditions.
+
+---
+
+## 🎯 Project Status
+
+**Current Phase:** Early MVP  
+**Stability:** Experimental — API subject to change  
+**Production Ready:** Not yet (educational/research purposes)
+
+---
+
+<div align="center">
+
+**Built with 🦀 Rust**
+
+*Breaking storage silos, one capsule at a time.*
+
+[Report Bug](https://github.com/your-org/space/issues) · [Request Feature](https://github.com/your-org/space/issues) · [Discussions](https://github.com/your-org/space/discussions)
+
+</div>
