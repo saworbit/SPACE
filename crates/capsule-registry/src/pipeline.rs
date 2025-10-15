@@ -13,21 +13,26 @@ impl WritePipeline {
         Self { registry, nvram }
     }
 
-    /// Write data and return the capsule ID
+/// Write data and return the capsule ID
     pub fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
-        // Create capsule metadata
-        let capsule_id = self.registry.create_capsule(data.len() as u64)?;
+        // Pre-allocate capsule ID but don't persist yet
+        let capsule_id = CapsuleId::new();
         
-        // Split into segments
+        // Collect segments first
+        let mut segment_ids = Vec::new();
+        
+        // Split into segments and write to NVRAM
         for chunk in data.chunks(SEGMENT_SIZE) {
             let seg_id = self.registry.alloc_segment();
             
-            // Append to NVRAM log
+            // Append to NVRAM log (can fail)
             self.nvram.append(seg_id, chunk)?;
             
-            // Link segment to capsule
-            self.registry.add_segment(capsule_id, seg_id)?;
+            segment_ids.push(seg_id);
         }
+        
+        // Only create capsule metadata after all segments are durable
+        self.registry.create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids)?;
         
         Ok(capsule_id)
     }

@@ -55,8 +55,7 @@ impl CapsuleRegistry {
         Ok(())
     }
 
-    pub fn create_capsule(&self, size: u64) -> Result<CapsuleId> {
-        let id = CapsuleId::new();
+ pub fn create_capsule_with_segments(&self, id: CapsuleId, size: u64, segments: Vec<SegmentId>) -> Result<()> {
         let mut capsules = self.capsules.write().unwrap();
         
         if capsules.contains_key(&id) {
@@ -66,7 +65,7 @@ impl CapsuleRegistry {
         let capsule = Capsule {
             id,
             size,
-            segments: Vec::new(),
+            segments,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
@@ -74,8 +73,8 @@ impl CapsuleRegistry {
 
         capsules.insert(id, capsule);
         drop(capsules); // Release lock before saving
-        self.save()?;   // Persist after every change
-        Ok(id)
+        self.save()?;   // Persist after segments are written
+        Ok(())
     }
 
     pub fn lookup(&self, id: CapsuleId) -> Result<Capsule> {
