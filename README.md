@@ -20,7 +20,7 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 ├─────────────────────────────────────┤
 │  📦 Block    →  NVMe-oF, iSCSI      │
 │  📄 File     →  NFS, SMB            │
-│  ☁️  Object   →  S3 API              │
+│  ☁️  Object   →  S3 API             │
 └─────────────────────────────────────┘
 ```
 
