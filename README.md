@@ -2,7 +2,7 @@
 
 > **One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BUSL%201.1-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
 [![Status](https://img.shields.io/badge/status-Early%20MVP-yellow.svg)](https://github.com/your-org/space)
 
@@ -28,6 +28,19 @@ No copies. No conversions. Just pure, protocol-agnostic storage.
 
 ---
 
+## ⚠️ Current Status: Proof of Concept
+
+**What exists NOW (v0.1):**
+- ✅ Basic capsule storage
+- ✅ CLI create/read operations
+- ✅ Persistent metadata
+
+**What's on the roadmap (not built yet):**
+- ⏳ Block/File/Object protocol views
+- ⏳ Encryption & compression
+- ⏳ Replication & clustering
+- ⏳ Policy compiler
+
 ## ✨ What This MVP Proves
 
 **Status:** Phase 1 Complete — Core storage layer working!
@@ -41,6 +54,11 @@ No copies. No conversions. Just pure, protocol-agnostic storage.
 ---
 
 ## 🎯 Quick Start
+
+### System Requirements
+- Linux, macOS, or Windows (WSL2)
+- Rust 1.75+
+- 2GB free disk space
 
 ### Build
 ```bash
@@ -246,9 +264,15 @@ This is an experimental platform exploring radical new storage architectures. We
 
 ---
 
-## 📄 License
+## 📜 License
 
-Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE) or http://www.apache.org/licenses/LICENSE-2.0)
+**BUSL 1.1** → Converts to Apache 2.0 after 4 years
+
+- ✅ **Free:** Students, non-profits, companies <50 employees & <$5M revenue & <100TB
+- 🎁 **Free for contributors:** 3+ merged PRs/year = free commercial use
+- 💼 **Commercial:** Required for larger organizations
+
+[Full license details →](LICENSE) | [Contributor benefits →](CONTRIBUTING.md)
 
 ### Contribution
 

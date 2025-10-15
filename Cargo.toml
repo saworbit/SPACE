@@ -11,7 +11,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["Shane Wall <shane@adaptive-storage.dev>"]
-license = "Apache-2.0"
+license = "BUSL-1.1"
 
 [workspace.dependencies]
 # Shared dependencies across all crates
