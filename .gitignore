@@ -9,8 +9,13 @@ Cargo.lock
 
 # Test files
 test.txt
+test*.bin
+test*.nvram*
 bigfile.bin
 output.txt
+retrieved_s3.txt
+downloaded.bin
+test_demo.txt
 
 # IDE
 .vscode/

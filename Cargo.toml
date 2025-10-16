@@ -4,7 +4,8 @@ members = [
     "crates/common",
     "crates/capsule-registry",
     "crates/nvram-sim",
-    "crates/spacectl", 
+    "crates/protocol-s3",
+    "crates/spacectl",
 ]
 
 [workspace.package]
