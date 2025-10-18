@@ -1,4 +1,5 @@
 use common::*;
+use common::Policy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::path::Path;
@@ -7,6 +8,7 @@ use anyhow::Result;
 use serde::{Serialize, Deserialize};
 
 pub mod pipeline;
+pub mod compression;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryState {
@@ -55,27 +57,28 @@ impl CapsuleRegistry {
         Ok(())
     }
 
- pub fn create_capsule_with_segments(&self, id: CapsuleId, size: u64, segments: Vec<SegmentId>) -> Result<()> {
-        let mut capsules = self.capsules.write().unwrap();
-        
-        if capsules.contains_key(&id) {
-            anyhow::bail!("Capsule collision (extremely unlikely)");
-        }
-
-        let capsule = Capsule {
-            id,
-            size,
-            segments,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs(),
-        };
-
-        capsules.insert(id, capsule);
-        drop(capsules); // Release lock before saving
-        self.save()?;   // Persist after segments are written
-        Ok(())
+pub fn create_capsule_with_segments(&self, id: CapsuleId, size: u64, segments: Vec<SegmentId>) -> Result<()> {
+    let mut capsules = self.capsules.write().unwrap();
+    
+    if capsules.contains_key(&id) {
+        anyhow::bail!("Capsule collision (extremely unlikely)");
     }
+
+    let capsule = Capsule {
+        id,
+        size,
+        segments,
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+        policy: Policy::default(), // Phase 2: Add default policy
+    };
+
+    capsules.insert(id, capsule);
+    drop(capsules); // Release lock before saving
+    self.save()?;   // Persist after segments are written
+    Ok(())
+}
 
     pub fn lookup(&self, id: CapsuleId) -> Result<Capsule> {
         self.capsules.read().unwrap()

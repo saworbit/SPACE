@@ -1,6 +1,9 @@
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
+pub mod policy;
+pub use policy::{Policy, CompressionPolicy};
+
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,6 +38,10 @@ pub struct Capsule {
     pub size: u64,
     pub segments: Vec<SegmentId>,
     pub created_at: u64,
+    
+    // Phase 2: Add policy and stats
+    #[serde(default)]
+    pub policy: Policy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,4 +49,14 @@ pub struct Segment {
     pub id: SegmentId,
     pub offset: u64,
     pub len: u32,
+    
+    // Phase 2: Track compression and access patterns
+    #[serde(default)]
+    pub compressed: bool,
+    #[serde(default)]
+    pub compression_algo: String, // "lz4", "zstd", or "none"
+    #[serde(default)]
+    pub deduplicated: bool,
+    #[serde(default)]
+    pub access_count: u32,
 }

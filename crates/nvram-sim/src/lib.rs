@@ -66,6 +66,11 @@ impl NvramLog {
             id: seg_id,
             offset,
             len: data.len() as u32,
+            // Phase 2 fields with defaults
+            compressed: false,
+            compression_algo: "none".to_string(),
+            deduplicated: false,
+            access_count: 0,
         };
         
         *next_offset += data.len() as u64;
