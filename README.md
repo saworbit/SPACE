@@ -14,15 +14,13 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 
 **SPACE flips the script.** Everything is a **capsule** — a universal 128-bit ID that can be viewed through *any* protocol:
 
-┌─────────────────────────────────────┐
-│   The Same Capsule, Three Views     │
-├─────────────────────────────────────┤
-│  📦 Block    →  NVMe-oF, iSCSI      │
-│  📄 File     →  NFS, SMB            │
-│  ☁️  Object   →  S3 API             │
-└─────────────────────────────────────┘
+| Protocol | Access Method |
+|----------|---------------|
+| 📦 **Block** | NVMe-oF, iSCSI |
+| 📄 **File** | NFS, SMB |
+| ☁️ **Object** | S3 API |
 
-No copies. No conversions. Just pure, protocol-agnostic storage.
+**The same capsule. Three different views. Zero data copies.**
 
 ---
 
@@ -79,153 +77,149 @@ No copies. No conversions. Just pure, protocol-agnostic storage.
 - 2GB free disk space
 
 ### Build
-
-cargo build --release
+    cargo build --release
 
 ### Create a Capsule
-
-# From a file
-echo "Hello SPACE!" > test.txt
-./target/release/spacectl create --file test.txt
-
-**Output:**
-
-✅ Capsule created: 550e8400-e29b-41d4-a716-446655440000
-   Size: 13 bytes
-  🗜️  Segment 0: 1.85x compression (13 -> 7 bytes, lz4_1)
-✅ Capsule 550e8400-e29b-41d4-a716-446655440000: 1.85x compression, 0 dedup hits (0 bytes saved)
+    # From a file
+    echo "Hello SPACE!" > test.txt
+    ./target/release/spacectl create --file test.txt
+    
+    # Output:
+    # ✅ Capsule created: 550e8400-e29b-41d4-a716-446655440000
+    #    Size: 13 bytes
+    #   🗜️  Segment 0: 1.85x compression (13 -> 7 bytes, lz4_1)
+    # ✅ Capsule 550e8400-...: 1.85x compression, 0 dedup hits
 
 ### Read It Back
-
-# Replace UUID with your capsule ID
-./target/release/spacectl read 550e8400-e29b-41d4-a716-446655440000 > output.txt
+    # Replace UUID with your capsule ID
+    ./target/release/spacectl read 550e8400-e29b-41d4-a716-446655440000 > output.txt
 
 ### Test Deduplication
-
-# Create file with repeated content
-echo "SPACE STORAGE " | Out-File -Encoding ASCII test_repeated.txt
-for i in {1..5000}; do echo "SPACE STORAGE " >> test_repeated.txt; done
-
-# Create first capsule
-./target/release/spacectl create --file test_repeated.txt
-
-# Create second capsule (same content - watch for dedup!)
-./target/release/spacectl create --file test_repeated.txt
-
-**Expected Output:**
-
-♻️  Dedup hit: Reusing segment 1 (saved 4194304 bytes)
-✅ Capsule ...: 5.23x compression, 1 dedup hits (4194304 bytes saved)
+    # Create file with repeated content (Bash)
+    echo "SPACE STORAGE " > test_repeated.txt
+    for i in {1..5000}; do echo "SPACE STORAGE " >> test_repeated.txt; done
+    
+    # PowerShell alternative:
+    # "SPACE STORAGE " * 5000 | Out-File test_repeated.txt
+    
+    # Create first capsule
+    ./target/release/spacectl create --file test_repeated.txt
+    
+    # Create second capsule (same content - watch for dedup!)
+    ./target/release/spacectl create --file test_repeated.txt
+    
+    # Expected Output:
+    # ♻️  Dedup hit: Reusing segment 1 (saved 4194304 bytes)
+    # ✅ Capsule ...: 5.23x compression, 1 dedup hits (4194304 bytes saved)
 
 ### Start S3 Server
-
-./target/release/spacectl serve-s3 --port 8080
-
-# In another terminal, test S3 API
-curl -X PUT http://localhost:8080/demo-bucket/hello.txt -d "Hello from S3!"
-curl http://localhost:8080/demo-bucket/hello.txt
+    ./target/release/spacectl serve-s3 --port 8080
+    
+    # In another terminal, test S3 API
+    curl -X PUT http://localhost:8080/demo-bucket/hello.txt -d "Hello from S3!"
+    curl http://localhost:8080/demo-bucket/hello.txt
 
 ---
 
 ## 🏗️ Architecture
 
-┌─────────────────────────────────────────────────────┐
-│                    spacectl (CLI)                   │
-│         Your interface to the storage fabric        │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│              CapsuleRegistry                        │
-│    Manages capsule metadata & segment mappings     │
-│    Content Store: ContentHash → SegmentId          │
-├─────────────────────────────────────────────────────┤
-│              WritePipeline                          │
-│    Segments → Compress → Hash → Dedupe → Store     │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│                 NvramLog                            │
-│        Durable append-only segment storage          │
-└─────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────┐
+    │                    spacectl (CLI)                   │
+    │         Your interface to the storage fabric        │
+    └────────────────────┬────────────────────────────────┘
+                         │
+    ┌────────────────────▼────────────────────────────────┐
+    │              CapsuleRegistry                        │
+    │    Manages capsule metadata & segment mappings     │
+    │    Content Store: ContentHash → SegmentId          │
+    ├─────────────────────────────────────────────────────┤
+    │              WritePipeline                          │
+    │    Segments → Compress → Hash → Dedupe → Store     │
+    └────────────────────┬────────────────────────────────┘
+                         │
+    ┌────────────────────▼────────────────────────────────┐
+    │                 NvramLog                            │
+    │        Durable append-only segment storage          │
+    └─────────────────────────────────────────────────────┘
 
 ### Data Flow (Write Path with Compression & Dedup)
 
-Input File
-    │
-    ├─► Split into 4MB segments
-    │
-    ├─► Compress each segment (LZ4/Zstd)
-    │   └─► Skip if high entropy (random data)
-    │
-    ├─► Hash compressed data (BLAKE3)
-    │
-    ├─► Check content store
-    │   ├─ Hit?  → Reuse existing segment (dedup!)
-    │   └─ Miss? → Write new segment
-    │
-    ├─► Append to NVRAM log (fsync)
-    │
-    └─► Update metadata registry
-         │
-         └─► Return CapsuleID to user
+    Input File
+        │
+        ├─► Split into 4MB segments
+        │
+        ├─► Compress each segment (LZ4/Zstd)
+        │   └─► Skip if high entropy (random data)
+        │
+        ├─► Hash compressed data (BLAKE3)
+        │
+        ├─► Check content store
+        │   ├─ Hit?  → Reuse existing segment (dedup!)
+        │   └─ Miss? → Write new segment
+        │
+        ├─► Append to NVRAM log (fsync)
+        │
+        └─► Update metadata registry
+             │
+             └─► Return CapsuleID to user
 
 ---
 
 ## 📁 Project Structure
 
-space/
-├── crates/
-│   ├── common/              # Shared types (CapsuleId, SegmentId, Policy)
-│   ├── capsule-registry/    # Metadata + write pipeline + dedup
-│   │   ├── src/
-│   │   │   ├── lib.rs       # Registry with content store
-│   │   │   ├── pipeline.rs  # Write/read with compression & dedup
-│   │   │   ├── compression.rs # LZ4/Zstd adaptive compression
-│   │   │   └── dedup.rs     # BLAKE3 hashing & stats
-│   │   └── tests/
-│   │       ├── integration_test.rs
-│   │       └── dedup_test.rs
-│   ├── nvram-sim/           # Persistent log storage simulator
-│   ├── protocol-s3/         # S3-compatible REST API
-│   └── spacectl/            # Command-line interface
-├── docs/
-│   ├── architecture.md      # Full system design
-│   ├── patentable_concepts.md
-│   ├── future_state_architecture.md
-│   └── DEDUP_IMPLEMENTATION.md  # Phase 2.2 details
-├── Cargo.toml               # Workspace configuration
-├── demo_s3.sh               # S3 protocol demo
-├── test_dedup.sh            # Deduplication demo (Bash)
-├── test_dedup.ps1           # Deduplication demo (PowerShell)
-└── README.md                # You are here
+    space/
+    ├── crates/
+    │   ├── common/              # Shared types (CapsuleId, SegmentId, Policy)
+    │   ├── capsule-registry/    # Metadata + write pipeline + dedup
+    │   │   ├── src/
+    │   │   │   ├── lib.rs       # Registry with content store
+    │   │   │   ├── pipeline.rs  # Write/read with compression & dedup
+    │   │   │   ├── compression.rs # LZ4/Zstd adaptive compression
+    │   │   │   └── dedup.rs     # BLAKE3 hashing & stats
+    │   │   └── tests/
+    │   │       ├── integration_test.rs
+    │   │       └── dedup_test.rs
+    │   ├── nvram-sim/           # Persistent log storage simulator
+    │   ├── protocol-s3/         # S3-compatible REST API
+    │   └── spacectl/            # Command-line interface
+    ├── docs/
+    │   ├── architecture.md
+    │   ├── patentable_concepts.md
+    │   ├── future_state_architecture.md
+    │   └── DEDUP_IMPLEMENTATION.md  # Phase 2.2 details
+    ├── Cargo.toml               # Workspace configuration
+    ├── demo_s3.sh               # S3 protocol demo
+    ├── test_dedup.sh            # Deduplication demo (Bash)
+    ├── test_dedup.ps1           # Deduplication demo (PowerShell)
+    └── README.md                # You are here
 
 ### Runtime Files (Auto-Generated)
 
-space.metadata         → Capsule registry + content store (JSON)
-space.nvram            → Raw segment data (binary)
-space.nvram.segments   → Segment offset index (JSON)
+    space.metadata         → Capsule registry + content store (JSON)
+    space.nvram            → Raw segment data (binary)
+    space.nvram.segments   → Segment offset index (JSON)
 
 ---
 
 ## 🧪 Testing
 
-# Run all tests
-cargo test --workspace
-
-# Run with output to see compression/dedup stats
-cargo test --workspace -- --nocapture
-
-# Run dedup-specific tests
-cargo test --test dedup_test -- --nocapture
-
-# Run S3 protocol tests
-cargo test -p protocol-s3 -- --nocapture
-
-# Automated dedup demo (Linux/macOS/Git Bash)
-./test_dedup.sh
-
-# Automated dedup demo (Windows PowerShell)
-.\test_dedup.ps1
+    # Run all tests
+    cargo test --workspace
+    
+    # Run with output to see compression/dedup stats
+    cargo test --workspace -- --nocapture
+    
+    # Run dedup-specific tests
+    cargo test --test dedup_test -- --nocapture
+    
+    # Run S3 protocol tests
+    cargo test -p protocol-s3 -- --nocapture
+    
+    # Automated dedup demo (Linux/macOS/Git Bash)
+    ./test_dedup.sh
+    
+    # Automated dedup demo (Windows PowerShell)
+    .\test_dedup.ps1
 
 **Test Coverage:**
 - ✅ Write/read round-trip with compression
@@ -293,7 +287,7 @@ This MVP proves the core innovations outlined in the architecture documents:
 - [x] Protocol abstraction layer
 - [x] S3 server with Axum
 
-### 🚧 Phase 3: Security & Encryption (IN PROGRESS)
+### 🚧 Phase 3: Security & Encryption (NEXT)
 - [ ] XTS-AES-256 per-segment encryption
 - [ ] Deterministic IV derivation (for dedup over ciphertext)
 - [ ] Key management and rotation
@@ -411,29 +405,29 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 
 ## 🚀 Quick Demo
 
-# Build
-cargo build --release
-
-# Create a file with repeated content
-echo "SPACE STORAGE PLATFORM" > demo.txt
-for i in {1..1000}; do echo "SPACE STORAGE PLATFORM" >> demo.txt; done
-
-# First capsule - no dedup yet
-./target/release/spacectl create --file demo.txt
-
-# Second capsule - watch the dedup magic!
-./target/release/spacectl create --file demo.txt
-
-# Expected output:
-# ♻️  Dedup hit: Reusing segment 0 (saved 24576 bytes)
-# ✅ Capsule ...: 5.2x compression, 1 dedup hits (24576 bytes saved)
-
-# Start S3 server
-./target/release/spacectl serve-s3 --port 8080 &
-
-# Access via S3 API
-curl -X PUT http://localhost:8080/demo/test.txt -d "Hello SPACE!"
-curl http://localhost:8080/demo/test.txt
+    # Build
+    cargo build --release
+    
+    # Create a file with repeated content
+    echo "SPACE STORAGE PLATFORM" > demo.txt
+    for i in {1..1000}; do echo "SPACE STORAGE PLATFORM" >> demo.txt; done
+    
+    # First capsule - no dedup yet
+    ./target/release/spacectl create --file demo.txt
+    
+    # Second capsule - watch the dedup magic!
+    ./target/release/spacectl create --file demo.txt
+    
+    # Expected output:
+    # ♻️  Dedup hit: Reusing segment 0 (saved 24576 bytes)
+    # ✅ Capsule ...: 5.2x compression, 1 dedup hits (24576 bytes saved)
+    
+    # Start S3 server
+    ./target/release/spacectl serve-s3 --port 8080 &
+    
+    # Access via S3 API
+    curl -X PUT http://localhost:8080/demo/test.txt -d "Hello SPACE!"
+    curl http://localhost:8080/demo/test.txt
 
 ---
 
