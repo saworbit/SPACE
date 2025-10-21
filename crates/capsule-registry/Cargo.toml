@@ -13,6 +13,9 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Phase 2: Compression
+# Phase 2.1: Compression
 lz4 = { workspace = true }
 zstd = { workspace = true }
+
+# Phase 2.2: Deduplication
+blake3 = { workspace = true }

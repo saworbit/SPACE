@@ -66,9 +66,12 @@ impl NvramLog {
             id: seg_id,
             offset,
             len: data.len() as u32,
-            // Phase 2 fields with defaults
+            // Phase 2.1: Compression fields
             compressed: false,
             compression_algo: "none".to_string(),
+            // Phase 2.2: Dedup fields
+            content_hash: None,
+            ref_count: 1,  // Default to 1 reference
             deduplicated: false,
             access_count: 0,
         };

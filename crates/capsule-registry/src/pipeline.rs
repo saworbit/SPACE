@@ -1,6 +1,7 @@
 use common::*;
 use crate::CapsuleRegistry;
 use crate::compression::{compress_segment, decompress_lz4, decompress_zstd};
+use crate::dedup::{hash_content, DedupStats};
 use nvram_sim::NvramLog;
 use anyhow::Result;
 
@@ -19,40 +20,79 @@ impl WritePipeline {
         self.write_capsule_with_policy(data, &Policy::default())
     }
 
-    /// Write data with explicit policy
+    /// Write data with explicit policy (including deduplication)
     pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
         // Pre-allocate capsule ID but don't persist yet
         let capsule_id = CapsuleId::new();
         
-        // Collect segments with compression stats
+        // Track stats
         let mut segment_ids = Vec::new();
         let mut total_compressed_size = 0u64;
         let mut total_original_size = 0u64;
+        let mut dedup_stats = DedupStats::new();
         
-        // Split into segments and compress
+        // Split into segments, compress, and deduplicate
         for chunk in data.chunks(SEGMENT_SIZE) {
-            let seg_id = self.registry.alloc_segment();
+            total_original_size += chunk.len() as u64;
             
-            // Compress the segment based on policy
+            // Step 1: Compress the segment based on policy
             let (compressed_data, comp_result) = compress_segment(chunk, &policy.compression)?;
-            
-            total_original_size += comp_result.original_size as u64;
             total_compressed_size += comp_result.compressed_size as u64;
             
-            // Append compressed data to NVRAM log (can fail)
-            let mut segment = self.nvram.append(seg_id, &compressed_data)?;
+            // Step 2: Hash the compressed data for deduplication
+            let content_hash = hash_content(&compressed_data);
             
-            // Update segment metadata with compression info
-            segment.compressed = comp_result.compressed;
-            segment.compression_algo = comp_result.algorithm.clone();
-            segment.deduplicated = false; // Phase 2.2 will add dedupe
-            segment.access_count = 0;
+            // Step 3: Check if this content already exists (if dedup enabled)
+            let (seg_id, was_deduped) = if policy.dedupe {
+                if let Some(existing_seg_id) = self.registry.lookup_content(&content_hash) {
+                    // Content exists! Reuse the segment
+                    dedup_stats.add_segment(compressed_data.len() as u64, true);
+                    
+                    println!("  ♻️  Dedup hit: Reusing segment {} (saved {} bytes)", 
+                        existing_seg_id.0, compressed_data.len());
+                    
+                    (existing_seg_id, true)
+                } else {
+                    // New content - allocate and write
+                    let new_seg_id = self.registry.alloc_segment();
+                    
+                    // Write to NVRAM
+                    let mut segment = self.nvram.append(new_seg_id, &compressed_data)?;
+                    
+                    // Update segment metadata
+                    segment.compressed = comp_result.compressed;
+                    segment.compression_algo = comp_result.algorithm.clone();
+                    segment.content_hash = Some(content_hash.clone());
+                    segment.ref_count = 1;
+                    segment.deduplicated = false;
+                    
+                    // Register in content store
+                    self.registry.register_content(content_hash, new_seg_id)?;
+                    
+                    dedup_stats.add_segment(compressed_data.len() as u64, false);
+                    
+                    (new_seg_id, false)
+                }
+            } else {
+                // Dedup disabled - always write new segment
+                let new_seg_id = self.registry.alloc_segment();
+                
+                let mut segment = self.nvram.append(new_seg_id, &compressed_data)?;
+                segment.compressed = comp_result.compressed;
+                segment.compression_algo = comp_result.algorithm.clone();
+                segment.ref_count = 1;
+                segment.deduplicated = false;
+                
+                dedup_stats.add_segment(compressed_data.len() as u64, false);
+                
+                (new_seg_id, false)
+            };
             
             segment_ids.push(seg_id);
             
-            // Log compression stats (optional, can remove for production)
-            if comp_result.compressed {
-                println!("  Segment {}: {:.2}x compression ({} -> {} bytes, {})", 
+            // Log compression stats
+            if comp_result.compressed && !was_deduped {
+                println!("  🗜️  Segment {}: {:.2}x compression ({} -> {} bytes, {})", 
                     seg_id.0, comp_result.ratio(), 
                     comp_result.original_size, comp_result.compressed_size,
                     comp_result.algorithm);
@@ -62,6 +102,11 @@ impl WritePipeline {
         // Only create capsule metadata after all segments are durable
         self.registry.create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids)?;
         
+        // Update dedup stats on capsule
+        if dedup_stats.bytes_saved > 0 {
+            self.registry.add_deduped_bytes(capsule_id, dedup_stats.bytes_saved)?;
+        }
+        
         // Print summary stats
         let compression_ratio = if total_compressed_size > 0 {
             total_original_size as f32 / total_compressed_size as f32
@@ -69,9 +114,9 @@ impl WritePipeline {
             1.0
         };
         
-        println!("✅ Capsule {}: {:.2}x overall compression ({} -> {} bytes)", 
+        println!("✅ Capsule {}: {:.2}x compression, {} dedup hits ({} bytes saved)", 
             capsule_id.as_uuid(), compression_ratio, 
-            total_original_size, total_compressed_size);
+            dedup_stats.deduped_segments, dedup_stats.bytes_saved);
         
         Ok(capsule_id)
     }
@@ -117,7 +162,7 @@ impl WritePipeline {
         }
 
         // Simple implementation - read full capsule then slice
-        // TODO Phase 2.1: Optimize to only read relevant segments
+        // TODO Phase 2.3: Optimize to only read relevant segments
         let full_data = self.read_capsule(id)?;
         Ok(full_data[offset as usize..(offset as usize + len)].to_vec())
     }

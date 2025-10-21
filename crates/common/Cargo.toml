@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 uuid = { workspace = true }
 serde = { workspace = true }
+hex = "0.4"

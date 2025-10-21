@@ -17,10 +17,16 @@ retrieved_s3.txt
 downloaded.bin
 test_demo.txt
 
+# NEW: Dedup test artifacts
+demo_repeated.txt
+demo_unique*.txt
+test_dedup*.nvram*
+test_dedup*.metadata
+
 # IDE
 .vscode/
 .idea/
 
 # OS
 .DS_Store
-Thumbs.db"
+Thumbs.db
