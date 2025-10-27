@@ -1,4 +1,3 @@
-use anyhow::Result;
 use blake3;
 use common::ContentHash;
 

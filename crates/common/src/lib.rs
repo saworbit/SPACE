@@ -2,7 +2,7 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
 pub mod policy;
-pub use policy::{Policy, CompressionPolicy};
+pub use policy::{Policy, CompressionPolicy, EncryptionPolicy};
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
@@ -83,4 +83,16 @@ pub struct Segment {
     pub deduplicated: bool,
     #[serde(default)]
     pub access_count: u32,
+    
+    // Phase 3: Encryption metadata
+    #[serde(default)]
+    pub encryption_version: Option<u16>,  // Encryption format version
+    #[serde(default)]
+    pub key_version: Option<u32>,  // Key version used
+    #[serde(default)]
+    pub tweak_nonce: Option<[u8; 16]>,  // XTS tweak
+    #[serde(default)]
+    pub integrity_tag: Option<[u8; 16]>,  // MAC tag
+    #[serde(default)]
+    pub encrypted: bool,  // Quick check if encrypted
 }

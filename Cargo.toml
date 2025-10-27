@@ -6,6 +6,7 @@ members = [
     "crates/nvram-sim",
     "crates/protocol-s3",
     "crates/spacectl",
+    "crates/encryption",    # NEW: Phase 3 encryption crate
 ]
 
 [workspace.package]
@@ -34,5 +35,12 @@ hex = "0.4"
 
 # Phase 2: Security
 zeroize = "1.7"
+
+# Phase 3: Encryption (NEW)
+aes = "0.8"
+cipher = "0.4"
+xts-mode = "0.5"
+poly1305 = "0.8"
+cpufeatures = "0.2"
 
 # Phase 2: Async

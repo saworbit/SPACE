@@ -5,14 +5,47 @@ use crate::dedup::{hash_content, DedupStats};
 use nvram_sim::NvramLog;
 use anyhow::Result;
 
+// Phase 3: Encryption imports
+use encryption::{
+    KeyManager, 
+    encrypt_segment, decrypt_segment,
+    derive_tweak_from_hash,
+    compute_mac, verify_mac,
+    EncryptionMetadata,
+};
+use std::sync::{Arc, Mutex};  // NEW: For interior mutability
+
 pub struct WritePipeline {
     registry: CapsuleRegistry,
     nvram: NvramLog,
+    key_manager: Option<Arc<Mutex<KeyManager>>>,  // CHANGED: Wrapped in Arc<Mutex<>>
 }
 
 impl WritePipeline {
     pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        Self { registry, nvram }
+        // Try to initialize key manager from environment
+        let key_manager = KeyManager::from_env()
+            .ok()
+            .map(|km| Arc::new(Mutex::new(km)));  // CHANGED: Wrap in Arc<Mutex<>>
+        
+        if key_manager.is_some() {
+            println!("🔐 Encryption enabled (key manager initialized)");
+        }
+        
+        Self { 
+            registry, 
+            nvram,
+            key_manager,
+        }
+    }
+    
+    /// Create pipeline with explicit key manager (for testing)
+    pub fn with_key_manager(registry: CapsuleRegistry, nvram: NvramLog, key_manager: KeyManager) -> Self {
+        Self {
+            registry,
+            nvram,
+            key_manager: Some(Arc::new(Mutex::new(key_manager))),  // CHANGED: Wrap in Arc<Mutex<>>
+        }
     }
 
     /// Write data with compression and return the capsule ID
@@ -20,7 +53,7 @@ impl WritePipeline {
         self.write_capsule_with_policy(data, &Policy::default())
     }
 
-    /// Write data with explicit policy (including deduplication)
+    /// Write data with explicit policy (including encryption)
     pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
         // Pre-allocate capsule ID but don't persist yet
         let capsule_id = CapsuleId::new();
@@ -31,7 +64,10 @@ impl WritePipeline {
         let mut total_original_size = 0u64;
         let mut dedup_stats = DedupStats::new();
         
-        // Split into segments, compress, and deduplicate
+        // Check if encryption is enabled
+        let encryption_enabled = policy.encryption.is_enabled() && self.key_manager.is_some();
+        
+        // Split into segments, compress, deduplicate, and encrypt
         for chunk in data.chunks(SEGMENT_SIZE) {
             total_original_size += chunk.len() as u64;
             
@@ -42,14 +78,47 @@ impl WritePipeline {
             // Step 2: Hash the compressed data for deduplication
             let content_hash = hash_content(&compressed_data);
             
-            // Step 3: Check if this content already exists (if dedup enabled)
+            // Step 3: Encrypt if enabled (before dedup check for deterministic encryption)
+            let (final_data, encryption_meta) = if encryption_enabled {
+                let km = self.key_manager.as_ref().unwrap();
+                let mut km = km.lock().unwrap();  // CHANGED: Lock the mutex
+                let key_version = km.current_version();
+                let key_pair = km.get_key(key_version)?;
+                
+                // Derive deterministic tweak from content hash
+                let tweak = derive_tweak_from_hash(content_hash.as_str().as_bytes());
+                
+                // Encrypt segment
+                let (ciphertext, mut enc_meta) = encrypt_segment(
+                    &compressed_data,
+                    key_pair,
+                    key_version,
+                    tweak,
+                )?;
+                
+                // Compute MAC over ciphertext + metadata
+                let mac_tag = compute_mac(
+                    &ciphertext,
+                    &enc_meta,
+                    key_pair.key1(),
+                    key_pair.key2(),
+                )?;
+                
+                enc_meta.set_integrity_tag(mac_tag);
+                
+                (ciphertext, Some(enc_meta))
+            } else {
+                (compressed_data.clone(), None)
+            };
+            
+            // Step 4: Check if this content already exists (if dedup enabled)
             let (seg_id, was_deduped) = if policy.dedupe {
                 if let Some(existing_seg_id) = self.registry.lookup_content(&content_hash) {
                     // Content exists! Reuse the segment
-                    dedup_stats.add_segment(compressed_data.len() as u64, true);
+                    dedup_stats.add_segment(final_data.len() as u64, true);
                     
                     println!("  ♻️  Dedup hit: Reusing segment {} (saved {} bytes)", 
-                        existing_seg_id.0, compressed_data.len());
+                        existing_seg_id.0, final_data.len());
                     
                     (existing_seg_id, true)
                 } else {
@@ -57,19 +126,31 @@ impl WritePipeline {
                     let new_seg_id = self.registry.alloc_segment();
                     
                     // Write to NVRAM
-                    let mut segment = self.nvram.append(new_seg_id, &compressed_data)?;
+                    let mut segment = self.nvram.append(new_seg_id, &final_data)?;
                     
-                    // Update segment metadata
+                    // Update segment metadata - compression
                     segment.compressed = comp_result.compressed;
                     segment.compression_algo = comp_result.algorithm.clone();
                     segment.content_hash = Some(content_hash.clone());
                     segment.ref_count = 1;
                     segment.deduplicated = false;
                     
+                    // Update segment metadata - encryption
+                    if let Some(ref enc_meta) = encryption_meta {
+                        segment.encrypted = true;
+                        segment.encryption_version = enc_meta.encryption_version;
+                        segment.key_version = enc_meta.key_version;
+                        segment.tweak_nonce = enc_meta.tweak_nonce;
+                        segment.integrity_tag = enc_meta.integrity_tag;
+                    }
+                    
+                    // Save updated metadata back to NVRAM
+                    self.nvram.update_segment_metadata(new_seg_id, segment)?;
+                    
                     // Register in content store
                     self.registry.register_content(content_hash, new_seg_id)?;
                     
-                    dedup_stats.add_segment(compressed_data.len() as u64, false);
+                    dedup_stats.add_segment(final_data.len() as u64, false);
                     
                     (new_seg_id, false)
                 }
@@ -77,25 +158,44 @@ impl WritePipeline {
                 // Dedup disabled - always write new segment
                 let new_seg_id = self.registry.alloc_segment();
                 
-                let mut segment = self.nvram.append(new_seg_id, &compressed_data)?;
+                let mut segment = self.nvram.append(new_seg_id, &final_data)?;
                 segment.compressed = comp_result.compressed;
                 segment.compression_algo = comp_result.algorithm.clone();
                 segment.ref_count = 1;
                 segment.deduplicated = false;
                 
-                dedup_stats.add_segment(compressed_data.len() as u64, false);
+                // Update segment metadata - encryption
+                if let Some(ref enc_meta) = encryption_meta {
+                    segment.encrypted = true;
+                    segment.encryption_version = enc_meta.encryption_version;
+                    segment.key_version = enc_meta.key_version;
+                    segment.tweak_nonce = enc_meta.tweak_nonce;
+                    segment.integrity_tag = enc_meta.integrity_tag;
+                }
+                
+                // Save updated metadata back to NVRAM
+                self.nvram.update_segment_metadata(new_seg_id, segment)?;
+                
+                dedup_stats.add_segment(final_data.len() as u64, false);
                 
                 (new_seg_id, false)
             };
             
             segment_ids.push(seg_id);
             
-            // Log compression stats
-            if comp_result.compressed && !was_deduped {
-                println!("  🗜️  Segment {}: {:.2}x compression ({} -> {} bytes, {})", 
-                    seg_id.0, comp_result.ratio(), 
-                    comp_result.original_size, comp_result.compressed_size,
-                    comp_result.algorithm);
+            // Log stats
+            if !was_deduped {
+                if encryption_enabled {
+                    println!("  🔐 Segment {}: encrypted with key v{}", 
+                        seg_id.0, 
+                        encryption_meta.as_ref().unwrap().key_version.unwrap());
+                }
+                if comp_result.compressed {
+                    println!("  🗜️  Segment {}: {:.2}x compression ({} -> {} bytes, {})", 
+                        seg_id.0, comp_result.ratio(), 
+                        comp_result.original_size, comp_result.compressed_size,
+                        comp_result.algorithm);
+                }
             }
         }
         
@@ -114,35 +214,74 @@ impl WritePipeline {
             1.0
         };
         
-        println!("✅ Capsule {}: {:.2}x compression, {} dedup hits ({} bytes saved)", 
+        let encryption_status = if encryption_enabled { " 🔐 encrypted" } else { "" };
+        
+        println!("✅ Capsule {}: {:.2}x compression, {} dedup hits ({} bytes saved){}", 
             capsule_id.as_uuid(), compression_ratio, 
-            dedup_stats.deduped_segments, dedup_stats.bytes_saved);
+            dedup_stats.deduped_segments, dedup_stats.bytes_saved,
+            encryption_status);
         
         Ok(capsule_id)
     }
 
-    /// Read entire capsule contents (with decompression)
+    /// Read entire capsule contents (with decryption and decompression)
     pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
         let capsule = self.registry.lookup(id)?;
         
         let mut result = Vec::with_capacity(capsule.size as usize);
         
         for seg_id in &capsule.segments {
-            let compressed_data = self.nvram.read(*seg_id)?;
+            // Read raw data from NVRAM
+            let raw_data = self.nvram.read(*seg_id)?;
             
-            // Decompress based on policy
+            // Get segment metadata to check if encrypted
+            let segment = self.nvram.get_segment_metadata(*seg_id)?;
+            
+            // Step 1: Decrypt if encrypted
+            let decrypted_data = if segment.encrypted {
+                // Verify we have a key manager
+                let km = self.key_manager.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("Cannot decrypt: key manager not initialized"))?;
+                
+                let mut km = km.lock().unwrap();  // CHANGED: Lock the mutex
+                
+                // Get the key version used for this segment
+                let key_version = segment.key_version
+                    .ok_or_else(|| anyhow::anyhow!("Missing key version in encrypted segment"))?;
+                
+                let key_pair = km.get_key(key_version)?;
+                
+                // Build encryption metadata from segment
+                let enc_meta = EncryptionMetadata {
+                    encryption_version: segment.encryption_version,
+                    key_version: segment.key_version,
+                    tweak_nonce: segment.tweak_nonce,
+                    integrity_tag: segment.integrity_tag,
+                    ciphertext_len: Some(raw_data.len() as u32),
+                };
+                
+                // Verify MAC first
+                verify_mac(&raw_data, &enc_meta, key_pair.key1(), key_pair.key2())?;
+                
+                // Decrypt
+                decrypt_segment(&raw_data, key_pair, &enc_meta)?
+            } else {
+                raw_data
+            };
+            
+            // Step 2: Decompress based on policy
             let data = match capsule.policy.compression {
-                CompressionPolicy::None => compressed_data,
+                CompressionPolicy::None => decrypted_data,
                 CompressionPolicy::LZ4 { .. } => {
-                    match decompress_lz4(&compressed_data) {
+                    match decompress_lz4(&decrypted_data) {
                         Ok(decompressed) => decompressed,
-                        Err(_) => compressed_data, // Wasn't compressed
+                        Err(_) => decrypted_data, // Wasn't compressed
                     }
                 }
                 CompressionPolicy::Zstd { .. } => {
-                    match decompress_zstd(&compressed_data) {
+                    match decompress_zstd(&decrypted_data) {
                         Ok(decompressed) => decompressed,
-                        Err(_) => compressed_data, // Wasn't compressed
+                        Err(_) => decrypted_data, // Wasn't compressed
                     }
                 }
             };

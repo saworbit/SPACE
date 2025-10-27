@@ -74,6 +74,12 @@ impl NvramLog {
             ref_count: 1,  // Default to 1 reference
             deduplicated: false,
             access_count: 0,
+            // Phase 3: Encryption fields
+            encryption_version: None,
+            key_version: None,
+            tweak_nonce: None,
+            integrity_tag: None,
+            encrypted: false,
         };
         
         *next_offset += data.len() as u64;
@@ -102,5 +108,27 @@ impl NvramLog {
         file.read_exact(&mut buffer)?;
         
         Ok(buffer)
+    }
+
+    /// NEW: Get segment metadata without reading data
+    /// 
+    /// Used by the read pipeline to check encryption status and get
+    /// encryption metadata before decrypting.
+    pub fn get_segment_metadata(&self, seg_id: SegmentId) -> Result<Segment> {
+        self.segment_map.read().unwrap()
+            .get(&seg_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Segment not found: {:?}", seg_id))
+    }
+
+    /// NEW: Update segment metadata after encryption
+    /// 
+    /// Called by the write pipeline to update encryption fields after
+    /// the segment has been written to disk.
+    pub fn update_segment_metadata(&self, seg_id: SegmentId, segment: Segment) -> Result<()> {
+        self.segment_map.write().unwrap()
+            .insert(seg_id, segment);
+        self.save_segment_map()?;
+        Ok(())
     }
 }

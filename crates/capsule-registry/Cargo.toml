@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 common = { path = "../common" }
 nvram-sim = { path = "../nvram-sim" }
+encryption = { path = "../encryption" }  # NEW: Phase 3 encryption support
 uuid = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

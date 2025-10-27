@@ -1,0 +1,37 @@
+[package]
+name = "encryption"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core dependencies (already in workspace)
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+
+# Zeroize with derive feature for secure memory
+zeroize = { workspace = true, features = ["derive"] }
+
+# Phase 3: Crypto dependencies (now in workspace)
+aes = { workspace = true }
+cipher = { workspace = true }
+xts-mode = { workspace = true }
+poly1305 = { workspace = true }
+cpufeatures = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.4"
+rand = "0.8"  # For generating test keys
+serial_test = "3.0"
+
+[features]
+default = ["std"]
+std = []
+experimental = []
+pqc = []
+tee = []
