@@ -30,17 +30,8 @@ const XTS_BLOCK_SIZE: usize = 16;
 /// Minimum data size for XTS (one block)
 const MIN_SECTOR_SIZE: usize = XTS_BLOCK_SIZE;
 
-/// Check if AES-NI is available (x86/x86_64 only)
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn is_aes_ni_available() -> bool {
-    cpufeatures::new!(aes_ni, "aes");
-    aes_ni::get()
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn is_aes_ni_available() -> bool {
-    false
-}
+// Hardware feature detection (e.g. AES-NI) is handled internally by the `aes`
+// crate via the `cpufeatures` integration, so we can rely on it directly.
 
 /// Encrypt data using XTS-AES-256
 ///
@@ -220,13 +211,6 @@ pub fn derive_tweak_from_hash(content_hash: &[u8]) -> [u8; 16] {
 mod tests {
     use super::*;
     use crate::keymanager::{KeyManager, MASTER_KEY_SIZE};
-
-    #[test]
-    fn test_aes_ni_detection() {
-        let available = is_aes_ni_available();
-        println!("AES-NI available: {}", available);
-        // Just verify it doesn't crash
-    }
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {

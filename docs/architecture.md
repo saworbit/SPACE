@@ -80,6 +80,16 @@ Modern workloads are scattered across VMs, containers, GPUs, DPUs and edge devic
 
 ---
 
+### 3.1 Protocol containers (current)
+
+| Protocol facade | Crate | Notes |
+|-----------------|-------|-------|
+| Object (S3)     | `protocol-s3` | REST demo with in-memory key map |
+| File (NFS-style)| `protocol-nfs` | Persists namespace in `space.nfs.json`, rewrites capsules on overwrite |
+| Block           | `protocol-block` | Presents logical LUNs with copy-on-write updates stored in `space.block.json` |
+
+Each facade delegates I/O to the shared `WritePipeline`, ensuring compression, dedupe, encryption, and reference management remain consistent regardless of protocol.  The lightweight adapters allow CLI tooling (`spacectl`) to expose object, file, and block semantics without duplicating storage logic.
+
 ## 4  Data flows
 
 ### 4.1 Write path – log‑structured with mirrored NVRAM

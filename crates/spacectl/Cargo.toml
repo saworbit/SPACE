@@ -14,6 +14,8 @@ common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }
 nvram-sim = { path = "../nvram-sim" }
 protocol-s3 = { path = "../protocol-s3" }
+protocol-nfs = { path = "../protocol-nfs" }
+protocol-block = { path = "../protocol-block" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }

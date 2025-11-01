@@ -4,6 +4,8 @@ members = [
     "crates/common",
     "crates/capsule-registry",
     "crates/nvram-sim",
+    "crates/protocol-block",
+    "crates/protocol-nfs",
     "crates/protocol-s3",
     "crates/spacectl",
     "crates/encryption",    # NEW: Phase 3 encryption crate

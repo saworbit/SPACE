@@ -30,6 +30,7 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - ✅ Universal capsule storage with persistent metadata
 - ✅ CLI create/read operations
 - ✅ S3-compatible REST API (protocol view proof-of-concept)
+- ✅ NFS + block protocol views (namespace + volume facades)
 - ✅ Adaptive compression (LZ4/Zstd with entropy detection)
 - ✅ Content-addressed deduplication (post-compression)
 - ✅ **XTS-AES-256 encryption with BLAKE3-MAC integrity**
@@ -38,7 +39,6 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - ✅ **Reference-counted garbage collection with metadata reclamation**
 
 **What's coming next:**
-- ⏳ NFS/Block protocol views
 - ⏳ Replication & clustering
 - ⏳ Policy compiler
 
@@ -68,6 +68,8 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 ### Phase 2.3: Protocol Views ✅
 ✅ **S3 REST API** — PUT/GET/HEAD/LIST/DELETE operations  
 ✅ **Protocol Abstraction** — Same capsule accessible via multiple APIs  
+✅ **NFS namespace view** - Hierarchical directories backed by capsules  
+✅ **Block volume view** - Logical LUN facade with copy-on-write rewrites  
 
 ### Phase 3.1: Encryption & Integrity ✅
 ✅ **XTS-AES-256 Encryption** — Per-segment encryption with hardware acceleration  
@@ -496,9 +498,10 @@ This is an experimental platform exploring radical new storage architectures. We
 
 - **[Architecture Overview](docs/architecture.md)** — Full system design
 - **[Future State Architecture](docs/future_state_architecture.md)** — Vision and roadmap
-- **[Patentable Concepts](docs/patentable_concepts.md)** — Novel mechanisms
-- **[Dedup Implementation](docs/DEDUP_IMPLEMENTATION.md)** — Phase 2.2 technical details
-- **[Encryption Implementation](docs/ENCRYPTION_IMPLEMENTATION.md)** — **NEW: Phase 3 security details**
+- **[Patentable Concepts](docs/patentable_concepts.md)** – Novel mechanisms
+- **[Dedup Implementation](docs/DEDUP_IMPLEMENTATION.md)** – Phase 2.2 technical details
+- **[Encryption Implementation](docs/ENCRYPTION_IMPLEMENTATION.md)** – **NEW: Phase 3 security details**
+- **[Protocol Views Integration](docs/protocol_views.md)** - CLI workflow for S3/NFS/block facades
 - **[S3 Quick Start](QUICKSTART_S3.md)** — Protocol view demo
 - **[Build Guide](BUILD.md)** — Compilation and testing
 
@@ -572,6 +575,21 @@ for i in {1..1000}; do echo "SPACE STORAGE PLATFORM" >> demo.txt; done
 # Access via S3 API
 curl -X PUT http://localhost:8080/demo/test.txt -d "Hello SPACE!"
 curl http://localhost:8080/demo/test.txt
+```
+
+### Explore NFS and Block views
+```powershell
+# Create directories and write a file via the NFS view
+spacectl nfs mkdir --path /lab/results
+spacectl nfs write --path /lab/results/report.json --file report.json
+spacectl nfs list --path /lab/results
+spacectl nfs read --path /lab/results/report.json > fetched.json
+
+# Provision a 32MiB block volume and write a sector
+spacectl block create vol1 33554432
+spacectl block write vol1 4096 --file sector.bin
+spacectl block read vol1 4096 --length 512 > sector.verify
+spacectl block delete vol1
 ```
 
 ---

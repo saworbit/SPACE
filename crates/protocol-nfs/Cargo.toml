@@ -1,0 +1,14 @@
+[package]
+name = "protocol-nfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+capsule-registry = { path = "../capsule-registry" }
+common = { path = "../common" }
+nvram-sim = { path = "../nvram-sim" }
+serde = { workspace = true }
+serde_json = { workspace = true }
