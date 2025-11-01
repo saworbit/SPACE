@@ -2,7 +2,7 @@ use blake3;
 use common::ContentHash;
 
 /// Compute BLAKE3 hash of data
-/// 
+///
 /// Uses BLAKE3 for speed and cryptographic strength.
 /// This hash is used for content-addressed storage.
 pub fn hash_content(data: &[u8]) -> ContentHash {
@@ -67,28 +67,28 @@ mod tests {
 
         // Same content = same hash
         assert_eq!(hash1, hash2);
-        
+
         // Different content = different hash
         assert_ne!(hash1, hash3);
-        
+
         println!("✅ Content hashing works correctly");
     }
 
     #[test]
     fn test_dedup_stats() {
         let mut stats = DedupStats::new();
-        
+
         stats.add_segment(4_000_000, false); // New segment
-        stats.add_segment(4_000_000, true);  // Deduped
-        stats.add_segment(4_000_000, true);  // Deduped
-        
+        stats.add_segment(4_000_000, true); // Deduped
+        stats.add_segment(4_000_000, true); // Deduped
+
         assert_eq!(stats.total_segments, 3);
         assert_eq!(stats.deduped_segments, 2);
         assert_eq!(stats.bytes_saved, 8_000_000);
-        
+
         stats.compute_ratio();
         assert!(stats.dedup_ratio > 1.0);
-        
+
         println!("✅ Dedup stats tracking works");
     }
 
@@ -97,14 +97,14 @@ mod tests {
         // Verify BLAKE3 produces consistent 32-byte hashes
         let data = b"Test data for consistency";
         let hash = hash_content(data);
-        
+
         // BLAKE3 produces 32-byte hash, hex encoded = 64 chars
         assert_eq!(hash.as_str().len(), 64);
-        
+
         // Hash again - should be identical
         let hash2 = hash_content(data);
         assert_eq!(hash, hash2);
-        
+
         println!("✅ BLAKE3 hashing is consistent");
     }
 }

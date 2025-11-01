@@ -1,15 +1,16 @@
-use common::*;
-use common::Policy;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use std::path::Path;
-use std::fs;
 use anyhow::Result;
-use serde::{Serialize, Deserialize};
+use common::Policy;
+use common::*;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 
-pub mod pipeline;
 pub mod compression;
-pub mod dedup;  // NEW
+pub mod dedup; // NEW
+pub mod gc;
+pub mod pipeline;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryState {
@@ -35,7 +36,7 @@ impl CapsuleRegistry {
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let metadata_path = path.as_ref().to_string_lossy().to_string();
-        
+
         // Try to load existing state
         let (capsules, next_segment_id, content_store) = if Path::new(&metadata_path).exists() {
             let data = fs::read_to_string(&metadata_path)?;
@@ -59,15 +60,20 @@ impl CapsuleRegistry {
             next_segment_id: *self.next_segment_id.read().unwrap(),
             content_store: self.content_store.read().unwrap().clone(),
         };
-        
+
         let json = serde_json::to_string_pretty(&state)?;
         fs::write(&self.metadata_path, json)?;
         Ok(())
     }
 
-    pub fn create_capsule_with_segments(&self, id: CapsuleId, size: u64, segments: Vec<SegmentId>) -> Result<()> {
+    pub fn create_capsule_with_segments(
+        &self,
+        id: CapsuleId,
+        size: u64,
+        segments: Vec<SegmentId>,
+    ) -> Result<()> {
         let mut capsules = self.capsules.write().unwrap();
-        
+
         if capsules.contains_key(&id) {
             anyhow::bail!("Capsule collision (extremely unlikely)");
         }
@@ -80,7 +86,7 @@ impl CapsuleRegistry {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
             policy: Policy::default(),
-            deduped_bytes: 0,  // Will be updated during write
+            deduped_bytes: 0, // Will be updated during write
         };
 
         capsules.insert(id, capsule);
@@ -90,7 +96,9 @@ impl CapsuleRegistry {
     }
 
     pub fn lookup(&self, id: CapsuleId) -> Result<Capsule> {
-        self.capsules.read().unwrap()
+        self.capsules
+            .read()
+            .unwrap()
             .get(&id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Capsule not found"))
@@ -105,7 +113,8 @@ impl CapsuleRegistry {
 
     pub fn add_segment(&self, capsule_id: CapsuleId, seg_id: SegmentId) -> Result<()> {
         let mut capsules = self.capsules.write().unwrap();
-        let capsule = capsules.get_mut(&capsule_id)
+        let capsule = capsules
+            .get_mut(&capsule_id)
             .ok_or_else(|| anyhow::anyhow!("Capsule not found"))?;
         capsule.segments.push(seg_id);
         drop(capsules);
@@ -114,7 +123,7 @@ impl CapsuleRegistry {
     }
 
     // NEW: Phase 2.2 - Deduplication methods
-    
+
     /// Check if content hash already exists in store
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
         self.content_store.read().unwrap().get(hash).copied()
@@ -127,6 +136,19 @@ impl CapsuleRegistry {
         Ok(())
     }
 
+    pub fn deregister_content(&self, hash: &ContentHash, seg_id: SegmentId) -> Result<bool> {
+        let mut store = self.content_store.write().unwrap();
+        if let Some(current) = store.get(hash) {
+            if *current == seg_id {
+                store.remove(hash);
+                drop(store);
+                self.save()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Increment dedup bytes counter for a capsule
     pub fn add_deduped_bytes(&self, capsule_id: CapsuleId, bytes: u64) -> Result<()> {
         let mut capsules = self.capsules.write().unwrap();
@@ -137,14 +159,14 @@ impl CapsuleRegistry {
     }
 
     pub fn list_capsules(&self) -> Vec<CapsuleId> {
-        self.capsules.read().unwrap()
-            .keys()
-            .copied()
-            .collect()
+        self.capsules.read().unwrap().keys().copied().collect()
     }
 
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        let capsule = self.capsules.write().unwrap()
+        let capsule = self
+            .capsules
+            .write()
+            .unwrap()
             .remove(&id)
             .ok_or_else(|| anyhow::anyhow!("Capsule not found"))?;
         self.save()?;
@@ -155,13 +177,11 @@ impl CapsuleRegistry {
     pub fn get_dedup_stats(&self) -> (usize, usize) {
         let content_store = self.content_store.read().unwrap();
         let capsules = self.capsules.read().unwrap();
-        
-        let total_segments: usize = capsules.values()
-            .map(|c| c.segments.len())
-            .sum();
-        
+
+        let total_segments: usize = capsules.values().map(|c| c.segments.len()).sum();
+
         let unique_segments = content_store.len();
-        
+
         (total_segments, unique_segments)
     }
 }
@@ -169,5 +189,16 @@ impl CapsuleRegistry {
 impl Default for CapsuleRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Clone for CapsuleRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            capsules: Arc::clone(&self.capsules),
+            next_segment_id: Arc::clone(&self.next_segment_id),
+            metadata_path: self.metadata_path.clone(),
+            content_store: Arc::clone(&self.content_store),
+        }
     }
 }

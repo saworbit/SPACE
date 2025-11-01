@@ -9,3 +9,6 @@ license.workspace = true
 uuid = { workspace = true }
 serde = { workspace = true }
 hex = "0.4"
+
+[dev-dependencies]
+serde_json = { workspace = true }

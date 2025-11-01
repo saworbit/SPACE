@@ -1,12 +1,12 @@
 use anyhow::Result;
-use capsule_registry::{CapsuleRegistry, pipeline::WritePipeline};
+use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::CapsuleId;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-pub mod server;
 pub mod handlers;
+pub mod server;
 
 /// Maps S3 keys to Capsule IDs
 #[derive(Debug, Clone)]
@@ -16,6 +16,28 @@ pub struct KeyMapping {
     size: u64,
     created_at: u64,
     content_type: String,
+}
+
+impl KeyMapping {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn capsule_id(&self) -> CapsuleId {
+        self.capsule_id
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    pub fn content_type(&self) -> &str {
+        &self.content_type
+    }
 }
 
 /// S3 Protocol View - provides S3-compatible access to capsules
@@ -39,7 +61,7 @@ impl S3View {
     pub fn put_object(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<CapsuleId> {
         // Write data to capsule
         let capsule_id = self.pipeline.write_capsule(&data)?;
-        
+
         // Map S3 key to capsule
         let full_key = format!("{}/{}", bucket, key);
         let mapping = KeyMapping {
@@ -53,15 +75,18 @@ impl S3View {
         };
 
         self.key_map.write().unwrap().insert(full_key, mapping);
-        
+
         Ok(capsule_id)
     }
 
     /// GET object - read capsule data
     pub fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>> {
         let full_key = format!("{}/{}", bucket, key);
-        
-        let mapping = self.key_map.read().unwrap()
+
+        let mapping = self
+            .key_map
+            .read()
+            .unwrap()
             .get(&full_key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))?;
@@ -72,8 +97,10 @@ impl S3View {
     /// HEAD object - get metadata without reading data
     pub fn head_object(&self, bucket: &str, key: &str) -> Result<KeyMapping> {
         let full_key = format!("{}/{}", bucket, key);
-        
-        self.key_map.read().unwrap()
+
+        self.key_map
+            .read()
+            .unwrap()
             .get(&full_key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))
@@ -82,8 +109,11 @@ impl S3View {
     /// LIST objects in bucket
     pub fn list_objects(&self, bucket: &str) -> Result<Vec<KeyMapping>> {
         let prefix = format!("{}/", bucket);
-        
-        Ok(self.key_map.read().unwrap()
+
+        Ok(self
+            .key_map
+            .read()
+            .unwrap()
             .iter()
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(_, v)| v.clone())
@@ -93,14 +123,16 @@ impl S3View {
     /// DELETE object
     pub fn delete_object(&self, bucket: &str, key: &str) -> Result<()> {
         let full_key = format!("{}/{}", bucket, key);
-        
-        self.key_map.write().unwrap()
+
+        self.key_map
+            .write()
+            .unwrap()
             .remove(&full_key)
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))?;
 
         // Note: We're not deleting the capsule itself yet - that's for Phase 3
         // For now, capsules are only deleted when explicitly removed via spacectl
-        
+
         Ok(())
     }
 }

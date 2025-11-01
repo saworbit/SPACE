@@ -67,11 +67,11 @@ fn compress_lz4(data: &[u8], level: i32) -> Result<Vec<u8>> {
     let mut encoder = lz4::EncoderBuilder::new()
         .level(level as u32)
         .build(Vec::new())?;
-    
+
     encoder.write_all(data)?;
     let (compressed, result) = encoder.finish();
     result?;
-    
+
     Ok(compressed)
 }
 
@@ -157,9 +157,12 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
 }
 
 /// Compress and return the actual compressed bytes
-pub fn compress_segment(data: &[u8], policy: &CompressionPolicy) -> Result<(Vec<u8>, CompressionResult)> {
+pub fn compress_segment(
+    data: &[u8],
+    policy: &CompressionPolicy,
+) -> Result<(Vec<u8>, CompressionResult)> {
     let result = adaptive_compress(data, policy)?;
-    
+
     if result.compressed {
         let compressed_data = match policy {
             CompressionPolicy::LZ4 { level } => compress_lz4(data, *level)?,
@@ -191,7 +194,11 @@ mod tests {
         // Repeated pattern - medium entropy
         let pattern = b"ABCD".repeat(256);
         let entropy = estimate_entropy(&pattern);
-        assert!(entropy > 1.5 && entropy < 3.0, "Expected medium entropy, got {}", entropy);
+        assert!(
+            entropy > 1.5 && entropy < 3.0,
+            "Expected medium entropy, got {}",
+            entropy
+        );
     }
 
     #[test]
@@ -209,39 +216,56 @@ mod tests {
     fn test_lz4_compression() {
         let data = b"Hello SPACE! ".repeat(1000);
         let policy = CompressionPolicy::LZ4 { level: 1 };
-        
+
         let result = adaptive_compress(&data, &policy).unwrap();
-        
+
         assert!(result.compressed);
-        assert!(result.ratio() > 3.0, "Expected 3x+ compression, got {:.2}x", result.ratio());
+        assert!(
+            result.ratio() > 3.0,
+            "Expected 3x+ compression, got {:.2}x",
+            result.ratio()
+        );
         assert_eq!(result.algorithm, "lz4_1");
-        
-        println!("✅ LZ4: {:.2}x compression ({} -> {} bytes)", 
-                 result.ratio(), result.original_size, result.compressed_size);
+
+        println!(
+            "✅ LZ4: {:.2}x compression ({} -> {} bytes)",
+            result.ratio(),
+            result.original_size,
+            result.compressed_size
+        );
     }
 
     #[test]
     fn test_zstd_compression() {
-        let data = b"This is SPACE - Storage Platform for Adaptive Computational Ecosystems. ".repeat(500);
+        let data =
+            b"This is SPACE - Storage Platform for Adaptive Computational Ecosystems. ".repeat(500);
         let policy = CompressionPolicy::Zstd { level: 3 };
-        
+
         let result = adaptive_compress(&data, &policy).unwrap();
-        
+
         assert!(result.compressed);
-        assert!(result.ratio() > 4.0, "Expected 4x+ compression, got {:.2}x", result.ratio());
+        assert!(
+            result.ratio() > 4.0,
+            "Expected 4x+ compression, got {:.2}x",
+            result.ratio()
+        );
         assert_eq!(result.algorithm, "zstd_3");
-        
-        println!("✅ Zstd: {:.2}x compression ({} -> {} bytes)", 
-                 result.ratio(), result.original_size, result.compressed_size);
+
+        println!(
+            "✅ Zstd: {:.2}x compression ({} -> {} bytes)",
+            result.ratio(),
+            result.original_size,
+            result.compressed_size
+        );
     }
 
     #[test]
     fn test_no_compression_policy() {
         let data = b"Some data".repeat(100);
         let policy = CompressionPolicy::None;
-        
+
         let result = adaptive_compress(&data, &policy).unwrap();
-        
+
         assert!(!result.compressed);
         assert_eq!(result.original_size, result.compressed_size);
         assert_eq!(result.algorithm, "none");
@@ -252,9 +276,9 @@ mod tests {
         // Generate high-entropy data
         let random: Vec<u8> = (0..4096).map(|i| ((i * 7919) % 256) as u8).collect();
         let policy = CompressionPolicy::LZ4 { level: 1 };
-        
+
         let result = adaptive_compress(&random, &policy).unwrap();
-        
+
         // Should skip compression due to high entropy
         assert!(!result.compressed || result.algorithm == "ineffective");
         println!("✅ Random data handling: {}", result.algorithm);
@@ -264,57 +288,72 @@ mod tests {
     fn test_roundtrip_lz4() {
         let original = b"SPACE roundtrip test! ".repeat(500);
         let policy = CompressionPolicy::LZ4 { level: 4 };
-        
+
         let (compressed, result) = compress_segment(&original, &policy).unwrap();
         assert!(result.compressed);
-        
+
         let decompressed = decompress_lz4(&compressed).unwrap();
         assert_eq!(original.as_slice(), decompressed.as_slice());
-        
-        println!("✅ LZ4 roundtrip: {} -> {} -> {} bytes", 
-                 original.len(), compressed.len(), decompressed.len());
+
+        println!(
+            "✅ LZ4 roundtrip: {} -> {} -> {} bytes",
+            original.len(),
+            compressed.len(),
+            decompressed.len()
+        );
     }
 
     #[test]
     fn test_roundtrip_zstd() {
         let original = b"SPACE Zstd roundtrip! ".repeat(500);
         let policy = CompressionPolicy::Zstd { level: 6 };
-        
+
         let (compressed, result) = compress_segment(&original, &policy).unwrap();
         assert!(result.compressed);
-        
+
         let decompressed = decompress_zstd(&compressed).unwrap();
         assert_eq!(original.as_slice(), decompressed.as_slice());
-        
-        println!("✅ Zstd roundtrip: {} -> {} -> {} bytes", 
-                 original.len(), compressed.len(), decompressed.len());
+
+        println!(
+            "✅ Zstd roundtrip: {} -> {} -> {} bytes",
+            original.len(),
+            compressed.len(),
+            decompressed.len()
+        );
     }
 
-#[test]
-fn test_ineffective_compression() {
-    // Use a pattern that genuinely won't compress well
-    // XOR pattern creates high entropy
-    let mut pseudo_compressed = Vec::with_capacity(1000);
-    for i in 0..1000 {
-        pseudo_compressed.push((i ^ (i >> 3) ^ (i >> 5)) as u8);
+    #[test]
+    fn test_ineffective_compression() {
+        // Use a pattern that genuinely won't compress well
+        // XOR pattern creates high entropy
+        let mut pseudo_compressed = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            pseudo_compressed.push((i ^ (i >> 3) ^ (i >> 5)) as u8);
+        }
+
+        let policy = CompressionPolicy::LZ4 { level: 9 };
+
+        let result = adaptive_compress(&pseudo_compressed, &policy).unwrap();
+
+        // Should either skip compression or achieve minimal ratio
+        // Accept ratio < 1.5 as "ineffective enough"
+        let acceptable = !result.compressed
+            || result.algorithm == "skipped_entropy"
+            || result.algorithm == "ineffective"
+            || result.ratio() < 1.5;
+
+        assert!(
+            acceptable,
+            "Expected ineffective compression, got: compressed={}, algorithm={}, ratio={:.2}x",
+            result.compressed,
+            result.algorithm,
+            result.ratio()
+        );
+
+        println!(
+            "✅ Ineffective compression detected: {} (ratio: {:.2}x)",
+            result.algorithm,
+            result.ratio()
+        );
     }
-    
-    let policy = CompressionPolicy::LZ4 { level: 9 };
-    
-    let result = adaptive_compress(&pseudo_compressed, &policy).unwrap();
-    
-    // Should either skip compression or achieve minimal ratio
-    // Accept ratio < 1.5 as "ineffective enough"
-    let acceptable = !result.compressed 
-        || result.algorithm == "skipped_entropy" 
-        || result.algorithm == "ineffective"
-        || result.ratio() < 1.5;
-    
-    assert!(acceptable, 
-        "Expected ineffective compression, got: compressed={}, algorithm={}, ratio={:.2}x", 
-        result.compressed, result.algorithm, result.ratio());
-    
-    println!("✅ Ineffective compression detected: {} (ratio: {:.2}x)", 
-        result.algorithm, result.ratio());
-}
 }

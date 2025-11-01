@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use serde::{Serialize, Deserialize};
 
 pub mod policy;
-pub use policy::{Policy, CompressionPolicy, EncryptionPolicy};
+pub use policy::{CompressionPolicy, EncryptionPolicy, Policy};
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
@@ -16,11 +16,11 @@ impl CapsuleId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
-    
+
     pub fn from_uuid(id: Uuid) -> Self {
         Self(id)
     }
-    
+
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
     }
@@ -40,7 +40,7 @@ impl ContentHash {
     pub fn from_bytes(hash: &[u8]) -> Self {
         Self(hex::encode(hash))
     }
-    
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -52,13 +52,13 @@ pub struct Capsule {
     pub size: u64,
     pub segments: Vec<SegmentId>,
     pub created_at: u64,
-    
+
     #[serde(default)]
     pub policy: Policy,
-    
+
     // Phase 2.2: Track dedup stats per capsule
     #[serde(default)]
-    pub deduped_bytes: u64,  // How many bytes were deduplicated
+    pub deduped_bytes: u64, // How many bytes were deduplicated
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,33 +66,33 @@ pub struct Segment {
     pub id: SegmentId,
     pub offset: u64,
     pub len: u32,
-    
+
     // Phase 2.1: Compression metadata
     #[serde(default)]
     pub compressed: bool,
     #[serde(default)]
     pub compression_algo: String,
-    
+
     // Phase 2.2: Deduplication metadata
     #[serde(default)]
-    pub content_hash: Option<ContentHash>,  // Hash of compressed data
+    pub content_hash: Option<ContentHash>, // Hash of compressed data
     #[serde(default)]
-    pub ref_count: u32,  // Reference count for GC
-    
+    pub ref_count: u32, // Reference count for GC
+
     #[serde(default)]
     pub deduplicated: bool,
     #[serde(default)]
     pub access_count: u32,
-    
+
     // Phase 3: Encryption metadata
     #[serde(default)]
-    pub encryption_version: Option<u16>,  // Encryption format version
+    pub encryption_version: Option<u16>, // Encryption format version
     #[serde(default)]
-    pub key_version: Option<u32>,  // Key version used
+    pub key_version: Option<u32>, // Key version used
     #[serde(default)]
-    pub tweak_nonce: Option<[u8; 16]>,  // XTS tweak
+    pub tweak_nonce: Option<[u8; 16]>, // XTS tweak
     #[serde(default)]
-    pub integrity_tag: Option<[u8; 16]>,  // MAC tag
+    pub integrity_tag: Option<[u8; 16]>, // MAC tag
     #[serde(default)]
-    pub encrypted: bool,  // Quick check if encrypted
+    pub encrypted: bool, // Quick check if encrypted
 }

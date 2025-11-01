@@ -596,7 +596,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 ## Future Work
 
-- [ ] Garbage collection (decrement ref_count)
+- [x] Garbage collection (refcount decrements + metadata reclamation)
 - [ ] Bloom filter optimization for MAC
 - [ ] Post-quantum key exchange (Kyber)
 - [ ] Background re-encryption for key rotation

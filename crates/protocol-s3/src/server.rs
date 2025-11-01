@@ -28,32 +28,34 @@ impl S3Server {
         let app = Router::new()
             // Health check
             .route("/health", get(health_check))
-            
             // S3 Object Operations
             .route("/:bucket/:key", put(put_object))
             .route("/:bucket/:key", get(get_object))
             .route("/:bucket/:key", head(head_object))
             .route("/:bucket/:key", delete(delete_object))
-            
             // Bucket Operations
             .route("/:bucket", get(list_objects))
-            
             // Add state
             .with_state(self.s3_view)
-            
             // Add middleware
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http());
 
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        
+
         info!("🚀 SPACE S3 Protocol View listening on http://{}", addr);
         info!("📦 Ready to serve capsules via S3 API");
         info!("");
         info!("Try:");
-        info!("  curl -X PUT http://localhost:{}/demo-bucket/hello.txt -d 'Hello SPACE!'", self.port);
-        info!("  curl http://localhost:{}/demo-bucket/hello.txt", self.port);
+        info!(
+            "  curl -X PUT http://localhost:{}/demo-bucket/hello.txt -d 'Hello SPACE!'",
+            self.port
+        );
+        info!(
+            "  curl http://localhost:{}/demo-bucket/hello.txt",
+            self.port
+        );
         info!("");
 
         axum::serve(listener, app).await?;

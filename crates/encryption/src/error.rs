@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Encryption-related errors
-/// 
+///
 /// These errors are designed to be informative for debugging while
 /// avoiding leaking sensitive information in production logs.
 #[derive(Error, Debug)]
@@ -102,7 +102,10 @@ mod tests {
         assert_eq!(err.to_string(), "Key not found: version 42");
 
         let err = EncryptionError::IntegrityFailure;
-        assert_eq!(err.to_string(), "Integrity verification failed: MAC mismatch");
+        assert_eq!(
+            err.to_string(),
+            "Integrity verification failed: MAC mismatch"
+        );
     }
 
     #[test]

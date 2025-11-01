@@ -166,13 +166,21 @@ chmod +x test_dedup.sh
 - Segments 42 used twice (deduped once)
 - Capsule saved 4MB via deduplication
 
+## Phase 3.2: Garbage Collection Implementation
+
+- **Reference-counted segments**: `Segment.ref_count` is updated on every dedup hit and capsule deletion, ensuring shared segments stay consistent across capsules.
+- **Startup reconciliation**: `WritePipeline::new` rebuilds refcounts from persisted capsule metadata, fixing drift after crashes or manual edits.
+- **Garbage collector**: `gc::GarbageCollector` walks `NvramLog::list_segments()` and removes segments whose refcount hit zero, pruning both metadata and content-store entries.
+- **Deletion path**: `WritePipeline::delete_capsule` decrements segment refcounts and drops orphaned hashes immediately, keeping capsules and segments in sync.
+- **Regression tests**: `gc_test.rs` covers multi-capsule refcounts and orphan sweeping to guard against regressions.
+
 ## Known Limitations
 
 ### Phase 2.2 Scope
 
-1. **No Garbage Collection**
-   - Deleted capsules don't decrement `ref_count`
-   - Segments never reclaimed (Phase 3)
+1. **No log-space reclamation yet**
+   - Freed segment bytes remain in the append-only log until a future compaction pass
+   - Free-list based reuse is planned for Phase 3.3
 
 2. **No Cross-Node Dedup**
    - Content store is local per node
@@ -188,10 +196,10 @@ chmod +x test_dedup.sh
 
 ## Future Enhancements (Phase 3+)
 
-### Phase 3: Security + GC
+### Phase 3: Security Enhancements
 
 - [ ] Encrypt segments *after* dedup (deterministic IV)
-- [ ] Implement garbage collection with ref counting
+- [ ] Introduce free-list or compaction to reclaim log space
 - [ ] Add bloom filter for negative lookups
 
 ### Phase 4: Scale

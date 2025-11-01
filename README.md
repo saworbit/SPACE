@@ -35,9 +35,9 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - ✅ **XTS-AES-256 encryption with BLAKE3-MAC integrity**
 - ✅ **Deterministic encryption preserving deduplication**
 - ✅ **Key management with version tracking**
+- ✅ **Reference-counted garbage collection with metadata reclamation**
 
 **What's coming next:**
-- ⏳ Garbage collection with ref counting
 - ⏳ NFS/Block protocol views
 - ⏳ Replication & clustering
 - ⏳ Policy compiler
@@ -398,8 +398,12 @@ For detailed security documentation, see [ENCRYPTION_IMPLEMENTATION.md](docs/ENC
 - [x] Memory zeroization for security
 - [x] 53 comprehensive tests
 
-### 🚧 Phase 3.2: Advanced Security (NEXT)
-- [ ] Garbage collection with ref counting
+### 🚧 Phase 3.2: Lifecycle Management (COMPLETE)
+- [x] Reference-counted segment tracking across capsules
+- [x] Startup refcount reconciliation on pipeline initialization
+- [x] Manual garbage collector for metadata reclamation
+
+### 🚧 Phase 3.3: Advanced Security (NEXT)
 - [ ] Bloom filter optimization for MAC
 - [ ] CLI encryption flags (--encrypt, --key-version)
 - [ ] Key escrow for enterprise
@@ -532,7 +536,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 - ✅ Persistent metadata and NVRAM log
 
 **Known limitations:**
-- ⚠️ No garbage collection yet (Phase 3.2)
+- �s���? Log-space reclamation pending (Phase 3.3)
 - ⚠️ CLI doesn't have --encrypt flag yet (Phase 3.2)
 - ⚠️ Single-node only (clustering = Phase 5)
 - ⚠️ No authentication/authorization (Phase 4)

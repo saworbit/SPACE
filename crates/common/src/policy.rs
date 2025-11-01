@@ -39,7 +39,7 @@ impl EncryptionPolicy {
     pub fn is_enabled(&self) -> bool {
         !matches!(self, EncryptionPolicy::Disabled)
     }
-    
+
     /// Get the key version to use (None = use current/latest)
     pub fn key_version(&self) -> Option<u32> {
         match self {
@@ -54,16 +54,16 @@ impl EncryptionPolicy {
 pub struct Policy {
     /// Compression algorithm and level
     pub compression: CompressionPolicy,
-    
+
     /// Enable inline deduplication
     pub dedupe: bool,
-    
+
     /// Background compaction interval in seconds (None = disabled)
     pub compact_interval_secs: Option<u64>,
-    
+
     /// Erasure coding profile (future use)
     pub erasure_profile: Option<String>,
-    
+
     /// Encryption policy (Phase 3)
     #[serde(default)]
     pub encryption: EncryptionPolicy,
@@ -114,7 +114,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
         }
     }
-    
+
     /// Create a policy with encryption enabled
     pub fn encrypted() -> Self {
         Self {
@@ -125,7 +125,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
         }
     }
-    
+
     /// Create a policy with encryption and high compression
     pub fn encrypted_compressed() -> Self {
         Self {
@@ -146,7 +146,10 @@ mod tests {
     fn test_default_policy() {
         let policy = Policy::default();
         assert!(policy.dedupe);
-        assert!(matches!(policy.compression, CompressionPolicy::LZ4 { level: 1 }));
+        assert!(matches!(
+            policy.compression,
+            CompressionPolicy::LZ4 { level: 1 }
+        ));
         assert!(matches!(policy.encryption, EncryptionPolicy::Disabled));
     }
 
@@ -162,31 +165,36 @@ mod tests {
         let edge = Policy::edge_optimized();
         assert!(edge.compact_interval_secs.is_none());
     }
-    
+
     #[test]
     fn test_encryption_policy() {
         let disabled = EncryptionPolicy::Disabled;
         assert!(!disabled.is_enabled());
         assert_eq!(disabled.key_version(), None);
-        
-        let enabled = EncryptionPolicy::XtsAes256 { key_version: Some(1) };
+
+        let enabled = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
         assert!(enabled.is_enabled());
         assert_eq!(enabled.key_version(), Some(1));
-        
+
         let enabled_auto = EncryptionPolicy::XtsAes256 { key_version: None };
         assert!(enabled_auto.is_enabled());
         assert_eq!(enabled_auto.key_version(), None);
     }
-    
+
     #[test]
     fn test_encrypted_presets() {
         let encrypted = Policy::encrypted();
         assert!(encrypted.encryption.is_enabled());
         assert!(encrypted.dedupe);
-        
+
         let encrypted_compressed = Policy::encrypted_compressed();
         assert!(encrypted_compressed.encryption.is_enabled());
-        assert!(matches!(encrypted_compressed.compression, CompressionPolicy::Zstd { .. }));
+        assert!(matches!(
+            encrypted_compressed.compression,
+            CompressionPolicy::Zstd { .. }
+        ));
     }
 
     #[test]
@@ -196,7 +204,7 @@ mod tests {
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.dedupe, deserialized.dedupe);
     }
-    
+
     #[test]
     fn test_encryption_serialization() {
         let policy = Policy::encrypted();

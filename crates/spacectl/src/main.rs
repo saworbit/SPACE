@@ -1,5 +1,5 @@
 use anyhow::Result;
-use capsule_registry::{CapsuleRegistry, pipeline::WritePipeline};
+use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use clap::{Parser, Subcommand};
 use common::CapsuleId;
 use nvram_sim::NvramLog;
@@ -38,20 +38,20 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     // Initialize tracing only for serve-s3 command
     if matches!(cli.command, Commands::ServeS3 { .. }) {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .init();
     }
-    
+
     match cli.command {
         Commands::Create { file } => {
             let registry = CapsuleRegistry::new();
             let nvram = NvramLog::open("space.nvram")?;
             let pipeline = WritePipeline::new(registry, nvram);
-            
+
             let data = fs::read(&file)?;
             let id = pipeline.write_capsule(&data)?;
             println!("✅ Capsule created: {}", id.as_uuid());
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
             let registry = CapsuleRegistry::new();
             let nvram = NvramLog::open("space.nvram")?;
             let pipeline = WritePipeline::new(registry, nvram);
-            
+
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
             let data = pipeline.read_capsule(id)?;
@@ -73,23 +73,21 @@ fn main() -> Result<()> {
             println!("(list not yet implemented)");
         }
         Commands::ServeS3 { port } => {
-            use protocol_s3::{S3View, server::S3Server};
-            
+            use protocol_s3::{server::S3Server, S3View};
+
             println!("🚀 Starting SPACE S3 Protocol View...");
-            
+
             let registry = CapsuleRegistry::new();
             let nvram = NvramLog::open("space.nvram")?;
             let s3_view = S3View::new(registry, nvram);
-            
+
             let server = S3Server::new(s3_view, port);
-            
+
             // Create a new tokio runtime for the async server
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                server.run().await
-            })?;
+            rt.block_on(async { server.run().await })?;
         }
     }
-    
+
     Ok(())
 }

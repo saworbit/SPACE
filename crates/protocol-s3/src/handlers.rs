@@ -7,7 +7,7 @@ use axum::{
 };
 use serde::Serialize;
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::S3View;
 
@@ -41,7 +41,12 @@ pub async fn put_object(
 
     match s3.put_object(&bucket, &key, body.to_vec()) {
         Ok(capsule_id) => {
-            info!("✅ Created capsule {} for {}/{}", capsule_id.as_uuid(), bucket, key);
+            info!(
+                "✅ Created capsule {} for {}/{}",
+                capsule_id.as_uuid(),
+                bucket,
+                key
+            );
             (
                 StatusCode::OK,
                 [("ETag", format!("\"{}\"", capsule_id.as_uuid()))],
@@ -65,18 +70,14 @@ pub async fn get_object(
     match s3.get_object(&bucket, &key) {
         Ok(data) => {
             info!("✅ Retrieved {} bytes from {}/{}", data.len(), bucket, key);
-            
+
             // Get metadata for Content-Type
-            let content_type = s3.head_object(&bucket, &key)
+            let content_type = s3
+                .head_object(&bucket, &key)
                 .map(|m| m.content_type)
                 .unwrap_or_else(|_| "application/octet-stream".to_string());
 
-            (
-                StatusCode::OK,
-                [("Content-Type", content_type)],
-                data,
-            )
-                .into_response()
+            (StatusCode::OK, [("Content-Type", content_type)], data).into_response()
         }
         Err(e) => {
             error!("❌ GET failed: {}", e);
@@ -114,10 +115,7 @@ pub async fn head_object(
 }
 
 /// GET /{bucket}?list
-pub async fn list_objects(
-    State(s3): State<AppState>,
-    Path(bucket): Path<String>,
-) -> Response {
+pub async fn list_objects(State(s3): State<AppState>, Path(bucket): Path<String>) -> Response {
     info!("LIST /{}", bucket);
 
     match s3.list_objects(&bucket) {
@@ -180,7 +178,7 @@ pub async fn health_check() -> Response {
 /// Format Unix timestamp as HTTP date
 fn format_http_date(timestamp: u64) -> String {
     use std::time::{Duration, UNIX_EPOCH};
-    
+
     let system_time = UNIX_EPOCH + Duration::from_secs(timestamp);
     let datetime = httpdate::fmt_http_date(system_time);
     datetime
