@@ -2,7 +2,7 @@
 
 > **One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
 
-[![License](https://img.shields.io/badge/license-BUSL%201.1-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
 [![Status](https://img.shields.io/badge/status-Phase%203.1%20Complete-green.svg)](https://github.com/your-org/space)
 
@@ -509,13 +509,13 @@ This is an experimental platform exploring radical new storage architectures. We
 
 ## 📜 License
 
-**BUSL 1.1** → Converts to Apache 2.0 after 4 years
+**Apache 2.0** → Permissive open source license with patent grant
 
-- ✅ **Free:** Students, non-profits, companies <50 employees & <$5M revenue & <100TB
-- 🎁 **Free for contributors:** 3+ merged PRs/year = free commercial use
-- 💼 **Commercial:** Required for larger organizations
+- Open use: commercial, research, and personal deployments are all allowed
+- Keep notices: retain copyright and license text when distributing
+- Contributions: submitted patches are accepted under Apache 2.0 (see CONTRIBUTING.md)
 
-[Full license details →](LICENSE) | [Contributor benefits →](CONTRIBUTING.md)
+[Full license details →](LICENSE) | [Contribution guidelines →](CONTRIBUTING.md)
 
 ### Contribution
 

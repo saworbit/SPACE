@@ -1,200 +1,201 @@
-Business Source License 1.1
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
 
-Parameters
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
-Licensor:             Shane Wall
-Licensed Work:        SPACE - Storage Platform for Adaptive Computational Ecosystems
-                      The Licensed Work is (c) 2025 Shane Wall
+   1. Definitions.
 
-Additional Use Grant: You may make use of the Licensed Work for free if you 
-                      meet ANY of the following:
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
 
-                      A) Free Tier - Organizations meeting ALL criteria:
-                         • Fewer than 50 employees, AND
-                         • Less than $5,000,000 USD in annual gross revenue, AND
-                         • Managing less than 100TB of total storage capacity, AND
-                         • Not offering SPACE as a hosted service to third parties
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
 
-                      B) Contributor License:
-                         • Active contributors with accepted pull requests in 
-                           the past 12 months
-                         • "Active" defined as: 3+ merged PRs OR 1+ substantial 
-                           feature contribution
-                         • Exemption applies to the contributor's employer 
-                           organization
-                         • Must maintain contribution activity to retain exemption
-                         • Does NOT exempt offering SPACE as a hosted service
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
 
-                      C) Always Free:
-                         • Educational and academic research purposes (unlimited)
-                         • Personal, non-commercial use (unlimited)
-                         • Non-profit organizations (501(c)(3) or equivalent)
-                         • Open source project infrastructure
-                         • Evaluation, testing, and development purposes
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
 
-Change Date:          Four years from the date each version of the Licensed 
-                      Work is published
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
 
-Change License:       Apache License, Version 2.0
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
 
--------------------------------------------------------------------------------
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
 
-Notice
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
 
-The Business Source License (this document, or the "License") is not an Open 
-Source license. However, the Licensed Work will eventually be made available 
-under an Open Source License, as stated in this License.
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
 
--------------------------------------------------------------------------------
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
 
-License Grant
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
 
-Subject to the terms and conditions of this License, Licensor hereby grants 
-you a non-exclusive, worldwide, non-transferable license to:
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
 
-  1. Use, copy, modify, and prepare derivative works of the Licensed Work
-  2. Reproduce and distribute copies of the Licensed Work
-  3. Publicly perform and publicly display the Licensed Work
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
 
-Provided that you do not:
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
 
-  • Use the Licensed Work for production purposes beyond the Additional Use 
-    Grant thresholds without obtaining a commercial license or active 
-    contributor status
-  • Use the Licensed Work to provide a Database Service, Storage Service, or 
-    similar offering where the Licensed Work is provided to third parties as 
-    a commercial service (unless covered by contributor exemption)
-  • Remove or obscure any licensing, copyright, or other notices
-  • Use the Licensor's trademarks without permission
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
 
--------------------------------------------------------------------------------
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
 
-Contributor License Clarification
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
 
-What qualifies as an "active contributor"?
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
 
-Your organization qualifies for free commercial use if you maintain active 
-contribution:
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
 
-  • Minimum: 3+ merged pull requests in the past 12 months, OR
-  • Substantial: 1+ major feature, architectural improvement, or significant 
-    bug fix accepted in the past 12 months
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
 
-What counts as a contribution?
-  • Code improvements (features, bug fixes, performance)
-  • Documentation enhancements
-  • Test coverage additions
-  • Security patches
-  • Architecture proposals that are implemented
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
 
-What does NOT count:
-  • Typo fixes alone
-  • Issue reports (without PRs)
-  • Drive-by PRs without ongoing engagement
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
 
-Verification:
-  • Contributors are tracked via GitHub commit history
-  • Organizations must register their contributor association at 
-    shane@adaptive-storage.dev
-  • Annual renewal based on continued activity
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
 
-Important Note:
-  Contributor exemption does NOT allow offering SPACE as a hosted service 
-  to third parties. That always requires a separate commercial agreement.
+   END OF TERMS AND CONDITIONS
 
-Example:
-  If Alice works for MegaCorp (500 employees, $50M revenue) and contributes 
-  5 meaningful PRs in 2025, MegaCorp can use SPACE in production for free 
-  through 2026, provided Alice (or other MegaCorp employees) continue 
-  contributing.
+   APPENDIX: How to apply the Apache License to your work.
 
--------------------------------------------------------------------------------
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
 
-Termination
+   Copyright [yyyy] [name of copyright owner]
 
-This License automatically terminates if you violate any of its terms. 
-Contributor exemptions terminate if contribution activity ceases for more 
-than 12 months.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
 
--------------------------------------------------------------------------------
+       http://www.apache.org/licenses/LICENSE-2.0
 
-Commercial Licensing
-
-For commercial licenses beyond the Additional Use Grant, or for organizations 
-not meeting the contributor or free tier criteria, please contact:
-
-  Email:   shane@adaptive-storage.dev
-  Website: https://adaptive-storage.dev
-
-Typical Pricing:
-  • Growth tier ($5M-$20M revenue):      $10,000-$25,000/year
-  • Enterprise tier ($20M-$100M revenue): $50,000-$150,000/year
-  • Large Enterprise ($100M+ revenue):    Custom pricing
-
--------------------------------------------------------------------------------
-
-Trademark
-
-"SPACE" and related marks are trademarks of Shane Wall. This License does not 
-grant permission to use trade names, trademarks, service marks, or product 
-names of the Licensor, except as required for reasonable and customary use in 
-describing the origin of the Licensed Work.
-
--------------------------------------------------------------------------------
-
-Disclaimer
-
-THE LICENSED WORK IS PROVIDED "AS IS" WITHOUT WARRANTIES OR CONDITIONS OF ANY 
-KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY WARRANTIES 
-OR CONDITIONS OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A 
-PARTICULAR PURPOSE.
-
--------------------------------------------------------------------------------
-
-Limitation of Liability
-
-IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER 
-LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE LICENSED WORK OR 
-THE USE OR OTHER DEALINGS IN THE LICENSED WORK.
-
--------------------------------------------------------------------------------
-
-Full License Text
-
-This License is based on the Business Source License 1.1.
-For the complete Business Source License 1.1 text, see:
-https://mariadb.com/bsl11/
-
--------------------------------------------------------------------------------
-
-Change Date Conversion
-
-On the Change Date (four years from each version's publication date), this 
-License automatically converts to the Change License (Apache License 2.0), 
-making that version of the Licensed Work fully open source.
-
-Example Timeline:
-  • SPACE v0.1 (released October 2025) → Apache 2.0 on October 2029
-  • SPACE v1.0 (released January 2026) → Apache 2.0 on January 2030
-
--------------------------------------------------------------------------------
-
-Summary Table
-
-| User Type        | Employees | Revenue  | Capacity | Contribution   | License? |
-|------------------|-----------|----------|----------|----------------|----------|
-| Student/Hobbyist | Any       | Any      | Any      | No             | FREE     |
-| Non-profit       | Any       | Any      | Any      | No             | FREE     |
-| Startup          | <50       | <$5M     | <100TB   | No             | FREE     |
-| Startup          | <50       | <$5M     | >100TB   | No             | REQUIRED |
-| Growth Co        | <50       | $5M-20M  | Any      | No             | REQUIRED |
-| Growth Co        | 100       | $10M     | Any      | 3+ PRs/year    | FREE     |
-| Enterprise       | 500+      | $50M+    | Any      | No             | REQUIRED |
-| Enterprise       | 500+      | $50M+    | Any      | Active contrib | FREE     |
-| Cloud Provider   | Any       | Any      | Any      | As service     | REQUIRED |
-
--------------------------------------------------------------------------------
-
-Copyright (c) 2025 Shane Wall & Contributors
-
-Questions or License Inquiries: shane@adaptive-storage.dev
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
