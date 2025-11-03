@@ -192,6 +192,11 @@ impl NvramLog {
         self.save_segment_map()?;
         Ok(())
     }
+
+    pub fn begin_transaction(&self) -> Result<NvramTransaction> {
+        let base_offset = *self.next_offset.read().unwrap();
+        Ok(NvramTransaction::new(self.clone(), base_offset))
+    }
 }
 
 impl Clone for NvramLog {
@@ -201,6 +206,178 @@ impl Clone for NvramLog {
             segment_map: Arc::clone(&self.segment_map),
             next_offset: Arc::clone(&self.next_offset),
             metadata_path: self.metadata_path.clone(),
+        }
+    }
+}
+
+struct PendingSegment {
+    segment: Segment,
+    data: Vec<u8>,
+}
+
+pub struct NvramTransaction {
+    log: NvramLog,
+    pending: Vec<PendingSegment>,
+    base_offset: u64,
+    current_offset: u64,
+    finalized: bool,
+}
+
+impl NvramTransaction {
+    fn new(log: NvramLog, base_offset: u64) -> Self {
+        Self {
+            log,
+            pending: Vec::new(),
+            base_offset,
+            current_offset: base_offset,
+            finalized: false,
+        }
+    }
+
+    fn ensure_active(&self) -> Result<()> {
+        if self.finalized {
+            bail!("transaction already finalized");
+        }
+        Ok(())
+    }
+
+    pub fn append_segment(&mut self, seg_id: SegmentId, data: &[u8]) -> Result<Segment> {
+        self.ensure_active()?;
+
+        let offset = self.current_offset;
+        let data_vec = data.to_vec();
+        let len = data_vec.len() as u32;
+
+        let segment = Segment {
+            id: seg_id,
+            offset,
+            len,
+            compressed: false,
+            compression_algo: "none".to_string(),
+            content_hash: None,
+            ref_count: 1,
+            deduplicated: false,
+            access_count: 0,
+            encryption_version: None,
+            key_version: None,
+            tweak_nonce: None,
+            integrity_tag: None,
+            encrypted: false,
+        };
+
+        self.current_offset = offset + data_vec.len() as u64;
+        {
+            let mut next_offset = self.log.next_offset.write().unwrap();
+            *next_offset = self.current_offset;
+        }
+
+        self.pending.push(PendingSegment {
+            segment: segment.clone(),
+            data: data_vec,
+        });
+
+        Ok(segment)
+    }
+
+    pub fn with_segment_mut<F>(&mut self, seg_id: SegmentId, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut Segment),
+    {
+        self.ensure_active()?;
+
+        let pending = self
+            .pending
+            .iter_mut()
+            .find(|entry| entry.segment.id == seg_id)
+            .ok_or_else(|| anyhow!("pending segment {:?} not found", seg_id))?;
+
+        f(&mut pending.segment);
+        Ok(())
+    }
+
+    pub fn set_segment_metadata(&mut self, seg_id: SegmentId, segment: Segment) -> Result<()> {
+        self.ensure_active()?;
+
+        let pending = self
+            .pending
+            .iter_mut()
+            .find(|entry| entry.segment.id == seg_id)
+            .ok_or_else(|| anyhow!("pending segment {:?} not found", seg_id))?;
+
+        pending.segment = segment;
+        Ok(())
+    }
+
+    pub fn pending_segment(&self, seg_id: SegmentId) -> Option<&Segment> {
+        self.pending
+            .iter()
+            .find(|entry| entry.segment.id == seg_id)
+            .map(|entry| &entry.segment)
+    }
+
+    pub fn commit(&mut self) -> Result<()> {
+        if self.finalized {
+            return Ok(());
+        }
+
+        if self.pending.is_empty() {
+            self.finalized = true;
+            return Ok(());
+        }
+
+        let mut file = self.log.file.write().unwrap();
+        let mut next_offset = self.log.next_offset.write().unwrap();
+
+        let write_result: Result<()> = (|| {
+            for entry in &self.pending {
+                file.seek(SeekFrom::Start(entry.segment.offset))?;
+                file.write_all(&entry.data)?;
+            }
+            file.sync_data()?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_result {
+            *next_offset = self.base_offset;
+            self.finalized = true;
+            return Err(err);
+        }
+
+        *next_offset = self.current_offset;
+        drop(file);
+        drop(next_offset);
+
+        {
+            let mut map = self.log.segment_map.write().unwrap();
+            for entry in &self.pending {
+                map.insert(entry.segment.id, entry.segment.clone());
+            }
+        }
+        self.log.save_segment_map()?;
+
+        self.pending.clear();
+        self.finalized = true;
+        Ok(())
+    }
+
+    pub fn rollback(&mut self) -> Result<()> {
+        if self.finalized {
+            return Ok(());
+        }
+
+        let mut next_offset = self.log.next_offset.write().unwrap();
+        *next_offset = self.base_offset;
+        self.pending.clear();
+        self.current_offset = self.base_offset;
+        self.finalized = true;
+        Ok(())
+    }
+}
+
+impl Drop for NvramTransaction {
+    fn drop(&mut self) {
+        if !self.finalized {
+            let _ = self.rollback();
         }
     }
 }

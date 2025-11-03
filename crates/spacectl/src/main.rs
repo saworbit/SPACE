@@ -2,6 +2,8 @@ use anyhow::Result;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use clap::{Parser, Subcommand};
 use common::CapsuleId;
+#[cfg(feature = "pipeline_async")]
+use common::Policy;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
 use protocol_nfs::NfsView;
@@ -288,6 +290,13 @@ fn main() -> Result<()> {
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::new(registry, nvram);
             let data = fs::read(&file)?;
+            #[cfg(feature = "pipeline_async")]
+            let id = {
+                let policy = Policy::default();
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(pipeline.write_capsule_with_policy_async(&data, &policy))?
+            };
+            #[cfg(not(feature = "pipeline_async"))]
             let id = pipeline.write_capsule(&data)?;
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {} bytes", data.len());

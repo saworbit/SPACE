@@ -9,6 +9,10 @@ license.workspace = true
 name = "spacectl"
 path = "src/main.rs"
 
+[features]
+default = []
+pipeline_async = ["capsule-registry/pipeline_async"]
+
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }

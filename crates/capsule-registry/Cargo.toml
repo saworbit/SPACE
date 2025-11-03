@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+pipeline_async = ["tokio", "futures", "num_cpus", "tracing"]
+
 [dependencies]
 common = { path = "../common" }
 nvram-sim = { path = "../nvram-sim" }
@@ -13,6 +17,10 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+num_cpus = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 # Phase 2.1: Compression
 lz4 = { workspace = true }

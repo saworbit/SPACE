@@ -27,18 +27,18 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 ## ⚡ Current Status: Phase 3.1 Complete
 
 **What exists NOW:**
-- ✅ Universal capsule storage with persistent metadata
-- ✅ CLI create/read operations
-- ✅ S3-compatible REST API (protocol view proof-of-concept)
-- ✅ NFS + block protocol views (namespace + volume facades)
-- ✅ Adaptive compression (LZ4/Zstd with entropy detection)
-- ✅ Zero-copy compression/dedup pipeline using `Cow<[u8]>` borrow semantics
-- ✅ Content-addressed deduplication (post-compression)
-- ✅ **XTS-AES-256 encryption with BLAKE3-MAC integrity**
-- ✅ **Deterministic encryption preserving deduplication**
-- ✅ **Key management with version tracking**
-- ✅ **Reference-counted garbage collection with metadata reclamation**
-
+- Universal capsule storage with persistent metadata
+- CLI create/read operations
+- S3-compatible REST API (protocol view proof-of-concept)
+- NFS + block protocol views (namespace + volume facades)
+- Adaptive compression (LZ4/Zstd with entropy detection)
+- Zero-copy compression/dedup pipeline using `Cow<[u8]>` borrow semantics
+- Content-addressed deduplication (post-compression)
+- **XTS-AES-256 encryption with BLAKE3-MAC integrity**
+- **Deterministic encryption preserving deduplication**
+- **Key management with version tracking**
+- **Reference-counted garbage collection with metadata reclamation**
+- **Tokio-powered async write pipeline** (Cargo feature `pipeline_async`) with staged NVRAM transactions, bounded concurrency, and `tracing` metrics
 **What's coming next:**
 - ⏳ Replication & clustering
 - ⏳ Policy compiler
@@ -141,6 +141,18 @@ for i in {1..5000}; do echo "SPACE STORAGE " >> test_repeated.txt; done
 # Expected Output:
 # ♻️  Dedup hit: Reusing segment 1 (saved 4194304 bytes)
 # ✅ Capsule ...: 5.23x compression, 1 dedup hits (4194304 bytes saved)
+```
+
+### Enable Async Pipeline & Metrics (optional)
+```bash
+# Build with async pipeline enabled
+cargo build --features pipeline_async
+
+# Run CLI with runtime-managed async pipeline and info-level tracing
+RUST_LOG=info ./target/debug/spacectl create --file test.txt
+
+# Run feature-gated tests
+cargo test -p capsule-registry --features pipeline_async
 ```
 
 ### Start S3 Server

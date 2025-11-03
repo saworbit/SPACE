@@ -47,6 +47,10 @@ Input Data
    - Compression returns `Cow<[u8]>`, borrowing the original slice when compression is skipped
    - Hashing, dedup lookups, and optional encryption operate directly on the borrowed buffer
    - Only segments that actually compress or encrypt allocate new `Vec<u8>`
+6. **Transactional Staging for Async Writes**
+   - When the `pipeline_async` feature is enabled, `WritePipeline` saturates Tokio workers and stages new segment data inside `NvramTransaction`
+   - Dedup hits are handled in two phases: staged reuse (within the same capsule) updates pending segment refcounts, while persistent reuse increments existing segments lazily and is rolled back if the transaction aborts
+   - Content-store registration is deferred until the transaction successfully commits, guaranteeing that hashes only point at durable on-disk segments
 
 ## Files Modified
 

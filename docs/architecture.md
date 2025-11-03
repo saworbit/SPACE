@@ -156,6 +156,15 @@ and the write path hashes/encrypts that borrowed data directly. Only segments th
 through LZ4/Zstd or encryption allocate fresh `Vec<u8>`, cutting per-segment copies  
 and reducing large transfer latency by ~10-20% in internal benchmarks.
 
+#### 5.1.1 Async coordination (`pipeline_async`)
+
+- The optional `pipeline_async` feature swaps the single-threaded loop for a Tokio-based fan-out/fan-in pipeline. A bounded `Semaphore` (`max_concurrency`, default `num_cpus / 2`) caps in-flight segment work while a channel feeds the ordered commit loop.
+- CPU-heavy steps (entropy check, compression, encryption) execute via `spawn_blocking`, returning `SegmentPrepared` records that carry preparation latency and the time they reached the coordinator.
+- The coordinator uses `NvramTransaction` to stage all new segment writes. Durability happens once every segment succeeds; on error the transaction rolls back without touching disk and persistent dedupe increments are undone.
+- `tracing` instrumentation records per-segment prep time, coordination delay, commit duration, and aggregated totals. `info!` summaries emit averages/maxima so CI can assert the <50 µs coordination target, while `trace!`/`debug!` provide per-segment detail when needed.
+- Content registration is deferred until after the NVRAM transaction commits; staging dedupe hits rely on an in-memory map and adjust staged segment refcounts so intra-capsule dedupe remains deterministic.
+- `PipelineConfig` exposes tuning knobs (`max_concurrency`, per-task memory limits, future transactional toggles) and is plumbed through `spacectl` so synchronous callers can opt in by enabling the Cargo feature.
+
 ### 5.2 Snapshot & Merkle root build
 
 ```rust
