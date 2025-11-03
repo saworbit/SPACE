@@ -9,8 +9,11 @@ use std::sync::{Arc, RwLock};
 
 pub mod compression;
 pub mod dedup; // NEW
+pub mod error;
 pub mod gc;
 pub mod pipeline;
+
+pub use error::{CompressionError, DedupError, PipelineError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryState {

@@ -9,10 +9,36 @@ use protocol_block::BlockView;
 use protocol_nfs::NfsView;
 use std::fs;
 use std::io::{self, Write};
+use std::sync::Once;
+use tracing_subscriber::EnvFilter;
 
 const NVRAM_PATH: &str = "space.nvram";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
 const BLOCK_METADATA_FILE: &str = "space.block.json";
+
+fn init_tracing() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let format = std::env::var("SPACE_LOG_FORMAT").unwrap_or_else(|_| "compact".to_string());
+
+        if format.eq_ignore_ascii_case("json") {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter.clone())
+                .with_target(true)
+                .json()
+                .flatten_event(true)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_target(true)
+                .compact()
+                .init();
+        }
+    });
+}
 
 #[derive(Parser)]
 #[command(name = "spacectl")]
@@ -277,13 +303,8 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    init_tracing();
     let cli = Cli::parse();
-
-    if matches!(cli.command, Commands::ServeS3 { .. }) {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .init();
-    }
 
     match cli.command {
         Commands::Create { file } => {

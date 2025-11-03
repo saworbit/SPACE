@@ -1,13 +1,19 @@
 use crate::compression::{compress_segment, decompress_lz4, decompress_zstd};
 use crate::dedup::{hash_content, DedupStats};
+#[cfg(feature = "pipeline_async")]
+use crate::error::PipelineResult;
+use crate::error::{CompressionError, PipelineError};
 use crate::{gc::GarbageCollector, CapsuleRegistry};
-use anyhow::Result;
+use anyhow::{Error as AnyhowError, Result};
 use common::*;
 use nvram_sim::NvramLog;
 #[cfg(feature = "pipeline_async")]
 use nvram_sim::NvramTransaction;
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(feature = "pipeline_async")]
+use tracing::{debug, trace};
+use tracing::{error, info, instrument, warn};
 
 // Phase 3: Encryption imports
 use encryption::{
@@ -26,8 +32,6 @@ use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{mpsc, Semaphore};
 #[cfg(feature = "pipeline_async")]
 use tokio::task::{spawn_blocking, JoinHandle};
-#[cfg(feature = "pipeline_async")]
-use tracing::{debug, info, trace};
 
 #[cfg(feature = "pipeline_async")]
 #[derive(Clone)]
@@ -49,15 +53,56 @@ impl Default for PipelineConfig {
     }
 }
 
+fn map_compression_error(segment_index: usize, err: AnyhowError) -> AnyhowError {
+    match err.downcast::<CompressionError>() {
+        Ok(comp_err) => {
+            error!(
+                segment_index,
+                error = %comp_err,
+                "Compression failed while preparing segment"
+            );
+            PipelineError::Compression {
+                segment_index,
+                source: comp_err,
+            }
+            .into()
+        }
+        Err(other) => other,
+    }
+}
+
+fn map_registry_error(operation: &'static str, err: AnyhowError) -> AnyhowError {
+    error!(operation, error = %err, "registry operation failed");
+    PipelineError::Registry {
+        operation,
+        source: err,
+    }
+    .into()
+}
+
+fn map_nvram_error(operation: &'static str, err: AnyhowError) -> AnyhowError {
+    error!(operation, error = %err, "nvram operation failed");
+    PipelineError::Nvram {
+        operation,
+        source: err,
+    }
+    .into()
+}
+
 #[cfg(feature = "pipeline_async")]
+#[instrument(
+    skip(chunk, policy, key_manager),
+    fields(segment_index = index, chunk_len = chunk.len(), policy = ?policy)
+)]
 fn prepare_segment(
     index: usize,
     chunk: Vec<u8>,
     policy: Policy,
     key_manager: Option<Arc<Mutex<KeyManager>>>,
-) -> Result<SegmentPrepared> {
+) -> PipelineResult<SegmentPrepared> {
     let started = Instant::now();
-    let (compressed_data, comp_result) = compress_segment(&chunk, &policy.compression)?;
+    let (compressed_data, comp_result) = compress_segment(&chunk, &policy.compression)
+        .map_err(|err| map_compression_error(index, err))?;
     let content_hash = hash_content(compressed_data.as_ref());
 
     let encryption_enabled = policy.encryption.is_enabled() && key_manager.is_some();
@@ -132,7 +177,7 @@ impl WritePipeline {
             .map(|km| Arc::new(Mutex::new(km))); // CHANGED: Wrap in Arc<Mutex<>>
 
         if key_manager.is_some() {
-            println!("🔐 Encryption enabled (key manager initialized)");
+            info!("encryption enabled (key manager initialised)");
         }
 
         let pipeline = Self {
@@ -144,7 +189,7 @@ impl WritePipeline {
         };
 
         if let Err(err) = pipeline.reconcile_refcounts() {
-            eprintln!("⚠️  Failed to reconcile segment refcounts: {:?}", err);
+            error!(error = ?err, "failed to reconcile segment refcounts");
         }
 
         pipeline
@@ -223,12 +268,14 @@ impl WritePipeline {
     }
 
     /// Write data with compression and return the capsule ID
+    #[instrument(skip(self, data), fields(bytes = data.len()))]
     pub fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
         self.write_capsule_with_policy(data, &Policy::default())
     }
 
     /// Write data with explicit policy (including encryption)
     #[cfg(not(feature = "pipeline_async"))]
+    #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
     pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
         // Pre-allocate capsule ID but don't persist yet
         let capsule_id = CapsuleId::new();
@@ -243,11 +290,12 @@ impl WritePipeline {
         let encryption_enabled = policy.encryption.is_enabled() && self.key_manager.is_some();
 
         // Split into segments, compress, deduplicate, and encrypt
-        for chunk in data.chunks(SEGMENT_SIZE) {
+        for (index, chunk) in data.chunks(SEGMENT_SIZE).enumerate() {
             total_original_size += chunk.len() as u64;
 
             // Step 1: Compress the segment based on policy
-            let (compressed_data, comp_result) = compress_segment(chunk, &policy.compression)?;
+            let (compressed_data, comp_result) = compress_segment(chunk, &policy.compression)
+                .map_err(|err| map_compression_error(index, err))?;
             total_compressed_size += comp_result.compressed_size as u64;
 
             // Step 2: Hash the compressed data for deduplication
@@ -271,9 +319,7 @@ impl WritePipeline {
                 // Compute MAC over ciphertext + metadata
                 let mac_tag =
                     compute_mac(&ciphertext, &enc_meta, key_pair.key1(), key_pair.key2())?;
-
                 enc_meta.set_integrity_tag(mac_tag);
-
                 encryption_meta = Some(enc_meta);
                 Cow::Owned(ciphertext)
             } else {
@@ -284,23 +330,30 @@ impl WritePipeline {
             let (seg_id, was_deduped) = if policy.dedupe {
                 if let Some(existing_seg_id) = self.registry.lookup_content(&content_hash) {
                     // Content exists! Reuse the segment
-                    let updated_segment = self.nvram.increment_refcount(existing_seg_id)?;
+                    let updated_segment = self
+                        .nvram
+                        .increment_refcount(existing_seg_id)
+                        .map_err(|err| map_nvram_error("increment_refcount", err))?;
                     let saved_bytes = updated_segment.len as u64;
 
                     dedup_stats.add_segment(saved_bytes, true);
 
-                    println!(
-                        "  ♻️  Dedup hit: Reusing segment {} (saved {} bytes, ref_count={})",
-                        existing_seg_id.0, saved_bytes, updated_segment.ref_count
+                    info!(
+                        segment = existing_seg_id.0,
+                        saved_bytes,
+                        ref_count = updated_segment.ref_count,
+                        "dedup hit: reusing segment"
                     );
-
                     (existing_seg_id, true)
                 } else {
                     // New content - allocate and write
                     let new_seg_id = self.registry.alloc_segment();
 
                     // Write to NVRAM
-                    let mut segment = self.nvram.append(new_seg_id, final_data.as_ref())?;
+                    let mut segment = self
+                        .nvram
+                        .append(new_seg_id, final_data.as_ref())
+                        .map_err(|err| map_nvram_error("append", err))?;
 
                     // Update segment metadata - compression
                     segment.compressed = comp_result.compressed;
@@ -319,10 +372,14 @@ impl WritePipeline {
                     }
 
                     // Save updated metadata back to NVRAM
-                    self.nvram.update_segment_metadata(new_seg_id, segment)?;
+                    self.nvram
+                        .update_segment_metadata(new_seg_id, segment)
+                        .map_err(|err| map_nvram_error("update_segment_metadata", err))?;
 
                     // Register in content store
-                    self.registry.register_content(content_hash, new_seg_id)?;
+                    self.registry
+                        .register_content(content_hash, new_seg_id)
+                        .map_err(|err| map_registry_error("register_content", err))?;
 
                     dedup_stats.add_segment(final_data.len() as u64, false);
 
@@ -332,7 +389,10 @@ impl WritePipeline {
                 // Dedup disabled - always write new segment
                 let new_seg_id = self.registry.alloc_segment();
 
-                let mut segment = self.nvram.append(new_seg_id, final_data.as_ref())?;
+                let mut segment = self
+                    .nvram
+                    .append(new_seg_id, final_data.as_ref())
+                    .map_err(|err| map_nvram_error("append", err))?;
                 segment.compressed = comp_result.compressed;
                 segment.compression_algo = comp_result.algorithm.clone();
                 segment.ref_count = 1;
@@ -348,7 +408,9 @@ impl WritePipeline {
                 }
 
                 // Save updated metadata back to NVRAM
-                self.nvram.update_segment_metadata(new_seg_id, segment)?;
+                self.nvram
+                    .update_segment_metadata(new_seg_id, segment)
+                    .map_err(|err| map_nvram_error("update_segment_metadata", err))?;
 
                 dedup_stats.add_segment(final_data.len() as u64, false);
 
@@ -360,34 +422,48 @@ impl WritePipeline {
             // Log stats
             if !was_deduped {
                 if encryption_enabled {
-                    println!(
-                        "  🔐 Segment {}: encrypted with key v{}",
-                        seg_id.0,
-                        encryption_meta.as_ref().unwrap().key_version.unwrap()
-                    );
+                    if let Some(meta) = encryption_meta.as_ref() {
+                        info!(
+                            segment = seg_id.0,
+                            key_version = meta.key_version,
+                            "segment encrypted"
+                        );
+                    } else {
+                        warn!(
+                            segment = seg_id.0,
+                            "missing encryption metadata after encryption"
+                        );
+                    }
                 }
                 if comp_result.compressed {
-                    println!(
-                        "  🗜️  Segment {}: {:.2}x compression ({} -> {} bytes, {})",
-                        seg_id.0,
-                        comp_result.ratio(),
-                        comp_result.original_size,
-                        comp_result.compressed_size,
-                        comp_result.algorithm
+                    info!(
+                        segment = seg_id.0,
+                        ratio = comp_result.ratio(),
+                        original = comp_result.original_size,
+                        compressed = comp_result.compressed_size,
+                        algorithm = %comp_result.algorithm,
+                        ?comp_result.reason,
+                        "segment compressed"
+                    );
+                } else if let Some(reason) = &comp_result.reason {
+                    warn!(
+                        segment = seg_id.0,
+                        ?reason,
+                        "segment stored without compression"
                     );
                 }
             }
         }
-
-        // Only create capsule metadata after all segments are durable
-        self.registry
-            .create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids)?;
-
         // Update dedup stats on capsule
         if dedup_stats.bytes_saved > 0 {
             self.registry
-                .add_deduped_bytes(capsule_id, dedup_stats.bytes_saved)?;
+                .add_deduped_bytes(capsule_id, dedup_stats.bytes_saved)
+                .map_err(|err| map_registry_error("add_deduped_bytes", err))?;
         }
+
+        self.registry
+            .create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids)
+            .map_err(|err| map_registry_error("create_capsule_with_segments", err))?;
 
         // Print summary stats
         let compression_ratio = if total_compressed_size > 0 {
@@ -402,13 +478,13 @@ impl WritePipeline {
             ""
         };
 
-        println!(
-            "✅ Capsule {}: {:.2}x compression, {} dedup hits ({} bytes saved){}",
-            capsule_id.as_uuid(),
-            compression_ratio,
-            dedup_stats.deduped_segments,
-            dedup_stats.bytes_saved,
-            encryption_status
+        info!(
+            capsule = %capsule_id.as_uuid(),
+            ratio = compression_ratio,
+            dedupe_hits = dedup_stats.deduped_segments,
+            bytes_saved = dedup_stats.bytes_saved,
+            encryption = %encryption_status,
+            "capsule write complete"
         );
 
         Ok(capsule_id)
@@ -426,6 +502,7 @@ impl WritePipeline {
     }
 
     #[cfg(feature = "pipeline_async")]
+    #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
     pub async fn write_capsule_with_policy_async(
         &self,
         data: &[u8],
@@ -439,7 +516,8 @@ impl WritePipeline {
 
         if total_segments == 0 {
             self.registry
-                .create_capsule_with_segments(capsule_id, 0, Vec::new())?;
+                .create_capsule_with_segments(capsule_id, 0, Vec::new())
+                .map_err(|err| map_registry_error("create_capsule_with_segments", err))?;
             info!(
                 capsule = %capsule_id.as_uuid(),
                 "async write pipeline completed (empty capsule)"
@@ -672,11 +750,11 @@ impl WritePipeline {
             registered.push((hash.clone(), *seg_id));
         }
 
-        if let Err(err) = self.registry.create_capsule_with_segments(
-            capsule_id,
-            data.len() as u64,
-            segment_ids.clone(),
-        ) {
+        if let Err(err) = self
+            .registry
+            .create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids.clone())
+            .map_err(|err| map_registry_error("create_capsule_with_segments", err))
+        {
             for (hash, seg_id) in &pending_registrations {
                 let _ = self.registry.deregister_content(hash, *seg_id)?;
                 let _ = self.nvram.remove_segment(*seg_id)?;
@@ -689,7 +767,8 @@ impl WritePipeline {
 
         if dedup_stats.bytes_saved > 0 {
             self.registry
-                .add_deduped_bytes(capsule_id, dedup_stats.bytes_saved)?;
+                .add_deduped_bytes(capsule_id, dedup_stats.bytes_saved)
+                .map_err(|err| map_registry_error("add_deduped_bytes", err))?;
         }
 
         let compression_ratio = if total_compressed_size > 0 {
@@ -726,13 +805,13 @@ impl WritePipeline {
         );
 
         let encryption_status = if encryption_enabled { " encrypted" } else { "" };
-        println!(
-            "Capsule {}: {:.2}x compression, {} dedup hits ({} bytes saved){}",
-            capsule_id.as_uuid(),
-            compression_ratio,
-            dedup_stats.deduped_segments,
-            dedup_stats.bytes_saved,
-            encryption_status
+        info!(
+            capsule = %capsule_id.as_uuid(),
+            ratio = compression_ratio,
+            dedupe_hits = dedup_stats.deduped_segments,
+            bytes_saved = dedup_stats.bytes_saved,
+            encryption = %encryption_status,
+            "async capsule summary"
         );
 
         Ok(capsule_id)
@@ -848,6 +927,7 @@ impl WritePipeline {
         ))
     }
     /// Read entire capsule contents (with decryption and decompression)
+    #[instrument(skip(self), fields(capsule = %id.as_uuid()))]
     pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
         let capsule = self.registry.lookup(id)?;
 
@@ -918,6 +998,7 @@ impl WritePipeline {
     }
 
     /// Read a range within a capsule (for block/file semantics)
+    #[instrument(skip(self), fields(capsule = %id.as_uuid(), offset, len))]
     pub fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
         let capsule = self.registry.lookup(id)?;
 

@@ -1,7 +1,18 @@
-use anyhow::Result;
+use crate::error::CompressionError;
+use anyhow::{Context, Result};
 use common::CompressionPolicy;
 use std::borrow::Cow;
 use std::io::Write;
+use tracing::{debug, info, instrument, warn};
+
+type CompressionOpResult<T> = std::result::Result<T, CompressionError>;
+
+/// Lightweight context for why compression was skipped or reverted.
+#[derive(Debug, Clone)]
+pub enum CompressionSkipReason {
+    Entropy { entropy: f32 },
+    Ineffective { ratio: f32 },
+}
 
 /// Compression statistics for a segment
 #[derive(Debug, Clone)]
@@ -10,6 +21,7 @@ pub struct CompressionResult {
     pub compressed_size: usize,
     pub compressed: bool,
     pub algorithm: String,
+    pub reason: Option<CompressionSkipReason>,
 }
 
 impl CompressionResult {
@@ -46,91 +58,129 @@ fn estimate_entropy(data: &[u8]) -> f32 {
     entropy
 }
 
-/// Determine if data is worth compressing
-/// Sample first 1KB to avoid overhead on incompressible data
-fn should_compress(data: &[u8]) -> bool {
-    // Always try to compress small segments
+/// Determine whether data should be compressed based on entropy analysis.
+/// Returns a skip reason if compression would be wasteful.
+fn entropy_skip_reason(data: &[u8]) -> Option<CompressionSkipReason> {
     if data.len() < 1024 {
-        return true;
+        return None;
     }
 
-    // Sample first 1KB for entropy estimation
     let sample_size = data.len().min(1024);
     let entropy = estimate_entropy(&data[..sample_size]);
 
-    // Entropy > 7.5 bits/byte suggests random/compressed data
-    // Skip compression to save CPU cycles
-    entropy < 7.5
+    if entropy >= 7.5 {
+        Some(CompressionSkipReason::Entropy { entropy })
+    } else {
+        None
+    }
 }
 
 /// Compress data using LZ4
-fn compress_lz4(data: &[u8], level: i32) -> Result<Vec<u8>> {
+#[instrument(skip(data), fields(algorithm = "lz4", level, input_len = data.len()))]
+fn compress_lz4(data: &[u8], level: i32) -> CompressionOpResult<Vec<u8>> {
     let mut encoder = lz4::EncoderBuilder::new()
         .level(level as u32)
-        .build(Vec::new())?;
+        .build(Vec::new())
+        .map_err(|err| CompressionError::codec("lz4", err.to_string()))?;
 
-    encoder.write_all(data)?;
+    encoder
+        .write_all(data)
+        .map_err(|err| CompressionError::io("lz4", err))?;
     let (compressed, result) = encoder.finish();
-    result?;
+    result.map_err(|err| CompressionError::codec("lz4", err.to_string()))?;
 
+    debug!(
+        compressed_len = compressed.len(),
+        "lz4 compression complete"
+    );
     Ok(compressed)
 }
 
 /// Decompress LZ4 data
-pub fn decompress_lz4(data: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = lz4::Decoder::new(data)?;
+#[instrument(skip(data), fields(algorithm = "lz4", input_len = data.len()))]
+pub fn decompress_lz4(data: &[u8]) -> CompressionOpResult<Vec<u8>> {
+    let mut decoder =
+        lz4::Decoder::new(data).map_err(|err| CompressionError::codec("lz4", err.to_string()))?;
     let mut decompressed = Vec::new();
-    std::io::copy(&mut decoder, &mut decompressed)?;
+    std::io::copy(&mut decoder, &mut decompressed)
+        .map_err(|err| CompressionError::io("lz4", err))?;
     Ok(decompressed)
 }
 
 /// Compress data using Zstd
-fn compress_zstd(data: &[u8], level: i32) -> Result<Vec<u8>> {
-    let compressed = zstd::encode_all(data, level)?;
+#[instrument(skip(data), fields(algorithm = "zstd", level, input_len = data.len()))]
+fn compress_zstd(data: &[u8], level: i32) -> CompressionOpResult<Vec<u8>> {
+    let compressed = zstd::encode_all(data, level)
+        .map_err(|err| CompressionError::codec("zstd", err.to_string()))?;
     Ok(compressed)
 }
 
 /// Decompress Zstd data
-pub fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>> {
-    let decompressed = zstd::decode_all(data)?;
+#[instrument(skip(data), fields(algorithm = "zstd", input_len = data.len()))]
+pub fn decompress_zstd(data: &[u8]) -> CompressionOpResult<Vec<u8>> {
+    let decompressed =
+        zstd::decode_all(data).map_err(|err| CompressionError::codec("zstd", err.to_string()))?;
     Ok(decompressed)
 }
 
 /// Adaptive compression with policy-driven algorithm selection
+#[instrument(skip(data, policy), fields(segment_size = data.len(), policy = ?policy))]
 pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<CompressionResult> {
     let original_size = data.len();
 
     // Check policy
     match policy {
         CompressionPolicy::None => {
+            info!("Compression disabled by policy");
             return Ok(CompressionResult {
                 original_size,
                 compressed_size: original_size,
                 compressed: false,
                 algorithm: "none".to_string(),
+                reason: None,
             });
         }
         _ => {}
     }
 
     // Entropy check - skip compression for random data
-    if !should_compress(data) {
+    if let Some(reason) = entropy_skip_reason(data) {
+        if let CompressionSkipReason::Entropy { entropy } = reason {
+            let error = CompressionError::EntropySkip {
+                entropy,
+                size: original_size,
+            };
+            warn!(
+                target = "pipeline::compression",
+                entropy, "skipping compression due to high entropy"
+            );
+            info!(
+                target = "telemetry::compression",
+                entropy,
+                size = original_size,
+                outcome = "skip_entropy"
+            );
+            debug!(%error, "compression skip classified");
+        }
         return Ok(CompressionResult {
             original_size,
             compressed_size: original_size,
             compressed: false,
             algorithm: "skipped_entropy".to_string(),
+            reason: Some(reason),
         });
     }
 
     // Compress based on policy
     let (compressed_data, algorithm) = match policy {
         CompressionPolicy::LZ4 { level } => {
-            let compressed = compress_lz4(data, *level)?;
+            let compressed =
+                compress_lz4(data, *level).context("LZ4 compression backend failed")?;
             (compressed, format!("lz4_{}", level))
         }
         CompressionPolicy::Zstd { level } => {
-            let compressed = compress_zstd(data, *level)?;
+            let compressed =
+                compress_zstd(data, *level).context("Zstd compression backend failed")?;
             (compressed, format!("zstd_{}", level))
         }
         CompressionPolicy::None => unreachable!(),
@@ -140,24 +190,71 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
 
     // Only use compression if it actually saves space (+ 5% margin)
     if compressed_size < original_size * 95 / 100 {
+        let ratio = if compressed_size == 0 {
+            f32::INFINITY
+        } else {
+            original_size as f32 / compressed_size as f32
+        };
+        info!(
+            target = "pipeline::compression",
+            %algorithm,
+            compressed_len = compressed_size,
+            ratio,
+            "compression successful"
+        );
+        info!(
+            target = "telemetry::compression",
+            %algorithm,
+            ratio,
+            original = original_size,
+            compressed = compressed_size,
+            outcome = "compressed"
+        );
         Ok(CompressionResult {
             original_size,
             compressed_size,
             compressed: true,
             algorithm,
+            reason: None,
         })
     } else {
         // Compression didn't help, return original
+        let ratio = if compressed_size == 0 {
+            1.0
+        } else {
+            original_size as f32 / compressed_size as f32
+        };
+        let skip = CompressionSkipReason::Ineffective { ratio };
+        let error = CompressionError::IneffectiveRatio {
+            ratio,
+            size: original_size,
+        };
+        info!(
+            target = "pipeline::compression",
+            %algorithm,
+            ratio,
+            "compression ineffective; reverting to original bytes"
+        );
+        info!(
+            target = "telemetry::compression",
+            %algorithm,
+            ratio,
+            size = original_size,
+            outcome = "ineffective"
+        );
+        debug!(%error, "compression skip classified");
         Ok(CompressionResult {
             original_size,
             compressed_size: original_size,
             compressed: false,
             algorithm: "ineffective".to_string(),
+            reason: Some(skip),
         })
     }
 }
 
 /// Compress and return the actual compressed bytes
+#[instrument(skip(data, policy), fields(segment_size = data.len()))]
 pub fn compress_segment<'a>(
     data: &'a [u8],
     policy: &CompressionPolicy,
@@ -166,12 +263,22 @@ pub fn compress_segment<'a>(
 
     if result.compressed {
         let compressed_data = match policy {
-            CompressionPolicy::LZ4 { level } => compress_lz4(data, *level)?,
-            CompressionPolicy::Zstd { level } => compress_zstd(data, *level)?,
+            CompressionPolicy::LZ4 { level } => compress_lz4(data, *level)
+                .context("LZ4 compression backend failed while materialising segment")?,
+            CompressionPolicy::Zstd { level } => compress_zstd(data, *level)
+                .context("Zstd compression backend failed while materialising segment")?,
             CompressionPolicy::None => data.to_vec(),
         };
+        debug!(
+            algorithm = %result.algorithm,
+            compressed_len = result.compressed_size,
+            "Segment compressed"
+        );
         Ok((Cow::Owned(compressed_data), result))
     } else {
+        if let Some(reason) = &result.reason {
+            debug!(?reason, "Segment left uncompressed");
+        }
         Ok((Cow::Borrowed(data), result))
     }
 }
@@ -179,6 +286,7 @@ pub fn compress_segment<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing_test::traced_test;
 
     #[test]
     fn test_entropy_estimation() {
@@ -203,14 +311,15 @@ mod tests {
     }
 
     #[test]
-    fn test_should_compress() {
-        // Repetitive data - should compress
+    fn test_entropy_gate() {
         let repetitive = vec![b'A'; 1024];
-        assert!(should_compress(&repetitive));
+        assert!(entropy_skip_reason(&repetitive).is_none());
 
-        // Random data - should skip
         let random: Vec<u8> = (0..1024).map(|i| ((i * 7919) % 256) as u8).collect();
-        assert!(!should_compress(&random), "Random data should be skipped");
+        assert!(matches!(
+            entropy_skip_reason(&random),
+            Some(CompressionSkipReason::Entropy { .. })
+        ));
     }
 
     #[test]
@@ -281,7 +390,11 @@ mod tests {
         let result = adaptive_compress(&random, &policy).unwrap();
 
         // Should skip compression due to high entropy
-        assert!(!result.compressed || result.algorithm == "ineffective");
+        assert!(!result.compressed);
+        assert!(matches!(
+            result.reason,
+            Some(CompressionSkipReason::Entropy { .. })
+        ));
         println!("✅ Random data handling: {}", result.algorithm);
     }
 
@@ -336,25 +449,54 @@ mod tests {
 
         let result = adaptive_compress(&pseudo_compressed, &policy).unwrap();
 
-        // Should either skip compression or achieve minimal ratio
-        // Accept ratio < 1.5 as "ineffective enough"
-        let acceptable = !result.compressed
-            || result.algorithm == "skipped_entropy"
-            || result.algorithm == "ineffective"
-            || result.ratio() < 1.5;
-
-        assert!(
-            acceptable,
-            "Expected ineffective compression, got: compressed={}, algorithm={}, ratio={:.2}x",
-            result.compressed,
-            result.algorithm,
-            result.ratio()
-        );
+        if result.compressed {
+            assert!(
+                result.ratio() < 1.5,
+                "Expected low compression ratio, got {:.2}x",
+                result.ratio()
+            );
+        } else {
+            assert!(
+                matches!(
+                    result.reason,
+                    Some(CompressionSkipReason::Ineffective { .. })
+                        | Some(CompressionSkipReason::Entropy { .. })
+                ),
+                "Expected skip reason for ineffective compression"
+            );
+        }
 
         println!(
             "✅ Ineffective compression detected: {} (ratio: {:.2}x)",
             result.algorithm,
             result.ratio()
         );
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_entropy_skip_emits_tracing() {
+        let random: Vec<u8> = (0..4096).map(|i| ((i * 7919) % 256) as u8).collect();
+        let policy = CompressionPolicy::Zstd { level: 3 };
+
+        let _ = adaptive_compress(&random, &policy).unwrap();
+
+        assert!(logs_contain("skipping compression due to high entropy"));
+        assert!(logs_contain("target=\"telemetry::compression\""));
+        assert!(logs_contain("outcome=\"skip_entropy\""));
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_successful_compression_emits_telemetry() {
+        let data = b"Space telemetry test ".repeat(1024);
+        let policy = CompressionPolicy::LZ4 { level: 1 };
+
+        let result = adaptive_compress(&data, &policy).unwrap();
+        assert!(result.compressed);
+
+        assert!(logs_contain("compression successful"));
+        assert!(logs_contain("target=\"telemetry::compression\""));
+        assert!(logs_contain("outcome=\"compressed\""));
     }
 }

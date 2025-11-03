@@ -607,6 +607,19 @@ spacectl block read vol1 4096 --length 512 > sector.verify
 spacectl block delete vol1
 ```
 
+### Telemetry & Logging
+- `SPACE_LOG_FORMAT` controls console output (`compact` by default, set to `json` for structured logs).
+- `RUST_LOG` follows `tracing` filters (example: `RUST_LOG=info,space=debug`).
+- All pipeline stages emit structured spans/events (`pipeline::compression`, `telemetry::compression`) for the future telemetry hub.
+- Primary error surfaces for on-call runbooks:
+  | Code | Level | Description | Suggested Action |
+  |------|-------|-------------|------------------|
+  | `CompressionError::EntropySkip` | `WARN` | High-entropy payload skipped compression, includes entropy + segment size | Optional; review workload mix if persistent |
+  | `CompressionError::IneffectiveRatio` | `INFO` | Compression reverted due to poor ratio, includes achieved ratio | Tune policy thresholds if noisy |
+  | `PipelineError::Compression` | `ERROR` | Compression subsystem hard-failed for a segment (includes index) | Retry segment; inspect codec health |
+  | `PipelineError::Nvram` / `PipelineError::Registry` | `ERROR` | Storage metadata IO failure with operation identifier | Investigate backing store, retry once safe |
+  | `PipelineError::Telemetry` | `WARN` | Downstream telemetry sink rejected structured event | Defer to hub health; logs still written locally |
+
 ---
 
 <div align="center">
