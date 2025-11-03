@@ -1,5 +1,6 @@
 use anyhow::Result;
 use common::CompressionPolicy;
+use std::borrow::Cow;
 use std::io::Write;
 
 /// Compression statistics for a segment
@@ -157,10 +158,10 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
 }
 
 /// Compress and return the actual compressed bytes
-pub fn compress_segment(
-    data: &[u8],
+pub fn compress_segment<'a>(
+    data: &'a [u8],
     policy: &CompressionPolicy,
-) -> Result<(Vec<u8>, CompressionResult)> {
+) -> Result<(Cow<'a, [u8]>, CompressionResult)> {
     let result = adaptive_compress(data, policy)?;
 
     if result.compressed {
@@ -169,9 +170,9 @@ pub fn compress_segment(
             CompressionPolicy::Zstd { level } => compress_zstd(data, *level)?,
             CompressionPolicy::None => data.to_vec(),
         };
-        Ok((compressed_data, result))
+        Ok((Cow::Owned(compressed_data), result))
     } else {
-        Ok((data.to_vec(), result))
+        Ok((Cow::Borrowed(data), result))
     }
 }
 
@@ -292,7 +293,7 @@ mod tests {
         let (compressed, result) = compress_segment(&original, &policy).unwrap();
         assert!(result.compressed);
 
-        let decompressed = decompress_lz4(&compressed).unwrap();
+        let decompressed = decompress_lz4(compressed.as_ref()).unwrap();
         assert_eq!(original.as_slice(), decompressed.as_slice());
 
         println!(
@@ -311,7 +312,7 @@ mod tests {
         let (compressed, result) = compress_segment(&original, &policy).unwrap();
         assert!(result.compressed);
 
-        let decompressed = decompress_zstd(&compressed).unwrap();
+        let decompressed = decompress_zstd(compressed.as_ref()).unwrap();
         assert_eq!(original.as_slice(), decompressed.as_slice());
 
         println!(

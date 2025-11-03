@@ -4,6 +4,7 @@ use crate::{gc::GarbageCollector, CapsuleRegistry};
 use anyhow::Result;
 use common::*;
 use nvram_sim::NvramLog;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 // Phase 3: Encryption imports
@@ -135,10 +136,11 @@ impl WritePipeline {
             total_compressed_size += comp_result.compressed_size as u64;
 
             // Step 2: Hash the compressed data for deduplication
-            let content_hash = hash_content(&compressed_data);
+            let content_hash = hash_content(compressed_data.as_ref());
 
             // Step 3: Encrypt if enabled (before dedup check for deterministic encryption)
-            let (final_data, encryption_meta) = if encryption_enabled {
+            let mut encryption_meta = None;
+            let final_data = if encryption_enabled {
                 let km = self.key_manager.as_ref().unwrap();
                 let mut km = km.lock().unwrap(); // CHANGED: Lock the mutex
                 let key_version = km.current_version();
@@ -149,7 +151,7 @@ impl WritePipeline {
 
                 // Encrypt segment
                 let (ciphertext, mut enc_meta) =
-                    encrypt_segment(&compressed_data, key_pair, key_version, tweak)?;
+                    encrypt_segment(compressed_data.as_ref(), key_pair, key_version, tweak)?;
 
                 // Compute MAC over ciphertext + metadata
                 let mac_tag =
@@ -157,9 +159,10 @@ impl WritePipeline {
 
                 enc_meta.set_integrity_tag(mac_tag);
 
-                (ciphertext, Some(enc_meta))
+                encryption_meta = Some(enc_meta);
+                Cow::Owned(ciphertext)
             } else {
-                (compressed_data.clone(), None)
+                compressed_data
             };
 
             // Step 4: Check if this content already exists (if dedup enabled)
@@ -182,7 +185,7 @@ impl WritePipeline {
                     let new_seg_id = self.registry.alloc_segment();
 
                     // Write to NVRAM
-                    let mut segment = self.nvram.append(new_seg_id, &final_data)?;
+                    let mut segment = self.nvram.append(new_seg_id, final_data.as_ref())?;
 
                     // Update segment metadata - compression
                     segment.compressed = comp_result.compressed;
@@ -214,7 +217,7 @@ impl WritePipeline {
                 // Dedup disabled - always write new segment
                 let new_seg_id = self.registry.alloc_segment();
 
-                let mut segment = self.nvram.append(new_seg_id, &final_data)?;
+                let mut segment = self.nvram.append(new_seg_id, final_data.as_ref())?;
                 segment.compressed = comp_result.compressed;
                 segment.compression_algo = comp_result.algorithm.clone();
                 segment.ref_count = 1;

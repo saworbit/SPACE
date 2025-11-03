@@ -32,6 +32,7 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - ✅ S3-compatible REST API (protocol view proof-of-concept)
 - ✅ NFS + block protocol views (namespace + volume facades)
 - ✅ Adaptive compression (LZ4/Zstd with entropy detection)
+- ✅ Zero-copy compression/dedup pipeline using `Cow<[u8]>` borrow semantics
 - ✅ Content-addressed deduplication (post-compression)
 - ✅ **XTS-AES-256 encryption with BLAKE3-MAC integrity**
 - ✅ **Deterministic encryption preserving deduplication**
@@ -58,12 +59,14 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 ✅ **Zstd Balanced Compression** — High compression ratios for cold data  
 ✅ **Entropy Detection** — Skip compression on random/pre-compressed data  
 ✅ **Policy-Driven** — Configure compression per capsule with presets  
+✅ **Zero-Copy Fast-Path** — Borrow slices when compression can reuse input to avoid extra allocations  
 
 ### Phase 2.2: Deduplication ✅
 ✅ **Content-Addressed Storage** — BLAKE3 hashing of compressed segments  
 ✅ **Automatic Dedup** — Reuse identical segments across capsules  
 ✅ **Space Savings Tracking** — Monitor dedup ratios and bytes saved  
 ✅ **Post-Compression Dedup** — Foundation for "dedupe over ciphertext"  
+✅ **Borrowed Hashing Path** — Zero-copy buffers flow through hashing/encryption without cloning  
 
 ### Phase 2.3: Protocol Views ✅
 ✅ **S3 REST API** — PUT/GET/HEAD/LIST/DELETE operations  
