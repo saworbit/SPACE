@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+cargo_metadata = { workspace = true }
+toml = { workspace = true }
+time = { workspace = true }
+semver = { workspace = true }

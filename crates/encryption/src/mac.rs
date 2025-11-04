@@ -25,6 +25,7 @@
 use crate::error::{EncryptionError, Result};
 use crate::policy::EncryptionMetadata;
 use blake3;
+use subtle::ConstantTimeEq;
 
 /// MAC tag size (128 bits / 16 bytes)
 pub const MAC_TAG_SIZE: usize = 16;
@@ -136,7 +137,7 @@ pub fn verify_mac(
     let computed_tag = compute_mac(ciphertext, &metadata_for_mac, xts_key1, xts_key2)?;
 
     // Constant-time comparison
-    if constant_time_eq(&stored_tag, &computed_tag) {
+    if bool::from(stored_tag.ct_eq(&computed_tag)) {
         Ok(())
     } else {
         Err(EncryptionError::IntegrityFailure)
@@ -176,17 +177,10 @@ fn serialize_metadata_for_mac(metadata: &EncryptionMetadata) -> Result<Vec<u8>> 
 /// Constant-time equality comparison
 ///
 /// Prevents timing attacks by always comparing all bytes.
-fn constant_time_eq(a: &[u8; 16], b: &[u8; 16]) -> bool {
-    let mut result = 0u8;
-    for i in 0..16 {
-        result |= a[i] ^ b[i];
-    }
-    result == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use subtle::ConstantTimeEq;
 
     #[test]
     fn test_derive_mac_key() {
@@ -369,13 +363,13 @@ mod tests {
         let b = [1u8; 16];
         let c = [2u8; 16];
 
-        assert!(constant_time_eq(&a, &b));
-        assert!(!constant_time_eq(&a, &c));
+        assert!(bool::from(a.ct_eq(&b)));
+        assert!(!bool::from(a.ct_eq(&c)));
 
         // Verify single bit difference is detected
         let mut d = [1u8; 16];
         d[15] ^= 1;
-        assert!(!constant_time_eq(&a, &d));
+        assert!(!bool::from(a.ct_eq(&d)));
 
         println!("✅ Constant-time comparison works");
     }

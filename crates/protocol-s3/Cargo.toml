@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 common = { path = "../common" }
@@ -11,10 +12,10 @@ capsule-registry = { path = "../capsule-registry" }
 nvram-sim = { path = "../nvram-sim" }
 
 # HTTP server
-axum = "0.7"
+axum = { version = "^0.7.9" } # 2025-11-03 sw: Tier1 HTTP surface per docs/dependency-security.md
 tokio = { workspace = true }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower = { version = "^0.4.13" } # 2025-11-03 sw: aligns with axum 0.7 require
+tower-http = { version = "^0.5.2", features = ["cors", "trace"] } # 2025-11-03 sw: HTTP middleware review logged
 
 # Serialization
 serde = { workspace = true }
@@ -26,8 +27,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Utilities
-bytes = "1.5"
+bytes = { version = "^1.10.1" } # 2025-11-03 sw: pinned to release used in audit

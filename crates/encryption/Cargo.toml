@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 # Core dependencies (already in workspace)
@@ -23,11 +24,12 @@ cipher = { workspace = true }
 xts-mode = { workspace = true }
 poly1305 = { workspace = true }
 cpufeatures = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
-proptest = "1.4"
-rand = "0.8"  # For generating test keys
-serial_test = "3.0"
+proptest = { version = "^1.8.0" } # Tier2 dev-only per docs/dependency-security.md
+rand = { version = "^0.9.2" }  # For generating test keys
+serial_test = { version = "^3.2.0" }
 
 [features]
 default = ["std"]

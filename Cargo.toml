@@ -9,6 +9,7 @@ members = [
     "crates/protocol-s3",
     "crates/spacectl",
     "crates/encryption",    # NEW: Phase 3 encryption crate
+    "xtask",
 ]
 
 [workspace.package]
@@ -18,36 +19,39 @@ authors = ["Shane Wall <shane@adaptive-storage.dev>"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-# Shared dependencies across all crates
-uuid = { version = "1.10", features = ["v4", "serde"] }
-anyhow = "1.0"
-thiserror = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.40", features = ["full"] }
-futures = "0.3"
-num_cpus = "1.16"
-tracing = { version = "0.1", features = ["std", "attributes"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-tracing-test = "0.2"
+# Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)
+uuid = { version = "^1.18.1", features = ["v4", "serde"] } # 2025-11-03 sw: deterministic object IDs for registry state
+anyhow = { version = "^1.0.100" } # 2025-11-03 sw: ergonomic error context, low risk per audit log
+thiserror = { version = "^1.0.69" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
+tokio = { version = "^1.48.0", features = ["full"] } # 2025-11-03 sw: async runtime staple, reviewed for LTS support
+futures = { version = "^0.3.31" } # 2025-11-03 sw: combinators align with tokio 1.48, no unsafe diff
+num_cpus = { version = "^1.17.0" } # 2025-11-03 sw: worker sizing, perf only
+tracing = { version = "^0.1.41", features = ["std", "attributes"] } # 2025-11-03 sw: observability spine
+tracing-subscriber = { version = "^0.3.20", features = ["env-filter", "fmt", "json"] } # 2025-11-03 sw: logging bridge
+tracing-test = { version = "^0.2.5" } # 2025-11-03 sw: ensures span assertions match runtime wiring
+clap = { version = "^4.5.49", features = ["derive"] } # 2025-11-03 sw: CLI + xtask parsing, Tier1 review
+cargo_metadata = { version = "^0.18.1" } # 2025-11-03 sw: workspace graph inspection for xtask
+toml = { version = "^0.8.19" } # 2025-11-03 sw: manifest parsing in xtask
+time = { version = "^0.3.36", features = ["macros", "formatting"] } # 2025-11-03 sw: ISO-8601 timestamps for drift reports
+semver = { version = "^1.0.27" } # 2025-11-03 sw: version range evaluation for drift detection
 
-# Phase 2.1: Compression
-lz4 = "1.27"
-zstd = "0.13"
+# Tier 0 — cryptography, serialization, dedup core (2025-11-03 sw; see docs/dependency-security.md#tier-0)
+serde = { version = "=1.0.228", features = ["derive"] } # 2025-11-03 sw: canonical serialization; CT reviewed
+serde_json = { version = "=1.0.145" } # 2025-11-03 sw: deterministic JSON for protocol surfaces
+blake3 = { version = "=1.8.2" } # 2025-11-03 sw: convergent hash, SIMD constant-time per upstream audit
+bloomfilter = { version = "=1.0.13" } # 2025-11-03 sw: dedupe candidate screening, bounded memory
+hex = { version = "=0.4.3" } # 2025-11-03 sw: hex encoding for key material, constant-time encode/decode
+lz4 = { version = "=1.28.1" } # 2025-11-03 sw: hot-path compression, SIMD routines audited
+zstd = { version = "=0.13.3" } # 2025-11-03 sw: deep compression with wasm off, see audit log entry CRS-132
+zeroize = { version = "=1.8.2" } # 2025-11-03 sw: memory clearing policy alignment
+aes = { version = "=0.8.4" } # 2025-11-03 sw: AES-NI optimized, matches Phase3 design
+cipher = { version = "=0.4.4" } # 2025-11-03 sw: trait glue for AES/Poly1305 stack
+xts-mode = { version = "=0.5.1" } # 2025-11-03 sw: XTS primitive, matches patentable_concepts.md guidance
+poly1305 = { version = "=0.8.0" } # 2025-11-03 sw: MAC verification, constant-time guarantee
+cpufeatures = { version = "=0.2.17" } # 2025-11-03 sw: runtime AES capability detection
+subtle = { version = "=2.6.1" } # 2025-11-03 sw: constant-time comparisons for key/tweak handling
 
-# Phase 2.2: Deduplication
-blake3 = "1.5"
-bloomfilter = "1.0.13"
-hex = "0.4"
-
-# Phase 2: Security
-zeroize = "1.7"
-
-# Phase 3: Encryption (NEW)
-aes = "0.8"
-cipher = "0.4"
-xts-mode = "0.5"
-poly1305 = "0.8"
-cpufeatures = "0.2"
-
-# Phase 2: Async
+[workspace.metadata.space.allowed-features]
+"capsule-registry" = ["pipeline_async"]
+"spacectl" = ["pipeline_async"]
+"encryption" = ["std", "experimental", "pqc", "tee"]

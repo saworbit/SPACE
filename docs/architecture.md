@@ -247,6 +247,7 @@ async fn health_agent_loop() {
 - Post‑quantum ready (Kyber hybrid key wrapping selectable by policy).
 - Immutable audit log (hash‑chained, external time‑stamp).
 - Confidential compute job‑slots (SGX/SEV enclaves run WASM/Python on‑disk data).
+- Dependency chain hardening enforced per [docs/dependency-security.md](dependency-security.md); audits tracked in docs/security/audit-status.json.
 
 ---
 
@@ -339,4 +340,5 @@ Discussions via GitHub Issues; code submissions require a Developer Certificate 
 ---
 
 © 2025 Shane Wall & contributors.  Licensed under the Apache License, Version 2.0.
+
 

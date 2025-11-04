@@ -1,0 +1,31 @@
+name: Security Audit
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install security tooling
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+          cargo install cargo-bloat --locked
+
+      - name: Run xtask audit
+        run: cargo xtask audit

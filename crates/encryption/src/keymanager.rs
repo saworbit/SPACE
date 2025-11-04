@@ -164,7 +164,7 @@ impl KeyManager {
     #[cfg(test)]
     pub fn generate() -> Result<Self> {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut master_key = [0u8; MASTER_KEY_SIZE];
         rng.fill(&mut master_key);
         Ok(Self::new(master_key))
