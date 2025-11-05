@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "sunday"
+      time: "03:00"
+    labels:
+      - "security"
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    open-pull-requests-limit: 5
+    groups:
+      crypto-stack:
+        patterns:
+          - "aes*"
+          - "cipher"
+          - "xts-mode"
+          - "poly1305"
+          - "subtle"
+          - "zeroize"
+      infra:
+        patterns:
+          - "tokio"
+          - "tracing*"
+          - "axum"
+          - "tower*"
+    ignore:
+      - dependency-name: "windows-sys"
+        update-types:
+          - "version-update:semver-minor"

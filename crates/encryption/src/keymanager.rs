@@ -18,6 +18,8 @@
 
 use crate::error::{EncryptionError, Result};
 use blake3;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::collections::HashMap;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -28,7 +30,22 @@ pub const XTS_KEY_SIZE: usize = 64;
 pub const MASTER_KEY_SIZE: usize = 32;
 
 /// Key derivation context string
-const KDF_CONTEXT: &[u8] = b"SPACE-XTS-AES-256-KEY-V1";
+const HKDF_INFO_CONTEXT: &[u8] = b"SPACE-XTS-AES-256-KEY-V1";
+const HKDF_SALT_DOMAIN: &[u8] = b"SPACE-HKDF-SALT-V1";
+const HKDF_SALT_SIZE: usize = 32;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Abstraction over TPM or secure element backends that can supply master material.
+pub trait TpmProvider {
+    /// Returns the 256-bit master key sealed in the TPM.
+    fn read_master_key(&self) -> Result<[u8; MASTER_KEY_SIZE]>;
+
+    /// Optional HKDF salt. Implementations may provide a device-unique pepper.
+    fn read_kdf_salt(&self) -> Result<Option<[u8; HKDF_SALT_SIZE]>> {
+        Ok(None)
+    }
+}
 
 /// A single XTS key pair (512 bits total)
 ///
@@ -89,6 +106,9 @@ pub struct KeyManager {
     /// Master key (zeroized on drop)
     master_key: [u8; MASTER_KEY_SIZE],
 
+    /// Salt material for HKDF (32 bytes)
+    hkdf_salt: [u8; HKDF_SALT_SIZE],
+
     /// Cached derived keys by version
     /// In production, this would be encrypted at rest or stored in HSM
     key_cache: HashMap<u32, XtsKeyPair>,
@@ -112,8 +132,11 @@ impl KeyManager {
     /// - Stored securely (TPM, KMS, or encrypted file)
     /// - Never logged or displayed
     pub fn new(master_key: [u8; MASTER_KEY_SIZE]) -> Self {
+        let hkdf_salt = Self::derive_hkdf_salt(&master_key);
+
         let mut manager = Self {
             master_key,
+            hkdf_salt,
             key_cache: HashMap::new(),
             current_version: 1,
             rotating: false,
@@ -125,6 +148,58 @@ impl KeyManager {
         }
 
         manager
+    }
+
+    fn derive_hkdf_salt(master_key: &[u8; MASTER_KEY_SIZE]) -> [u8; HKDF_SALT_SIZE] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(HKDF_SALT_DOMAIN);
+        hasher.update(master_key);
+        let hash = hasher.finalize();
+        let mut salt = [0u8; HKDF_SALT_SIZE];
+        salt.copy_from_slice(&hash.as_bytes()[..HKDF_SALT_SIZE]);
+        salt
+    }
+
+    fn hkdf_extract(&self) -> Result<[u8; 32]> {
+        let mut mac = HmacSha256::new_from_slice(&self.hkdf_salt).map_err(|e| {
+            EncryptionError::KeyDerivationFailed(format!("HKDF extract init failed: {e}"))
+        })?;
+        mac.update(&self.master_key);
+        let prk = mac.finalize().into_bytes();
+        Ok(prk.into())
+    }
+
+    fn hkdf_expand(prk: &[u8; 32], info: &[u8]) -> Result<[u8; XTS_KEY_SIZE]> {
+        let mut okm = [0u8; XTS_KEY_SIZE];
+        let mut generated = 0usize;
+        let mut previous_block: Vec<u8> = Vec::new();
+        let mut counter: u8 = 1;
+
+        while generated < XTS_KEY_SIZE {
+            let mut mac = HmacSha256::new_from_slice(prk).map_err(|e| {
+                EncryptionError::KeyDerivationFailed(format!("HKDF expand init failed: {e}"))
+            })?;
+            mac.update(&previous_block);
+            mac.update(info);
+            mac.update(&[counter]);
+            let block_array: [u8; 32] = mac.finalize().into_bytes().into();
+            let take = std::cmp::min(block_array.len(), XTS_KEY_SIZE - generated);
+            okm[generated..generated + take].copy_from_slice(&block_array[..take]);
+            previous_block = block_array.to_vec();
+            generated += take;
+            counter = counter.checked_add(1).ok_or_else(|| {
+                EncryptionError::KeyDerivationFailed("HKDF counter overflowed".into())
+            })?;
+        }
+
+        Ok(okm)
+    }
+
+    fn hkdf_info(version: u32) -> Vec<u8> {
+        let mut info = Vec::with_capacity(HKDF_INFO_CONTEXT.len() + 4);
+        info.extend_from_slice(HKDF_INFO_CONTEXT);
+        info.extend_from_slice(&version.to_be_bytes());
+        info
     }
 
     /// Create from environment variable
@@ -157,6 +232,21 @@ impl KeyManager {
         Ok(Self::new(master_key))
     }
 
+    /// Construct a key manager backed by a TPM implementation.
+    ///
+    /// The provider is responsible for unsealing the master key and, optionally,
+    /// delivering device-specific HKDF salt material.
+    pub fn from_tpm<P: TpmProvider>(provider: &P) -> Result<Self> {
+        let master_key = provider.read_master_key()?;
+        let mut manager = Self::new(master_key);
+
+        if let Some(salt) = provider.read_kdf_salt()? {
+            manager.hkdf_salt = salt;
+        }
+
+        Ok(manager)
+    }
+
     /// Generate a random master key (for testing or initialization)
     ///
     /// # Security
@@ -170,23 +260,14 @@ impl KeyManager {
         Ok(Self::new(master_key))
     }
 
-    /// Derive a key for a specific version using BLAKE3 as KDF
+    /// Derive a key for a specific version using HKDF (HMAC-SHA256)
     ///
-    /// Derivation: BLAKE3(master_key || context || version)
+    /// Derivation: HKDF(master_key, salt = hkdf_salt, info = context || version)
     fn derive_key(&self, version: u32) -> Result<XtsKeyPair> {
-        let mut hasher = blake3::Hasher::new();
-
-        // Input: master_key || context || version
-        hasher.update(&self.master_key);
-        hasher.update(KDF_CONTEXT);
-        hasher.update(&version.to_le_bytes());
-
-        // Derive 64 bytes for XTS (two AES-256 keys)
-        let mut output = [0u8; XTS_KEY_SIZE];
-        let mut output_reader = hasher.finalize_xof();
-        output_reader.fill(&mut output);
-
-        Ok(XtsKeyPair::from_bytes(output))
+        let prk = self.hkdf_extract()?;
+        let info = Self::hkdf_info(version);
+        let okm = Self::hkdf_expand(&prk, &info)?;
+        Ok(XtsKeyPair::from_bytes(okm))
     }
 
     /// Get key for a specific version
@@ -263,6 +344,7 @@ impl Drop for KeyManager {
     fn drop(&mut self) {
         // Zeroize master key
         self.master_key.zeroize();
+        self.hkdf_salt.zeroize();
         // Clear cache (keys are ZeroizeOnDrop)
         self.key_cache.clear();
     }
@@ -537,5 +619,61 @@ mod tests {
             result.unwrap_err(),
             EncryptionError::InvalidKeyLength { .. }
         ));
+    }
+
+    #[derive(Clone, Copy)]
+    struct MockTpm {
+        master: [u8; MASTER_KEY_SIZE],
+        salt: Option<[u8; HKDF_SALT_SIZE]>,
+    }
+
+    impl TpmProvider for MockTpm {
+        fn read_master_key(&self) -> Result<[u8; MASTER_KEY_SIZE]> {
+            Ok(self.master)
+        }
+
+        fn read_kdf_salt(&self) -> Result<Option<[u8; HKDF_SALT_SIZE]>> {
+            Ok(self.salt)
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_tpm_injects_salt() {
+        let master = [0x42u8; MASTER_KEY_SIZE];
+        let salt_a = [0xA5u8; HKDF_SALT_SIZE];
+        let salt_b = [0x5Au8; HKDF_SALT_SIZE];
+
+        let mut manager_a = KeyManager::from_tpm(&MockTpm {
+            master,
+            salt: Some(salt_a),
+        })
+        .expect("TPM provider should initialise manager");
+        let mut manager_b = KeyManager::from_tpm(&MockTpm {
+            master,
+            salt: Some(salt_b),
+        })
+        .expect("TPM provider should initialise manager");
+
+        let key_a = manager_a.get_key(1).unwrap().to_bytes();
+        let key_b = manager_b.get_key(1).unwrap().to_bytes();
+
+        assert_ne!(
+            key_a, key_b,
+            "different TPM salts must yield different keys"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_tpm_without_salt_matches_default() {
+        let master = [0x11u8; MASTER_KEY_SIZE];
+        let mut via_new = KeyManager::new(master);
+        let mut via_tpm = KeyManager::from_tpm(&MockTpm { master, salt: None }).unwrap();
+
+        let key_new = via_new.get_key(1).unwrap().to_bytes();
+        let key_tpm = via_tpm.get_key(1).unwrap().to_bytes();
+
+        assert_eq!(key_new, key_tpm);
     }
 }

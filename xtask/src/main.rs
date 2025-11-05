@@ -36,6 +36,8 @@ enum CommandKind {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Capture dependency graph artefacts for manual inspection.
+    Graph,
 }
 
 fn main() -> Result<()> {
@@ -44,6 +46,7 @@ fn main() -> Result<()> {
     match args.command {
         CommandKind::Audit { no_tests } => audit(no_tests),
         CommandKind::Drift { output } => drift(output),
+        CommandKind::Graph => graph(),
     }
 }
 
@@ -76,6 +79,51 @@ fn audit(no_tests: bool) -> Result<()> {
         "cargo",
         ["bloat", "-p", "spacectl", "--crates", "--release"],
     )?;
+
+    Ok(())
+}
+
+fn graph() -> Result<()> {
+    let out_dir = Path::new("target").join("xtask");
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed to create {}", out_dir.display()))?;
+
+    println!("Writing cargo tree to target/xtask/cargo-tree.txt");
+    let tree_bytes = run_capture(
+        "cargo",
+        [
+            "tree",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--edges",
+            "normal,build,dev",
+            "--locked",
+        ],
+    )?;
+    fs::write(out_dir.join("cargo-tree.txt"), tree_bytes)
+        .context("failed to write cargo-tree.txt")?;
+
+    println!("Attempting cargo deps (if installed) -> target/xtask/cargo-deps.txt");
+    match Command::new("cargo")
+        .args(["deps", "--all-deps", "--include-tests"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            fs::write(out_dir.join("cargo-deps.txt"), output.stdout)
+                .context("failed to write cargo-deps.txt")?;
+        }
+        Ok(output) => {
+            eprintln!(
+                "cargo deps exited with {} – skipping graph capture (stderr: {})",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(err) => {
+            eprintln!("cargo deps unavailable ({err}); install with `cargo install cargo-deps`");
+        }
+    }
 
     Ok(())
 }

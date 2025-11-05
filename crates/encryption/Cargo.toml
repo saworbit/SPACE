@@ -17,6 +17,8 @@ hex = { workspace = true }
 
 # Zeroize with derive feature for secure memory
 zeroize = { workspace = true, features = ["derive"] }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 # Phase 3: Crypto dependencies (now in workspace)
 aes = { workspace = true }

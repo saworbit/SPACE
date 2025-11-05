@@ -118,13 +118,15 @@ metadata.set_integrity_tag(tag: [u8; 16])
 #### KeyManager
 ```rust
 pub struct KeyManager {
-    master_key: [u8; 32],                    // From SPACE_MASTER_KEY env
+    master_key: [u8; 32],                    // From SPACE_MASTER_KEY env or TPM
+    hkdf_salt: [u8; 32],                     // Device / TPM provided salt
     key_cache: HashMap<u32, XtsKeyPair>,     // Derived keys
     current_version: u32,                    // Active version
 }
 
 // Initialization
 KeyManager::from_env() -> Result<Self>          // From SPACE_MASTER_KEY
+KeyManager::from_tpm<T: TpmProvider>(provider: &T) -> Result<Self>
 KeyManager::new(master_key: [u8; 32]) -> Self   // Explicit (testing)
 
 // Key access
@@ -138,24 +140,15 @@ clear_cache(&mut self)                          // Force re-derivation
 
 #### Key Derivation
 ```rust
-fn derive_xts_key_pair(master_key: &[u8; 32], version: u32) -> [u8; 64] {
-    // Key 1: BLAKE3-keyed(master, "SPACE-XTS-KEY-V1" || version)
-    let mut hasher = blake3::Hasher::new_keyed(master_key);
-    hasher.update(b"SPACE-XTS-KEY-V1");
-    hasher.update(&version.to_le_bytes());
-    let hash1 = hasher.finalize();
-    
-    // Key 2: BLAKE3-keyed(master, "SPACE-XTS-KEY-V1-PART2" || version)
-    let mut hasher = blake3::Hasher::new_keyed(master_key);
-    hasher.update(b"SPACE-XTS-KEY-V1-PART2");
-    hasher.update(&version.to_le_bytes());
-    let hash2 = hasher.finalize();
-    
-    // Combine: key_pair = key1 || key2 (512 bits total)
-    let mut key_pair = [0u8; 64];
-    key_pair[0..32].copy_from_slice(&hash1.as_bytes()[0..32]);
-    key_pair[32..64].copy_from_slice(&hash2.as_bytes()[0..32]);
-    key_pair
+fn derive_xts_key_pair(master_key: &[u8; 32], hkdf_salt: &[u8; 32], version: u32) -> [u8; 64] {
+    // Extract: PRK = HMAC-SHA256(hkdf_salt, master_key)
+    let prk = hkdf_extract(hkdf_salt, master_key);
+
+    // Expand: context info binds the version into the key material
+    let mut info = Vec::from("SPACE-XTS-AES-256-KEY-V1");
+    info.extend_from_slice(&version.to_be_bytes());
+
+    hkdf_expand(&prk, &info, 64)
 }
 ```
 
@@ -572,7 +565,7 @@ cargo test --workspace
 | Confidentiality | XTS-AES-256 | 256-bit |
 | Integrity | BLAKE3-MAC | 128-bit |
 | Deduplication | Deterministic tweaks | Preserved |
-| Key Derivation | BLAKE3-KDF | Cryptographic |
+| Key Derivation | HKDF (HMAC-SHA256) | Cryptographic |
 
 ---
 

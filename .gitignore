@@ -1,5 +1,7 @@
 # Rust
 /target/
+/fuzz/target/
+/fuzz/corpus/
 Cargo.lock
 
 # SPACE runtime files

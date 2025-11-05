@@ -30,6 +30,10 @@ pub enum CompressionError {
         algorithm: &'static str,
         message: String,
     },
+
+    /// Integrity validation failed after recompressing a segment.
+    #[error("Integrity check failed for {algorithm}")]
+    IntegrityFailure { algorithm: &'static str },
 }
 
 impl CompressionError {
@@ -44,6 +48,10 @@ impl CompressionError {
             algorithm,
             message: message.into(),
         }
+    }
+
+    pub fn integrity(algorithm: &'static str) -> Self {
+        CompressionError::IntegrityFailure { algorithm }
     }
 
     pub fn io(algorithm: &'static str, source: std::io::Error) -> Self {

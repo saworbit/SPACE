@@ -12,7 +12,7 @@ SPACE enforces deterministic, auditable builds for every crate in the workspace.
 2. **Pin** – update `Cargo.toml` with the approved version, add reviewer/timestamp comment, and sync `Cargo.lock`.
 3. **Verify** – run `cargo tree --edges normal,build,dev`, `cargo audit --deny warnings`, `cargo deny check`, and feature allowlist validation.
 4. **Review** – attach artefacts to the PR template (section below) and capture rationale in meeting notes if material.
-5. **Monitor** – Dependabot/Renovate and nightly audits raise issues when advisories or drift are detected.
+5. **Monitor** – Dependabot (configured via `.github/dependabot.yml`) and nightly audits raise issues when advisories or drift are detected.
 
 ## Dependency Tiers
 
@@ -35,9 +35,10 @@ Record tier assignments inside PR descriptions and keep the table up to date whe
   - `security-audit`: runs `cargo xtask audit` (format/check/audit/deny/bloat) on every push and pull request.
   - `dependency-drift`: nightly; emits issues when advisories appear, transitive count exceeds 50, or manifests diverge from policy.
 - **Tooling**
-  - `cargo audit --deny warnings` blocks merges on high/critical advisories.
-  - `cargo deny check bans licenses sources` enforces Apache/MIT compatibility.
-  - `cargo bloat --crates` runs in release mode and posts size regressions to PR logs.
+- `cargo audit --deny warnings` blocks merges on high/critical advisories.
+- `cargo deny check bans licenses sources` enforces Apache/MIT compatibility.
+- `cargo bloat --crates` runs in release mode and posts size regressions to PR logs.
+- `cargo xtask graph` captures a workspace dependency snapshot (and, if available, `cargo deps` output) for review.
 - Results from the last green run are mirrored in `docs/security/audit-status.json` and surfaced via Slack.
 
 ## Crypto Review Rubric
@@ -45,6 +46,10 @@ Record tier assignments inside PR descriptions and keep the table up to date whe
 - Verify upstream uses hardware acceleration safely (`cpufeatures` gating, no runtime feature toggles that alter timing).
 - For new algorithms, capture proofs or references in `ENCRYPTION_IMPLEMENTATION.md` and list reviewers.
 - Key derivation must use HKDF/PBKDF2 with TPM-backed master secrets; ensure `keymanager.rs` aligns with policy.
+
+## Fuzzing & Side-Channel Probing
+- Fuzz targets live under `fuzz/` (driven by `cargo fuzz`). Run `cargo fuzz run encrypt_roundtrip` after touching the encryption stack; archive interesting crashes alongside the PR.
+- Side-channel hardening relies on constant-time comparisons in compression, MAC verification, and key handling; new code paths must continue this pattern.
 
 ## PR Checklist (add to description)
 ```

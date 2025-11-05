@@ -5,12 +5,12 @@
                       "cargo-deny":  "0.18.5",
                       "rustc":  "stable"
                   },
-    "last_passed":  "2025-11-04T21:32:24Z",
-    "xtask_audit_sha":  "1c93e171d548cfb6d2217c2b55155f5364bc373e",
+    "last_passed":  "2025-11-05T11:40:20Z",
+    "xtask_audit_sha":  "737d2e14999bd0930a676bbcedc8a0e45a26ee48",
     "reports":  {
                     "cargo_bloat":  "target/release/spacectl.exe",
                     "cargo_deny":  "pass",
                     "cargo_audit":  "pass"
                 },
-    "notes":  "Generated via cargo xtask audit --no-tests on 2025-11-04T21:32:24Z."
+    "notes":  "Generated via cargo xtask audit --no-tests on 2025-11-05T11:40:20Z."
 }

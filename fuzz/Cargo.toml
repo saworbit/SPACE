@@ -1,0 +1,22 @@
+[package]
+name = "space-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+anyhow = "1"
+libfuzzer-sys = "0.4"
+
+[dependencies.encryption]
+path = "../crates/encryption"
+default-features = true
+
+[[bin]]
+name = "encrypt_roundtrip"
+path = "fuzz_targets/encrypt_roundtrip.rs"
+test = false
+doc = false

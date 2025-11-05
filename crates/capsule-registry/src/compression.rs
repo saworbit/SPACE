@@ -3,9 +3,17 @@ use anyhow::{Context, Result};
 use common::CompressionPolicy;
 use std::borrow::Cow;
 use std::io::Write;
+use subtle::ConstantTimeEq;
 use tracing::{debug, info, instrument, warn};
 
 type CompressionOpResult<T> = std::result::Result<T, CompressionError>;
+
+fn constant_time_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    bool::from(a.ct_eq(b))
+}
 
 /// Lightweight context for why compression was skipped or reverted.
 #[derive(Debug, Clone)]
@@ -121,6 +129,24 @@ pub fn decompress_zstd(data: &[u8]) -> CompressionOpResult<Vec<u8>> {
     let decompressed =
         zstd::decode_all(data).map_err(|err| CompressionError::codec("zstd", err.to_string()))?;
     Ok(decompressed)
+}
+
+fn verify_integrity(
+    policy: &CompressionPolicy,
+    compressed: &[u8],
+    original: &[u8],
+) -> CompressionOpResult<()> {
+    let (algorithm, candidate) = match policy {
+        CompressionPolicy::LZ4 { .. } => ("lz4", decompress_lz4(compressed)?),
+        CompressionPolicy::Zstd { .. } => ("zstd", decompress_zstd(compressed)?),
+        CompressionPolicy::None => return Ok(()),
+    };
+
+    if !constant_time_equal(candidate.as_slice(), original) {
+        return Err(CompressionError::integrity(algorithm));
+    }
+
+    Ok(())
 }
 
 /// Adaptive compression with policy-driven algorithm selection
@@ -269,6 +295,8 @@ pub fn compress_segment<'a>(
                 .context("Zstd compression backend failed while materialising segment")?,
             CompressionPolicy::None => data.to_vec(),
         };
+
+        verify_integrity(policy, &compressed_data, data)?;
         debug!(
             algorithm = %result.algorithm,
             compressed_len = result.compressed_size,
@@ -471,6 +499,31 @@ mod tests {
             result.algorithm,
             result.ratio()
         );
+    }
+
+    #[test]
+    fn test_verify_integrity_detects_tampering() {
+        let payload = b"Tamper detection payload".repeat(256);
+        let policy = CompressionPolicy::LZ4 { level: 4 };
+        let compressed = compress_lz4(payload.as_slice(), 4).unwrap();
+        let mut altered = payload.clone();
+        altered[0] ^= 0xAA;
+
+        let error = verify_integrity(&policy, &compressed, &altered).unwrap_err();
+        assert!(matches!(
+            error,
+            CompressionError::IntegrityFailure { algorithm: "lz4" }
+        ));
+    }
+
+    #[test]
+    fn test_verify_integrity_accepts_valid_payload() {
+        let payload = b"Integrity ok payload".repeat(256);
+        let policy = CompressionPolicy::Zstd { level: 3 };
+        let compressed = compress_zstd(payload.as_slice(), 3).unwrap();
+
+        let result = verify_integrity(&policy, &compressed, payload.as_slice());
+        assert!(result.is_ok());
     }
 
     #[traced_test]

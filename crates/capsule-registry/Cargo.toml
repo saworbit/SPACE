@@ -27,6 +27,7 @@ tracing-subscriber = { workspace = true }
 lz4 = { workspace = true }
 zstd = { workspace = true }
 blake3 = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
