@@ -5,6 +5,8 @@ use crate::error::PipelineResult;
 use crate::error::{CompressionError, PipelineError};
 use crate::{gc::GarbageCollector, CapsuleRegistry};
 use anyhow::{Error as AnyhowError, Result};
+#[cfg(feature = "pipeline_async")]
+use bytes::Bytes;
 use common::*;
 use nvram_sim::NvramLog;
 #[cfg(feature = "pipeline_async")]
@@ -124,11 +126,11 @@ fn prepare_segment(
         let mac_tag = compute_mac(&ciphertext, &enc_meta, key_pair.key1(), key_pair.key2())?;
         enc_meta.set_integrity_tag(mac_tag);
         encryption_meta = Some(enc_meta);
-        ciphertext
+        Bytes::from(ciphertext)
     } else {
         match compressed_data {
-            Cow::Borrowed(data) => data.to_vec(),
-            Cow::Owned(vec) => vec,
+            Cow::Borrowed(_) => Bytes::from(chunk),
+            Cow::Owned(vec) => Bytes::from(vec),
         }
     };
 
@@ -147,7 +149,7 @@ fn prepare_segment(
 struct SegmentPrepared {
     index: usize,
     content_hash: ContentHash,
-    final_data: Vec<u8>,
+    final_data: Bytes,
     comp_result: crate::compression::CompressionResult,
     encryption_meta: Option<EncryptionMetadata>,
     prepared_at: Instant,

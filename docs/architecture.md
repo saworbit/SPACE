@@ -150,11 +150,13 @@ fn write_object(id: Uuid, data: &[u8], pol: &Policy) -> Result<()> {
 ```
 
 **Zero-copy optimisation (Phase 3.1++)**  
-The real pipeline mirrors this pseudocode while using `Cow<[u8]>` buffers end-to-end.  
-Compression can hand back a borrowed slice when it deems the input "already optimal",  
-and the write path hashes/encrypts that borrowed data directly. Only segments that go  
-through LZ4/Zstd or encryption allocate fresh `Vec<u8>`, cutting per-segment copies  
-and reducing large transfer latency by ~10-20% in internal benchmarks.
+The production pipeline keeps segment data in borrow-friendly containers.  
+Compression returns `Cow<[u8]>`, letting the sync write path hash and encrypt  
+borrowed slices without cloning. When the async `pipeline_async` feature is  
+enabled, prepared segments are wrapped in reference-counted `Bytes`, so worker  
+tasks and the commit coordinator share the same backing allocation. Only segments  
+that actually compress or encrypt materialise new storage, reducing per-segment  
+copies and cutting large transfer latency by ~10–20% in internal benchmarks.
 
 #### 5.1.1 Async coordination (`pipeline_async`)
 

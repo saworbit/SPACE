@@ -32,7 +32,7 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - S3-compatible REST API (protocol view proof-of-concept)
 - NFS + block protocol views (namespace + volume facades)
 - Adaptive compression (LZ4/Zstd with entropy detection)
-- Zero-copy compression/dedup pipeline using `Cow<[u8]>` borrow semantics
+- Zero-copy compression/dedup pipeline using `Cow<[u8]>` + `bytes::Bytes` shared buffers
 - Content-addressed deduplication (post-compression)
 - **XTS-AES-256 encryption with BLAKE3-MAC integrity**
 - **Deterministic encryption preserving deduplication**

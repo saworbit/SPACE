@@ -28,6 +28,7 @@ lz4 = { workspace = true }
 zstd = { workspace = true }
 blake3 = { workspace = true }
 subtle = { workspace = true }
+bytes = "1.7"
 
 [dev-dependencies]
 tracing-test = { workspace = true }

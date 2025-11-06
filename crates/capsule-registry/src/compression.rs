@@ -28,6 +28,8 @@ pub struct CompressionResult {
     pub original_size: usize,
     pub compressed_size: usize,
     pub compressed: bool,
+    /// Indicates whether we reused the original slice without allocating.
+    pub reused_original: bool,
     pub algorithm: String,
     pub reason: Option<CompressionSkipReason>,
 }
@@ -149,22 +151,29 @@ fn verify_integrity(
     Ok(())
 }
 
-/// Adaptive compression with policy-driven algorithm selection
+/// Adaptive compression with policy-driven algorithm selection.
+/// Returns either a borrowed view into the original slice or owned compressed bytes.
 #[instrument(skip(data, policy), fields(segment_size = data.len(), policy = ?policy))]
-pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<CompressionResult> {
+pub fn adaptive_compress<'a>(
+    data: &'a [u8],
+    policy: &CompressionPolicy,
+) -> Result<(Cow<'a, [u8]>, CompressionResult)> {
     let original_size = data.len();
 
-    // Check policy
     match policy {
         CompressionPolicy::None => {
             info!("Compression disabled by policy");
-            return Ok(CompressionResult {
-                original_size,
-                compressed_size: original_size,
-                compressed: false,
-                algorithm: "none".to_string(),
-                reason: None,
-            });
+            return Ok((
+                Cow::Borrowed(data),
+                CompressionResult {
+                    original_size,
+                    compressed_size: original_size,
+                    compressed: false,
+                    reused_original: true,
+                    algorithm: "none".to_string(),
+                    reason: None,
+                },
+            ));
         }
         _ => {}
     }
@@ -188,13 +197,17 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
             );
             debug!(%error, "compression skip classified");
         }
-        return Ok(CompressionResult {
-            original_size,
-            compressed_size: original_size,
-            compressed: false,
-            algorithm: "skipped_entropy".to_string(),
-            reason: Some(reason),
-        });
+        return Ok((
+            Cow::Borrowed(data),
+            CompressionResult {
+                original_size,
+                compressed_size: original_size,
+                compressed: false,
+                reused_original: true,
+                algorithm: "skipped_entropy".to_string(),
+                reason: Some(reason),
+            },
+        ));
     }
 
     // Compress based on policy
@@ -214,7 +227,6 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
 
     let compressed_size = compressed_data.len();
 
-    // Only use compression if it actually saves space (+ 5% margin)
     if compressed_size < original_size * 95 / 100 {
         let ratio = if compressed_size == 0 {
             f32::INFINITY
@@ -236,15 +248,18 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
             compressed = compressed_size,
             outcome = "compressed"
         );
-        Ok(CompressionResult {
-            original_size,
-            compressed_size,
-            compressed: true,
-            algorithm,
-            reason: None,
-        })
+        Ok((
+            Cow::Owned(compressed_data),
+            CompressionResult {
+                original_size,
+                compressed_size,
+                compressed: true,
+                reused_original: false,
+                algorithm,
+                reason: None,
+            },
+        ))
     } else {
-        // Compression didn't help, return original
         let ratio = if compressed_size == 0 {
             1.0
         } else {
@@ -269,13 +284,17 @@ pub fn adaptive_compress(data: &[u8], policy: &CompressionPolicy) -> Result<Comp
             outcome = "ineffective"
         );
         debug!(%error, "compression skip classified");
-        Ok(CompressionResult {
-            original_size,
-            compressed_size: original_size,
-            compressed: false,
-            algorithm: "ineffective".to_string(),
-            reason: Some(skip),
-        })
+        Ok((
+            Cow::Borrowed(data),
+            CompressionResult {
+                original_size,
+                compressed_size: original_size,
+                compressed: false,
+                reused_original: true,
+                algorithm: "ineffective".to_string(),
+                reason: Some(skip),
+            },
+        ))
     }
 }
 
@@ -285,30 +304,20 @@ pub fn compress_segment<'a>(
     data: &'a [u8],
     policy: &CompressionPolicy,
 ) -> Result<(Cow<'a, [u8]>, CompressionResult)> {
-    let result = adaptive_compress(data, policy)?;
+    let (compressed_view, result) = adaptive_compress(data, policy)?;
 
     if result.compressed {
-        let compressed_data = match policy {
-            CompressionPolicy::LZ4 { level } => compress_lz4(data, *level)
-                .context("LZ4 compression backend failed while materialising segment")?,
-            CompressionPolicy::Zstd { level } => compress_zstd(data, *level)
-                .context("Zstd compression backend failed while materialising segment")?,
-            CompressionPolicy::None => data.to_vec(),
-        };
-
-        verify_integrity(policy, &compressed_data, data)?;
+        verify_integrity(policy, compressed_view.as_ref(), data)?;
         debug!(
             algorithm = %result.algorithm,
             compressed_len = result.compressed_size,
             "Segment compressed"
         );
-        Ok((Cow::Owned(compressed_data), result))
-    } else {
-        if let Some(reason) = &result.reason {
-            debug!(?reason, "Segment left uncompressed");
-        }
-        Ok((Cow::Borrowed(data), result))
+    } else if let Some(reason) = &result.reason {
+        debug!(?reason, "Segment left uncompressed");
     }
+
+    Ok((compressed_view, result))
 }
 
 #[cfg(test)]
@@ -355,9 +364,10 @@ mod tests {
         let data = b"Hello SPACE! ".repeat(1000);
         let policy = CompressionPolicy::LZ4 { level: 1 };
 
-        let result = adaptive_compress(&data, &policy).unwrap();
+        let (_view, result) = adaptive_compress(&data, &policy).unwrap();
 
         assert!(result.compressed);
+        assert!(!result.reused_original);
         assert!(
             result.ratio() > 3.0,
             "Expected 3x+ compression, got {:.2}x",
@@ -379,9 +389,10 @@ mod tests {
             b"This is SPACE - Storage Platform for Adaptive Computational Ecosystems. ".repeat(500);
         let policy = CompressionPolicy::Zstd { level: 3 };
 
-        let result = adaptive_compress(&data, &policy).unwrap();
+        let (_view, result) = adaptive_compress(&data, &policy).unwrap();
 
         assert!(result.compressed);
+        assert!(!result.reused_original);
         assert!(
             result.ratio() > 4.0,
             "Expected 4x+ compression, got {:.2}x",
@@ -402,9 +413,11 @@ mod tests {
         let data = b"Some data".repeat(100);
         let policy = CompressionPolicy::None;
 
-        let result = adaptive_compress(&data, &policy).unwrap();
+        let (view, result) = adaptive_compress(&data, &policy).unwrap();
 
         assert!(!result.compressed);
+        assert!(result.reused_original);
+        assert!(std::ptr::eq(view.as_ptr(), data.as_ptr()));
         assert_eq!(result.original_size, result.compressed_size);
         assert_eq!(result.algorithm, "none");
     }
@@ -415,10 +428,11 @@ mod tests {
         let random: Vec<u8> = (0..4096).map(|i| ((i * 7919) % 256) as u8).collect();
         let policy = CompressionPolicy::LZ4 { level: 1 };
 
-        let result = adaptive_compress(&random, &policy).unwrap();
+        let (_view, result) = adaptive_compress(&random, &policy).unwrap();
 
         // Should skip compression due to high entropy
         assert!(!result.compressed);
+        assert!(result.reused_original);
         assert!(matches!(
             result.reason,
             Some(CompressionSkipReason::Entropy { .. })
@@ -475,7 +489,7 @@ mod tests {
 
         let policy = CompressionPolicy::LZ4 { level: 9 };
 
-        let result = adaptive_compress(&pseudo_compressed, &policy).unwrap();
+        let (_view, result) = adaptive_compress(&pseudo_compressed, &policy).unwrap();
 
         if result.compressed {
             assert!(
@@ -484,6 +498,7 @@ mod tests {
                 result.ratio()
             );
         } else {
+            assert!(result.reused_original);
             assert!(
                 matches!(
                     result.reason,
@@ -545,8 +560,9 @@ mod tests {
         let data = b"Space telemetry test ".repeat(1024);
         let policy = CompressionPolicy::LZ4 { level: 1 };
 
-        let result = adaptive_compress(&data, &policy).unwrap();
+        let (_view, result) = adaptive_compress(&data, &policy).unwrap();
         assert!(result.compressed);
+        assert!(!result.reused_original);
 
         assert!(logs_contain("compression successful"));
         assert!(logs_contain("target=\"telemetry::compression\""));
