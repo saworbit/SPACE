@@ -167,6 +167,15 @@ copies and cutting large transfer latency by ~10–20% in internal benchmarks.
 - Content registration is deferred until after the NVRAM transaction commits; staging dedupe hits rely on an in-memory map and adjust staged segment refcounts so intra-capsule dedupe remains deterministic.
 - `PipelineConfig` exposes tuning knobs (`max_concurrency`, per-task memory limits, future transactional toggles) and is plumbed through `spacectl` so synchronous callers can opt in by enabling the Cargo feature.
 
+#### 5.1.2 Trait-based modular prototype (`modular_pipeline` feature)
+
+- The new `compression`, `dedup`, `storage`, and `pipeline` crates break the legacy monolith into composable building blocks. Each stage implements a shared trait (`Compressor`, `Deduper`, `Encryptor`, `StorageBackend`, `PolicyEvaluator`, `Keyring`) so alternate implementations (e.g. GPU offloads, Zlib, distributed storage backends) can be swapped in without touching orchestrator logic.
+- `pipeline::Pipeline` orchestrates the flow using generics for zero-cost abstraction. It stages writes through `StorageBackend::Transaction`, records dedupe statistics, surfaces `EncryptionSummary` metadata (algorithm, key version, tweak, MAC) for downstream registry updates, and now handles `read_capsule`, `delete_capsule`, and `garbage_collect` paths by consulting the shared catalog.
+- `storage::NvramBackend` wraps the existing simulator behind the transactional trait. Tests can also swap in the in-memory backend for fast CI.
+- Enabling `capsule-registry`'s `modular_pipeline` feature re-exports helper types (`PipelineBuilder`, `InMemoryPipeline`, `XtsEncryptor`, `KeyManagerKeyring`) and a `registry_nvram_pipeline_with_encryption` constructor so application code can stand up pipelines backed by the real `CapsuleRegistry` without manual wiring, while legacy callers continue using `pipeline::WritePipeline`.
+- Additional integration tests (`integration_test.rs`, `gc_test.rs`) now exercise the trait-based pipeline behind the feature flag, validating dedupe stats, encryption metadata, key rotation behaviour, and the new GC lifecycle with registry-backed state.
+- `spacectl` and `protocol-s3` can drive either implementation at runtime: building with `--features modular_pipeline` enables a `--modular` CLI flag for `create`, `read`, and `serve-s3`, and the legacy `WritePipeline` transparently delegates to the modular orchestrator unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set. This lets operators dogfood the new stack (including deletes/GC) without dropping compatibility.
+
 ### 5.2 Snapshot & Merkle root build
 
 ```rust

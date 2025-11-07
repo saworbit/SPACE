@@ -1,9 +1,11 @@
-use crate::compression::{compress_segment, decompress_lz4, decompress_zstd};
+use compression::{compress_segment, decompress_lz4, decompress_zstd};
 use crate::dedup::{hash_content, DedupStats};
 #[cfg(feature = "pipeline_async")]
 use crate::error::PipelineResult;
 use crate::error::{CompressionError, PipelineError};
 use crate::{gc::GarbageCollector, CapsuleRegistry};
+#[cfg(feature = "modular_pipeline")]
+use crate::modular_pipeline;
 use anyhow::{Error as AnyhowError, Result};
 #[cfg(feature = "pipeline_async")]
 use bytes::Bytes;
@@ -34,6 +36,8 @@ use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{mpsc, Semaphore};
 #[cfg(feature = "pipeline_async")]
 use tokio::task::{spawn_blocking, JoinHandle};
+#[cfg(feature = "modular_pipeline")]
+use tokio::{runtime::Runtime as TokioRuntime, sync::Mutex as TokioMutex};
 
 #[cfg(feature = "pipeline_async")]
 #[derive(Clone)]
@@ -150,7 +154,7 @@ struct SegmentPrepared {
     index: usize,
     content_hash: ContentHash,
     final_data: Bytes,
-    comp_result: crate::compression::CompressionResult,
+        comp_result: compression::CompressionResult,
     encryption_meta: Option<EncryptionMetadata>,
     prepared_at: Instant,
     preparation_time: Duration,
@@ -167,6 +171,10 @@ pub struct WritePipeline {
     registry: CapsuleRegistry,
     nvram: NvramLog,
     key_manager: Option<Arc<Mutex<KeyManager>>>, // CHANGED: Wrapped in Arc<Mutex<>>
+    #[cfg(feature = "modular_pipeline")]
+    modular: Option<Arc<TokioMutex<crate::modular_pipeline::RegistryPipelineHandle>>>,
+    #[cfg(feature = "modular_pipeline")]
+    runtime: Option<Arc<TokioRuntime>>,
     #[cfg(feature = "pipeline_async")]
     config: PipelineConfig,
 }
@@ -182,10 +190,43 @@ impl WritePipeline {
             info!("encryption enabled (key manager initialised)");
         }
 
+        #[cfg(feature = "modular_pipeline")]
+        let modular_enabled = std::env::var("SPACE_DISABLE_MODULAR_PIPELINE").is_err();
+        #[cfg(feature = "modular_pipeline")]
+        let (modular, runtime) = if modular_enabled {
+            match modular_pipeline::registry_pipeline_from_log(nvram.clone(), registry.clone()) {
+                Ok(handle) => match TokioRuntime::new() {
+                    Ok(rt) => (
+                        Some(Arc::new(TokioMutex::new(handle))),
+                        Some(Arc::new(rt)),
+                    ),
+                    Err(err) => {
+                        warn!(error = %err, "failed to create tokio runtime for modular pipeline delegation");
+                        (None, None)
+                    }
+                },
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise modular pipeline delegation");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        #[cfg(not(feature = "modular_pipeline"))]
+        let _modular = ();
+        #[cfg(not(feature = "modular_pipeline"))]
+        let _runtime = ();
+
         let pipeline = Self {
             registry,
             nvram,
             key_manager,
+            #[cfg(feature = "modular_pipeline")]
+            modular,
+            #[cfg(feature = "modular_pipeline")]
+            runtime,
             #[cfg(feature = "pipeline_async")]
             config: PipelineConfig::default(),
         };
@@ -203,10 +244,44 @@ impl WritePipeline {
         nvram: NvramLog,
         key_manager: KeyManager,
     ) -> Self {
+        let key_manager = Some(Arc::new(Mutex::new(key_manager))); // CHANGED: Wrap in Arc<Mutex<>>
+
+        #[cfg(feature = "modular_pipeline")]
+        let modular_enabled = std::env::var("SPACE_DISABLE_MODULAR_PIPELINE").is_err();
+        #[cfg(feature = "modular_pipeline")]
+        let (modular, runtime) = if modular_enabled {
+            match modular_pipeline::registry_pipeline_from_log(nvram.clone(), registry.clone()) {
+                Ok(handle) => match TokioRuntime::new() {
+                    Ok(rt) => (
+                        Some(Arc::new(TokioMutex::new(handle))),
+                        Some(Arc::new(rt)),
+                    ),
+                    Err(err) => {
+                        warn!(error = %err, "failed to create tokio runtime for modular pipeline delegation");
+                        (None, None)
+                    }
+                },
+                Err(err) => {
+                    warn!(error = %err, "failed to initialise modular pipeline delegation");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+        #[cfg(not(feature = "modular_pipeline"))]
+        let _modular = ();
+        #[cfg(not(feature = "modular_pipeline"))]
+        let _runtime = ();
+
         Self {
             registry,
             nvram,
-            key_manager: Some(Arc::new(Mutex::new(key_manager))), // CHANGED: Wrap in Arc<Mutex<>>
+            key_manager,
+            #[cfg(feature = "modular_pipeline")]
+            modular,
+            #[cfg(feature = "modular_pipeline")]
+            runtime,
             #[cfg(feature = "pipeline_async")]
             config: PipelineConfig::default(),
         }
@@ -248,6 +323,14 @@ impl WritePipeline {
     }
 
     pub fn delete_capsule(&self, capsule_id: CapsuleId) -> Result<()> {
+        #[cfg(feature = "modular_pipeline")]
+        if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+            return runtime.block_on(async {
+                let mut handle = modular.lock().await;
+                handle.delete_capsule(capsule_id).await
+            });
+        }
+
         let capsule = self.registry.delete_capsule(capsule_id)?;
 
         for seg_id in capsule.segments {
@@ -265,6 +348,14 @@ impl WritePipeline {
     }
 
     pub fn garbage_collect(&self) -> Result<usize> {
+        #[cfg(feature = "modular_pipeline")]
+        if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+            return runtime.block_on(async {
+                let mut handle = modular.lock().await;
+                handle.garbage_collect().await
+            });
+        }
+
         let gc = GarbageCollector::new(&self.registry, &self.nvram);
         gc.sweep()
     }
@@ -276,11 +367,19 @@ impl WritePipeline {
     }
 
     /// Write data with explicit policy (including encryption)
-    #[cfg(not(feature = "pipeline_async"))]
-    #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
-    pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-        // Pre-allocate capsule ID but don't persist yet
-        let capsule_id = CapsuleId::new();
+#[cfg(not(feature = "pipeline_async"))]
+#[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
+pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+    #[cfg(feature = "modular_pipeline")]
+    if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+        return runtime.block_on(async {
+            let mut handle = modular.lock().await;
+            handle.write_capsule(data, policy).await
+        });
+    }
+
+    // Pre-allocate capsule ID but don't persist yet
+    let capsule_id = CapsuleId::new();
 
         // Track stats
         let mut segment_ids = Vec::new();
@@ -492,10 +591,18 @@ impl WritePipeline {
         Ok(capsule_id)
     }
 
-    #[cfg(feature = "pipeline_async")]
-    pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(self.write_capsule_with_policy_async(data, policy)),
+#[cfg(feature = "pipeline_async")]
+pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+    #[cfg(feature = "modular_pipeline")]
+    if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+        return runtime.block_on(async {
+            let mut handle = modular.lock().await;
+            handle.write_capsule(data, policy).await
+        });
+    }
+
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(self.write_capsule_with_policy_async(data, policy)),
             Err(_) => {
                 let runtime = RuntimeBuilder::new_multi_thread().enable_all().build()?;
                 runtime.block_on(self.write_capsule_with_policy_async(data, policy))
@@ -503,14 +610,20 @@ impl WritePipeline {
         }
     }
 
-    #[cfg(feature = "pipeline_async")]
-    #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
-    pub async fn write_capsule_with_policy_async(
-        &self,
-        data: &[u8],
-        policy: &Policy,
-    ) -> Result<CapsuleId> {
-        let pipeline_start = Instant::now();
+#[cfg(feature = "pipeline_async")]
+#[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
+pub async fn write_capsule_with_policy_async(
+    &self,
+    data: &[u8],
+    policy: &Policy,
+) -> Result<CapsuleId> {
+    #[cfg(feature = "modular_pipeline")]
+    if let Some(modular) = &self.modular {
+        let mut handle = modular.lock().await;
+        return handle.write_capsule(data, policy).await;
+    }
+
+    let pipeline_start = Instant::now();
         let capsule_id = CapsuleId::new();
 
         let encryption_enabled = policy.encryption.is_enabled() && self.key_manager.is_some();
@@ -931,6 +1044,14 @@ impl WritePipeline {
     /// Read entire capsule contents (with decryption and decompression)
     #[instrument(skip(self), fields(capsule = %id.as_uuid()))]
     pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
+        #[cfg(feature = "modular_pipeline")]
+        if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+            return runtime.block_on(async {
+                let handle = modular.lock().await;
+                handle.read_capsule(id).await
+            });
+        }
+
         let capsule = self.registry.lookup(id)?;
 
         let mut result = Vec::with_capacity(capsule.size as usize);

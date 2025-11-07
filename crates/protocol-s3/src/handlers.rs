@@ -39,7 +39,7 @@ pub async fn put_object(
 ) -> Response {
     info!("PUT /{}/{} ({} bytes)", bucket, key, body.len());
 
-    match s3.put_object(&bucket, &key, body.to_vec()) {
+    match s3.put_object(&bucket, &key, body.to_vec()).await {
         Ok(capsule_id) => {
             info!(
                 "✅ Created capsule {} for {}/{}",
@@ -67,7 +67,7 @@ pub async fn get_object(
 ) -> Response {
     info!("GET /{}/{}", bucket, key);
 
-    match s3.get_object(&bucket, &key) {
+    match s3.get_object(&bucket, &key).await {
         Ok(data) => {
             info!("✅ Retrieved {} bytes from {}/{}", data.len(), bucket, key);
 

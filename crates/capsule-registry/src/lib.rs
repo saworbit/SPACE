@@ -7,13 +7,219 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-pub mod compression;
 pub mod dedup; // NEW
 pub mod error;
 pub mod gc;
 pub mod pipeline;
 
 pub use error::{CompressionError, DedupError, PipelineError};
+
+#[cfg(feature = "modular_pipeline")]
+pub mod modular_pipeline {
+    use std::sync::{Arc, Mutex};
+
+    use anyhow::Result;
+    use common::{CapsuleId, Policy};
+    use encryption::KeyManager;
+    use nvram_sim::NvramLog;
+    pub use pipeline::{
+        pipeline_with_nvram, pipeline_with_nvram_xts, DefaultPipeline, DefaultPolicyEvaluator,
+        InMemoryPipeline, KeyManagerKeyring, NoopEncryptor, NullKeyring, NvramPipeline,
+        NvramPipelineWithEncryption, Pipeline, PipelineBuilder, XtsEncryptor,
+    };
+    pub use storage::{InMemoryBackend, NvramBackend};
+
+    pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
+        path: P,
+        key_manager: Arc<Mutex<KeyManager>>,
+    ) -> Result<NvramPipelineWithEncryption> {
+        pipeline_with_nvram_xts(path, key_manager)
+    }
+
+    pub type RegistryEncryptedPipeline = Pipeline<
+        compression::Lz4ZstdCompressor,
+        dedup::Blake3Deduper,
+        XtsEncryptor,
+        NvramBackend,
+        DefaultPolicyEvaluator,
+        KeyManagerKeyring,
+        crate::CapsuleRegistry,
+    >;
+
+    pub type RegistryPlainPipeline = Pipeline<
+        compression::Lz4ZstdCompressor,
+        dedup::Blake3Deduper,
+        NoopEncryptor,
+        NvramBackend,
+        DefaultPolicyEvaluator,
+        NullKeyring,
+        crate::CapsuleRegistry,
+    >;
+
+    pub enum RegistryPipelineHandle {
+        Encrypted(RegistryEncryptedPipeline),
+        Plain(RegistryPlainPipeline),
+    }
+
+    impl RegistryPipelineHandle {
+        pub async fn write_capsule(
+            &mut self,
+            data: &[u8],
+            policy: &Policy,
+        ) -> Result<CapsuleId> {
+            match self {
+                Self::Encrypted(p) => p.write_capsule(data, policy).await,
+                Self::Plain(p) => p.write_capsule(data, policy).await,
+            }
+        }
+
+        pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
+            match self {
+                Self::Encrypted(p) => p.read_capsule(id).await,
+                Self::Plain(p) => p.read_capsule(id).await,
+            }
+        }
+
+        pub async fn delete_capsule(&mut self, id: CapsuleId) -> Result<()> {
+            match self {
+                Self::Encrypted(p) => p.delete_capsule(id).await,
+                Self::Plain(p) => p.delete_capsule(id).await,
+            }
+        }
+
+        pub async fn garbage_collect(&mut self) -> Result<usize> {
+            match self {
+                Self::Encrypted(p) => p.garbage_collect().await,
+                Self::Plain(p) => p.garbage_collect().await,
+            }
+        }
+    }
+
+    pub fn registry_pipeline_from_env<P: AsRef<std::path::Path>>(
+        path: P,
+        registry: crate::CapsuleRegistry,
+    ) -> Result<RegistryPipelineHandle> {
+        let backend = NvramBackend::open(path)?;
+        registry_pipeline_from_backend(backend, registry)
+    }
+
+    pub fn registry_pipeline_from_log(
+        log: NvramLog,
+        registry: crate::CapsuleRegistry,
+    ) -> Result<RegistryPipelineHandle> {
+        let backend = NvramBackend::from_log(log);
+        registry_pipeline_from_backend(backend, registry)
+    }
+
+    pub fn registry_nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
+        path: P,
+        registry: crate::CapsuleRegistry,
+        key_manager: Arc<Mutex<KeyManager>>,
+    ) -> Result<RegistryEncryptedPipeline> {
+        let storage = NvramBackend::open(path)?;
+        build_encrypted_pipeline(storage, registry, key_manager)
+    }
+
+    fn registry_pipeline_from_backend(
+        storage: NvramBackend,
+        registry: crate::CapsuleRegistry,
+    ) -> Result<RegistryPipelineHandle> {
+        if let Ok(manager) = KeyManager::from_env() {
+            let km = Arc::new(Mutex::new(manager));
+            let pipeline = build_encrypted_pipeline(storage, registry, km)?;
+            Ok(RegistryPipelineHandle::Encrypted(pipeline))
+        } else {
+            Ok(RegistryPipelineHandle::Plain(Pipeline::new(
+                compression::Lz4ZstdCompressor::default(),
+                dedup::Blake3Deduper::default(),
+                NoopEncryptor::default(),
+                storage,
+                DefaultPolicyEvaluator::default(),
+                None,
+                registry,
+            )))
+        }
+    }
+
+    fn build_encrypted_pipeline(
+        storage: NvramBackend,
+        registry: crate::CapsuleRegistry,
+        key_manager: Arc<Mutex<KeyManager>>,
+    ) -> Result<RegistryEncryptedPipeline> {
+        Ok(Pipeline::new(
+            compression::Lz4ZstdCompressor::default(),
+            dedup::Blake3Deduper::default(),
+            XtsEncryptor::new(Arc::clone(&key_manager)),
+            storage,
+            DefaultPolicyEvaluator::default(),
+            Some(KeyManagerKeyring::new(key_manager)),
+            registry,
+        ))
+    }
+}
+
+impl common::traits::CapsuleCatalog for CapsuleRegistry {
+    fn allocate_segment(&self) -> Result<SegmentId> {
+        Ok(CapsuleRegistry::alloc_segment(self))
+    }
+
+    fn lookup_capsule(&self, id: CapsuleId) -> Result<Capsule> {
+        CapsuleRegistry::lookup(self, id)
+    }
+
+    fn create_capsule(
+        &self,
+        id: CapsuleId,
+        size: u64,
+        policy: &Policy,
+        segments: Vec<SegmentId>,
+        stats: &common::traits::DedupStats,
+    ) -> Result<()> {
+        CapsuleRegistry::create_capsule_with_segments(self, id, size, segments)?;
+        let mut capsules = self.capsules.write().unwrap();
+        if let Some(capsule) = capsules.get_mut(&id) {
+            capsule.policy = policy.clone();
+            capsule.deduped_bytes = stats.bytes_saved;
+        }
+        drop(capsules);
+        CapsuleRegistry::save(self)?;
+        Ok(())
+    }
+
+    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
+        CapsuleRegistry::delete_capsule(self, id)
+    }
+
+    fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
+        CapsuleRegistry::lookup_content(self, hash)
+    }
+
+    fn register_content(&self, hash: ContentHash, segment: SegmentId) -> Result<()> {
+        CapsuleRegistry::register_content(self, hash, segment)
+    }
+
+    fn deregister_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
+        CapsuleRegistry::deregister_content(self, hash, segment)
+    }
+
+    fn capsules(&self) -> Vec<Capsule> {
+        self.capsules
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
+        self.content_store
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(hash, seg)| (hash.clone(), *seg))
+            .collect()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryState {

@@ -9,11 +9,15 @@ publish = false
 [features]
 default = []
 pipeline_async = ["tokio", "futures", "num_cpus"]
+modular_pipeline = ["pipeline", "tokio"]
 
 [dependencies]
 common = { path = "../common" }
 nvram-sim = { path = "../nvram-sim" }
 encryption = { path = "../encryption" }  # NEW: Phase 3 encryption support
+compression = { path = "../compression" }
+dedup = { path = "../dedup" }
+storage = { path = "../storage" }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -29,6 +33,8 @@ zstd = { workspace = true }
 blake3 = { workspace = true }
 subtle = { workspace = true }
 bytes = "1.7"
+pipeline = { path = "../pipeline", optional = true }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
+futures = { workspace = true }

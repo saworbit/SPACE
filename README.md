@@ -38,6 +38,7 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - **Deterministic encryption preserving deduplication**
 - **Key management with version tracking**
 - **Reference-counted garbage collection with metadata reclamation**
+- **Modular trait-based pipeline for read/delete/GC (feature `modular_pipeline`)**
 - **Tokio-powered async write pipeline** (Cargo feature `pipeline_async`) with staged NVRAM transactions, bounded concurrency, and `tracing` metrics
 **What's coming next:**
 - ⏳ Replication & clustering
@@ -154,6 +155,24 @@ RUST_LOG=info ./target/debug/spacectl create --file test.txt
 # Run feature-gated tests
 cargo test -p capsule-registry --features pipeline_async
 ```
+
+### Opt in to the Modular Pipeline (compression/dedup/encryption traits)
+```bash
+# Build everything with the modular orchestrator available
+cargo build --features modular_pipeline
+
+# Create or read capsules via the trait-based pipeline
+./target/release/spacectl create --file demo.txt --modular
+./target/release/spacectl read 550e8400-e29b-41d4-a716-446655440000 --modular > output.txt
+
+# Serve the S3 view against the modular backend
+./target/release/spacectl serve-s3 --port 8080 --modular
+
+# Legacy callers can still flip back at runtime, even when the feature is enabled
+SPACE_DISABLE_MODULAR_PIPELINE=1 ./target/release/spacectl create --file demo.txt
+```
+
+The modular path instantiates `compression`, `dedup`, `encryption`, and `storage` crates through shared traits, while `WritePipeline` automatically delegates reads/writes/GC to the new orchestrator whenever the feature is compiled in. Protocol crates (e.g., S3) and the CLI share a common helper (`registry_pipeline_from_env`) so they all exercise the same code paths. Disable the feature entirely for leaner binaries via `--no-default-features` or by omitting `--features modular_pipeline`.
 
 ### Start S3 Server
 ```bash
@@ -278,6 +297,9 @@ cargo test -p encryption -- --nocapture
 
 # Run dedup-specific tests
 cargo test --test dedup_test -- --nocapture
+
+# Exercise the modular pipeline prototype (compression/dedup/encryption traits)
+cargo test -p capsule-registry --features modular_pipeline -- --nocapture
 
 # Run S3 protocol tests
 cargo test -p protocol-s3 -- --nocapture

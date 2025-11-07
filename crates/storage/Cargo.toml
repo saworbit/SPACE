@@ -1,5 +1,5 @@
 [package]
-name = "common"
+name = "storage"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,11 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-uuid = { workspace = true }
-serde = { workspace = true }
-hex = { workspace = true }
 anyhow = { workspace = true }
+common = { path = "../common" }
 futures = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
+nvram-sim = { path = "../nvram-sim" }

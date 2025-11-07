@@ -13,6 +13,10 @@ path = "src/main.rs"
 [features]
 default = []
 pipeline_async = ["capsule-registry/pipeline_async"]
+modular_pipeline = [
+    "capsule-registry/modular_pipeline",
+    "protocol-s3/modular_pipeline",
+]
 
 [dependencies]
 common = { path = "../common" }

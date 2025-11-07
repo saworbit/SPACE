@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
     "crates/common",
+    "crates/compression",
+    "crates/dedup",
+    "crates/storage",
+    "crates/pipeline",
     "crates/capsule-registry",
     "crates/nvram-sim",
     "crates/protocol-block",

@@ -3,8 +3,8 @@ use nvram_sim::NvramLog;
 use protocol_s3::S3View;
 use std::fs;
 
-#[test]
-fn test_s3_put_and_get() {
+#[tokio::test]
+async fn test_s3_put_and_get() {
     // Setup
     let log_path = "test_s3.nvram";
     let meta_path = "test_s3.metadata";
@@ -22,11 +22,15 @@ fn test_s3_put_and_get() {
     // PUT object
     let capsule_id = s3
         .put_object("test-bucket", "hello.txt", test_data.clone())
+        .await
         .unwrap();
     println!("✅ PUT: Created capsule {:?}", capsule_id);
 
     // GET object
-    let retrieved = s3.get_object("test-bucket", "hello.txt").unwrap();
+    let retrieved = s3
+        .get_object("test-bucket", "hello.txt")
+        .await
+        .unwrap();
     assert_eq!(retrieved, test_data);
     println!("✅ GET: Retrieved {} bytes", retrieved.len());
 
@@ -45,7 +49,7 @@ fn test_s3_put_and_get() {
 
     // DELETE object
     s3.delete_object("test-bucket", "hello.txt").unwrap();
-    let result = s3.get_object("test-bucket", "hello.txt");
+    let result = s3.get_object("test-bucket", "hello.txt").await;
     assert!(result.is_err());
     println!("✅ DELETE: Object removed from key map");
 
@@ -57,8 +61,8 @@ fn test_s3_put_and_get() {
     println!("\n🎉 All S3 view tests passed!");
 }
 
-#[test]
-fn test_s3_multiple_objects() {
+#[tokio::test]
+async fn test_s3_multiple_objects() {
     let log_path = "test_s3_multi.nvram";
     let meta_path = "test_s3_multi.metadata";
     let _ = fs::remove_file(log_path);
@@ -71,10 +75,13 @@ fn test_s3_multiple_objects() {
 
     // Create multiple objects
     s3.put_object("bucket1", "file1.txt", b"Content 1".to_vec())
+        .await
         .unwrap();
     s3.put_object("bucket1", "file2.txt", b"Content 2".to_vec())
+        .await
         .unwrap();
     s3.put_object("bucket2", "file3.txt", b"Content 3".to_vec())
+        .await
         .unwrap();
 
     // List bucket1
@@ -88,7 +95,10 @@ fn test_s3_multiple_objects() {
     println!("✅ Bucket2 has {} objects", bucket2_objects.len());
 
     // Verify content
-    let data = s3.get_object("bucket1", "file2.txt").unwrap();
+    let data = s3
+        .get_object("bucket1", "file2.txt")
+        .await
+        .unwrap();
     assert_eq!(data, b"Content 2");
 
     // Cleanup
@@ -99,8 +109,8 @@ fn test_s3_multiple_objects() {
     println!("🎉 Multi-object test passed!");
 }
 
-#[test]
-fn test_s3_large_object() {
+#[tokio::test]
+async fn test_s3_large_object() {
     let log_path = "test_s3_large.nvram";
     let meta_path = "test_s3_large.metadata";
     let _ = fs::remove_file(log_path);
@@ -117,10 +127,14 @@ fn test_s3_large_object() {
     println!("Creating large object: {} bytes", large_data.len());
 
     s3.put_object("test", "large.bin", large_data.clone())
+        .await
         .unwrap();
     println!("✅ PUT: Stored large object");
 
-    let retrieved = s3.get_object("test", "large.bin").unwrap();
+    let retrieved = s3
+        .get_object("test", "large.bin")
+        .await
+        .unwrap();
     assert_eq!(retrieved.len(), large_data.len());
     assert_eq!(retrieved, large_data);
     println!("✅ GET: Retrieved and verified {} bytes", retrieved.len());

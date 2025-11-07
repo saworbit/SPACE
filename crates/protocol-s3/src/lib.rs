@@ -1,9 +1,16 @@
 use anyhow::Result;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
+#[cfg(feature = "modular_pipeline")]
+use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle};
 use common::CapsuleId;
+#[cfg(feature = "modular_pipeline")]
+use common::Policy;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+#[cfg(feature = "modular_pipeline")]
+use tokio::sync::Mutex as TokioMutex;
+use tokio::task;
 
 pub mod handlers;
 pub mod server;
@@ -41,33 +48,58 @@ impl KeyMapping {
 }
 
 /// S3 Protocol View - provides S3-compatible access to capsules
+enum PipelineBackend {
+    Legacy(Arc<WritePipeline>),
+    #[cfg(feature = "modular_pipeline")]
+    Modular(Arc<TokioMutex<RegistryPipelineHandle>>),
+}
+
 pub struct S3View {
-    pipeline: Arc<WritePipeline>,
+    pipeline: PipelineBackend,
     // Maps "bucket/key" -> CapsuleId
     key_map: Arc<RwLock<HashMap<String, KeyMapping>>>,
 }
 
 impl S3View {
     pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        let pipeline = Arc::new(WritePipeline::new(registry, nvram));
-
         Self {
-            pipeline,
+            pipeline: PipelineBackend::Legacy(Arc::new(WritePipeline::new(registry, nvram))),
+            key_map: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[cfg(feature = "modular_pipeline")]
+    pub fn new_modular(handle: RegistryPipelineHandle) -> Self {
+        Self {
+            pipeline: PipelineBackend::Modular(Arc::new(TokioMutex::new(handle))),
             key_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// PUT object - create new capsule from data
-    pub fn put_object(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<CapsuleId> {
-        // Write data to capsule
-        let capsule_id = self.pipeline.write_capsule(&data)?;
+    pub async fn put_object(&self, bucket: &str, key: &str, data: Vec<u8>) -> Result<CapsuleId> {
+        let data_len = data.len();
+        let capsule_id = match &self.pipeline {
+            PipelineBackend::Legacy(pipeline) => {
+                let pipeline = Arc::clone(pipeline);
+                let payload = data.clone();
+                task::spawn_blocking(move || pipeline.write_capsule(&payload))
+                    .await
+                    .map_err(|err| anyhow::anyhow!(err.to_string()))??
+            }
+            #[cfg(feature = "modular_pipeline")]
+            PipelineBackend::Modular(pipeline) => {
+                let mut handle = pipeline.lock().await;
+                handle.write_capsule(&data, &Policy::default()).await?
+            }
+        };
 
         // Map S3 key to capsule
         let full_key = format!("{}/{}", bucket, key);
         let mapping = KeyMapping {
             key: full_key.clone(),
             capsule_id,
-            size: data.len() as u64,
+            size: data_len as u64,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
@@ -80,7 +112,7 @@ impl S3View {
     }
 
     /// GET object - read capsule data
-    pub fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>> {
+    pub async fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>> {
         let full_key = format!("{}/{}", bucket, key);
 
         let mapping = self
@@ -91,7 +123,19 @@ impl S3View {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))?;
 
-        self.pipeline.read_capsule(mapping.capsule_id)
+        match &self.pipeline {
+            PipelineBackend::Legacy(pipeline) => {
+                let pipeline = Arc::clone(pipeline);
+                task::spawn_blocking(move || pipeline.read_capsule(mapping.capsule_id))
+                    .await
+                    .map_err(|err| anyhow::anyhow!(err.to_string()))?
+            }
+            #[cfg(feature = "modular_pipeline")]
+            PipelineBackend::Modular(pipeline) => {
+                let handle = pipeline.lock().await;
+                handle.read_capsule(mapping.capsule_id).await
+            }
+        }
     }
 
     /// HEAD object - get metadata without reading data

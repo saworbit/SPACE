@@ -1,0 +1,12 @@
+[package]
+name = "dedup"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+common = { path = "../common" }

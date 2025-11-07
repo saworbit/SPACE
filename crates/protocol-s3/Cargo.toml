@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+modular_pipeline = ["capsule-registry/modular_pipeline"]
+
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }

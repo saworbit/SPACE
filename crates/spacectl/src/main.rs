@@ -1,8 +1,10 @@
 use anyhow::Result;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
+#[cfg(feature = "modular_pipeline")]
+use capsule_registry::modular_pipeline;
 use clap::{Parser, Subcommand};
 use common::CapsuleId;
-#[cfg(feature = "pipeline_async")]
+#[cfg(any(feature = "pipeline_async", feature = "modular_pipeline"))]
 use common::Policy;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
@@ -11,6 +13,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::sync::Once;
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "modular_pipeline")]
+use tokio::runtime::Runtime as TokioRuntime;
 
 const NVRAM_PATH: &str = "space.nvram";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
@@ -121,6 +125,29 @@ fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
     let registry = CapsuleRegistry::new();
     let nvram = NvramLog::open(NVRAM_PATH)?;
     Ok((registry, nvram))
+}
+
+#[cfg(feature = "modular_pipeline")]
+fn build_modular_pipeline_handle(
+    registry: CapsuleRegistry,
+) -> Result<(modular_pipeline::RegistryPipelineHandle, TokioRuntime)> {
+    let handle = modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
+    let runtime = TokioRuntime::new()?;
+    Ok((handle, runtime))
+}
+
+#[cfg(feature = "modular_pipeline")]
+fn modular_write_capsule(data: &[u8]) -> Result<CapsuleId> {
+    let registry = CapsuleRegistry::new();
+    let (mut handle, runtime) = build_modular_pipeline_handle(registry)?;
+    runtime.block_on(async { handle.write_capsule(data, &Policy::default()).await })
+}
+
+#[cfg(feature = "modular_pipeline")]
+fn modular_read_capsule(id: CapsuleId) -> Result<Vec<u8>> {
+    let registry = CapsuleRegistry::new();
+    let (handle, runtime) = build_modular_pipeline_handle(registry)?;
+    runtime.block_on(async { handle.read_capsule(id).await })
 }
 
 fn run_nfs_command(command: NfsCommands) -> Result<()> {
@@ -276,11 +303,17 @@ enum Commands {
         /// Input file path
         #[arg(short, long)]
         file: String,
+        #[cfg(feature = "modular_pipeline")]
+        #[arg(long)]
+        modular: bool,
     },
     /// Read capsule contents
     Read {
         /// Capsule UUID
         capsule_id: String,
+        #[cfg(feature = "modular_pipeline")]
+        #[arg(long)]
+        modular: bool,
     },
     /// List all capsules
     List,
@@ -289,6 +322,9 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "8080")]
         port: u16,
+        #[cfg(feature = "modular_pipeline")]
+        #[arg(long)]
+        modular: bool,
     },
     /// Interact with the NFS namespace view
     Nfs {
@@ -307,10 +343,22 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Create { file } => {
+        Commands::Create {
+            file,
+            #[cfg(feature = "modular_pipeline")]
+            modular,
+        } => {
+            let data = fs::read(&file)?;
+            #[cfg(feature = "modular_pipeline")]
+            if modular {
+                let id = modular_write_capsule(&data)?;
+                println!("Capsule created: {}", id.as_uuid());
+                println!("Size: {} bytes", data.len());
+                return Ok(());
+            }
+
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::new(registry, nvram);
-            let data = fs::read(&file)?;
             #[cfg(feature = "pipeline_async")]
             let id = {
                 let policy = Policy::default();
@@ -322,11 +370,23 @@ fn main() -> Result<()> {
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {} bytes", data.len());
         }
-        Commands::Read { capsule_id } => {
-            let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::new(registry, nvram);
+        Commands::Read {
+            capsule_id,
+            #[cfg(feature = "modular_pipeline")]
+            modular,
+        } => {
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
+
+            #[cfg(feature = "modular_pipeline")]
+            if modular {
+                let data = modular_read_capsule(id)?;
+                io::stdout().write_all(&data)?;
+                return Ok(());
+            }
+
+            let (registry, nvram) = open_registry_and_nvram()?;
+            let pipeline = WritePipeline::new(registry, nvram);
             let data = pipeline.read_capsule(id)?;
             io::stdout().write_all(&data)?;
         }
@@ -355,14 +415,32 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::ServeS3 { port } => {
+        Commands::ServeS3 {
+            port,
+            #[cfg(feature = "modular_pipeline")]
+            modular,
+        } => {
             use protocol_s3::{server::S3Server, S3View};
 
             println!("Starting SPACE S3 Protocol View...");
 
-            let registry = CapsuleRegistry::new();
-            let nvram = NvramLog::open(NVRAM_PATH)?;
-            let s3_view = S3View::new(registry, nvram);
+            #[cfg(feature = "modular_pipeline")]
+            let s3_view = if modular {
+                let registry = CapsuleRegistry::new();
+                let handle = modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
+                S3View::new_modular(handle)
+            } else {
+                let registry = CapsuleRegistry::new();
+                let nvram = NvramLog::open(NVRAM_PATH)?;
+                S3View::new(registry, nvram)
+            };
+
+            #[cfg(not(feature = "modular_pipeline"))]
+            let s3_view = {
+                let registry = CapsuleRegistry::new();
+                let nvram = NvramLog::open(NVRAM_PATH)?;
+                S3View::new(registry, nvram)
+            };
 
             let server = S3Server::new(s3_view, port);
 

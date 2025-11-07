@@ -197,6 +197,15 @@ impl NvramLog {
         let base_offset = *self.next_offset.read().unwrap();
         Ok(NvramTransaction::new(self.clone(), base_offset))
     }
+
+    pub fn list_segment_ids(&self) -> Vec<SegmentId> {
+        self.segment_map
+            .read()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect()
+    }
 }
 
 impl Clone for NvramLog {
@@ -313,6 +322,10 @@ impl NvramTransaction {
             .iter()
             .find(|entry| entry.segment.id == seg_id)
             .map(|entry| &entry.segment)
+    }
+
+    pub fn log_handle(&self) -> NvramLog {
+        self.log.clone()
     }
 
     pub fn commit(&mut self) -> Result<()> {

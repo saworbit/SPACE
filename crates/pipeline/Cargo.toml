@@ -1,0 +1,19 @@
+[package]
+name = "pipeline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+common = { path = "../common" }
+compression = { path = "../compression" }
+dedup = { path = "../dedup" }
+storage = { path = "../storage" }
+encryption = { path = "../encryption" }
+futures = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }

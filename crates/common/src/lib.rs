@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod policy;
+pub mod traits;
 pub use policy::{CompressionPolicy, EncryptionPolicy, Policy};
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
