@@ -249,18 +249,7 @@ async fn health_agent_loop() {
 
 ---
 
-## 7  Security & integrity
-
-- TPM‑backed secure boot & node attestation.
-- SPIFFE identities + mutual TLS enforced by eBPF gateway.
-- Per‑segment XTS‑AES‑256 keys; envelope keys in external KMS.
-- **Merkle tree per snapshot** for tamper proofing and ransomware roll‑back integrity.
-- Post‑quantum ready (Kyber hybrid key wrapping selectable by policy).
-- Immutable audit log (hash‑chained, external time‑stamp).
-- Confidential compute job‑slots (SGX/SEV enclaves run WASM/Python on‑disk data).
-- Dependency chain hardening enforced per [docs/dependency-security.md](dependency-security.md); audits tracked in docs/security/audit-status.json.
-
----
+## 7  Security & integrity`r`n`r`n- TPM-backed secure boot & node attestation (roadmap).`r`n- **Counting Bloom filters** in the capsule registry keep dedupe lookups constant even with 10M+ segments; tunable via `SPACE_BLOOM_CAPACITY` / `SPACE_BLOOM_FPR`.`r`n- **SPIFFE + mTLS ingress** enforced by the eBPF gateway; a Tokio workload client refreshes the allow-list (`SPACE_SPIFFE_*`).`r`n- Per-segment **XTS-AES-256** with convergent tweaks; keys sourced from env/KMS/TPM via `KeyManager`.`r`n- **Post-quantum crypto toggle** (`Policy::crypto_profile = HybridKyber`) wraps AES key pairs with Kyber ML-KEM derived material.`r`n- **Immutable audit log** (BLAKE3 hash chain + TSA batches) records capsule + nvram events with fsync/rotation policies.`r`n- **Zero-trust ingress + policy checks** ensure capsule reads/writes originate from verified workloads before reaching protocol engines.`r`n- Confidential compute job-slots (SGX/SEV enclaves execute WASM/Python over encrypted data, roadmap).`r`n- Dependency chain hardening enforced per [docs/dependency-security.md](dependency-security.md); audits tracked in docs/security/audit-status.json.`r`n`r`n---
 
 ## 8  Data protection & replication
 
@@ -351,5 +340,6 @@ Discussions via GitHub Issues; code submissions require a Developer Certificate 
 ---
 
 © 2025 Shane Wall & contributors.  Licensed under the Apache License, Version 2.0.
+
 
 

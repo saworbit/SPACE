@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// Cryptography profile for the write pipeline.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CryptoProfile {
+    /// Classical AES + BLAKE3 path.
+    Classical,
+    /// Hybrid Kyber (ML-KEM) + AES for post-quantum readiness.
+    HybridKyber,
+}
+
+impl Default for CryptoProfile {
+    fn default() -> Self {
+        CryptoProfile::Classical
+    }
+}
+
 /// Compression algorithm selection
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CompressionPolicy {
@@ -67,6 +82,10 @@ pub struct Policy {
     /// Encryption policy (Phase 3)
     #[serde(default)]
     pub encryption: EncryptionPolicy,
+
+    /// Cryptography profile (Phase 3.3)
+    #[serde(default)]
+    pub crypto_profile: CryptoProfile,
 }
 
 impl Default for Policy {
@@ -77,6 +96,7 @@ impl Default for Policy {
             compact_interval_secs: Some(3600), // 1 hour
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
+            crypto_profile: CryptoProfile::default(),
         }
     }
 }
@@ -90,6 +110,7 @@ impl Policy {
             compact_interval_secs: Some(1800),
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
+            crypto_profile: CryptoProfile::default(),
         }
     }
 
@@ -101,6 +122,7 @@ impl Policy {
             compact_interval_secs: Some(7200),
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
+            crypto_profile: CryptoProfile::default(),
         }
     }
 
@@ -112,6 +134,7 @@ impl Policy {
             compact_interval_secs: None, // Manual compaction
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
+            crypto_profile: CryptoProfile::default(),
         }
     }
 
@@ -123,6 +146,7 @@ impl Policy {
             compact_interval_secs: Some(3600),
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+            crypto_profile: CryptoProfile::default(),
         }
     }
 
@@ -134,6 +158,7 @@ impl Policy {
             compact_interval_secs: Some(3600),
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+            crypto_profile: CryptoProfile::default(),
         }
     }
 }
@@ -203,6 +228,7 @@ mod tests {
         let json = serde_json::to_string(&policy).unwrap();
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.dedupe, deserialized.dedupe);
+        assert_eq!(policy.crypto_profile, CryptoProfile::Classical);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-Phase%203.1%20Complete-green.svg)](https://github.com/your-org/space)
+[![Status](https://img.shields.io/badge/status-Phase%203.3%20Advanced%20Security-green.svg)](https://github.com/your-org/space)
 
 ---
 
@@ -24,7 +24,9 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 
 ---
 
-## ⚡ Current Status: Phase 3.1 Complete
+## ? Current Status: Phase 3.3 � Advanced Security Landed
+
+**Status:** Phase 3.3 Complete � Advanced Security hardened!
 
 **What exists NOW:**
 - Universal capsule storage with persistent metadata
@@ -36,17 +38,23 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - Content-addressed deduplication (post-compression)
 - **XTS-AES-256 encryption with BLAKE3-MAC integrity**
 - **Deterministic encryption preserving deduplication**
-- **Key management with version tracking**
+- **Key management with rotation support**
 - **Reference-counted garbage collection with metadata reclamation**
 - **Modular trait-based pipeline for read/delete/GC (feature `modular_pipeline`)**
 - **Tokio-powered async write pipeline** (Cargo feature `pipeline_async`) with staged NVRAM transactions, bounded concurrency, and `tracing` metrics
+- **Counting Bloom filters** in the registry to prescreen dedup candidates at multi-million scale
+- **Immutable audit log** with BLAKE3 hash chaining + optional TSA anchoring (`security::audit_log`)
+- **SPIFFE + mTLS eBPF gateway** when the `advanced-security` feature is enabled (`protocol-s3`)
+- **Post-quantum crypto toggle** (Kyber + AES hybrid) selectable via `Policy::crypto_profile`
+- **Dedicated `security` module** so Bloom/audit/PQ/eBPF logic stays feature gated
+
 **What's coming next:**
-- ⏳ Replication & clustering
-- ⏳ Policy compiler
+- ? Replication & clustering
+- ? Policy compiler
 
 ## ✨ What This MVP Proves
 
-**Status:** Phase 3.1 Complete — Security Layer Integrated!
+**Phase 3.3 Complete: Compression ? | Dedup ? | Protocol Views ? | Advanced Security ?**
 
 ### Phase 1: Core Storage ✅
 ✅ **Universal Capsule IDs** — 128-bit UUIDs as the single storage primitive  
@@ -82,6 +90,13 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 ✅ **Key Management** — Version-tracked key derivation with rotation support  
 ✅ **Zero-Trust Design** — Keys from environment, zeroized on drop  
 
+### Phase 3.3: Advanced Security ??
+?? **Counting Bloom filters** guard the registry from multi-million entry dedup explosions while keeping false positives ~0.1%.
+?? **Immutable audit log** persists every capsule/segment event with BLAKE3 hash chaining plus optional TSA webhooks (`security::audit_log`).
+?? **Zero-trust ingress** � the SPIFFE + mTLS gateway (feature `advanced-security`) layers an eBPF policy filter and refreshable workload allow-list.
+?? **Post-quantum crypto toggle** � `Policy::crypto_profile = HybridKyber` wraps AES keys with Kyber ML-KEM material for forward secrecy.
+?? **Modular security crate** keeps Bloom/Audit/PQ/eBPF code feature gated so sovereign deployments can opt in/out cleanly.
+
 ---
 
 ## 🎯 Quick Start
@@ -103,6 +118,37 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 # Verify setup
 echo ${#SPACE_MASTER_KEY}  # Should output 64
+```
+
+### Advanced Security Setup (Optional)
+```bash
+# Opt-in to Bloom/audit/SPIFFE/PQ via the feature flag
+cargo build --features advanced-security
+
+# Registry tuning (optional)
+export SPACE_BLOOM_CAPACITY=10000000        # default: 10M entries
+export SPACE_BLOOM_FPR=0.001                # default: 0.1% false positives
+
+# Audit log (optional TSA batches every 100 events)
+export SPACE_AUDIT_LOG=/var/lib/space/space.audit.log
+export SPACE_AUDIT_FLUSH=5                  # fsync every 5 events
+export SPACE_TSA_ENDPOINT=https://tsa.local/submit
+export SPACE_TSA_API_KEY=demo-token
+
+# SPIFFE + mTLS ingress (protocol-s3)
+export SPACE_ALLOWED_SPIFFE_IDS="spiffe://demo/client-a,spiffe://demo/client-b"
+export SPACE_SPIFFE_ENDPOINT=ws://127.0.0.1:9001/identities
+export SPACE_SPIFFE_HEADER=x-spiffe-id
+export SPACE_SPIFFE_REFRESH_SECS=30
+export SPACE_BPF_PROGRAM=/opt/space/gateway.bpf.o   # optional on Linux
+
+# Kyber hybrid toggle for PQ readiness
+export SPACE_KYBER_KEY_PATH=/var/lib/space/space.kyber.key
+```
+
+Run the zero-trust S3 test on Linux (aya/ebpf requires a unix target):
+```bash
+cargo test -p protocol-s3 --features advanced-security
 ```
 
 ### Create a Capsule
@@ -304,6 +350,10 @@ cargo test -p capsule-registry --features modular_pipeline -- --nocapture
 # Run S3 protocol tests
 cargo test -p protocol-s3 -- --nocapture
 
+# Zero-trust ingress tests (Linux + advanced-security feature)
+cargo test -p protocol-s3 --features advanced-security -- --nocapture
+
+
 # Automated dedup demo (Linux/macOS/Git Bash)
 ./test_dedup.sh
 
@@ -442,11 +492,12 @@ For detailed security documentation, see [ENCRYPTION_IMPLEMENTATION.md](docs/ENC
 - [x] Startup refcount reconciliation on pipeline initialization
 - [x] Manual garbage collector for metadata reclamation
 
-### 🚧 Phase 3.3: Advanced Security (NEXT)
-- [ ] Bloom filter optimization for MAC
-- [ ] CLI encryption flags (--encrypt, --key-version)
-- [ ] Key escrow for enterprise
-- [ ] Audit logging
+### ?? Phase 3.3: Advanced Security (COMPLETE)
+- [x] Counting Bloom filters + registry plumbing
+- [x] Immutable audit log with BLAKE3 hash chains + TSA hooks
+- [x] SPIFFE + mTLS ingress middleware + refreshable allow-list
+- [x] Kyber hybrid crypto profile + segment metadata
+- [x] Security module + docs aligning Bloom/Audit/PQ/eBPF
 
 ### 🔮 Phase 4: Advanced Protocol Views
 - [ ] NVMe-oF block target (SPDK)
@@ -562,12 +613,14 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 
 ## 🎯 Project Status
 
-**Current Phase:** Phase 3.1 Complete (Security Layer)  
+**Current Phase:** Phase 3.3 Complete (Advanced Security)  
 **Stability:** Experimental — API subject to change  
 **Production Ready:** Not yet (educational/research purposes)  
 
 **What works today:**
 - ✅ Capsule storage with compression and deduplication
+- ? Counting Bloom + audit log (feature `advanced-security`)
+- ? SPIFFE + mTLS gateway with optional eBPF + Kyber toggle
 - ✅ **XTS-AES-256 encryption with integrity verification**
 - ✅ **Deterministic encryption preserving deduplication**
 - ✅ **Key management with rotation support**
@@ -576,7 +629,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 - ✅ Persistent metadata and NVRAM log
 
 **Known limitations:**
-- �s���? Log-space reclamation pending (Phase 3.3)
+- ?? Log-space reclamation pending (Phase 4)
 - ⚠️ CLI doesn't have --encrypt flag yet (Phase 3.2)
 - ⚠️ Single-node only (clustering = Phase 5)
 - ⚠️ No authentication/authorization (Phase 4)
@@ -650,8 +703,9 @@ spacectl block delete vol1
 
 *Breaking storage silos, one encrypted capsule at a time.*
 
-**Phase 3.1 Complete: Compression ✅ | Dedup ✅ | Protocol Views ✅ | Encryption ✅**
+**Phase 3.3 Complete: Compression ? | Dedup ? | Protocol Views ? | Advanced Security ?**
 
 [Report Bug](https://github.com/your-org/space/issues) · [Request Feature](https://github.com/your-org/space/issues) · [Discussions](https://github.com/your-org/space/discussions)
 
 </div>
+

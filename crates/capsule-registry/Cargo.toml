@@ -10,6 +10,7 @@ publish = false
 default = []
 pipeline_async = ["tokio", "futures", "num_cpus"]
 modular_pipeline = ["pipeline", "tokio"]
+advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
 
 [dependencies]
 common = { path = "../common" }

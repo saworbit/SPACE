@@ -6,7 +6,12 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+advanced-security = ["common/advanced-security"]
+
 [dependencies]
 common = { path = "../common" }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }

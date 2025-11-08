@@ -9,6 +9,11 @@ publish = false
 [features]
 default = []
 modular_pipeline = ["capsule-registry/modular_pipeline"]
+advanced-security = [
+    "common/advanced-security",
+    "capsule-registry/advanced-security",
+    "nvram-sim/advanced-security",
+]
 
 [dependencies]
 common = { path = "../common" }
@@ -36,3 +41,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Utilities
 bytes = { version = "^1.10.1" } # 2025-11-03 sw: pinned to release used in audit
+
+[dev-dependencies]
+futures = { workspace = true }
+tokio-tungstenite = { workspace = true }

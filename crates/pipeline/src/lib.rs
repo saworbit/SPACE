@@ -452,6 +452,8 @@ where
                 tweak_nonce: encryption_summary.tweak_nonce,
                 integrity_tag: encryption_summary.integrity_tag,
                 encrypted: encryption_policy.is_enabled(),
+                pq_ciphertext: None,
+                pq_nonce: None,
             };
             txn.set_segment_metadata(seg_id, metadata).await?;
             txn.commit().await?;

@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(feature = "advanced-security")]
+pub mod security;
+
 pub mod policy;
 pub mod traits;
-pub use policy::{CompressionPolicy, EncryptionPolicy, Policy};
+pub use policy::{CompressionPolicy, CryptoProfile, EncryptionPolicy, Policy};
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
@@ -96,4 +99,46 @@ pub struct Segment {
     pub integrity_tag: Option<[u8; 16]>, // MAC tag
     #[serde(default)]
     pub encrypted: bool, // Quick check if encrypted
+
+    // Phase 3.3: Post-quantum metadata
+    #[serde(default)]
+    pub pq_ciphertext: Option<String>,
+    #[serde(default)]
+    pub pq_nonce: Option<[u8; 16]>,
+}
+
+/// Immutable audit log events emitted by the platform.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Event {
+    CapsuleCreated {
+        capsule_id: CapsuleId,
+        size: u64,
+        segments: usize,
+        policy: Policy,
+    },
+    CapsuleRead {
+        capsule_id: CapsuleId,
+        size: u64,
+    },
+    CapsuleDeleted {
+        capsule_id: CapsuleId,
+        reclaimed_bytes: u64,
+    },
+    SegmentAppended {
+        segment_id: SegmentId,
+        len: u32,
+        content_hash: Option<ContentHash>,
+        encrypted: bool,
+    },
+    DedupHit {
+        segment_id: SegmentId,
+        capsule_id: CapsuleId,
+        content_hash: ContentHash,
+    },
+    AuditHeartbeat {
+        timestamp: u64,
+        capsules: usize,
+        segments: usize,
+    },
 }

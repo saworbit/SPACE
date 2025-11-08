@@ -24,6 +24,16 @@ use encryption::{
     compute_mac, decrypt_segment, derive_tweak_from_hash, encrypt_segment, verify_mac,
     EncryptionMetadata, KeyManager,
 };
+#[cfg(feature = "advanced-security")]
+use encryption::keymanager::XtsKeyPair;
+#[cfg(feature = "advanced-security")]
+use common::security::{
+    audit_log::AuditLog,
+    crypto_profiles::{
+        collect_base_material, serialize_ciphertext, HybridKeyMaterial, KyberKeyManager,
+        KyberNonceExt,
+    },
+};
 use std::sync::{Arc, Mutex}; // NEW: For interior mutability
 #[cfg(feature = "pipeline_async")]
 use std::time::{Duration, Instant};
@@ -171,6 +181,10 @@ pub struct WritePipeline {
     registry: CapsuleRegistry,
     nvram: NvramLog,
     key_manager: Option<Arc<Mutex<KeyManager>>>, // CHANGED: Wrapped in Arc<Mutex<>>
+    #[cfg(feature = "advanced-security")]
+    audit_log: Option<AuditLog>,
+    #[cfg(feature = "advanced-security")]
+    kyber_manager: Option<KyberKeyManager>,
     #[cfg(feature = "modular_pipeline")]
     modular: Option<Arc<TokioMutex<crate::modular_pipeline::RegistryPipelineHandle>>>,
     #[cfg(feature = "modular_pipeline")]
@@ -185,6 +199,22 @@ impl WritePipeline {
         let key_manager = KeyManager::from_env()
             .ok()
             .map(|km| Arc::new(Mutex::new(km))); // CHANGED: Wrap in Arc<Mutex<>>
+
+        #[cfg(feature = "advanced-security")]
+        let audit_log = AuditLog::from_env().ok();
+
+        #[cfg(feature = "advanced-security")]
+        let mut nvram = nvram;
+        #[cfg(not(feature = "advanced-security"))]
+        let nvram = nvram;
+
+        #[cfg(feature = "advanced-security")]
+        if let Some(log) = audit_log.as_ref() {
+            nvram = nvram.with_audit(log.clone());
+        }
+
+        #[cfg(feature = "advanced-security")]
+        let kyber_manager = KyberKeyManager::from_env().ok();
 
         if key_manager.is_some() {
             info!("encryption enabled (key manager initialised)");
@@ -223,6 +253,10 @@ impl WritePipeline {
             registry,
             nvram,
             key_manager,
+            #[cfg(feature = "advanced-security")]
+            audit_log,
+            #[cfg(feature = "advanced-security")]
+            kyber_manager,
             #[cfg(feature = "modular_pipeline")]
             modular,
             #[cfg(feature = "modular_pipeline")]
@@ -245,6 +279,19 @@ impl WritePipeline {
         key_manager: KeyManager,
     ) -> Self {
         let key_manager = Some(Arc::new(Mutex::new(key_manager))); // CHANGED: Wrap in Arc<Mutex<>>
+
+        #[cfg(feature = "advanced-security")]
+        let audit_log = AuditLog::from_env().ok();
+        #[cfg(feature = "advanced-security")]
+        let kyber_manager = KyberKeyManager::from_env().ok();
+        #[cfg(feature = "advanced-security")]
+        let mut nvram = nvram;
+        #[cfg(feature = "advanced-security")]
+        if let Some(log) = audit_log.as_ref() {
+            nvram = nvram.with_audit(log.clone());
+        }
+        #[cfg(not(feature = "advanced-security"))]
+        let nvram = nvram;
 
         #[cfg(feature = "modular_pipeline")]
         let modular_enabled = std::env::var("SPACE_DISABLE_MODULAR_PIPELINE").is_err();
@@ -278,6 +325,10 @@ impl WritePipeline {
             registry,
             nvram,
             key_manager,
+            #[cfg(feature = "advanced-security")]
+            audit_log,
+            #[cfg(feature = "advanced-security")]
+            kyber_manager,
             #[cfg(feature = "modular_pipeline")]
             modular,
             #[cfg(feature = "modular_pipeline")]
@@ -322,6 +373,15 @@ impl WritePipeline {
         Ok(())
     }
 
+    #[cfg(feature = "advanced-security")]
+    fn audit_event(&self, event: common::Event) {
+        if let Some(log) = &self.audit_log {
+            if let Err(err) = log.append(event) {
+                warn!(error = %err, "failed to append audit log entry");
+            }
+        }
+    }
+
     pub fn delete_capsule(&self, capsule_id: CapsuleId) -> Result<()> {
         #[cfg(feature = "modular_pipeline")]
         if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
@@ -343,6 +403,12 @@ impl WritePipeline {
                 self.nvram.remove_segment(seg_id)?;
             }
         }
+
+        #[cfg(feature = "advanced-security")]
+        self.audit_event(common::Event::CapsuleDeleted {
+            capsule_id,
+            reclaimed_bytes: capsule.size,
+        });
 
         Ok(())
     }
@@ -380,6 +446,7 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
 
     // Pre-allocate capsule ID but don't persist yet
     let capsule_id = CapsuleId::new();
+    let policy_snapshot = policy.clone();
 
         // Track stats
         let mut segment_ids = Vec::new();
@@ -402,24 +469,63 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
             // Step 2: Hash the compressed data for deduplication
             let content_hash = hash_content(compressed_data.as_ref());
 
-            // Step 3: Encrypt if enabled (before dedup check for deterministic encryption)
+            // Step 3: Encrypt if enabled (before dedup check)
             let mut encryption_meta = None;
+            #[cfg(feature = "advanced-security")]
+            let mut hybrid_state: Option<HybridKeyMaterial> = None;
             let final_data = if encryption_enabled {
                 let km = self.key_manager.as_ref().unwrap();
-                let mut km = km.lock().unwrap(); // CHANGED: Lock the mutex
+                let mut km = km.lock().unwrap();
                 let key_version = km.current_version();
                 let key_pair = km.get_key(key_version)?;
 
-                // Derive deterministic tweak from content hash
-                let tweak = derive_tweak_from_hash(content_hash.as_str().as_bytes());
+                #[cfg(feature = "advanced-security")]
+                let mut derived_pair: Option<XtsKeyPair> = None;
+                #[cfg(feature = "advanced-security")]
+                if policy.crypto_profile == CryptoProfile::HybridKyber {
+                    if let Some(manager) = &self.kyber_manager {
+                        match manager.wrap_xts_key(
+                            policy.crypto_profile,
+                            &collect_base_material((key_pair.key1(), key_pair.key2())),
+                            &capsule_id,
+                            SegmentId(index as u64),
+                            &content_hash,
+                        ) {
+                            Ok(Some(material)) => {
+                                derived_pair =
+                                    Some(XtsKeyPair::from_bytes(material.wrapped_key));
+                                hybrid_state = Some(material);
+                            }
+                            Ok(None) => {}
+                            Err(err) => warn!(error = %err, "kyber key wrapping failed"),
+                        }
+                    } else {
+                        warn!(
+                            "policy requested hybrid crypto but kyber manager is unavailable"
+                        );
+                    }
+                }
 
-                // Encrypt segment
+                #[allow(unused_mut)]
+                let mut tweak = derive_tweak_from_hash(content_hash.as_str().as_bytes());
+                #[cfg(feature = "advanced-security")]
+                if let Some(material) = &hybrid_state {
+                    tweak = material.nonce.mix_with(tweak);
+                }
+
+                #[cfg(feature = "advanced-security")]
+                let pair_for_use = derived_pair
+                    .as_ref()
+                    .map(|pair| pair as &XtsKeyPair)
+                    .unwrap_or(key_pair);
+                #[cfg(not(feature = "advanced-security"))]
+                let pair_for_use = key_pair;
+
                 let (ciphertext, mut enc_meta) =
-                    encrypt_segment(compressed_data.as_ref(), key_pair, key_version, tweak)?;
+                    encrypt_segment(compressed_data.as_ref(), pair_for_use, key_version, tweak)?;
 
-                // Compute MAC over ciphertext + metadata
                 let mac_tag =
-                    compute_mac(&ciphertext, &enc_meta, key_pair.key1(), key_pair.key2())?;
+                    compute_mac(&ciphertext, &enc_meta, pair_for_use.key1(), pair_for_use.key2())?;
                 enc_meta.set_integrity_tag(mac_tag);
                 encryption_meta = Some(enc_meta);
                 Cow::Owned(ciphertext)
@@ -445,6 +551,12 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                         ref_count = updated_segment.ref_count,
                         "dedup hit: reusing segment"
                     );
+                    #[cfg(feature = "advanced-security")]
+                    self.audit_event(common::Event::DedupHit {
+                        segment_id: existing_seg_id,
+                        capsule_id,
+                        content_hash: content_hash.clone(),
+                    });
                     (existing_seg_id, true)
                 } else {
                     // New content - allocate and write
@@ -470,6 +582,12 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                         segment.key_version = enc_meta.key_version;
                         segment.tweak_nonce = enc_meta.tweak_nonce;
                         segment.integrity_tag = enc_meta.integrity_tag;
+                    }
+                    #[cfg(feature = "advanced-security")]
+                    if let Some(material) = hybrid_state.as_ref() {
+                        segment.pq_ciphertext =
+                            Some(serialize_ciphertext(&material.ciphertext));
+                        segment.pq_nonce = Some(material.nonce);
                     }
 
                     // Save updated metadata back to NVRAM
@@ -506,6 +624,12 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                     segment.key_version = enc_meta.key_version;
                     segment.tweak_nonce = enc_meta.tweak_nonce;
                     segment.integrity_tag = enc_meta.integrity_tag;
+                }
+                #[cfg(feature = "advanced-security")]
+                if let Some(material) = hybrid_state.as_ref() {
+                    segment.pq_ciphertext =
+                        Some(serialize_ciphertext(&material.ciphertext));
+                    segment.pq_nonce = Some(material.nonce);
                 }
 
                 // Save updated metadata back to NVRAM
@@ -562,9 +686,24 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                 .map_err(|err| map_registry_error("add_deduped_bytes", err))?;
         }
 
+        #[cfg(feature = "advanced-security")]
+        let segments_written = segment_ids.len();
         self.registry
-            .create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids)
+            .create_capsule_with_segments(
+                capsule_id,
+                data.len() as u64,
+                segment_ids,
+                policy_snapshot.clone(),
+            )
             .map_err(|err| map_registry_error("create_capsule_with_segments", err))?;
+
+        #[cfg(feature = "advanced-security")]
+        self.audit_event(common::Event::CapsuleCreated {
+            capsule_id,
+            size: data.len() as u64,
+            segments: segments_written,
+            policy: policy_snapshot.clone(),
+        });
 
         // Print summary stats
         let compression_ratio = if total_compressed_size > 0 {
@@ -631,7 +770,12 @@ pub async fn write_capsule_with_policy_async(
 
         if total_segments == 0 {
             self.registry
-                .create_capsule_with_segments(capsule_id, 0, Vec::new())
+                .create_capsule_with_segments(
+                    capsule_id,
+                    0,
+                    Vec::new(),
+                    policy.clone(),
+                )
                 .map_err(|err| map_registry_error("create_capsule_with_segments", err))?;
             info!(
                 capsule = %capsule_id.as_uuid(),
@@ -867,7 +1011,12 @@ pub async fn write_capsule_with_policy_async(
 
         if let Err(err) = self
             .registry
-            .create_capsule_with_segments(capsule_id, data.len() as u64, segment_ids.clone())
+            .create_capsule_with_segments(
+                capsule_id,
+                data.len() as u64,
+                segment_ids.clone(),
+                policy.clone(),
+            )
             .map_err(|err| map_registry_error("create_capsule_with_segments", err))
         {
             for (hash, seg_id) in &pending_registrations {
@@ -1056,7 +1205,9 @@ pub async fn write_capsule_with_policy_async(
 
         let mut result = Vec::with_capacity(capsule.size as usize);
 
-        for seg_id in &capsule.segments {
+        for (_seg_index, seg_id) in capsule.segments.iter().enumerate() {
+            #[cfg(feature = "advanced-security")]
+            let seg_index = _seg_index;
             // Read raw data from NVRAM
             let raw_data = self.nvram.read(*seg_id)?;
 
@@ -1065,21 +1216,53 @@ pub async fn write_capsule_with_policy_async(
 
             // Step 1: Decrypt if encrypted
             let decrypted_data = if segment.encrypted {
-                // Verify we have a key manager
                 let km = self.key_manager.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("Cannot decrypt: key manager not initialized")
                 })?;
 
-                let mut km = km.lock().unwrap(); // CHANGED: Lock the mutex
+                let mut km = km.lock().unwrap();
 
-                // Get the key version used for this segment
                 let key_version = segment
                     .key_version
                     .ok_or_else(|| anyhow::anyhow!("Missing key version in encrypted segment"))?;
 
                 let key_pair = km.get_key(key_version)?;
 
-                // Build encryption metadata from segment
+                #[cfg(feature = "advanced-security")]
+                let mut derived_pair: Option<XtsKeyPair> = None;
+                #[cfg(feature = "advanced-security")]
+                if capsule.policy.crypto_profile == CryptoProfile::HybridKyber {
+                    if let (Some(manager), Some(cipher_hex), Some(hash)) = (
+                        self.kyber_manager.as_ref(),
+                        &segment.pq_ciphertext,
+                        &segment.content_hash,
+                    ) {
+                        match manager.unwrap_xts_key(
+                            capsule.policy.crypto_profile,
+                            &collect_base_material((key_pair.key1(), key_pair.key2())),
+                            &capsule.id,
+                            SegmentId(seg_index as u64),
+                            hash,
+                            cipher_hex,
+                        ) {
+                            Ok(Some(material)) => {
+                                derived_pair =
+                                    Some(XtsKeyPair::from_bytes(material.wrapped_key));
+                            }
+                            Ok(None) => {}
+                            Err(err) => warn!(error = %err, "kyber unwrap failed"),
+                        }
+                    }
+                }
+
+                #[cfg(feature = "advanced-security")]
+                let pair_for_use = derived_pair
+                    .as_ref()
+                    .map(|pair| pair as &XtsKeyPair)
+                    .unwrap_or(key_pair);
+                #[cfg(not(feature = "advanced-security"))]
+                let pair_for_use = key_pair;
+
                 let enc_meta = EncryptionMetadata {
                     encryption_version: segment.encryption_version,
                     key_version: segment.key_version,
@@ -1088,11 +1271,9 @@ pub async fn write_capsule_with_policy_async(
                     ciphertext_len: Some(raw_data.len() as u32),
                 };
 
-                // Verify MAC first
-                verify_mac(&raw_data, &enc_meta, key_pair.key1(), key_pair.key2())?;
+                verify_mac(&raw_data, &enc_meta, pair_for_use.key1(), pair_for_use.key2())?;
 
-                // Decrypt
-                decrypt_segment(&raw_data, key_pair, &enc_meta)?
+                decrypt_segment(&raw_data, pair_for_use, &enc_meta)?
             } else {
                 raw_data
             };
@@ -1116,6 +1297,12 @@ pub async fn write_capsule_with_policy_async(
 
             result.extend_from_slice(&data);
         }
+
+        #[cfg(feature = "advanced-security")]
+        self.audit_event(common::Event::CapsuleRead {
+            capsule_id: id,
+            size: capsule.size,
+        });
 
         Ok(result)
     }

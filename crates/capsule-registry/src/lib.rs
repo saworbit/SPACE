@@ -1,6 +1,8 @@
 use anyhow::Result;
 use common::Policy;
 use common::*;
+#[cfg(feature = "advanced-security")]
+use common::security::bloom_dedup::BloomFilterWrapper;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -175,7 +177,7 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
         segments: Vec<SegmentId>,
         stats: &common::traits::DedupStats,
     ) -> Result<()> {
-        CapsuleRegistry::create_capsule_with_segments(self, id, size, segments)?;
+        CapsuleRegistry::create_capsule_with_segments(self, id, size, segments, policy.clone())?;
         let mut capsules = self.capsules.write().unwrap();
         if let Some(capsule) = capsules.get_mut(&id) {
             capsule.policy = policy.clone();
@@ -236,6 +238,8 @@ pub struct CapsuleRegistry {
     metadata_path: String,
     // Phase 2.2: Content store for deduplication
     content_store: Arc<RwLock<HashMap<ContentHash, SegmentId>>>,
+    #[cfg(feature = "advanced-security")]
+    bloom_filter: Option<Arc<BloomFilterWrapper>>,
 }
 
 impl CapsuleRegistry {
@@ -255,11 +259,16 @@ impl CapsuleRegistry {
             (HashMap::new(), 0, HashMap::new())
         };
 
+        #[cfg(feature = "advanced-security")]
+        let bloom_filter = Self::configure_bloom(Some(&content_store));
+
         Ok(Self {
             capsules: Arc::new(RwLock::new(capsules)),
             next_segment_id: Arc::new(RwLock::new(next_segment_id)),
             metadata_path,
             content_store: Arc::new(RwLock::new(content_store)),
+            #[cfg(feature = "advanced-security")]
+            bloom_filter,
         })
     }
 
@@ -280,6 +289,7 @@ impl CapsuleRegistry {
         id: CapsuleId,
         size: u64,
         segments: Vec<SegmentId>,
+        policy: Policy,
     ) -> Result<()> {
         let mut capsules = self.capsules.write().unwrap();
 
@@ -294,7 +304,7 @@ impl CapsuleRegistry {
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
-            policy: Policy::default(),
+            policy,
             deduped_bytes: 0, // Will be updated during write
         };
 
@@ -335,12 +345,25 @@ impl CapsuleRegistry {
 
     /// Check if content hash already exists in store
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
+        #[cfg(feature = "advanced-security")]
+        if let Some(filter) = &self.bloom_filter {
+            if !filter.might_contain(hash) {
+                return None;
+            }
+        }
         self.content_store.read().unwrap().get(hash).copied()
     }
 
     /// Register new content hash → segment mapping
     pub fn register_content(&self, hash: ContentHash, seg_id: SegmentId) -> Result<()> {
-        self.content_store.write().unwrap().insert(hash, seg_id);
+        self.content_store
+            .write()
+            .unwrap()
+            .insert(hash.clone(), seg_id);
+        #[cfg(feature = "advanced-security")]
+        if let Some(filter) = &self.bloom_filter {
+            filter.record_insertion(&hash);
+        }
         self.save()?;
         Ok(())
     }
@@ -350,6 +373,10 @@ impl CapsuleRegistry {
         if let Some(current) = store.get(hash) {
             if *current == seg_id {
                 store.remove(hash);
+                #[cfg(feature = "advanced-security")]
+                if let Some(filter) = &self.bloom_filter {
+                    filter.record_removal(hash);
+                }
                 drop(store);
                 self.save()?;
                 return Ok(true);
@@ -393,6 +420,29 @@ impl CapsuleRegistry {
 
         (total_segments, unique_segments)
     }
+
+    #[cfg(feature = "advanced-security")]
+    fn configure_bloom(
+        existing: Option<&HashMap<ContentHash, SegmentId>>,
+    ) -> Option<Arc<BloomFilterWrapper>> {
+        let capacity = std::env::var("SPACE_BLOOM_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(10_000_000);
+        let fp_rate = std::env::var("SPACE_BLOOM_FPR")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.001);
+
+        let filter = if let Some(store) = existing {
+            let hashes = store.keys().cloned().collect::<Vec<_>>();
+            BloomFilterWrapper::with_existing(capacity, fp_rate, hashes)
+        } else {
+            BloomFilterWrapper::new(capacity, fp_rate)
+        };
+
+        Some(Arc::new(filter))
+    }
 }
 
 impl Default for CapsuleRegistry {
@@ -408,6 +458,8 @@ impl Clone for CapsuleRegistry {
             next_segment_id: Arc::clone(&self.next_segment_id),
             metadata_path: self.metadata_path.clone(),
             content_store: Arc::clone(&self.content_store),
+            #[cfg(feature = "advanced-security")]
+            bloom_filter: self.bloom_filter.clone(),
         }
     }
 }
