@@ -62,6 +62,60 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - 🔄 Replication & clustering
 - 📋 Policy compiler
 
+## 🌐 PODMS Scaling Preview (Experimental)
+
+**Policy-Orchestrated Disaggregated Mesh Scaling** is SPACE's distributed scaling model, currently in Step 1 (bedrock prep). PODMS enables autonomous scaling agents to make intelligent placement and replication decisions based on policy constraints.
+
+### ⚡ Quick Enable
+
+```bash
+# Build with PODMS telemetry hooks enabled
+cargo build --features podms
+
+# PODMS requires async pipeline (automatically enabled)
+cargo test --features podms
+```
+
+### 🎯 Key Concepts
+
+- **📡 Telemetry Events**: Capsule create/read/heat events signal scaling needs
+- **📋 Policy-Driven**: RPO, latency targets, and sovereignty control placement
+- **🔗 Mesh Topology**: Disaggregated nodes with autonomous swarm intelligence
+- **🛡️ Zero-Disruption**: Single-node compatibility maintained
+
+### 🗺️ Scaling Policies
+
+```rust
+// Metro-sync: Low latency, synchronous replication
+let policy = Policy::metro_sync();
+// RPO: 0ms (sync), Latency: 2ms, Sovereignty: Zone
+
+// Geo-replicated: Higher latency, async replication
+let policy = Policy::geo_replicated();
+// RPO: 5min, Latency: 100ms, Sovereignty: Global
+
+// Edge-optimized: Local-only, no replication
+let policy = Policy::edge_optimized();
+// RPO: 5min, Latency: 50ms, Sovereignty: Local
+```
+
+### 📊 What Works Today (Step 1)
+
+- ✅ PODMS types (NodeId, ZoneId, SovereigntyLevel)
+- ✅ Policy extensions (RPO, latency_target, sovereignty)
+- ✅ Telemetry channel infrastructure
+- ✅ Async event emission on capsule writes
+
+### 🔜 Roadmap
+
+- **Step 2**: Replication agents & metro-sync
+- **Step 3**: Policy compiler & autonomous orchestration
+- **Step 4**: Full mesh federation
+
+See [docs/podms.md](docs/podms.md) for architecture details.
+
+---
+
 ## ✨ What This MVP Proves
 
 **🎉 Phase 3.3 Complete: Compression ✅ | Dedup ✅ | Protocol Views ✅ | Advanced Security ✅**

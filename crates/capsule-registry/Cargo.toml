@@ -11,6 +11,7 @@ default = []
 pipeline_async = ["tokio", "futures", "num_cpus"]
 modular_pipeline = ["pipeline", "tokio"]
 advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
+podms = ["dep:tokio", "dep:tracing", "pipeline_async", "common/podms"]
 
 [dependencies]
 common = { path = "../common" }

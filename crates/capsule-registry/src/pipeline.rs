@@ -191,6 +191,9 @@ pub struct WritePipeline {
     runtime: Option<Arc<TokioRuntime>>,
     #[cfg(feature = "pipeline_async")]
     config: PipelineConfig,
+    // PODMS: Telemetry channel for scaling agents
+    #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+    telemetry_tx: Option<tokio::sync::mpsc::UnboundedSender<common::podms::Telemetry>>,
 }
 
 impl WritePipeline {
@@ -263,6 +266,8 @@ impl WritePipeline {
             runtime,
             #[cfg(feature = "pipeline_async")]
             config: PipelineConfig::default(),
+            #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+            telemetry_tx: None, // Initialized via set_telemetry_channel
         };
 
         if let Err(err) = pipeline.reconcile_refcounts() {
@@ -335,12 +340,25 @@ impl WritePipeline {
             runtime,
             #[cfg(feature = "pipeline_async")]
             config: PipelineConfig::default(),
+            #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+            telemetry_tx: None, // Initialized via set_telemetry_channel
         }
     }
 
     #[cfg(feature = "pipeline_async")]
     pub fn with_config(mut self, config: PipelineConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Set the telemetry channel for PODMS scaling agents.
+    /// Call this method to enable autonomous telemetry emission for distributed scaling.
+    #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+    pub fn with_telemetry_channel(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<common::podms::Telemetry>,
+    ) -> Self {
+        self.telemetry_tx = Some(tx);
         self
     }
 
@@ -1077,6 +1095,30 @@ pub async fn write_capsule_with_policy_async(
             encryption = %encryption_status,
             "async capsule summary"
         );
+
+        // PODMS: Emit telemetry for autonomous scaling agents
+        #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+        if let Some(tx) = &self.telemetry_tx {
+            let telemetry_event = common::podms::Telemetry::NewCapsule {
+                id: capsule_id,
+                policy: policy.clone(),
+                node_id: None, // Will be set by agent when node ID is known
+            };
+
+            // Use try_send to avoid blocking the write path
+            if let Err(e) = tx.send(telemetry_event) {
+                tracing::warn!(
+                    capsule = %capsule_id.as_uuid(),
+                    error = %e,
+                    "failed to emit PODMS telemetry (channel closed)"
+                );
+            } else {
+                tracing::debug!(
+                    capsule = %capsule_id.as_uuid(),
+                    "emitted PODMS telemetry: NewCapsule"
+                );
+            }
+        }
 
         Ok(capsule_id)
     }

@@ -86,6 +86,39 @@ pub struct Policy {
     /// Cryptography profile (Phase 3.3)
     #[serde(default)]
     pub crypto_profile: CryptoProfile,
+
+    // ========================================================================
+    // PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) Fields
+    // ========================================================================
+    // These fields enable autonomous scaling agents to make placement and
+    // replication decisions based on policy constraints.
+
+    /// Recovery Point Objective - maximum acceptable data loss window.
+    /// Duration::ZERO means synchronous replication, higher values allow async.
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_rpo")]
+    pub rpo: std::time::Duration,
+
+    /// Maximum acceptable latency for read/write operations.
+    /// Used to determine optimal placement (e.g., 2ms for metro, 50ms for geo).
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_latency_target")]
+    pub latency_target: std::time::Duration,
+
+    /// Data sovereignty level controlling replication scope.
+    #[cfg(feature = "podms")]
+    #[serde(default)]
+    pub sovereignty: crate::podms::SovereigntyLevel,
+}
+
+#[cfg(feature = "podms")]
+fn default_rpo() -> std::time::Duration {
+    std::time::Duration::from_secs(60) // 1 minute default
+}
+
+#[cfg(feature = "podms")]
+fn default_latency_target() -> std::time::Duration {
+    std::time::Duration::from_millis(10) // 10ms default
 }
 
 impl Default for Policy {
@@ -97,6 +130,12 @@ impl Default for Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            #[cfg(feature = "podms")]
+            rpo: default_rpo(),
+            #[cfg(feature = "podms")]
+            latency_target: default_latency_target(),
+            #[cfg(feature = "podms")]
+            sovereignty: crate::podms::SovereigntyLevel::default(),
         }
     }
 }
@@ -111,6 +150,12 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            #[cfg(feature = "podms")]
+            rpo: default_rpo(),
+            #[cfg(feature = "podms")]
+            latency_target: default_latency_target(),
+            #[cfg(feature = "podms")]
+            sovereignty: crate::podms::SovereigntyLevel::default(),
         }
     }
 
@@ -123,6 +168,12 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            #[cfg(feature = "podms")]
+            rpo: default_rpo(),
+            #[cfg(feature = "podms")]
+            latency_target: default_latency_target(),
+            #[cfg(feature = "podms")]
+            sovereignty: crate::podms::SovereigntyLevel::default(),
         }
     }
 
@@ -135,6 +186,12 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            #[cfg(feature = "podms")]
+            rpo: std::time::Duration::from_secs(300), // 5 min RPO for edge
+            #[cfg(feature = "podms")]
+            latency_target: std::time::Duration::from_millis(50), // Higher latency tolerance
+            #[cfg(feature = "podms")]
+            sovereignty: crate::podms::SovereigntyLevel::Local, // Edge stays local
         }
     }
 
@@ -147,6 +204,12 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
+            #[cfg(feature = "podms")]
+            rpo: default_rpo(),
+            #[cfg(feature = "podms")]
+            latency_target: default_latency_target(),
+            #[cfg(feature = "podms")]
+            sovereignty: crate::podms::SovereigntyLevel::default(),
         }
     }
 
@@ -159,6 +222,45 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
+            #[cfg(feature = "podms")]
+            rpo: default_rpo(),
+            #[cfg(feature = "podms")]
+            latency_target: default_latency_target(),
+            #[cfg(feature = "podms")]
+            sovereignty: crate::podms::SovereigntyLevel::default(),
+        }
+    }
+
+    // PODMS-specific policy presets
+    #[cfg(feature = "podms")]
+    /// Create a policy for metro-sync replication (low RPO, low latency)
+    pub fn metro_sync() -> Self {
+        Self {
+            compression: CompressionPolicy::LZ4 { level: 1 },
+            dedupe: true,
+            compact_interval_secs: Some(3600),
+            erasure_profile: None,
+            encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+            crypto_profile: CryptoProfile::default(),
+            rpo: std::time::Duration::ZERO, // Synchronous replication
+            latency_target: std::time::Duration::from_millis(2), // 2ms target
+            sovereignty: crate::podms::SovereigntyLevel::Zone,
+        }
+    }
+
+    #[cfg(feature = "podms")]
+    /// Create a policy for geo-distributed replication (higher RPO, higher latency)
+    pub fn geo_replicated() -> Self {
+        Self {
+            compression: CompressionPolicy::Zstd { level: 3 },
+            dedupe: true,
+            compact_interval_secs: Some(3600),
+            erasure_profile: None,
+            encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+            crypto_profile: CryptoProfile::default(),
+            rpo: std::time::Duration::from_secs(300), // 5 min async
+            latency_target: std::time::Duration::from_millis(100), // 100ms target
+            sovereignty: crate::podms::SovereigntyLevel::Global,
         }
     }
 }
@@ -229,6 +331,52 @@ mod tests {
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.dedupe, deserialized.dedupe);
         assert_eq!(policy.crypto_profile, CryptoProfile::Classical);
+    }
+
+    #[cfg(feature = "podms")]
+    #[test]
+    fn test_podms_policy_fields() {
+        use std::time::Duration;
+
+        let policy = Policy::default();
+        assert_eq!(policy.rpo, Duration::from_secs(60));
+        assert_eq!(policy.latency_target, Duration::from_millis(10));
+        assert_eq!(policy.sovereignty, crate::podms::SovereigntyLevel::Local);
+    }
+
+    #[cfg(feature = "podms")]
+    #[test]
+    fn test_metro_sync_policy() {
+        use std::time::Duration;
+
+        let policy = Policy::metro_sync();
+        assert_eq!(policy.rpo, Duration::ZERO);
+        assert_eq!(policy.latency_target, Duration::from_millis(2));
+        assert_eq!(policy.sovereignty, crate::podms::SovereigntyLevel::Zone);
+        assert!(policy.encryption.is_enabled());
+    }
+
+    #[cfg(feature = "podms")]
+    #[test]
+    fn test_geo_replicated_policy() {
+        use std::time::Duration;
+
+        let policy = Policy::geo_replicated();
+        assert_eq!(policy.rpo, Duration::from_secs(300));
+        assert_eq!(policy.latency_target, Duration::from_millis(100));
+        assert_eq!(policy.sovereignty, crate::podms::SovereigntyLevel::Global);
+        assert!(policy.encryption.is_enabled());
+    }
+
+    #[cfg(feature = "podms")]
+    #[test]
+    fn test_edge_optimized_podms_fields() {
+        use std::time::Duration;
+
+        let policy = Policy::edge_optimized();
+        assert_eq!(policy.rpo, Duration::from_secs(300));
+        assert_eq!(policy.latency_target, Duration::from_millis(50));
+        assert_eq!(policy.sovereignty, crate::podms::SovereigntyLevel::Local);
     }
 
     #[test]
