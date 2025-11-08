@@ -4,7 +4,8 @@
 
 #![cfg(all(feature = "podms", feature = "pipeline_async"))]
 
-use capsule_registry::{CapsuleRegistry, WritePipeline};
+use capsule_registry::pipeline::WritePipeline;
+use capsule_registry::CapsuleRegistry;
 use common::{podms::Telemetry, Policy};
 use nvram_sim::NvramLog;
 use tokio::sync::mpsc;
@@ -12,8 +13,12 @@ use tokio::sync::mpsc;
 #[tokio::test]
 async fn test_telemetry_channel_creation() {
     let (tx, _rx) = mpsc::unbounded_channel::<Telemetry>();
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::new();
+    let test_id = uuid::Uuid::new_v4();
+    let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let registry_path = temp_dir.join("registry.metadata");
+    let registry = CapsuleRegistry::open(&registry_path).unwrap();
+    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -24,8 +29,12 @@ async fn test_telemetry_channel_creation() {
 #[tokio::test]
 async fn test_telemetry_emission_on_write() {
     let (tx, mut rx) = mpsc::unbounded_channel::<Telemetry>();
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::new();
+    let test_id = uuid::Uuid::new_v4();
+    let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let registry_path = temp_dir.join("registry.metadata");
+    let registry = CapsuleRegistry::open(&registry_path).unwrap();
+    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -59,8 +68,12 @@ async fn test_telemetry_with_metro_sync_policy() {
     use std::time::Duration;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Telemetry>();
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::new();
+    let test_id = uuid::Uuid::new_v4();
+    let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let registry_path = temp_dir.join("registry.metadata");
+    let registry = CapsuleRegistry::open(&registry_path).unwrap();
+    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -94,8 +107,12 @@ async fn test_telemetry_with_metro_sync_policy() {
 #[tokio::test]
 async fn test_no_telemetry_without_channel() {
     // Create pipeline without telemetry channel
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::new();
+    let test_id = uuid::Uuid::new_v4();
+    let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let registry_path = temp_dir.join("registry.metadata");
+    let registry = CapsuleRegistry::open(&registry_path).unwrap();
+    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram);
 
@@ -111,8 +128,12 @@ async fn test_no_telemetry_without_channel() {
 #[tokio::test]
 async fn test_telemetry_channel_closed_gracefully() {
     let (tx, rx) = mpsc::unbounded_channel::<Telemetry>();
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::new();
+    let test_id = uuid::Uuid::new_v4();
+    let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let registry_path = temp_dir.join("registry.metadata");
+    let registry = CapsuleRegistry::open(&registry_path).unwrap();
+    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -134,8 +155,12 @@ async fn test_telemetry_channel_closed_gracefully() {
 #[tokio::test]
 async fn test_multiple_writes_emit_multiple_telemetry_events() {
     let (tx, mut rx) = mpsc::unbounded_channel::<Telemetry>();
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::new();
+    let test_id = uuid::Uuid::new_v4();
+    let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let registry_path = temp_dir.join("registry.metadata");
+    let registry = CapsuleRegistry::open(&registry_path).unwrap();
+    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 

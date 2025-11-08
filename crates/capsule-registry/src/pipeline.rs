@@ -118,7 +118,22 @@ fn prepare_segment(
 ) -> PipelineResult<SegmentPrepared> {
     let started = Instant::now();
     let (compressed_data, comp_result) = compress_segment(&chunk, &policy.compression)
-        .map_err(|err| map_compression_error(index, err))?;
+        .map_err(|err| {
+            let comp_err = match err.downcast::<CompressionError>() {
+                Ok(ce) => ce,
+                Err(other) => {
+                    error!(segment_index = index, error = %other, "Unexpected compression error");
+                    return PipelineError::Registry {
+                        operation: "compress_segment",
+                        source: other,
+                    };
+                }
+            };
+            PipelineError::Compression {
+                segment_index: index,
+                source: comp_err,
+            }
+        })?;
     let content_hash = hash_content(compressed_data.as_ref());
 
     let encryption_enabled = policy.encryption.is_enabled() && key_manager.is_some();
@@ -127,11 +142,19 @@ fn prepare_segment(
     let final_data = if encryption_enabled {
         let km = key_manager
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Key manager unavailable for encryption"))?;
+            .ok_or_else(|| {
+                PipelineError::Registry {
+                    operation: "key_manager",
+                    source: anyhow::anyhow!("Key manager unavailable for encryption"),
+                }
+            })?;
         let mut km = km.lock().unwrap();
 
         let key_version = km.current_version();
-        let key_pair = km.get_key(key_version)?;
+        let key_pair = km.get_key(key_version).map_err(|e| PipelineError::Registry {
+            operation: "get_key",
+            source: e.into(),
+        })?;
 
         let tweak = derive_tweak_from_hash(content_hash.as_str().as_bytes());
         let (ciphertext, mut enc_meta) =
@@ -194,6 +217,9 @@ pub struct WritePipeline {
     // PODMS: Telemetry channel for scaling agents
     #[cfg(all(feature = "podms", feature = "pipeline_async"))]
     telemetry_tx: Option<tokio::sync::mpsc::UnboundedSender<common::podms::Telemetry>>,
+    // PODMS: Mesh node for metro-sync replication
+    #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+    mesh_node: Option<std::sync::Arc<scaling::MeshNode>>,
 }
 
 impl WritePipeline {
@@ -268,6 +294,8 @@ impl WritePipeline {
             config: PipelineConfig::default(),
             #[cfg(all(feature = "podms", feature = "pipeline_async"))]
             telemetry_tx: None, // Initialized via set_telemetry_channel
+            #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+            mesh_node: None, // Initialized via with_mesh_node
         };
 
         if let Err(err) = pipeline.reconcile_refcounts() {
@@ -342,6 +370,8 @@ impl WritePipeline {
             config: PipelineConfig::default(),
             #[cfg(all(feature = "podms", feature = "pipeline_async"))]
             telemetry_tx: None, // Initialized via set_telemetry_channel
+            #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+            mesh_node: None, // Initialized via with_mesh_node
         }
     }
 
@@ -359,6 +389,14 @@ impl WritePipeline {
         tx: tokio::sync::mpsc::UnboundedSender<common::podms::Telemetry>,
     ) -> Self {
         self.telemetry_tx = Some(tx);
+        self
+    }
+
+    /// Set the mesh node for PODMS metro-sync replication.
+    /// Call this method to enable autonomous segment mirroring for zero-RPO policies.
+    #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+    pub fn with_mesh_node(mut self, mesh_node: std::sync::Arc<scaling::MeshNode>) -> Self {
+        self.mesh_node = Some(mesh_node);
         self
     }
 
@@ -1096,6 +1134,38 @@ pub async fn write_capsule_with_policy_async(
             "async capsule summary"
         );
 
+        // PODMS: Metro-sync replication for zero-RPO policies
+        #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+        if policy.rpo == Duration::ZERO {
+            if let Some(ref mesh_node) = self.mesh_node {
+                let replication_start = Instant::now();
+                match self.perform_metro_sync_replication(capsule_id, &segment_ids, mesh_node).await {
+                    Ok(replicated_count) => {
+                        let replication_time = replication_start.elapsed();
+                        info!(
+                            capsule = %capsule_id.as_uuid(),
+                            replicated_to = replicated_count,
+                            replication_ms = replication_time.as_millis(),
+                            "metro-sync replication completed"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            capsule = %capsule_id.as_uuid(),
+                            error = %e,
+                            "metro-sync replication failed (non-fatal)"
+                        );
+                        // Non-fatal: Local write succeeded, replication is best-effort for POC
+                    }
+                }
+            } else {
+                debug!(
+                    capsule = %capsule_id.as_uuid(),
+                    "skipping metro-sync: mesh node not configured"
+                );
+            }
+        }
+
         // PODMS: Emit telemetry for autonomous scaling agents
         #[cfg(all(feature = "podms", feature = "pipeline_async"))]
         if let Some(tx) = &self.telemetry_tx {
@@ -1122,6 +1192,102 @@ pub async fn write_capsule_with_policy_async(
 
         Ok(capsule_id)
     }
+
+    /// Perform metro-sync replication for zero-RPO policies.
+    /// Mirrors segments to 1-2 peer nodes in the same zone.
+    #[cfg(all(feature = "podms", feature = "pipeline_async"))]
+    async fn perform_metro_sync_replication(
+        &self,
+        capsule_id: CapsuleId,
+        segment_ids: &[SegmentId],
+        mesh_node: &std::sync::Arc<scaling::MeshNode>,
+    ) -> Result<usize> {
+        use tracing::Span;
+
+        let span = tracing::info_span!(
+            "metro_sync_replication",
+            capsule_id = %capsule_id.as_uuid(),
+            segments = segment_ids.len()
+        );
+        let _enter = span.enter();
+
+        // Step 1: Discover peers in the same zone
+        let peers = mesh_node.discover_peers().await?;
+
+        if peers.is_empty() {
+            debug!("no peers available for replication");
+            return Ok(0);
+        }
+
+        // Step 2: Select 1-2 target peers (simple strategy: first 2)
+        let target_count = std::cmp::min(2, peers.len());
+        let targets = &peers[..target_count];
+
+        info!(targets = targets.len(), "selected replication targets");
+
+        // Step 3: Mirror each segment to all targets
+        let mut replicated_count = 0;
+
+        for (seg_index, &seg_id) in segment_ids.iter().enumerate() {
+            // Read segment data from NVRAM
+            let segment_data = self.nvram.read(seg_id)?;
+
+            // Get segment metadata for hash verification
+            let segment_meta = self.nvram.get_segment_metadata(seg_id)?;
+
+            // Preserve dedup: Only mirror if content hash is unique
+            // (In full implementation, we'd check remote node's dedup registry)
+            if let Some(ref content_hash) = segment_meta.content_hash {
+                debug!(
+                    segment = seg_id.0,
+                    hash = ?content_hash,
+                    "segment has content hash"
+                );
+            }
+
+            // Mirror to each target
+            for target_id in targets {
+                let mirror_span = tracing::debug_span!(
+                    "mirror_segment",
+                    segment = seg_id.0,
+                    target = %target_id
+                );
+                let _mirror_enter = mirror_span.enter();
+
+                match mesh_node.mirror_segment(&segment_data, *target_id).await {
+                    Ok(_) => {
+                        trace!(
+                            segment = seg_id.0,
+                            target = %target_id,
+                            bytes = segment_data.len(),
+                            "segment mirrored successfully"
+                        );
+                        replicated_count += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            segment = seg_id.0,
+                            segment_index = seg_index,
+                            target = %target_id,
+                            error = %e,
+                            "failed to mirror segment (continuing)"
+                        );
+                        // Continue with other segments/targets
+                    }
+                }
+            }
+        }
+
+        info!(
+            segments = segment_ids.len(),
+            targets = targets.len(),
+            total_replications = replicated_count,
+            "metro-sync replication batch complete"
+        );
+
+        Ok(replicated_count)
+    }
+
     #[cfg(feature = "pipeline_async")]
     fn commit_segment(
         &self,

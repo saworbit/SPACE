@@ -8,10 +8,10 @@ publish = false
 
 [features]
 default = []
-pipeline_async = ["tokio", "futures", "num_cpus"]
-modular_pipeline = ["pipeline", "tokio"]
+pipeline_async = ["dep:tokio", "dep:futures", "dep:num_cpus"]
+modular_pipeline = ["dep:pipeline", "dep:tokio"]
 advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
-podms = ["dep:tokio", "dep:tracing", "pipeline_async", "common/podms"]
+podms = ["dep:tokio", "pipeline_async", "common/podms", "dep:scaling"]
 
 [dependencies]
 common = { path = "../common" }
@@ -36,6 +36,7 @@ blake3 = { workspace = true }
 subtle = { workspace = true }
 bytes = "1.7"
 pipeline = { path = "../pipeline", optional = true }
+scaling = { path = "../scaling", optional = true }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
