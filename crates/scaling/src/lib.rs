@@ -17,8 +17,14 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 pub mod agent;
+pub mod compiler;
 #[cfg(test)]
 mod tests;
+
+// Re-export key compiler types for external use
+pub use compiler::{
+    EvacuationUrgency, MeshState, NodeInfo, PolicyCompiler, ReplicationStrategy, ScalingAction,
+};
 
 /// Mesh node capabilities for disaggregated access.
 /// Nodes advertise their capabilities (e.g., GPU, NVRAM, network tier) via gossip.

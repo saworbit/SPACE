@@ -18,7 +18,7 @@ advanced-security = [
     "dep:tokio-tungstenite",
     "dep:tracing",
 ]
-podms = []  # PODMS types enabled via feature flag
+podms = ["dep:tracing"]  # PODMS types enabled via feature flag
 
 [dependencies]
 uuid = { workspace = true }

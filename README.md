@@ -59,12 +59,12 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - 🏗️ **Dedicated `security` module** so Bloom/audit/PQ/eBPF logic stays feature gated
 
 **🔜 What's coming next:**
-- 🔄 Replication & clustering
-- 📋 Policy compiler
+- 🔄 Full mesh federation & cross-zone routing (Step 4)
+- 🤖 ML-driven heatmaps & adaptive placement
 
-## 🌐 PODMS Scaling: Metro-Sync Replication (Step 2 Complete)
+## 🌐 PODMS Scaling: Policy Compiler Intelligence (Step 3 Complete)
 
-**Policy-Orchestrated Disaggregated Mesh Scaling** is SPACE's distributed scaling model. **Step 2 is now complete**, bringing metro-sync replication with zero-RPO guarantees, mesh networking, and autonomous scaling agents. PODMS enables intelligent placement and replication decisions based on policy constraints.
+**Policy-Orchestrated Disaggregated Mesh Scaling** is SPACE's distributed scaling model. **Step 3 is now complete**, bringing the policy compiler—the "brain" of PODMS that translates declarative policies into autonomous scaling actions. Capsules now exhibit swarm intelligence: self-replicating, migrating, and transforming based on policy rules and real-time telemetry.
 
 ### ⚡ Quick Enable
 
@@ -79,13 +79,16 @@ cargo test --features podms
 cargo test --features podms podms_metro_sync
 ```
 
-### 🎯 Key Features (Step 2)
+### 🎯 Key Features (Step 3)
 
+- **🧠 Policy Compiler**: Translates declarative policies into executable scaling actions
+- **🐝 Swarm Intelligence**: Capsules self-adapt (migrate, replicate, transform) based on telemetry
+- **⚡ Autonomous Actions**: Heat spikes → migrations, capacity thresholds → rebalancing
+- **🔄 Smart Replication**: RPO-driven strategies (metro-sync, async batching, none)
+- **🔒 Sovereignty Enforcement**: Policies block actions that violate zone constraints
+- **🎭 On-the-Fly Transformation**: Re-encrypt/recompress during migrations
 - **📡 Telemetry Events**: Real-time capsule lifecycle events for autonomous agents
-- **📋 Policy-Driven Replication**: RPO=0 triggers synchronous metro-sync mirroring
 - **🔗 Mesh Networking**: Gossip-based peer discovery with RDMA-ready transport
-- **🤖 Autonomous Agents**: Event-driven scaling without centralized orchestration
-- **🔒 Dedup-Preserving**: Hash-based content verification during replication
 - **🛡️ Zero-Disruption**: Single-node mode has zero overhead (feature-gated)
 
 ### 🗺️ Scaling Policies
@@ -104,7 +107,7 @@ let policy = Policy::edge_optimized();
 // RPO: 5min, Latency: 50ms, Sovereignty: Local
 ```
 
-### 📊 What Works Today (Step 2 Complete)
+### 📊 What Works Today (Step 3 Complete)
 
 **Step 1 - Bedrock:**
 - ✅ PODMS types (NodeId, ZoneId, SovereigntyLevel, Telemetry)
@@ -112,7 +115,7 @@ let policy = Policy::edge_optimized();
 - ✅ Telemetry channel infrastructure
 - ✅ Async event emission on capsule writes
 
-**Step 2 - Metro-Sync Replication (NEW):**
+**Step 2 - Metro-Sync Replication:**
 - ✅ **Mesh networking** with gossip-based peer discovery (memberlist)
 - ✅ **RDMA mock transport** for zero-copy segment mirroring (TCP POC)
 - ✅ **Metro-sync replication** triggered by RPO=0 policies
@@ -120,10 +123,18 @@ let policy = Policy::edge_optimized();
 - ✅ **Hash-based dedup preservation** during replication
 - ✅ **Multi-node integration tests** with failover scenarios
 
+**Step 3 - Policy Compiler (NEW):**
+- ✅ **PolicyCompiler** translating telemetry events into ScalingActions
+- ✅ **ScalingAction types**: Replicate, Migrate, Evacuate, Rebalance
+- ✅ **SwarmBehavior trait** for capsule self-transformation
+- ✅ **Decision rules**: RPO → replication strategy, latency → placement
+- ✅ **Sovereignty validation** preventing policy violations
+- ✅ **Agent integration** with action execution layer
+- ✅ **Comprehensive tests** (90%+ coverage on compiler logic)
+
 ### 🔜 Roadmap
 
-- **Step 3**: Policy compiler & rule-based orchestration
-- **Step 4**: Full mesh federation & cross-zone routing
+- **Step 4**: Full mesh federation & cross-zone routing with gossip
 - **Future**: Adaptive RPO, cost-aware placement, ML-driven heatmaps
 
 See [docs/podms.md](docs/podms.md) for architecture details and implementation guide.

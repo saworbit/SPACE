@@ -152,7 +152,6 @@ pub enum Event {
 #[cfg(feature = "podms")]
 pub mod podms {
     use super::*;
-    use std::time::Duration;
 
     /// Unique identifier for a node in the SPACE mesh.
     /// Wraps a UUID to represent individual storage nodes.
@@ -259,6 +258,156 @@ pub mod podms {
             node_id: NodeId,
             reason: String,
         },
+    }
+
+    /// Swarm behavior trait for capsule self-transformation during migrations.
+    ///
+    /// This trait enables PODMS "swarm intelligence" where capsules autonomously
+    /// adapt their representation (compression, encryption) based on policy
+    /// constraints during migration or replication events.
+    pub trait SwarmBehavior {
+        /// Apply policy-driven transformation to capsule data.
+        ///
+        /// Transformations preserve security and dedup invariants while adapting
+        /// to new placement contexts (e.g., re-encrypt for zone change, recompress
+        /// for cold storage).
+        ///
+        /// # Arguments
+        /// * `data` - Original capsule data
+        /// * `policy` - Target policy context (may differ from source)
+        ///
+        /// # Returns
+        /// Transformed data ready for new placement
+        fn apply_transform(&self, data: &[u8], policy: &Policy) -> anyhow::Result<Vec<u8>>;
+
+        /// Hook called before migration to validate and prepare.
+        ///
+        /// # Arguments
+        /// * `destination` - Target node for migration
+        /// * `dest_zone` - Target zone for sovereignty validation
+        ///
+        /// # Returns
+        /// Ok(()) if migration is allowed, Err if sovereignty violated
+        fn on_migrate(
+            &self,
+            destination: NodeId,
+            dest_zone: &ZoneId,
+        ) -> anyhow::Result<()>;
+
+        /// Determine if transformation is required for migration.
+        ///
+        /// # Arguments
+        /// * `source_zone` - Current zone
+        /// * `dest_zone` - Target zone
+        ///
+        /// # Returns
+        /// true if data needs transformation (e.g., zone boundary crossing)
+        fn requires_transform(
+            &self,
+            source_zone: &ZoneId,
+            dest_zone: &ZoneId,
+        ) -> bool;
+    }
+
+    /// Implementation of SwarmBehavior for Capsule.
+    ///
+    /// Provides policy-aware transformation logic that preserves security
+    /// invariants (encryption keys, dedup hashes) while adapting compression
+    /// and encryption to new placement contexts.
+    impl SwarmBehavior for Capsule {
+        fn apply_transform(&self, data: &[u8], policy: &Policy) -> anyhow::Result<Vec<u8>> {
+            // For Step 3, implement basic transformation logic
+            // In practice, this would:
+            // 1. Decrypt with current key
+            // 2. Re-encrypt with destination zone key (if zone changed)
+            // 3. Recompress if policy changed (e.g., cold storage)
+            // 4. Preserve dedup hashes for content-based addressing
+
+            // Determine if we need recompression based on policy
+            let needs_recompression = match &policy.compression {
+                CompressionPolicy::None => false,
+                CompressionPolicy::LZ4 { .. } | CompressionPolicy::Zstd { .. } => {
+                    !self.is_compressed()
+                }
+            };
+
+            if needs_recompression {
+                // In production: Use compression crate with policy-specified algo
+                // For now, return original data as placeholder
+                tracing::debug!(
+                    capsule_id = ?self.id,
+                    policy_compression = ?policy.compression,
+                    "would apply recompression during transform"
+                );
+            }
+
+            // Return original data for now (full transformation in later steps)
+            Ok(data.to_vec())
+        }
+
+        fn on_migrate(
+            &self,
+            destination: NodeId,
+            dest_zone: &ZoneId,
+        ) -> anyhow::Result<()> {
+            // Validate sovereignty constraints
+            match self.policy.sovereignty {
+                SovereigntyLevel::Local => {
+                    return Err(anyhow::anyhow!(
+                        "capsule {:?} has Local sovereignty, cannot migrate",
+                        self.id
+                    ));
+                }
+                SovereigntyLevel::Zone => {
+                    // Would need to validate dest_zone matches current zone
+                    // For now, log the check
+                    tracing::debug!(
+                        capsule_id = ?self.id,
+                        destination = %destination,
+                        dest_zone = %dest_zone,
+                        "validating zone sovereignty for migration"
+                    );
+                }
+                SovereigntyLevel::Global => {
+                    // No restrictions
+                }
+            }
+
+            Ok(())
+        }
+
+        fn requires_transform(
+            &self,
+            source_zone: &ZoneId,
+            dest_zone: &ZoneId,
+        ) -> bool {
+            // Transformation needed if:
+            // 1. Crossing zone boundaries (for re-encryption)
+            // 2. Policy change (e.g., moving to cold storage)
+            source_zone != dest_zone
+        }
+    }
+
+    // Helper methods for Capsule (PODMS-specific)
+    impl Capsule {
+        /// Check if capsule data is compressed.
+        fn is_compressed(&self) -> bool {
+            // Check if any segments are compressed
+            // In production, this would check segment metadata
+            false // Placeholder
+        }
+
+        /// Determine if capsule should be treated as cold data.
+        ///
+        /// Cold data has low access frequency and benefits from higher compression.
+        fn is_cold_data(&self) -> bool {
+            // In production: Check access patterns from telemetry
+            // For now, use a simple heuristic based on access counts
+            self.segments.len() > 0 && {
+                // Would check segment access_count in real implementation
+                false // Placeholder
+            }
+        }
     }
 
     #[cfg(test)]

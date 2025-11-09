@@ -1,0 +1,61 @@
+# Example PODMS Policy Configuration
+#
+# This policy demonstrates how to configure autonomous scaling behaviors
+# for SPACE capsules using the Policy Compiler (Step 3).
+#
+# Policy fields drive intelligent decision-making:
+# - rpo: Recovery Point Objective (triggers replication strategy)
+# - latency_target: Max acceptable latency (influences placement)
+# - sovereignty: Data residency constraints (Local/Zone/Global)
+
+# Metro-Sync Policy: Zero-RPO, sub-2ms latency
+# Use for critical data requiring synchronous replication
+metro_sync:
+  rpo: 0s
+  latency_target: 2ms
+  sovereignty: zone
+  compression:
+    type: lz4
+    level: 1
+  encryption:
+    type: xts_aes256
+    key_version: 1
+
+# Geo-Replicated Policy: 5-minute RPO, sub-100ms latency
+# Use for regional data with moderate durability requirements
+geo_replicated:
+  rpo: 300s
+  latency_target: 100ms
+  sovereignty: global
+  compression:
+    type: zstd
+    level: 3
+  encryption:
+    type: xts_aes256
+    key_version: 1
+
+# Edge-Local Policy: No replication, local-only
+# Use for air-gapped or privacy-sensitive deployments
+edge_local:
+  rpo: 86400s  # 24 hours
+  latency_target: 10ms
+  sovereignty: local
+  compression:
+    type: zstd
+    level: 5
+  encryption:
+    type: xts_aes256
+    key_version: 1
+
+# Cold Storage Policy: High compression, relaxed latency
+# Use for archival data with infrequent access
+cold_storage:
+  rpo: 3600s  # 1 hour
+  latency_target: 1000ms  # 1 second acceptable
+  sovereignty: global
+  compression:
+    type: zstd
+    level: 9  # Maximum compression
+  encryption:
+    type: xts_aes256
+    key_version: 1

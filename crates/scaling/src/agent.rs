@@ -5,28 +5,44 @@
 //! - HeatSpike → Migrate capsule to cooler nodes
 //! - CapacityThreshold → Rebalance across nodes
 //! - NodeDegraded → Evacuate capsules from failing node
+//!
+//! Step 3 Integration: The agent now uses the PolicyCompiler to translate
+//! telemetry events into concrete ScalingActions based on declarative policies.
 
 use anyhow::Result;
 use common::podms::{NodeId, Telemetry};
 use common::{CapsuleId, Policy};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, info, warn};
 
+use crate::compiler::{MeshState, NodeInfo, PolicyCompiler, ScalingAction};
 use crate::MeshNode;
 
 /// Scaling agent that consumes telemetry and performs autonomous actions.
-/// Note: This is a stub implementation for Step 2. Full migration logic
-/// will be implemented in Step 3 when we add the policy compiler.
+///
+/// Step 3: Now integrates PolicyCompiler for swarm intelligence - translating
+/// declarative policies into autonomous scaling behaviors.
 pub struct ScalingAgent {
     mesh_node: Arc<MeshNode>,
+    compiler: PolicyCompiler,
 }
 
 impl ScalingAgent {
-    /// Create a new scaling agent.
+    /// Create a new scaling agent with default policy.
     pub fn new(mesh_node: Arc<MeshNode>) -> Self {
-        Self { mesh_node }
+        Self {
+            mesh_node,
+            compiler: PolicyCompiler::with_defaults(),
+        }
+    }
+
+    /// Create a new scaling agent with a custom default policy.
+    pub fn with_policy(mesh_node: Arc<MeshNode>, default_policy: Policy) -> Self {
+        Self {
+            mesh_node,
+            compiler: PolicyCompiler::new(default_policy),
+        }
     }
 
     /// Run the agent loop, consuming telemetry events and triggering actions.
@@ -54,181 +70,241 @@ impl ScalingAgent {
         Ok(())
     }
 
-    /// Handle a single telemetry event.
+    /// Handle a single telemetry event using the policy compiler.
+    ///
+    /// Step 3: This method now uses the PolicyCompiler to translate events
+    /// into ScalingActions, then executes each action autonomously.
     async fn handle_telemetry_event(&self, event: Telemetry) -> Result<()> {
-        match event {
-            Telemetry::NewCapsule { id, policy, node_id } => {
-                self.handle_new_capsule(id, policy, node_id).await?;
+        // Extract policy from event (use default if not specified)
+        let policy = match &event {
+            Telemetry::NewCapsule { policy, .. } => policy.clone(),
+            _ => Policy::metro_sync(), // Default for non-capsule events
+        };
+
+        // Build current mesh state snapshot for compiler
+        let mesh_state = self.build_mesh_state().await?;
+
+        // Compile telemetry event into scaling actions
+        let actions = self
+            .compiler
+            .compile_scaling_actions(&event, &policy, &mesh_state);
+
+        debug!(
+            event_type = std::any::type_name_of_val(&event),
+            action_count = actions.len(),
+            "compiled scaling actions from telemetry"
+        );
+
+        // Execute each action
+        for action in actions {
+            if let Err(e) = self.execute_action(action).await {
+                warn!(error = %e, "failed to execute scaling action");
             }
-            Telemetry::HeatSpike {
-                id,
-                accesses_per_min,
-                node_id,
+        }
+
+        Ok(())
+    }
+
+    /// Build a snapshot of current mesh state for the compiler.
+    ///
+    /// This provides the compiler with topology and capacity information
+    /// needed for target selection decisions.
+    async fn build_mesh_state(&self) -> Result<MeshState> {
+        // For Step 3, create a basic mesh state
+        // In production, this would query actual node states from the mesh
+        let peer_ids = self.mesh_node.discover_peers().await?;
+
+        let mut nodes = Vec::new();
+        for peer_id in peer_ids {
+            // For now, create placeholder node info
+            // In production: Query actual capabilities and utilization
+            nodes.push((
+                peer_id,
+                NodeInfo {
+                    zone: self.mesh_node.zone().clone(),
+                    available_bytes: 1_000_000_000, // 1GB placeholder
+                    used_bytes: 100_000_000,        // 10% utilization
+                    network_tier: crate::NetworkTier::Premium,
+                },
+            ));
+        }
+
+        Ok(MeshState::new(nodes, self.mesh_node.zone().clone()))
+    }
+
+    /// Execute a compiled scaling action.
+    ///
+    /// This is the execution layer - each action type has its own handler
+    /// that performs the actual mesh operations (replication, migration, etc).
+    async fn execute_action(&self, action: ScalingAction) -> Result<()> {
+        match action {
+            ScalingAction::Replicate {
+                capsule_id,
+                strategy,
+                targets,
             } => {
-                self.handle_heat_spike(id, accesses_per_min, node_id).await?;
-            }
-            Telemetry::CapacityThreshold {
-                node_id,
-                used_bytes,
-                total_bytes,
-                threshold_pct,
-            } => {
-                self.handle_capacity_threshold(node_id, used_bytes, total_bytes, threshold_pct)
+                self.execute_replication(capsule_id, strategy, targets)
                     .await?;
             }
-            Telemetry::NodeDegraded { node_id, reason } => {
-                self.handle_node_degraded(node_id, reason).await?;
+            ScalingAction::Migrate {
+                capsule_id,
+                reason,
+                destination,
+                transform,
+            } => {
+                self.execute_migration(capsule_id, reason, destination, transform)
+                    .await?;
+            }
+            ScalingAction::Evacuate {
+                source_node,
+                reason,
+                urgency,
+            } => {
+                self.execute_evacuation(source_node, reason, urgency)
+                    .await?;
+            }
+            ScalingAction::Rebalance {
+                overloaded_nodes,
+                underutilized_nodes,
+            } => {
+                self.execute_rebalancing(overloaded_nodes, underutilized_nodes)
+                    .await?;
             }
         }
 
         Ok(())
     }
 
-    /// Handle NewCapsule event: Check policy and trigger replication if needed.
-    async fn handle_new_capsule(
+    // ========================================================================
+    // Action Executors - Step 3 Implementation
+    // ========================================================================
+    // These methods execute compiled ScalingActions using mesh operations.
+
+    /// Execute replication action based on compiled strategy.
+    async fn execute_replication(
         &self,
         capsule_id: CapsuleId,
-        _policy: Policy,
-        _node_id: Option<NodeId>,
+        strategy: crate::compiler::ReplicationStrategy,
+        targets: Vec<NodeId>,
     ) -> Result<()> {
-        debug!(
+        info!(
             capsule_id = %capsule_id.as_uuid(),
-            "handling new capsule (agent stub)"
+            strategy = ?strategy,
+            target_count = targets.len(),
+            "executing replication"
         );
 
-        // Note: Full implementation will check policy.rpo and policy.latency_target
-        // when common/podms feature is enabled. For now, this is a stub.
-        //
-        // Future implementation will:
-        // - Check if policy.rpo == Duration::ZERO → trigger metro-sync
-        // - Check if policy.rpo < 60s → trigger async replication
-        // - Check if policy.latency_target < 2ms → optimize placement
-        //
-        // For Step 2, replication is handled directly in WritePipeline.
-        // Agent will take over in Step 3 with the policy compiler.
+        use crate::compiler::ReplicationStrategy;
+        match strategy {
+            ReplicationStrategy::MetroSync { replica_count } => {
+                // Synchronous replication for zero-RPO
+                // In production: Mirror segments to targets in parallel
+                debug!(
+                    replica_count = replica_count,
+                    "performing metro-sync replication"
+                );
 
-        debug!("agent stub: replication delegated to WritePipeline");
-
-        Ok(())
-    }
-
-    /// Trigger metro-sync replication to 1-2 peer nodes.
-    async fn trigger_metro_sync_replication(
-        &self,
-        _capsule_id: CapsuleId,
-        _policy: &Policy,
-    ) -> Result<()> {
-        // TODO: Implement actual replication logic
-        // This is a stub for Step 2 - full implementation would:
-        // 1. Discover peers via mesh_node
-        // 2. Select 1-2 targets in same zone
-        // 3. Mirror segments via mesh_node.mirror_segment()
-        // 4. Update metadata with replication status
-
-        let peers = self.mesh_node.discover_peers().await?;
-        debug!(peer_count = peers.len(), "discovered peers for replication");
-
-        // Select first peer for now (simple strategy)
-        if let Some(_target) = peers.first() {
-            debug!("would replicate to peer (stub)");
-            // Actual replication will be implemented in pipeline extension
+                for target in targets.iter().take(replica_count) {
+                    debug!(target = %target, "would mirror segments to target");
+                    // TODO: Load capsule segments and call mesh_node.mirror_segment()
+                }
+            }
+            ReplicationStrategy::AsyncWithBatching { rpo } => {
+                // Async replication with batching
+                debug!(rpo_secs = rpo.as_secs(), "queuing async replication");
+                // TODO: Add to replication queue with RPO-based batching
+            }
+            ReplicationStrategy::None => {
+                // No replication needed
+                debug!("no replication required");
+            }
         }
 
         Ok(())
     }
 
-    /// Trigger async replication with batching based on RPO.
-    async fn trigger_async_replication(
-        &self,
-        _capsule_id: CapsuleId,
-        _policy: &Policy,
-    ) -> Result<()> {
-        // TODO: Implement async replication with buffering
-        // Queue capsule for batched replication
-        debug!("async replication queued (stub)");
-        Ok(())
-    }
-
-    /// Check if capsule is optimally placed for its latency target.
-    async fn check_optimal_placement(
-        &self,
-        _capsule_id: CapsuleId,
-        _policy: &Policy,
-    ) -> Result<()> {
-        // TODO: Implement placement optimization
-        // Check current node capabilities vs. policy requirements
-        debug!("placement check (stub)");
-        Ok(())
-    }
-
-    /// Handle HeatSpike event: Migrate hot capsule to cooler node.
-    async fn handle_heat_spike(
+    /// Execute migration action (with optional transformation).
+    async fn execute_migration(
         &self,
         capsule_id: CapsuleId,
-        accesses_per_min: u64,
-        _node_id: Option<NodeId>,
+        reason: String,
+        destination: NodeId,
+        transform: bool,
     ) -> Result<()> {
-        warn!(
+        info!(
             capsule_id = %capsule_id.as_uuid(),
-            accesses_per_min,
-            "heat spike detected"
+            destination = %destination,
+            reason = %reason,
+            transform = transform,
+            "executing migration"
         );
 
-        // TODO: Implement migration logic
-        // 1. Find least-loaded peer
-        // 2. Copy capsule segments
-        // 3. Update routing metadata
-        // 4. Verify migration success
-        // 5. Delete old copy
+        // TODO: Step 3 - Implement migration with transformation hooks
+        // 1. Load capsule segments from current node
+        // 2. If transform: Apply SwarmBehavior.apply_transform()
+        // 3. Mirror to destination via mesh_node.mirror_segment()
+        // 4. Update routing/registry to point to new location
+        // 5. Verify success, then delete old copy
 
-        debug!("migration queued (stub)");
+        if transform {
+            debug!("would apply transformation during migration");
+            // Use SwarmBehavior trait from common::podms
+        }
+
+        debug!("migration queued for execution");
         Ok(())
     }
 
-    /// Handle CapacityThreshold event: Trigger rebalancing.
-    async fn handle_capacity_threshold(
+    /// Execute evacuation action based on urgency level.
+    async fn execute_evacuation(
         &self,
-        node_id: NodeId,
-        used_bytes: u64,
-        total_bytes: u64,
-        threshold_pct: f64,
+        source_node: NodeId,
+        reason: String,
+        urgency: crate::compiler::EvacuationUrgency,
     ) -> Result<()> {
         warn!(
-            node_id = %node_id,
-            used_bytes,
-            total_bytes,
-            threshold_pct,
-            "capacity threshold reached"
+            source_node = %source_node,
+            reason = %reason,
+            urgency = ?urgency,
+            "executing evacuation"
         );
 
-        // TODO: Implement rebalancing
-        // 1. Enumerate capsules on this node
-        // 2. Sort by access frequency (coldest first)
-        // 3. Select candidates for evacuation
-        // 4. Find target nodes with capacity
-        // 5. Migrate capsules
+        use crate::compiler::EvacuationUrgency;
+        match urgency {
+            EvacuationUrgency::Immediate => {
+                // Parallel evacuation for critical failures
+                debug!("initiating immediate parallel evacuation");
+                // TODO: Enumerate capsules, migrate all in parallel
+            }
+            EvacuationUrgency::Gradual => {
+                // Gradual evacuation (cold capsules first)
+                debug!("initiating gradual evacuation (cold-first)");
+                // TODO: Sort capsules by access frequency, migrate in order
+            }
+        }
 
-        debug!("rebalancing queued (stub)");
         Ok(())
     }
 
-    /// Handle NodeDegraded event: Evacuate capsules from failing node.
-    async fn handle_node_degraded(&self, node_id: NodeId, reason: String) -> Result<()> {
-        warn!(
-            node_id = %node_id,
-            reason = %reason,
-            "node degraded, triggering evacuation"
+    /// Execute rebalancing action across nodes.
+    async fn execute_rebalancing(
+        &self,
+        overloaded_nodes: Vec<NodeId>,
+        underutilized_nodes: Vec<NodeId>,
+    ) -> Result<()> {
+        info!(
+            overloaded_count = overloaded_nodes.len(),
+            underutilized_count = underutilized_nodes.len(),
+            "executing rebalancing"
         );
 
-        // TODO: Implement evacuation
-        // This is the highest priority agent action:
-        // 1. Enumerate all capsules on degraded node
-        // 2. Find healthy peers in same zone
-        // 3. Copy all capsules in parallel
-        // 4. Update routing/registry
-        // 5. Mark old node as evacuated
+        // TODO: Step 3 - Implement rebalancing logic
+        // 1. Enumerate capsules on overloaded nodes
+        // 2. Sort by access frequency (coldest first)
+        // 3. Calculate target distribution
+        // 4. Migrate capsules to underutilized nodes
 
-        debug!("evacuation queued (stub)");
+        debug!("rebalancing queued for execution");
         Ok(())
     }
 }
