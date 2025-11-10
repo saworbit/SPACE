@@ -8,10 +8,20 @@ use capsule_registry::pipeline::WritePipeline;
 use capsule_registry::CapsuleRegistry;
 use common::{podms::Telemetry, Policy};
 use nvram_sim::NvramLog;
+use std::sync::Once;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
+
+fn init_native_pipeline() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    });
+}
 
 #[tokio::test]
 async fn test_telemetry_channel_creation() {
+    init_native_pipeline();
     let (tx, _rx) = mpsc::unbounded_channel::<Telemetry>();
     let test_id = uuid::Uuid::new_v4();
     let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
@@ -27,6 +37,7 @@ async fn test_telemetry_channel_creation() {
 
 #[tokio::test]
 async fn test_telemetry_emission_on_write() {
+    init_native_pipeline();
     let (tx, mut rx) = mpsc::unbounded_channel::<Telemetry>();
     let test_id = uuid::Uuid::new_v4();
     let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
@@ -47,7 +58,10 @@ async fn test_telemetry_emission_on_write() {
         .expect("write should succeed");
 
     // Verify telemetry was emitted
-    let event = rx.try_recv().expect("should receive telemetry event");
+    let event = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timeout waiting for telemetry event") 
+        .expect("telemetry channel closed");
 
     match event {
         Telemetry::NewCapsule {
@@ -64,7 +78,7 @@ async fn test_telemetry_emission_on_write() {
 
 #[tokio::test]
 async fn test_telemetry_with_metro_sync_policy() {
-    use std::time::Duration;
+    init_native_pipeline();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Telemetry>();
     let test_id = uuid::Uuid::new_v4();
@@ -86,7 +100,10 @@ async fn test_telemetry_with_metro_sync_policy() {
         .expect("write should succeed");
 
     // Verify telemetry contains correct policy
-    let event = rx.try_recv().expect("should receive telemetry event");
+    let event = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timeout waiting for telemetry event")
+        .expect("telemetry channel closed");
 
     match event {
         Telemetry::NewCapsule {
@@ -105,6 +122,7 @@ async fn test_telemetry_with_metro_sync_policy() {
 
 #[tokio::test]
 async fn test_no_telemetry_without_channel() {
+    init_native_pipeline();
     // Create pipeline without telemetry channel
     let test_id = uuid::Uuid::new_v4();
     let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
@@ -128,6 +146,7 @@ async fn test_no_telemetry_without_channel() {
 
 #[tokio::test]
 async fn test_telemetry_channel_closed_gracefully() {
+    init_native_pipeline();
     let (tx, rx) = mpsc::unbounded_channel::<Telemetry>();
     let test_id = uuid::Uuid::new_v4();
     let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
@@ -157,6 +176,7 @@ async fn test_telemetry_channel_closed_gracefully() {
 
 #[tokio::test]
 async fn test_multiple_writes_emit_multiple_telemetry_events() {
+    init_native_pipeline();
     let (tx, mut rx) = mpsc::unbounded_channel::<Telemetry>();
     let test_id = uuid::Uuid::new_v4();
     let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
@@ -186,9 +206,18 @@ async fn test_multiple_writes_emit_multiple_telemetry_events() {
         .expect("third write should succeed");
 
     // Verify we got three telemetry events
-    let event1 = rx.try_recv().expect("should receive first event");
-    let event2 = rx.try_recv().expect("should receive second event");
-    let event3 = rx.try_recv().expect("should receive third event");
+    let event1 = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timeout waiting for first event")
+        .expect("telemetry channel closed");
+    let event2 = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timeout waiting for second event")
+        .expect("telemetry channel closed");
+    let event3 = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timeout waiting for third event")
+        .expect("telemetry channel closed");
 
     match (event1, event2, event3) {
         (

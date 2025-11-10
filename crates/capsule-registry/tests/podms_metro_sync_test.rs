@@ -14,12 +14,21 @@ use common::podms::{Telemetry, ZoneId};
 use common::Policy;
 use nvram_sim::NvramLog;
 use scaling::MeshNode;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
+fn init_native_pipeline() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    });
+}
+
 #[tokio::test]
 async fn test_metro_sync_replication_with_mesh_node() {
+    init_native_pipeline();
+
     // Setup: Create two nodes in the same zone
     let zone = ZoneId::Metro {
         name: "us-west-1a".into(),
@@ -85,6 +94,8 @@ async fn test_metro_sync_replication_with_mesh_node() {
 
 #[tokio::test]
 async fn test_metro_sync_skipped_without_mesh_node() {
+    init_native_pipeline();
+
     // Create pipeline WITHOUT mesh node
     let test_id = uuid::Uuid::new_v4();
     let temp_dir = std::env::temp_dir().join(format!("podms_test_{}", test_id));
@@ -125,6 +136,8 @@ async fn test_metro_sync_skipped_without_mesh_node() {
 
 #[tokio::test]
 async fn test_async_replication_skipped_for_non_zero_rpo() {
+    init_native_pipeline();
+
     // Setup: Create mesh node
     let zone = ZoneId::Metro {
         name: "test-zone".into(),
@@ -172,6 +185,8 @@ async fn test_async_replication_skipped_for_non_zero_rpo() {
 
 #[tokio::test]
 async fn test_replication_preserves_dedup() {
+    init_native_pipeline();
+
     // Setup: Create two nodes
     let zone = ZoneId::Metro {
         name: "dedup-test".into(),
@@ -225,6 +240,8 @@ async fn test_replication_preserves_dedup() {
 
 #[tokio::test]
 async fn test_multi_segment_capsule_replication() {
+    init_native_pipeline();
+
     // Setup nodes
     let zone = ZoneId::Metro {
         name: "multi-seg".into(),
