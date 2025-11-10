@@ -11,8 +11,20 @@ fn cleanup(log_path: &str, meta_path: &str) {
     let _ = fs::remove_file(meta_path);
 }
 
+use std::sync::Once;
+
+fn init() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // Force tests to hit the native async pipeline even when the modular
+        // pipeline feature is enabled so we exercise the NVMe/NVRAM path.
+        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    });
+}
+
 #[test]
 fn async_pipeline_processes_segments_in_order() {
+    init();
     let log_path = "async_pipeline.log";
     let meta_path = "async_pipeline.metadata";
     cleanup(log_path, meta_path);
@@ -62,6 +74,7 @@ fn async_pipeline_processes_segments_in_order() {
 
 #[test]
 fn async_pipeline_deduplicates_repeated_payloads() {
+    init();
     let log_path = "async_pipeline_dedup.log";
     let meta_path = "async_pipeline_dedup.metadata";
     cleanup(log_path, meta_path);
