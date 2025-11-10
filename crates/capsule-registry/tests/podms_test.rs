@@ -60,7 +60,7 @@ async fn test_telemetry_emission_on_write() {
     // Verify telemetry was emitted
     let event = timeout(Duration::from_secs(1), rx.recv())
         .await
-        .expect("timeout waiting for telemetry event") 
+        .expect("timeout waiting for telemetry event")
         .expect("telemetry channel closed");
 
     match event {
