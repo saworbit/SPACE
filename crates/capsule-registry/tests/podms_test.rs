@@ -18,12 +18,11 @@ async fn test_telemetry_channel_creation() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
-    let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
+    let _pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
-    // Pipeline should be created successfully with telemetry channel
-    assert!(true); // If we got here, the channel was set up correctly
+    // Pipeline should be created successfully if we reach this point.
 }
 
 #[tokio::test]
@@ -34,7 +33,7 @@ async fn test_telemetry_emission_on_write() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -73,7 +72,7 @@ async fn test_telemetry_with_metro_sync_policy() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -112,7 +111,7 @@ async fn test_no_telemetry_without_channel() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram);
 
@@ -120,7 +119,9 @@ async fn test_no_telemetry_without_channel() {
     let data = b"Test data";
     let policy = Policy::default();
 
-    let result = pipeline.write_capsule_with_policy_async(data, &policy).await;
+    let result = pipeline
+        .write_capsule_with_policy_async(data, &policy)
+        .await;
 
     assert!(result.is_ok(), "write should succeed without telemetry");
 }
@@ -133,7 +134,7 @@ async fn test_telemetry_channel_closed_gracefully() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 
@@ -144,7 +145,9 @@ async fn test_telemetry_channel_closed_gracefully() {
     let data = b"Test data after channel close";
     let policy = Policy::default();
 
-    let result = pipeline.write_capsule_with_policy_async(data, &policy).await;
+    let result = pipeline
+        .write_capsule_with_policy_async(data, &policy)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -160,7 +163,7 @@ async fn test_multiple_writes_emit_multiple_telemetry_events() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let pipeline = WritePipeline::new(registry, nvram).with_telemetry_channel(tx);
 

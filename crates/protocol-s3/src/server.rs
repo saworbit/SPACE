@@ -1,20 +1,20 @@
 use anyhow::Result;
+#[cfg(feature = "advanced-security")]
+use axum::{
+    body::Body,
+    http::Request,
+    middleware::{from_fn, Next},
+    response::Response,
+};
 use axum::{
     routing::{delete, get, head, put},
     Router,
 };
 #[cfg(feature = "advanced-security")]
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-    middleware::{from_fn, Next},
-    response::Response,
-};
-#[cfg(feature = "advanced-security")]
-use tokio::time::{sleep, Duration};
+use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "advanced-security")]
-use std::path::PathBuf;
+use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -68,7 +68,9 @@ impl S3Server {
         #[cfg(feature = "advanced-security")]
         if let Some(gateway) = &gateway {
             let layer = MtlsLayer::new(gateway);
-            app = app.layer(from_fn(move |req, next| enforce_mtls(layer.clone(), req, next)));
+            app = app.layer(from_fn(move |req, next| {
+                enforce_mtls(layer.clone(), req, next)
+            }));
         }
 
         #[cfg(feature = "advanced-security")]
@@ -135,12 +137,13 @@ impl S3Server {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(30);
 
-        let mut config = ZeroTrustConfig::default();
-        config.allowed_spiffe_ids = allowed;
-        config.header_name = header;
-        config.bpf_program = bpf_program;
-        config.spiffe_endpoint = spiffe_endpoint;
-        config.refresh_interval_secs = refresh_interval_secs;
+        let config = ZeroTrustConfig {
+            bpf_program,
+            allowed_spiffe_ids: allowed,
+            spiffe_endpoint,
+            header_name: header,
+            refresh_interval_secs,
+        };
 
         match EbpfGateway::new(config) {
             Ok(gateway) => Some(gateway),
@@ -153,21 +156,15 @@ impl S3Server {
 }
 
 #[cfg(feature = "advanced-security")]
-async fn enforce_mtls<B>(
-    layer: MtlsLayer,
-    mut req: Request<B>,
-    next: Next<B>,
-) -> Response {
+async fn enforce_mtls(layer: MtlsLayer, mut req: Request<Body>, next: Next) -> Response {
     match layer.authorize(&req) {
         Ok(identity) => {
             req.extensions_mut().insert(identity);
             next.run(req).await
         }
-        Err(MtlsRejection { status, message }) => {
-            Response::builder()
-                .status(status)
-                .body(Body::from(message))
-                .unwrap()
-        }
+        Err(MtlsRejection { status, message }) => Response::builder()
+            .status(status)
+            .body(Body::from(message))
+            .unwrap(),
     }
 }

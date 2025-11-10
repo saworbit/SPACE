@@ -67,8 +67,8 @@ mod modular_pipeline_integration {
     use futures::executor::block_on;
     use nvram_sim::NvramLog;
     use pipeline::Pipeline as ModularPipeline;
-    use storage::NvramBackend;
     use std::sync::{Arc, Mutex};
+    use storage::NvramBackend;
 
     #[test]
     fn modular_pipeline_write_succeeds() {
@@ -103,11 +103,11 @@ mod modular_pipeline_integration {
         let encryptor = XtsEncryptor::new(Arc::clone(&key_manager));
         let keyring = KeyManagerKeyring::new(key_manager);
         let mut pipeline = ModularPipeline::new(
-            Lz4ZstdCompressor::default(),
+            Lz4ZstdCompressor,
             Blake3Deduper::default(),
             encryptor,
             storage.clone(),
-            DefaultPolicyEvaluator::default(),
+            DefaultPolicyEvaluator,
             Some(keyring),
             pipeline::InMemoryCatalog::default(),
         );
@@ -182,8 +182,7 @@ mod modular_pipeline_integration {
         .unwrap();
 
         let policy = Policy::default();
-        let capsule_id =
-            block_on(pipeline.write_capsule(b"orphaned data block", &policy)).unwrap();
+        let capsule_id = block_on(pipeline.write_capsule(b"orphaned data block", &policy)).unwrap();
         drop(pipeline);
 
         let capsule = registry.lookup(capsule_id).unwrap();
@@ -192,16 +191,14 @@ mod modular_pipeline_integration {
         let mut metadata = log.get_segment_metadata(seg_id).unwrap();
         metadata.ref_count = 0;
         metadata.deduplicated = false;
-        log.update_segment_metadata(seg_id, metadata.clone()).unwrap();
+        log.update_segment_metadata(seg_id, metadata.clone())
+            .unwrap();
         registry.delete_capsule(capsule_id).unwrap();
         drop(log);
 
-        let mut pipeline = registry_nvram_pipeline_with_encryption(
-            &log_path,
-            registry.clone(),
-            key_manager,
-        )
-        .unwrap();
+        let mut pipeline =
+            registry_nvram_pipeline_with_encryption(&log_path, registry.clone(), key_manager)
+                .unwrap();
 
         let reclaimed = block_on(pipeline.garbage_collect()).unwrap();
         assert_eq!(reclaimed, 1);

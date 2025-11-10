@@ -10,7 +10,9 @@ use futures::{SinkExt, StreamExt};
 use http::{header::HeaderName, Request, StatusCode};
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{info, warn};
+#[cfg(target_os = "linux")]
+use tracing::info;
+use tracing::warn;
 
 #[cfg(target_os = "linux")]
 use aya::Bpf;
@@ -77,13 +79,9 @@ impl EbpfGateway {
         Ok(Self {
             #[cfg(target_os = "linux")]
             program,
-            allowed: Arc::new(RwLock::new(
-                config.allowed_spiffe_ids.into_iter().collect(),
-            )),
+            allowed: Arc::new(RwLock::new(config.allowed_spiffe_ids.into_iter().collect())),
             header_name: config.header_name.clone(),
-            workload_client: config
-                .spiffe_endpoint
-                .map(SpiffeWorkloadClient::new),
+            workload_client: config.spiffe_endpoint.map(SpiffeWorkloadClient::new),
             refresh_interval: Duration::from_secs(config.refresh_interval_secs.max(5)),
         })
     }
@@ -133,7 +131,7 @@ impl MtlsLayer {
         let header_value = req
             .headers()
             .get(&self.header)
-            .ok_or_else(|| MtlsRejection::missing_identity())?;
+            .ok_or_else(MtlsRejection::missing_identity)?;
 
         let spiffe = header_value
             .to_str()
@@ -214,8 +212,8 @@ impl SpiffeWorkloadClient {
         while let Some(msg) = socket.next().await {
             match msg {
                 Ok(Message::Text(payload)) => {
-                    let parsed: IdentitiesPayload = serde_json::from_str(&payload)
-                        .context("invalid SPIFFE payload")?;
+                    let parsed: IdentitiesPayload =
+                        serde_json::from_str(&payload).context("invalid SPIFFE payload")?;
                     return Ok(parsed.allowed);
                 }
                 Ok(Message::Binary(_)) => continue,

@@ -8,9 +8,9 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use blake3::Hasher;
 use pqcrypto_kyber::kyber768::{self, Ciphertext, PublicKey, SecretKey};
-use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _};
+use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{CapsuleId, ContentHash, CryptoProfile, SegmentId};
 
@@ -160,8 +160,8 @@ fn derive_material(
 }
 
 fn load_keys(path: &Path) -> Result<KyberKeyMaterialState> {
-    let contents =
-        std::fs::read_to_string(path).with_context(|| format!("unable to read {}", path.display()))?;
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("unable to read {}", path.display()))?;
     let disk: StoredKyberKey = serde_json::from_str(&contents)?;
     let public = PublicKey::from_bytes(&hex::decode(disk.public)?)
         .map_err(|err| anyhow!("invalid public key: {err:?}"))?;
@@ -218,7 +218,13 @@ mod tests {
         let segment = SegmentId(7);
 
         let wrapped = manager
-            .wrap_xts_key(CryptoProfile::HybridKyber, &base_key, &capsule, segment, &hash)
+            .wrap_xts_key(
+                CryptoProfile::HybridKyber,
+                &base_key,
+                &capsule,
+                segment,
+                &hash,
+            )
             .unwrap()
             .expect("hybrid material");
         let decoded = manager

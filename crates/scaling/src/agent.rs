@@ -47,10 +47,7 @@ impl ScalingAgent {
 
     /// Run the agent loop, consuming telemetry events and triggering actions.
     /// This is the main entry point for the autonomous scaling system.
-    pub async fn run(
-        &self,
-        mut telemetry_rx: UnboundedReceiver<Telemetry>,
-    ) -> Result<()> {
+    pub async fn run(&self, mut telemetry_rx: UnboundedReceiver<Telemetry>) -> Result<()> {
         info!(node_id = %self.mesh_node.id(), "scaling agent started");
 
         loop {

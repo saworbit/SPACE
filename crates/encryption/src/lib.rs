@@ -124,8 +124,9 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert!(!VERSION.is_empty());
-        println!("Encryption crate version: {}", VERSION);
+        let runtime_version = VERSION.to_string();
+        assert!(!runtime_version.is_empty());
+        println!("Encryption crate version: {}", runtime_version);
     }
 
     #[test]

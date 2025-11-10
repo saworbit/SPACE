@@ -356,7 +356,7 @@ fn find_pin_mismatches(metadata: &Metadata, pins: &BTreeMap<String, String>) -> 
         });
 
     for (name, spec) in pins {
-        let sanitized = spec.trim_start_matches(|c| c == '=' || c == '^');
+        let sanitized = spec.trim_start_matches(&['=', '^'][..]);
         let resolved = packages_by_name
             .get(name.as_str())
             .map(|pkgs| {
@@ -474,9 +474,9 @@ fn load_metadata() -> Result<Metadata> {
 }
 
 fn iso_timestamp() -> Result<String> {
-    Ok(OffsetDateTime::now_utc()
+    OffsetDateTime::now_utc()
         .format(&Rfc3339)
-        .context("failed to format timestamp")?)
+        .context("failed to format timestamp")
 }
 
 #[derive(Serialize)]

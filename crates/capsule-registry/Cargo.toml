@@ -41,3 +41,8 @@ scaling = { path = "../scaling", optional = true }
 [dev-dependencies]
 tracing-test = { workspace = true }
 futures = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "pipeline"
+harness = false

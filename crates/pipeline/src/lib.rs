@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use anyhow::{anyhow, Context, Result};
 use common::{
     traits::{
-        CapsuleCatalog, Compressor, DedupStats, Deduper, Encryptor, EncryptionSummary, Keyring,
+        CapsuleCatalog, Compressor, DedupStats, Deduper, EncryptionSummary, Encryptor, Keyring,
         PolicyEvaluator, StorageBackend, StorageTransaction,
     },
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
@@ -11,12 +11,11 @@ use common::{
 };
 use compression::Lz4ZstdCompressor;
 use dedup::Blake3Deduper;
-use storage::{InMemoryBackend, NvramBackend};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use storage::{InMemoryBackend, NvramBackend};
 use tracing::instrument;
 
-use blake3;
 use encryption::{
     compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE, KeyManager,
 };
@@ -106,7 +105,7 @@ impl Encryptor for XtsEncryptor {
 
         let (ciphertext, mut metadata) =
             encrypt_segment(data.as_ref(), &key_pair, key_version, tweak)
-            .context("segment encryption failed")?;
+                .context("segment encryption failed")?;
 
         let mac = compute_mac(&ciphertext, &metadata, key_pair.key1(), key_pair.key2())
             .context("failed to compute MAC")?;
@@ -151,11 +150,7 @@ impl Encryptor for XtsEncryptor {
 pub struct DefaultPolicyEvaluator;
 
 impl PolicyEvaluator for DefaultPolicyEvaluator {
-    fn evaluate_compression(
-        &self,
-        policy: &Policy,
-        _sample: &[u8],
-    ) -> Result<CompressionPolicy> {
+    fn evaluate_compression(&self, policy: &Policy, _sample: &[u8]) -> Result<CompressionPolicy> {
         Ok(policy.compression.clone())
     }
 
@@ -428,9 +423,11 @@ where
                     .as_ref()
                     .map(|keyring| keyring.derive_key(capsule_id, seg_id))
                     .transpose()?;
-                let (encrypted, summary) = self
-                    .encryptor
-                    .encrypt(Cow::Borrowed(view.as_ref()), &encryption_policy, seg_id)?;
+                let (encrypted, summary) = self.encryptor.encrypt(
+                    Cow::Borrowed(view.as_ref()),
+                    &encryption_policy,
+                    seg_id,
+                )?;
                 (encrypted, summary)
             } else {
                 (view.into_owned(), EncryptionSummary::new("none"))
@@ -600,16 +597,7 @@ pub struct PipelineBuilder<
     catalog: Option<R>,
 }
 
-impl<
-        C,
-        D,
-        E,
-        S,
-        Eval,
-        K,
-        R,
-    > Default
-    for PipelineBuilder<C, D, E, S, Eval, K, R>
+impl<C, D, E, S, Eval, K, R> Default for PipelineBuilder<C, D, E, S, Eval, K, R>
 where
     C: Compressor + Default,
     D: Deduper + Default,
@@ -632,15 +620,7 @@ where
     }
 }
 
-impl<
-        C,
-        D,
-        E,
-        S,
-        Eval,
-        K,
-        R,
-    > PipelineBuilder<C, D, E, S, Eval, K, R>
+impl<C, D, E, S, Eval, K, R> PipelineBuilder<C, D, E, S, Eval, K, R>
 where
     C: Compressor + Default,
     D: Deduper + Default,
@@ -737,11 +717,11 @@ pub type NvramPipelineWithEncryption = Pipeline<
 pub fn pipeline_with_nvram<P: AsRef<std::path::Path>>(path: P) -> Result<NvramPipeline> {
     let storage = NvramBackend::open(path)?;
     Ok(Pipeline::new(
-        Lz4ZstdCompressor::default(),
+        Lz4ZstdCompressor,
         Blake3Deduper::default(),
-        NoopEncryptor::default(),
+        NoopEncryptor,
         storage,
-        DefaultPolicyEvaluator::default(),
+        DefaultPolicyEvaluator,
         None,
         InMemoryCatalog::default(),
     ))
@@ -753,11 +733,11 @@ pub fn pipeline_with_nvram_xts<P: AsRef<std::path::Path>>(
 ) -> Result<NvramPipelineWithEncryption> {
     let storage = NvramBackend::open(path)?;
     Ok(Pipeline::new(
-        Lz4ZstdCompressor::default(),
+        Lz4ZstdCompressor,
         Blake3Deduper::default(),
         XtsEncryptor::new(Arc::clone(&key_manager)),
         storage,
-        DefaultPolicyEvaluator::default(),
+        DefaultPolicyEvaluator,
         Some(KeyManagerKeyring::new(key_manager)),
         InMemoryCatalog::default(),
     ))

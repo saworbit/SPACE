@@ -11,7 +11,6 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::CapsuleId;
 use nvram_sim::NvramLog;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -131,7 +130,7 @@ impl BlockView {
         if block_size == 0 {
             bail!("Block size must be > 0");
         }
-        if size % block_size != 0 {
+        if !size.is_multiple_of(block_size) {
             bail!("Volume size must be a multiple of block size");
         }
         if size > usize::MAX as u64 {

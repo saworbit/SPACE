@@ -338,8 +338,11 @@ impl Compressor for Lz4ZstdCompressor {
         policy: &CompressionPolicy,
     ) -> Result<(Cow<'a, [u8]>, CompressionSummary)> {
         let (view, result) = compress_segment(data, policy)?;
-        let mut summary =
-            CompressionSummary::new(result.original_size, result.compressed_size, result.algorithm);
+        let mut summary = CompressionSummary::new(
+            result.original_size,
+            result.compressed_size,
+            result.algorithm,
+        );
         summary.compressed = result.compressed;
         summary.reused_input = result.reused_original;
         summary.reason = result.reason.as_ref().map(|r| r.to_string());

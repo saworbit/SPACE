@@ -5,7 +5,10 @@
       "Bash(cargo check:*)",
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
-      "Bash(set RUST_BACKTRACE=1:*)"
+      "Bash(set RUST_BACKTRACE=1:*)",
+      "Bash(dir \"c:\\space\")",
+      "Bash(cat:*)",
+      "Bash(git -C /c/space log:*)"
     ],
     "deny": [],
     "ask": []

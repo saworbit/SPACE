@@ -5,9 +5,13 @@
 
 > **✨ One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-Phase%203.3%20Advanced%20Security-green.svg)](https://github.com/your-org/space)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
+[![Status](https://img.shields.io/badge/status-Phase%203.3%20Advanced%20Security-green.svg)](https://github.com/saworbit/SPACE)
+[![Contributing](https://img.shields.io/badge/Contributing-Guidelines-blueviolet.svg)](CONTRIBUTING.md)
+
+**Phase 3.3 Complete** – Encryption ✅ | Bloom Filters ✅ | Audit Log ✅ | SPIFFE/mTLS ✅ | PODMS Scaling ✅
 
 ---
 
@@ -796,7 +800,7 @@ spacectl block delete vol1
 
 ---
 
-[🐛 Report Bug](https://github.com/your-org/space/issues) • [💡 Request Feature](https://github.com/your-org/space/issues) • [💬 Discussions](https://github.com/your-org/space/discussions)
+[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Request Feature](https://github.com/saworbit/SPACE/issues) • [💬 Discussions](https://github.com/saworbit/SPACE/discussions)
 
 **⭐ Star us on GitHub if you find this project interesting! ⭐**
 

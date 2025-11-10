@@ -47,11 +47,7 @@ impl InMemoryTransaction {
 }
 
 impl StorageTransaction for InMemoryTransaction {
-    fn append<'a>(
-        &'a mut self,
-        segment: SegmentId,
-        data: &'a [u8],
-    ) -> BoxFuture<'a, Result<()>> {
+    fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         self.staged_segments.insert(segment, data.to_vec());
         Box::pin(async { Ok(()) })
     }
@@ -72,10 +68,7 @@ impl StorageTransaction for InMemoryTransaction {
 
     fn commit(self) -> BoxFuture<'static, Result<()>> {
         Box::pin(async move {
-            let mut guard = self
-                .inner
-                .lock()
-                .expect("in-memory backend mutex poisoned");
+            let mut guard = self.inner.lock().expect("in-memory backend mutex poisoned");
             for (segment, data) in self.staged_segments {
                 guard.segments.insert(segment, data);
             }
@@ -98,11 +91,7 @@ impl StorageTransaction for InMemoryTransaction {
 impl StorageBackend for InMemoryBackend {
     type Transaction = InMemoryTransaction;
 
-    fn append<'a>(
-        &'a mut self,
-        segment: SegmentId,
-        data: &'a [u8],
-    ) -> BoxFuture<'a, Result<()>> {
+    fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         let inner = Arc::clone(&self.inner);
         let payload = data.to_vec();
         Box::pin(async move {
@@ -192,11 +181,7 @@ impl NvramStorageTransaction {
 }
 
 impl StorageTransaction for NvramStorageTransaction {
-    fn append<'a>(
-        &'a mut self,
-        segment: SegmentId,
-        data: &'a [u8],
-    ) -> BoxFuture<'a, Result<()>> {
+    fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         let data_vec = data.to_vec();
         let inner = &mut self.inner;
         Box::pin(async move {
@@ -246,11 +231,7 @@ impl StorageTransaction for NvramStorageTransaction {
 impl StorageBackend for NvramBackend {
     type Transaction = NvramStorageTransaction;
 
-    fn append<'a>(
-        &'a mut self,
-        segment: SegmentId,
-        data: &'a [u8],
-    ) -> BoxFuture<'a, Result<()>> {
+    fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
         let log = self.log.clone();
         let payload = data.to_vec();
         Box::pin(async move {

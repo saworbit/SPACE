@@ -1,7 +1,7 @@
 use anyhow::Result;
-use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 #[cfg(feature = "modular_pipeline")]
 use capsule_registry::modular_pipeline;
+use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use clap::{Parser, Subcommand};
 use common::CapsuleId;
 #[cfg(any(feature = "pipeline_async", feature = "modular_pipeline"))]
@@ -12,9 +12,9 @@ use protocol_nfs::NfsView;
 use std::fs;
 use std::io::{self, Write};
 use std::sync::Once;
-use tracing_subscriber::EnvFilter;
 #[cfg(feature = "modular_pipeline")]
 use tokio::runtime::Runtime as TokioRuntime;
+use tracing_subscriber::EnvFilter;
 
 const NVRAM_PATH: &str = "space.nvram";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";

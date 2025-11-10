@@ -22,15 +22,18 @@ async fn spiffe_allow_list_refreshes_from_stub() {
     let addr = listener.local_addr().expect("local addr");
     let stub_handle = tokio::spawn(run_stub(listener, responses.clone()));
 
-    let mut config = ZeroTrustConfig::default();
-    config.allowed_spiffe_ids = vec!["spiffe://bootstrap".into()];
-    config.header_name = "x-spiffe-id".into();
-    config.spiffe_endpoint = Some(format!("ws://{}", addr));
-    config.refresh_interval_secs = 1;
+    let config = ZeroTrustConfig {
+        allowed_spiffe_ids: vec!["spiffe://bootstrap".into()],
+        header_name: "x-spiffe-id".into(),
+        spiffe_endpoint: Some(format!("ws://{}", addr)),
+        refresh_interval_secs: 1,
+        ..ZeroTrustConfig::default()
+    };
 
     let gateway = EbpfGateway::new(config).expect("gateway init");
     {
-        let guard = gateway.allowed_identities().read().unwrap();
+        let identities = gateway.allowed_identities();
+        let guard = identities.read().unwrap();
         assert!(guard.contains("spiffe://bootstrap"));
     }
 
@@ -50,7 +53,8 @@ async fn spiffe_allow_list_refreshes_from_stub() {
     .await
     .expect("refresh loop");
 
-    let guard = gateway.allowed_identities().read().unwrap();
+    let identities = gateway.allowed_identities();
+    let guard = identities.read().unwrap();
     assert!(guard.contains("spiffe://demo/b"));
     assert_eq!(guard.len(), 1);
 
@@ -66,25 +70,22 @@ async fn run_stub(listener: TcpListener, responses: Arc<Mutex<VecDeque<Vec<Strin
 
         let responses = responses.clone();
         tokio::spawn(async move {
-            match accept_async(stream).await {
-                Ok(mut ws) => {
-                    while let Some(msg) = ws.next().await {
-                        match msg {
-                            Ok(Message::Text(_request)) => {
-                                let payload = {
-                                    let mut guard = responses.lock().await;
-                                    guard.pop_front().unwrap_or_default()
-                                };
-                                let json = json!({ "allowed": payload }).to_string();
-                                let _ = ws.send(Message::Text(json)).await;
-                                break;
-                            }
-                            Ok(Message::Close(_)) => break,
-                            _ => continue,
+            if let Ok(mut ws) = accept_async(stream).await {
+                while let Some(msg) = ws.next().await {
+                    match msg {
+                        Ok(Message::Text(_request)) => {
+                            let payload = {
+                                let mut guard = responses.lock().await;
+                                guard.pop_front().unwrap_or_default()
+                            };
+                            let json = json!({ "allowed": payload }).to_string();
+                            let _ = ws.send(Message::Text(json)).await;
+                            break;
                         }
+                        Ok(Message::Close(_)) => break,
+                        _ => continue,
                     }
                 }
-                Err(_) => {}
             }
         });
     }

@@ -1,15 +1,15 @@
-use compression::{compress_segment, decompress_lz4, decompress_zstd};
 use crate::dedup::{hash_content, DedupStats};
 #[cfg(feature = "pipeline_async")]
 use crate::error::PipelineResult;
 use crate::error::{CompressionError, PipelineError};
-use crate::{gc::GarbageCollector, CapsuleRegistry};
 #[cfg(feature = "modular_pipeline")]
 use crate::modular_pipeline;
+use crate::{gc::GarbageCollector, CapsuleRegistry};
 use anyhow::{Error as AnyhowError, Result};
 #[cfg(feature = "pipeline_async")]
 use bytes::Bytes;
 use common::*;
+use compression::{compress_segment, decompress_lz4, decompress_zstd};
 use nvram_sim::NvramLog;
 #[cfg(feature = "pipeline_async")]
 use nvram_sim::NvramTransaction;
@@ -20,19 +20,18 @@ use tracing::{debug, trace};
 use tracing::{error, info, instrument, warn};
 
 // Phase 3: Encryption imports
-use encryption::{
-    compute_mac, decrypt_segment, derive_tweak_from_hash, encrypt_segment, verify_mac,
-    EncryptionMetadata, KeyManager,
+#[cfg(feature = "advanced-security")]
+use common::security::audit_log::AuditLog;
+#[cfg(feature = "advanced-security")]
+#[cfg_attr(feature = "pipeline_async", allow(unused_imports))]
+use common::security::crypto_profiles::{
+    collect_base_material, serialize_ciphertext, HybridKeyMaterial, KyberKeyManager, KyberNonceExt,
 };
 #[cfg(feature = "advanced-security")]
 use encryption::keymanager::XtsKeyPair;
-#[cfg(feature = "advanced-security")]
-use common::security::{
-    audit_log::AuditLog,
-    crypto_profiles::{
-        collect_base_material, serialize_ciphertext, HybridKeyMaterial, KyberKeyManager,
-        KyberNonceExt,
-    },
+use encryption::{
+    compute_mac, decrypt_segment, derive_tweak_from_hash, encrypt_segment, verify_mac,
+    EncryptionMetadata, KeyManager,
 };
 use std::sync::{Arc, Mutex}; // NEW: For interior mutability
 #[cfg(feature = "pipeline_async")]
@@ -69,6 +68,7 @@ impl Default for PipelineConfig {
     }
 }
 
+#[cfg_attr(feature = "pipeline_async", allow(dead_code))]
 fn map_compression_error(segment_index: usize, err: AnyhowError) -> AnyhowError {
     match err.downcast::<CompressionError>() {
         Ok(comp_err) => {
@@ -87,6 +87,7 @@ fn map_compression_error(segment_index: usize, err: AnyhowError) -> AnyhowError 
     }
 }
 
+#[cfg_attr(feature = "pipeline_async", allow(dead_code))]
 fn map_registry_error(operation: &'static str, err: AnyhowError) -> AnyhowError {
     error!(operation, error = %err, "registry operation failed");
     PipelineError::Registry {
@@ -96,6 +97,7 @@ fn map_registry_error(operation: &'static str, err: AnyhowError) -> AnyhowError 
     .into()
 }
 
+#[cfg_attr(feature = "pipeline_async", allow(dead_code))]
 fn map_nvram_error(operation: &'static str, err: AnyhowError) -> AnyhowError {
     error!(operation, error = %err, "nvram operation failed");
     PipelineError::Nvram {
@@ -117,8 +119,8 @@ fn prepare_segment(
     key_manager: Option<Arc<Mutex<KeyManager>>>,
 ) -> PipelineResult<SegmentPrepared> {
     let started = Instant::now();
-    let (compressed_data, comp_result) = compress_segment(&chunk, &policy.compression)
-        .map_err(|err| {
+    let (compressed_data, comp_result) =
+        compress_segment(&chunk, &policy.compression).map_err(|err| {
             let comp_err = match err.downcast::<CompressionError>() {
                 Ok(ce) => ce,
                 Err(other) => {
@@ -142,19 +144,19 @@ fn prepare_segment(
     let final_data = if encryption_enabled {
         let km = key_manager
             .as_ref()
-            .ok_or_else(|| {
-                PipelineError::Registry {
-                    operation: "key_manager",
-                    source: anyhow::anyhow!("Key manager unavailable for encryption"),
-                }
+            .ok_or_else(|| PipelineError::Registry {
+                operation: "key_manager",
+                source: anyhow::anyhow!("Key manager unavailable for encryption"),
             })?;
         let mut km = km.lock().unwrap();
 
         let key_version = km.current_version();
-        let key_pair = km.get_key(key_version).map_err(|e| PipelineError::Registry {
-            operation: "get_key",
-            source: e.into(),
-        })?;
+        let key_pair = km
+            .get_key(key_version)
+            .map_err(|e| PipelineError::Registry {
+                operation: "get_key",
+                source: e.into(),
+            })?;
 
         let tweak = derive_tweak_from_hash(content_hash.as_str().as_bytes());
         let (ciphertext, mut enc_meta) =
@@ -187,7 +189,7 @@ struct SegmentPrepared {
     index: usize,
     content_hash: ContentHash,
     final_data: Bytes,
-        comp_result: compression::CompressionResult,
+    comp_result: compression::CompressionResult,
     encryption_meta: Option<EncryptionMetadata>,
     prepared_at: Instant,
     preparation_time: Duration,
@@ -255,10 +257,7 @@ impl WritePipeline {
         let (modular, runtime) = if modular_enabled {
             match modular_pipeline::registry_pipeline_from_log(nvram.clone(), registry.clone()) {
                 Ok(handle) => match TokioRuntime::new() {
-                    Ok(rt) => (
-                        Some(Arc::new(TokioMutex::new(handle))),
-                        Some(Arc::new(rt)),
-                    ),
+                    Ok(rt) => (Some(Arc::new(TokioMutex::new(handle))), Some(Arc::new(rt))),
                     Err(err) => {
                         warn!(error = %err, "failed to create tokio runtime for modular pipeline delegation");
                         (None, None)
@@ -332,10 +331,7 @@ impl WritePipeline {
         let (modular, runtime) = if modular_enabled {
             match modular_pipeline::registry_pipeline_from_log(nvram.clone(), registry.clone()) {
                 Ok(handle) => match TokioRuntime::new() {
-                    Ok(rt) => (
-                        Some(Arc::new(TokioMutex::new(handle))),
-                        Some(Arc::new(rt)),
-                    ),
+                    Ok(rt) => (Some(Arc::new(TokioMutex::new(handle))), Some(Arc::new(rt))),
                     Err(err) => {
                         warn!(error = %err, "failed to create tokio runtime for modular pipeline delegation");
                         (None, None)
@@ -489,20 +485,20 @@ impl WritePipeline {
     }
 
     /// Write data with explicit policy (including encryption)
-#[cfg(not(feature = "pipeline_async"))]
-#[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
-pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-    #[cfg(feature = "modular_pipeline")]
-    if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
-        return runtime.block_on(async {
-            let mut handle = modular.lock().await;
-            handle.write_capsule(data, policy).await
-        });
-    }
+    #[cfg(not(feature = "pipeline_async"))]
+    #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
+    pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+        #[cfg(feature = "modular_pipeline")]
+        if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+            return runtime.block_on(async {
+                let mut handle = modular.lock().await;
+                handle.write_capsule(data, policy).await
+            });
+        }
 
-    // Pre-allocate capsule ID but don't persist yet
-    let capsule_id = CapsuleId::new();
-    let policy_snapshot = policy.clone();
+        // Pre-allocate capsule ID but don't persist yet
+        let capsule_id = CapsuleId::new();
+        let policy_snapshot = policy.clone();
 
         // Track stats
         let mut segment_ids = Vec::new();
@@ -548,17 +544,14 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                             &content_hash,
                         ) {
                             Ok(Some(material)) => {
-                                derived_pair =
-                                    Some(XtsKeyPair::from_bytes(material.wrapped_key));
+                                derived_pair = Some(XtsKeyPair::from_bytes(material.wrapped_key));
                                 hybrid_state = Some(material);
                             }
                             Ok(None) => {}
                             Err(err) => warn!(error = %err, "kyber key wrapping failed"),
                         }
                     } else {
-                        warn!(
-                            "policy requested hybrid crypto but kyber manager is unavailable"
-                        );
+                        warn!("policy requested hybrid crypto but kyber manager is unavailable");
                     }
                 }
 
@@ -580,8 +573,12 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                 let (ciphertext, mut enc_meta) =
                     encrypt_segment(compressed_data.as_ref(), pair_for_use, key_version, tweak)?;
 
-                let mac_tag =
-                    compute_mac(&ciphertext, &enc_meta, pair_for_use.key1(), pair_for_use.key2())?;
+                let mac_tag = compute_mac(
+                    &ciphertext,
+                    &enc_meta,
+                    pair_for_use.key1(),
+                    pair_for_use.key2(),
+                )?;
                 enc_meta.set_integrity_tag(mac_tag);
                 encryption_meta = Some(enc_meta);
                 Cow::Owned(ciphertext)
@@ -641,8 +638,7 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                     }
                     #[cfg(feature = "advanced-security")]
                     if let Some(material) = hybrid_state.as_ref() {
-                        segment.pq_ciphertext =
-                            Some(serialize_ciphertext(&material.ciphertext));
+                        segment.pq_ciphertext = Some(serialize_ciphertext(&material.ciphertext));
                         segment.pq_nonce = Some(material.nonce);
                     }
 
@@ -683,8 +679,7 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
                 }
                 #[cfg(feature = "advanced-security")]
                 if let Some(material) = hybrid_state.as_ref() {
-                    segment.pq_ciphertext =
-                        Some(serialize_ciphertext(&material.ciphertext));
+                    segment.pq_ciphertext = Some(serialize_ciphertext(&material.ciphertext));
                     segment.pq_nonce = Some(material.nonce);
                 }
 
@@ -786,18 +781,18 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
         Ok(capsule_id)
     }
 
-#[cfg(feature = "pipeline_async")]
-pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-    #[cfg(feature = "modular_pipeline")]
-    if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
-        return runtime.block_on(async {
-            let mut handle = modular.lock().await;
-            handle.write_capsule(data, policy).await
-        });
-    }
+    #[cfg(feature = "pipeline_async")]
+    pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+        #[cfg(feature = "modular_pipeline")]
+        if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+            return runtime.block_on(async {
+                let mut handle = modular.lock().await;
+                handle.write_capsule(data, policy).await
+            });
+        }
 
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(self.write_capsule_with_policy_async(data, policy)),
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(self.write_capsule_with_policy_async(data, policy)),
             Err(_) => {
                 let runtime = RuntimeBuilder::new_multi_thread().enable_all().build()?;
                 runtime.block_on(self.write_capsule_with_policy_async(data, policy))
@@ -805,33 +800,28 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
         }
     }
 
-#[cfg(feature = "pipeline_async")]
-#[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
-pub async fn write_capsule_with_policy_async(
-    &self,
-    data: &[u8],
-    policy: &Policy,
-) -> Result<CapsuleId> {
-    #[cfg(feature = "modular_pipeline")]
-    if let Some(modular) = &self.modular {
-        let mut handle = modular.lock().await;
-        return handle.write_capsule(data, policy).await;
-    }
+    #[cfg(feature = "pipeline_async")]
+    #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
+    pub async fn write_capsule_with_policy_async(
+        &self,
+        data: &[u8],
+        policy: &Policy,
+    ) -> Result<CapsuleId> {
+        #[cfg(feature = "modular_pipeline")]
+        if let Some(modular) = &self.modular {
+            let mut handle = modular.lock().await;
+            return handle.write_capsule(data, policy).await;
+        }
 
-    let pipeline_start = Instant::now();
+        let pipeline_start = Instant::now();
         let capsule_id = CapsuleId::new();
 
         let encryption_enabled = policy.encryption.is_enabled() && self.key_manager.is_some();
-        let total_segments = (data.len() + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+        let total_segments = data.len().div_ceil(SEGMENT_SIZE);
 
         if total_segments == 0 {
             self.registry
-                .create_capsule_with_segments(
-                    capsule_id,
-                    0,
-                    Vec::new(),
-                    policy.clone(),
-                )
+                .create_capsule_with_segments(capsule_id, 0, Vec::new(), policy.clone())
                 .map_err(|err| map_registry_error("create_capsule_with_segments", err))?;
             info!(
                 capsule = %capsule_id.as_uuid(),
@@ -1139,7 +1129,10 @@ pub async fn write_capsule_with_policy_async(
         if policy.rpo == Duration::ZERO {
             if let Some(ref mesh_node) = self.mesh_node {
                 let replication_start = Instant::now();
-                match self.perform_metro_sync_replication(capsule_id, &segment_ids, mesh_node).await {
+                match self
+                    .perform_metro_sync_replication(capsule_id, &segment_ids, mesh_node)
+                    .await
+                {
                     Ok(replicated_count) => {
                         let replication_time = replication_start.elapsed();
                         info!(
@@ -1202,8 +1195,6 @@ pub async fn write_capsule_with_policy_async(
         segment_ids: &[SegmentId],
         mesh_node: &std::sync::Arc<scaling::MeshNode>,
     ) -> Result<usize> {
-        use tracing::Span;
-
         let span = tracing::info_span!(
             "metro_sync_replication",
             capsule_id = %capsule_id.as_uuid(),
@@ -1454,8 +1445,7 @@ pub async fn write_capsule_with_policy_async(
                             cipher_hex,
                         ) {
                             Ok(Some(material)) => {
-                                derived_pair =
-                                    Some(XtsKeyPair::from_bytes(material.wrapped_key));
+                                derived_pair = Some(XtsKeyPair::from_bytes(material.wrapped_key));
                             }
                             Ok(None) => {}
                             Err(err) => warn!(error = %err, "kyber unwrap failed"),
@@ -1479,7 +1469,12 @@ pub async fn write_capsule_with_policy_async(
                     ciphertext_len: Some(raw_data.len() as u32),
                 };
 
-                verify_mac(&raw_data, &enc_meta, pair_for_use.key1(), pair_for_use.key2())?;
+                verify_mac(
+                    &raw_data,
+                    &enc_meta,
+                    pair_for_use.key1(),
+                    pair_for_use.key2(),
+                )?;
 
                 decrypt_segment(&raw_data, pair_for_use, &enc_meta)?
             } else {

@@ -6,9 +6,9 @@ use std::fs;
 fn setup_paths(prefix: &str) -> (String, String) {
     let log_path = format!("{}_gc.log", prefix);
     let meta_path = format!("{}_gc.metadata", prefix);
-    let _ = fs::remove_file(&log_path);
+    let _ = fs::remove_file(log_path.as_str());
     let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(&meta_path);
+    let _ = fs::remove_file(meta_path.as_str());
     (log_path, meta_path)
 }
 
@@ -18,9 +18,9 @@ fn refcounts_increase_and_decrease_with_capsules() {
 
     let (log_path, meta_path) = setup_paths("refcount");
 
-    let registry = CapsuleRegistry::open(&meta_path).unwrap();
+    let registry = CapsuleRegistry::open(meta_path.as_str()).unwrap();
     let registry_view = registry.clone();
-    let nvram = NvramLog::open(&log_path).unwrap();
+    let nvram = NvramLog::open(log_path.as_str()).unwrap();
     let nvram_view = nvram.clone();
 
     let pipeline = WritePipeline::new(registry, nvram);
@@ -43,7 +43,7 @@ fn refcounts_increase_and_decrease_with_capsules() {
     pipeline.delete_capsule(capsule_one).unwrap();
     let segment = nvram_view.get_segment_metadata(shared_seg).unwrap();
     assert_eq!(segment.ref_count, 1);
-    assert!(segment.deduplicated == false);
+    assert!(!segment.deduplicated);
 
     // Delete the final capsule – segment metadata and content mapping should vanish.
     let segment_hash = segment.content_hash.clone().expect("segment hash present");
@@ -53,9 +53,9 @@ fn refcounts_increase_and_decrease_with_capsules() {
     assert!(registry_view.lookup_content(&segment_hash).is_none());
 
     drop(pipeline);
-    let _ = fs::remove_file(&log_path);
+    let _ = fs::remove_file(log_path.as_str());
     let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(&meta_path);
+    let _ = fs::remove_file(meta_path.as_str());
 
     std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
 }
@@ -66,9 +66,9 @@ fn garbage_collect_reclaims_orphan_segments() {
 
     let (log_path, meta_path) = setup_paths("gc_sweep");
 
-    let registry = CapsuleRegistry::open(&meta_path).unwrap();
+    let registry = CapsuleRegistry::open(meta_path.as_str()).unwrap();
     let registry_view = registry.clone();
-    let nvram = NvramLog::open(&log_path).unwrap();
+    let nvram = NvramLog::open(log_path.as_str()).unwrap();
     let nvram_view = nvram.clone();
 
     let pipeline = WritePipeline::new(registry, nvram);
@@ -96,9 +96,9 @@ fn garbage_collect_reclaims_orphan_segments() {
     }
 
     drop(pipeline);
-    let _ = fs::remove_file(&log_path);
+    let _ = fs::remove_file(log_path.as_str());
     let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(&meta_path);
+    let _ = fs::remove_file(meta_path.as_str());
 
     std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
 }
@@ -115,8 +115,8 @@ mod modular_pipeline_gc {
     use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
     use futures::executor::block_on;
     use pipeline::Pipeline as ModularPipeline;
-    use storage::NvramBackend;
     use std::sync::{Arc, Mutex};
+    use storage::NvramBackend;
 
     #[test]
     fn modular_pipeline_handles_key_rotation() {
@@ -124,20 +124,20 @@ mod modular_pipeline_gc {
 
         let log_path = "modular_gc.log";
         let segments_path = format!("{}.segments", log_path);
-        let _ = fs::remove_file(&log_path);
-        let _ = fs::remove_file(&segments_path);
+        let _ = fs::remove_file(log_path);
+        let _ = fs::remove_file(segments_path.as_str());
 
-        let storage = NvramBackend::open(&log_path).unwrap();
+        let storage = NvramBackend::open(log_path).unwrap();
         let key_manager = Arc::new(Mutex::new(KeyManager::new([0x3Cu8; MASTER_KEY_SIZE])));
 
         let encryptor = XtsEncryptor::new(Arc::clone(&key_manager));
         let keyring = KeyManagerKeyring::new(Arc::clone(&key_manager));
         let mut pipeline = ModularPipeline::new(
-            Lz4ZstdCompressor::default(),
+            Lz4ZstdCompressor,
             Blake3Deduper::default(),
             encryptor,
             storage.clone(),
-            DefaultPolicyEvaluator::default(),
+            DefaultPolicyEvaluator,
             Some(keyring),
             pipeline::InMemoryCatalog::default(),
         );
@@ -154,15 +154,15 @@ mod modular_pipeline_gc {
 
         block_on(pipeline.write_capsule(b"modular gc data payload second", &policy)).unwrap();
 
-        let log = nvram_sim::NvramLog::open(&log_path).unwrap();
+        let log = nvram_sim::NvramLog::open(log_path).unwrap();
         let first = log.get_segment_metadata(SegmentId(0)).unwrap();
         let second = log.get_segment_metadata(SegmentId(1)).unwrap();
 
         assert!(first.encrypted && second.encrypted);
         assert_ne!(first.key_version, second.key_version);
 
-        let _ = fs::remove_file(&log_path);
-        let _ = fs::remove_file(&segments_path);
+        let _ = fs::remove_file(log_path);
+        let _ = fs::remove_file(segments_path.as_str());
 
         std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
     }

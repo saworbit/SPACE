@@ -1,7 +1,7 @@
 use anyhow::Result;
-use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 #[cfg(feature = "modular_pipeline")]
-use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle};
+use capsule_registry::modular_pipeline::RegistryPipelineHandle;
+use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::CapsuleId;
 #[cfg(feature = "modular_pipeline")]
 use common::Policy;

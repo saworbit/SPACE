@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod mesh_tests {
-    use crate::{MeshNode, NetworkTier, NodeCapabilities};
+    use crate::{MeshNode, NetworkTier};
     use common::podms::ZoneId;
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
@@ -16,8 +16,11 @@ mod mesh_tests {
 
         let node = MeshNode::new(zone.clone(), addr).await.unwrap();
         assert_eq!(node.zone(), &zone);
-        assert_eq!(node.capabilities().has_nvram, true);
-        assert_eq!(node.capabilities().network_tier as u8, NetworkTier::Standard as u8);
+        assert!(node.capabilities().has_nvram);
+        assert_eq!(
+            node.capabilities().network_tier as u8,
+            NetworkTier::Standard as u8
+        );
     }
 
     #[tokio::test]

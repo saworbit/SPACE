@@ -180,8 +180,7 @@ fn format_http_date(timestamp: u64) -> String {
     use std::time::{Duration, UNIX_EPOCH};
 
     let system_time = UNIX_EPOCH + Duration::from_secs(timestamp);
-    let datetime = httpdate::fmt_http_date(system_time);
-    datetime
+    httpdate::fmt_http_date(system_time)
 }
 
 // Helper crate for HTTP date formatting

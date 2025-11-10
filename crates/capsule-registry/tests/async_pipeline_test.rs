@@ -25,7 +25,7 @@ fn async_pipeline_processes_segments_in_order() {
     let segment_count = 3;
     let mut data = Vec::with_capacity(SEGMENT_SIZE * segment_count + 2048);
     for seg in 0..segment_count {
-        data.extend(std::iter::repeat(seg as u8).take(SEGMENT_SIZE));
+        data.extend(std::iter::repeat_n(seg as u8, SEGMENT_SIZE));
     }
     data.extend((0..2048).map(|i| ((i * 37) % 251) as u8));
 
@@ -41,7 +41,7 @@ fn async_pipeline_processes_segments_in_order() {
     let reopened = CapsuleRegistry::open(meta_path).expect("reopen registry");
     let capsule = reopened.lookup(capsule_id).expect("capsule lookup");
 
-    let expected_segments = (data.len() + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+    let expected_segments = data.len().div_ceil(SEGMENT_SIZE);
     assert_eq!(
         capsule.segments.len(),
         expected_segments,

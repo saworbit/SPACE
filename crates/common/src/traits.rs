@@ -143,8 +143,12 @@ pub trait Encryptor: Send + Sync {
         segment: SegmentId,
     ) -> Result<(Vec<u8>, EncryptionSummary)>;
 
-    fn decrypt(&self, data: &[u8], policy: &EncryptionPolicy, segment: SegmentId)
-        -> Result<Vec<u8>>;
+    fn decrypt(
+        &self,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        segment: SegmentId,
+    ) -> Result<Vec<u8>>;
 
     fn compute_mac(&self, data: &[u8], segment: SegmentId) -> Result<Vec<u8>>;
 
@@ -153,11 +157,7 @@ pub trait Encryptor: Send + Sync {
 
 /// Transaction object returned by storage backends.
 pub trait StorageTransaction: Send {
-    fn append<'a>(
-        &'a mut self,
-        segment: SegmentId,
-        data: &'a [u8],
-    ) -> BoxFuture<'a, Result<()>>;
+    fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>>;
 
     fn set_segment_metadata<'a>(
         &'a mut self,
@@ -184,11 +184,7 @@ pub trait StorageTransaction: Send {
 pub trait StorageBackend: Send + Sync {
     type Transaction: StorageTransaction;
 
-    fn append<'a>(
-        &'a mut self,
-        segment: SegmentId,
-        data: &'a [u8],
-    ) -> BoxFuture<'a, Result<()>>;
+    fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>>;
 
     fn read(&self, segment: SegmentId) -> BoxFuture<'_, Result<Vec<u8>>>;
 

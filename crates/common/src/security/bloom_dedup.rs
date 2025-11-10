@@ -23,7 +23,10 @@ pub struct BloomFilterWrapper {
 impl BloomFilterWrapper {
     pub fn new(expected_items: usize, false_positive_rate: f64) -> Self {
         Self {
-            inner: Arc::new(CountingBloomFilter::new(expected_items, false_positive_rate)),
+            inner: Arc::new(CountingBloomFilter::new(
+                expected_items,
+                false_positive_rate,
+            )),
         }
     }
 
@@ -197,7 +200,7 @@ mod tests {
     fn bloom_insert_lookup() {
         let filter = BloomFilterWrapper::new(1_000, 0.001);
         let hash = ContentHash("deadbeef".into());
-        assert!(filter.might_contain(&hash) == false);
+        assert!(!filter.might_contain(&hash));
         filter.record_insertion(&hash);
         assert!(filter.might_contain(&hash));
         filter.record_removal(&hash);

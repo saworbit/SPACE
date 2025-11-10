@@ -27,10 +27,7 @@ async fn test_s3_put_and_get() {
     println!("✅ PUT: Created capsule {:?}", capsule_id);
 
     // GET object
-    let retrieved = s3
-        .get_object("test-bucket", "hello.txt")
-        .await
-        .unwrap();
+    let retrieved = s3.get_object("test-bucket", "hello.txt").await.unwrap();
     assert_eq!(retrieved, test_data);
     println!("✅ GET: Retrieved {} bytes", retrieved.len());
 
@@ -95,10 +92,7 @@ async fn test_s3_multiple_objects() {
     println!("✅ Bucket2 has {} objects", bucket2_objects.len());
 
     // Verify content
-    let data = s3
-        .get_object("bucket1", "file2.txt")
-        .await
-        .unwrap();
+    let data = s3.get_object("bucket1", "file2.txt").await.unwrap();
     assert_eq!(data, b"Content 2");
 
     // Cleanup
@@ -131,10 +125,7 @@ async fn test_s3_large_object() {
         .unwrap();
     println!("✅ PUT: Stored large object");
 
-    let retrieved = s3
-        .get_object("test", "large.bin")
-        .await
-        .unwrap();
+    let retrieved = s3.get_object("test", "large.bin").await.unwrap();
     assert_eq!(retrieved.len(), large_data.len());
     assert_eq!(retrieved, large_data);
     println!("✅ GET: Retrieved and verified {} bytes", retrieved.len());

@@ -10,7 +10,7 @@
 
 use capsule_registry::pipeline::WritePipeline;
 use capsule_registry::CapsuleRegistry;
-use common::podms::{NodeId, Telemetry, ZoneId};
+use common::podms::{Telemetry, ZoneId};
 use common::Policy;
 use nvram_sim::NvramLog;
 use scaling::MeshNode;
@@ -46,7 +46,7 @@ async fn test_metro_sync_replication_with_mesh_node() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let (telemetry_tx, mut telemetry_rx) = mpsc::unbounded_channel();
 
@@ -91,7 +91,7 @@ async fn test_metro_sync_skipped_without_mesh_node() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let (telemetry_tx, mut telemetry_rx) = mpsc::unbounded_channel();
 
@@ -138,7 +138,7 @@ async fn test_async_replication_skipped_for_non_zero_rpo() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let (telemetry_tx, mut telemetry_rx) = mpsc::unbounded_channel();
 
@@ -148,8 +148,10 @@ async fn test_async_replication_skipped_for_non_zero_rpo() {
 
     // Write with non-zero RPO (async replication, not metro-sync)
     let test_data = b"test data for async";
-    let mut policy = Policy::default();
-    policy.rpo = Duration::from_secs(60); // 1 minute RPO
+    let policy = Policy {
+        rpo: Duration::from_secs(60),
+        ..Policy::default()
+    };
 
     let capsule_id = pipeline
         .write_capsule_with_policy_async(test_data, &policy)
@@ -192,7 +194,7 @@ async fn test_replication_preserves_dedup() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let (telemetry_tx, _telemetry_rx) = mpsc::unbounded_channel();
 
@@ -245,7 +247,7 @@ async fn test_multi_segment_capsule_replication() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let registry_path = temp_dir.join("registry.metadata");
     let registry = CapsuleRegistry::open(&registry_path).unwrap();
-    let nvram = NvramLog::open(&temp_dir.join("nvram.log")).unwrap();
+    let nvram = NvramLog::open(temp_dir.join("nvram.log")).unwrap();
 
     let (telemetry_tx, _telemetry_rx) = mpsc::unbounded_channel();
 

@@ -109,8 +109,16 @@ impl PolicyCompiler {
     ) -> Vec<ScalingAction> {
         let mut actions = Vec::new();
 
+        if self.default_policy.encryption.is_enabled() && !policy.encryption.is_enabled() {
+            debug!("capsule policy disabled encryption while default policy requires it");
+        }
+
         match event {
-            Telemetry::NewCapsule { id, policy: _, node_id: _ } => {
+            Telemetry::NewCapsule {
+                id,
+                policy: _,
+                node_id: _,
+            } => {
                 actions.extend(self.compile_replication_strategy(*id, policy, mesh_state));
             }
             Telemetry::HeatSpike {
@@ -118,7 +126,12 @@ impl PolicyCompiler {
                 accesses_per_min,
                 node_id: _,
             } => {
-                actions.extend(self.compile_migration_for_heat(*id, *accesses_per_min, policy, mesh_state));
+                actions.extend(self.compile_migration_for_heat(
+                    *id,
+                    *accesses_per_min,
+                    policy,
+                    mesh_state,
+                ));
             }
             Telemetry::CapacityThreshold {
                 node_id,
@@ -127,11 +140,24 @@ impl PolicyCompiler {
                 threshold_pct,
             } => {
                 let used_percent = if *total_bytes > 0 {
-                    (*used_bytes as f32 / *total_bytes as f32) * 100.0
+                    ((*used_bytes as f64 / *total_bytes as f64) * 100.0) as f32
                 } else {
                     0.0
                 };
-                actions.extend(self.compile_rebalancing(*node_id, used_percent, mesh_state));
+                let normalized_threshold = if (*threshold_pct).abs() <= 1.0 {
+                    (*threshold_pct * 100.0) as f32
+                } else {
+                    *threshold_pct as f32
+                };
+                if used_percent >= normalized_threshold {
+                    actions.extend(self.compile_rebalancing(*node_id, used_percent, mesh_state));
+                } else {
+                    debug!(
+                        used_percent = used_percent,
+                        threshold = normalized_threshold,
+                        "capacity below threshold; skipping rebalancing"
+                    );
+                }
             }
             Telemetry::NodeDegraded { node_id, reason } => {
                 actions.extend(self.compile_evacuation(*node_id, reason, mesh_state));
@@ -301,17 +327,12 @@ impl PolicyCompiler {
     }
 
     /// Select replication targets based on policy sovereignty and latency constraints.
-    fn select_replication_targets(
-        &self,
-        policy: &Policy,
-        mesh_state: &MeshState,
-    ) -> Vec<NodeId> {
+    fn select_replication_targets(&self, policy: &Policy, mesh_state: &MeshState) -> Vec<NodeId> {
         let mut candidates = mesh_state.available_nodes();
 
         // Filter by sovereignty level
-        candidates.retain(|&node_id| {
-            mesh_state.satisfies_sovereignty(node_id, &policy.sovereignty)
-        });
+        candidates
+            .retain(|&node_id| mesh_state.satisfies_sovereignty(node_id, &policy.sovereignty));
 
         // Filter by latency target
         if policy.latency_target < Duration::from_millis(2) {
@@ -331,17 +352,12 @@ impl PolicyCompiler {
     }
 
     /// Select optimal migration target for a capsule.
-    fn select_migration_target(
-        &self,
-        policy: &Policy,
-        mesh_state: &MeshState,
-    ) -> Option<NodeId> {
+    fn select_migration_target(&self, policy: &Policy, mesh_state: &MeshState) -> Option<NodeId> {
         let mut candidates = mesh_state.available_nodes();
 
         // Filter by sovereignty
-        candidates.retain(|&node_id| {
-            mesh_state.satisfies_sovereignty(node_id, &policy.sovereignty)
-        });
+        candidates
+            .retain(|&node_id| mesh_state.satisfies_sovereignty(node_id, &policy.sovereignty));
 
         // Prefer metro zone for low latency
         if policy.latency_target < Duration::from_millis(2) {
@@ -602,7 +618,10 @@ mod tests {
                 targets,
             } => {
                 assert_eq!(*id, capsule_id);
-                assert_eq!(*strategy, ReplicationStrategy::MetroSync { replica_count: 2 });
+                assert_eq!(
+                    *strategy,
+                    ReplicationStrategy::MetroSync { replica_count: 2 }
+                );
                 assert_eq!(targets.len(), 2);
             }
             _ => panic!("expected Replicate action"),

@@ -1,18 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 /// Cryptography profile for the write pipeline.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum CryptoProfile {
     /// Classical AES + BLAKE3 path.
+    #[default]
     Classical,
     /// Hybrid Kyber (ML-KEM) + AES for post-quantum readiness.
     HybridKyber,
-}
-
-impl Default for CryptoProfile {
-    fn default() -> Self {
-        CryptoProfile::Classical
-    }
 }
 
 /// Compression algorithm selection
@@ -34,19 +29,13 @@ impl Default for CompressionPolicy {
 }
 
 /// Encryption policy
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum EncryptionPolicy {
     /// No encryption
+    #[default]
     Disabled,
     /// XTS-AES-256 with specified key version
     XtsAes256 { key_version: Option<u32> },
-}
-
-impl Default for EncryptionPolicy {
-    fn default() -> Self {
-        // Default to disabled (opt-in for encryption)
-        EncryptionPolicy::Disabled
-    }
 }
 
 impl EncryptionPolicy {
@@ -92,7 +81,6 @@ pub struct Policy {
     // ========================================================================
     // These fields enable autonomous scaling agents to make placement and
     // replication decisions based on policy constraints.
-
     /// Recovery Point Objective - maximum acceptable data loss window.
     /// Duration::ZERO means synchronous replication, higher values allow async.
     #[cfg(feature = "podms")]

@@ -38,9 +38,9 @@ pub struct NodeCapabilities {
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum NetworkTier {
-    Standard,  // <10ms metro latency
-    Premium,   // <2ms with RDMA
-    Edge,      // >50ms edge sites
+    Standard, // <10ms metro latency
+    Premium,  // <2ms with RDMA
+    Edge,     // >50ms edge sites
 }
 
 impl Default for NodeCapabilities {
@@ -130,7 +130,7 @@ impl MeshNode {
 
     /// Handle an incoming mirror connection (segment replication).
     async fn handle_mirror_connection(
-        mut socket: TcpStream,
+        socket: TcpStream,
         _peers: Arc<RwLock<HashMap<NodeId, SocketAddr>>>,
     ) {
         // TODO: Implement segment receive logic

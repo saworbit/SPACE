@@ -9,15 +9,14 @@
 //!     helpers where appropriate, and
 //!   * provide rich doc comments / inline rationale so that future protocol teams
 //!     understand the trade-offs made here.
-//! The implementation is intentionally conservative: it serialises namespace
-//! mutations through an `RwLock` and rewrites whole files on every modification.
+//!     The implementation is intentionally conservative: it serialises namespace
+//!     mutations through an `RwLock` and rewrites whole files on every modification.
 
 use anyhow::{anyhow, bail, Result};
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::CapsuleId;
 use nvram_sim::NvramLog;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};

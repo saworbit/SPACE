@@ -30,13 +30,28 @@ struct AuditState {
     last_tsa: Option<TsaProof>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuditOptions {
     pub path: PathBuf,
     pub flush_interval: u32,
     pub max_file_bytes: u64,
     pub tsa_batch_size: u32,
     pub tsa_client: Option<Arc<dyn TsaClient>>,
+}
+
+impl std::fmt::Debug for AuditOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuditOptions")
+            .field("path", &self.path)
+            .field("flush_interval", &self.flush_interval)
+            .field("max_file_bytes", &self.max_file_bytes)
+            .field("tsa_batch_size", &self.tsa_batch_size)
+            .field(
+                "tsa_client",
+                &self.tsa_client.as_ref().map(|_| "configured"),
+            )
+            .finish()
+    }
 }
 
 impl Default for AuditOptions {
@@ -109,9 +124,12 @@ impl AuditLog {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(1);
 
-        let tsa_client = std::env::var("SPACE_TSA_ENDPOINT")
-            .ok()
-            .map(|endpoint| Arc::new(HttpTsaClient::new(endpoint, std::env::var("SPACE_TSA_API_KEY").ok())) as Arc<dyn TsaClient>);
+        let tsa_client = std::env::var("SPACE_TSA_ENDPOINT").ok().map(|endpoint| {
+            Arc::new(HttpTsaClient::new(
+                endpoint,
+                std::env::var("SPACE_TSA_API_KEY").ok(),
+            )) as Arc<dyn TsaClient>
+        });
 
         let builder = AuditLog::builder(path)
             .flush_interval(flush)
@@ -228,16 +246,13 @@ fn rotate_file(options: &AuditOptions, state: &mut AuditState) -> Result<()> {
         .unwrap_or_else(|| OsStr::new("space.audit.log"))
         .to_string_lossy()
         .to_string();
-    let rotated = options
-        .path
-        .with_file_name(format!("{file_name}.1"));
+    let rotated = options.path.with_file_name(format!("{file_name}.1"));
 
     state.file.sync_all().ok();
     drop(fs::rename(&options.path, &rotated));
 
     state.file = OpenOptions::new()
         .create(true)
-        .write(true)
         .append(true)
         .open(&options.path)?;
     Ok(())

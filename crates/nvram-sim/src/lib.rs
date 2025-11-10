@@ -1,15 +1,14 @@
 use anyhow::{anyhow, bail, Result};
-use common::*;
 #[cfg(feature = "advanced-security")]
 use common::security::audit_log::AuditLog;
-#[cfg(feature = "advanced-security")]
-use tracing::warn;
-use serde_json;
+use common::*;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+#[cfg(feature = "advanced-security")]
+use tracing::warn;
 
 pub struct NvramLog {
     file: Arc<RwLock<File>>,
@@ -29,6 +28,7 @@ impl NvramLog {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path_str)?;
 
         // Get file size for next_offset
@@ -234,12 +234,7 @@ impl NvramLog {
     }
 
     pub fn list_segment_ids(&self) -> Vec<SegmentId> {
-        self.segment_map
-            .read()
-            .unwrap()
-            .keys()
-            .copied()
-            .collect()
+        self.segment_map.read().unwrap().keys().copied().collect()
     }
 }
 

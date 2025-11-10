@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each variant represents a different encryption approach, with distinct
 /// security properties and performance characteristics.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum EncryptionPolicy {
     /// No encryption (default for backward compatibility)
     ///
@@ -12,6 +12,7 @@ pub enum EncryptionPolicy {
     /// - Migration from Phase 2.x
     /// - Public/non-sensitive data
     /// - Performance-critical paths where encryption is not required
+    #[default]
     None,
 
     /// XTS-AES-256 with Poly1305 MAC (Phase 3.1 MVP)
@@ -42,13 +43,6 @@ pub enum EncryptionPolicy {
     /// Future: Convergent encryption + ML-KEM (Kyber) for quantum resistance
     #[cfg(feature = "experimental")]
     MlePqc { key_version: u32, pqc_enabled: bool },
-}
-
-impl Default for EncryptionPolicy {
-    fn default() -> Self {
-        // Default to None for backward compatibility with Phase 2.x
-        EncryptionPolicy::None
-    }
 }
 
 impl EncryptionPolicy {

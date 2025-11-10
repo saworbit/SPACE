@@ -1,8 +1,10 @@
 use anyhow::Result;
-use common::Policy;
-use common::*;
 #[cfg(feature = "advanced-security")]
 use common::security::bloom_dedup::BloomFilterWrapper;
+#[cfg(feature = "advanced-security")]
+use common::security::DedupOptimizer;
+use common::Policy;
+use common::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -64,11 +66,7 @@ pub mod modular_pipeline {
     }
 
     impl RegistryPipelineHandle {
-        pub async fn write_capsule(
-            &mut self,
-            data: &[u8],
-            policy: &Policy,
-        ) -> Result<CapsuleId> {
+        pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
             match self {
                 Self::Encrypted(p) => p.write_capsule(data, policy).await,
                 Self::Plain(p) => p.write_capsule(data, policy).await,
@@ -132,11 +130,11 @@ pub mod modular_pipeline {
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
         } else {
             Ok(RegistryPipelineHandle::Plain(Pipeline::new(
-                compression::Lz4ZstdCompressor::default(),
+                compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
-                NoopEncryptor::default(),
+                NoopEncryptor,
                 storage,
-                DefaultPolicyEvaluator::default(),
+                DefaultPolicyEvaluator,
                 None,
                 registry,
             )))
@@ -149,11 +147,11 @@ pub mod modular_pipeline {
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryEncryptedPipeline> {
         Ok(Pipeline::new(
-            compression::Lz4ZstdCompressor::default(),
+            compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),
             XtsEncryptor::new(Arc::clone(&key_manager)),
             storage,
-            DefaultPolicyEvaluator::default(),
+            DefaultPolicyEvaluator,
             Some(KeyManagerKeyring::new(key_manager)),
             registry,
         ))
@@ -205,12 +203,7 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
     }
 
     fn capsules(&self) -> Vec<Capsule> {
-        self.capsules
-            .read()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect()
+        self.capsules.read().unwrap().values().cloned().collect()
     }
 
     fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {

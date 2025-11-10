@@ -212,21 +212,16 @@ pub mod podms {
 
     /// Data sovereignty level controlling replication scope.
     /// Determines where data can be replicated and migrated.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "snake_case")]
     pub enum SovereigntyLevel {
         /// No external replication - data stays on local node
+        #[default]
         Local,
         /// Replication within defined zones only
         Zone,
         /// Full federation across all zones
         Global,
-    }
-
-    impl Default for SovereigntyLevel {
-        fn default() -> Self {
-            SovereigntyLevel::Local
-        }
     }
 
     /// Telemetry events for PODMS autonomous agents.
@@ -254,10 +249,7 @@ pub mod podms {
             threshold_pct: f64,
         },
         /// Node health degraded - may trigger evacuation
-        NodeDegraded {
-            node_id: NodeId,
-            reason: String,
-        },
+        NodeDegraded { node_id: NodeId, reason: String },
     }
 
     /// Swarm behavior trait for capsule self-transformation during migrations.
@@ -288,11 +280,7 @@ pub mod podms {
         ///
         /// # Returns
         /// Ok(()) if migration is allowed, Err if sovereignty violated
-        fn on_migrate(
-            &self,
-            destination: NodeId,
-            dest_zone: &ZoneId,
-        ) -> anyhow::Result<()>;
+        fn on_migrate(&self, destination: NodeId, dest_zone: &ZoneId) -> anyhow::Result<()>;
 
         /// Determine if transformation is required for migration.
         ///
@@ -302,11 +290,7 @@ pub mod podms {
         ///
         /// # Returns
         /// true if data needs transformation (e.g., zone boundary crossing)
-        fn requires_transform(
-            &self,
-            source_zone: &ZoneId,
-            dest_zone: &ZoneId,
-        ) -> bool;
+        fn requires_transform(&self, source_zone: &ZoneId, dest_zone: &ZoneId) -> bool;
     }
 
     /// Implementation of SwarmBehavior for Capsule.
@@ -345,11 +329,7 @@ pub mod podms {
             Ok(data.to_vec())
         }
 
-        fn on_migrate(
-            &self,
-            destination: NodeId,
-            dest_zone: &ZoneId,
-        ) -> anyhow::Result<()> {
+        fn on_migrate(&self, destination: NodeId, dest_zone: &ZoneId) -> anyhow::Result<()> {
             // Validate sovereignty constraints
             match self.policy.sovereignty {
                 SovereigntyLevel::Local => {
@@ -376,11 +356,7 @@ pub mod podms {
             Ok(())
         }
 
-        fn requires_transform(
-            &self,
-            source_zone: &ZoneId,
-            dest_zone: &ZoneId,
-        ) -> bool {
+        fn requires_transform(&self, source_zone: &ZoneId, dest_zone: &ZoneId) -> bool {
             // Transformation needed if:
             // 1. Crossing zone boundaries (for re-encryption)
             // 2. Policy change (e.g., moving to cold storage)
@@ -400,10 +376,11 @@ pub mod podms {
         /// Determine if capsule should be treated as cold data.
         ///
         /// Cold data has low access frequency and benefits from higher compression.
+        #[allow(dead_code)]
         fn is_cold_data(&self) -> bool {
             // In production: Check access patterns from telemetry
             // For now, use a simple heuristic based on access counts
-            self.segments.len() > 0 && {
+            !self.segments.is_empty() && {
                 // Would check segment access_count in real implementation
                 false // Placeholder
             }
