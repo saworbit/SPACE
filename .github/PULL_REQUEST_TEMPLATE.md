@@ -1,19 +1,16 @@
 ## Description
 
-Please include a summary of the change and which issue is fixed. Include relevant motivation and context.
+Summary of change + relevant motivation.
 
 Fixes # (issue)
 
-## Type of change
-
+## Type
 - [ ] Bug fix
 - [ ] New feature
 - [ ] Breaking change
-- [ ] Documentation update
+- [ ] Docs
 
-## Checklist:
-
-- [ ] My code follows the style guidelines (`cargo fmt`)
-- [ ] I have performed a self-review
-- [ ] I have commented my code
-- [ ] New and existing tests pass locally (`cargo test --workspace`)
+## Checklist
+- [ ] `cargo fmt --all`
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+- [ ] Tests pass (`cargo test --workspace`)

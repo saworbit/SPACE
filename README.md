@@ -1,27 +1,15 @@
-<div align="center">
-
-# 🚀 SPACE MVP
-## Storage Platform for Adaptive Computational Ecosystems
-
-> **✨ One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
+# ?? SPACE � Storage Platform for Adaptive Computational Ecosystems
 
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
-[![Status](https://img.shields.io/badge/status-Phase%203.3%20Advanced%20Security-green.svg)](https://github.com/saworbit/SPACE)
-[![Contributing](https://img.shields.io/badge/Contributing-Guidelines-blueviolet.svg)](CONTRIBUTING.md)
+[![Discussions](https://img.shields.io/github/discussions/saworbit/SPACE)](https://github.com/saworbit/SPACE/discussions)
 
-**Phase 3.3 Complete** – Encryption ✅ | Bloom Filters ✅ | Audit Log ✅ | SPIFFE/mTLS ✅ | PODMS Scaling ✅
+> **One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
 
----
-
-### 📑 Table of Contents
-[💡 The Big Idea](#-the-big-idea) • [📊 Current Status](#-current-status-phase-33---advanced-security-landed) • [🚀 Quick Start](#-quick-start) • [🏗️ Architecture](#️-architecture) • [🔐 Security](#-security--encryption) • [🗺️ Roadmap](#️-roadmap) • [⚡ Performance](#-performance-characteristics) • [🧪 Testing](#-testing) • [📚 Learn More](#-learn-more)
-
-</div>
+**Phase 3.3 Complete** � Encryption ? | Bloom Filters ? | Audit Log ? | SPIFFE/mTLS ? | PODMS Scaling ?
 
 ---
-
 ## 💡 The Big Idea
 
 Traditional storage forces you into boxes: **block** *or* **file** *or* **object**. Different APIs, separate data copies, endless complexity.
@@ -790,6 +778,9 @@ spacectl block delete vol1
 
 ---
 
+## ?? Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md) � [Code of Conduct](CODE_OF_CONDUCT.md) � [Security](SECURITY.md)
+
 <div align="center">
 
 **Built with 🦀 Rust**
@@ -805,6 +796,12 @@ spacectl block delete vol1
 **⭐ Star us on GitHub if you find this project interesting! ⭐**
 
 </div>
+
+
+
+
+
+
 
 
 

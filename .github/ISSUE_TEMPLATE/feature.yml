@@ -1,10 +1,14 @@
-name: Feature Request
-description: Suggest an idea for SPACE
+name: ✨ Feature Request
+description: Suggest an idea
 title: "[FEATURE] "
 labels: [enhancement]
 body:
   - type: textarea
     attributes:
-      label: Is your feature request related to a problem?
+      label: Problem
+      description: What problem are you trying to solve?
     validations:
       required: true
+  - type: textarea
+    attributes:
+      label: Proposed Solution
