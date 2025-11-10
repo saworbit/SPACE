@@ -43,6 +43,7 @@ impl Default for ZeroTrustConfig {
 #[derive(Clone)]
 pub struct EbpfGateway {
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     program: Option<Arc<Bpf>>,
     allowed: Arc<RwLock<HashSet<String>>>,
     header_name: String,

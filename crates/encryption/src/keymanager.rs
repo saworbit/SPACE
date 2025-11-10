@@ -242,6 +242,11 @@ impl KeyManager {
 
         if let Some(salt) = provider.read_kdf_salt()? {
             manager.hkdf_salt = salt;
+            manager.key_cache.clear();
+            let current = manager.current_version;
+            if let Ok(key) = manager.derive_key(current) {
+                manager.key_cache.insert(current, key);
+            }
         }
 
         Ok(manager)
