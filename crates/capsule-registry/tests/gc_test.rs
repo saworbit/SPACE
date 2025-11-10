@@ -2,6 +2,14 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::Policy;
 use nvram_sim::NvramLog;
 use std::fs;
+use std::sync::Once;
+
+fn init_native_pipeline() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    });
+}
 
 fn setup_paths(prefix: &str) -> (String, String) {
     let log_path = format!("{}_gc.log", prefix);
@@ -14,7 +22,7 @@ fn setup_paths(prefix: &str) -> (String, String) {
 
 #[test]
 fn refcounts_increase_and_decrease_with_capsules() {
-    std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    init_native_pipeline();
 
     let (log_path, meta_path) = setup_paths("refcount");
 
@@ -57,12 +65,11 @@ fn refcounts_increase_and_decrease_with_capsules() {
     let _ = fs::remove_file(format!("{}.segments", log_path));
     let _ = fs::remove_file(meta_path.as_str());
 
-    std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
 }
 
 #[test]
 fn garbage_collect_reclaims_orphan_segments() {
-    std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    init_native_pipeline();
 
     let (log_path, meta_path) = setup_paths("gc_sweep");
 
@@ -100,7 +107,6 @@ fn garbage_collect_reclaims_orphan_segments() {
     let _ = fs::remove_file(format!("{}.segments", log_path));
     let _ = fs::remove_file(meta_path.as_str());
 
-    std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
 }
 
 #[cfg(feature = "modular_pipeline")]

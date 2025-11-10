@@ -6,17 +6,36 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      toolchain:
+        description: "Rust toolchain specification (e.g. stable, stable 2 weeks ago)"
+        required: true
+        default: "stable"
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      DEFAULT_TOOLCHAIN: stable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          input_toolchain="${{ github.event.inputs.toolchain }}"
+          if [[ -z "$input_toolchain" ]]; then
+            input_toolchain="$DEFAULT_TOOLCHAIN"
+          fi
+          echo "toolchain=$input_toolchain" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.toolchain.outputs.toolchain }}
 
       - name: Cache cargo builds
         uses: Swatinem/rust-cache@v2
@@ -28,4 +47,6 @@ jobs:
           cargo install cargo-bloat --locked
 
       - name: Run xtask audit
+        env:
+          TOOLCHAIN: ${{ steps.toolchain.outputs.toolchain }}
         run: cargo xtask audit
