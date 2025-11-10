@@ -1,36 +1,81 @@
-# ?? SPACE � Storage Platform for Adaptive Computational Ecosystems
+<div align="center">
+
+# 🚀 SPACE
+### Storage Platform for Adaptive Computational Ecosystems
 
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
 [![Discussions](https://img.shields.io/github/discussions/saworbit/SPACE)](https://github.com/saworbit/SPACE/discussions)
 
-> **One capsule. Infinite views.** The future of storage starts with a single primitive that breaks down protocol silos.
-
-**Phase 3.3 Complete** � Encryption ? | Bloom Filters ? | Audit Log ? | SPIFFE/mTLS ? | PODMS Scaling ?
+### *One capsule. Infinite views.*
+**The future of storage starts with a single primitive that breaks down protocol silos.**
 
 ---
+
+### 🎉 Phase 3.3 Complete
+Encryption ✅ • Bloom Filters ✅ • Audit Log ✅ • SPIFFE/mTLS ✅ • PODMS Scaling ✅
+
+[🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [💡 Why SPACE](#-why-this-matters)
+
+</div>
+
+---
+
+## 📖 Table of Contents
+
+- [💡 The Big Idea](#-the-big-idea)
+- [📊 What Works Today](#-what-works-today)
+- [🌐 PODMS Scaling](#-podms-scaling)
+- [✨ Development Phases](#-development-phases)
+- [🚀 Quick Start](#-quick-start)
+- [🏗️ Architecture](#️-architecture)
+- [📁 Project Structure](#-project-structure)
+- [🧪 Testing](#-testing)
+- [💡 Why This Matters](#-why-this-matters)
+- [🔐 Security & Encryption](#-security--encryption)
+- [🗺️ Roadmap](#️-roadmap)
+- [⚡ Performance](#-performance)
+- [🤝 Contributing](#-contributing)
+- [📚 Documentation](#-documentation)
+- [📜 License](#-license)
+- [📊 Project Status](#-project-status)
+- [🎬 Quick Demo](#-quick-demo)
+
+---
+
 ## 💡 The Big Idea
 
-Traditional storage forces you into boxes: **block** *or* **file** *or* **object**. Different APIs, separate data copies, endless complexity.
+Traditional storage forces you into boxes: **block** *or* **file** *or* **object**.
+Different APIs. Separate data copies. Endless complexity.
 
-**SPACE flips the script.** Everything is a **capsule** -- a universal 128-bit ID that can be viewed through *any* protocol:
+### SPACE flips the script 🎯
 
-| Protocol | Access Method |
-|----------|---------------|
-| 🔲 **Block** | NVMe-oF, iSCSI |
-| 📁 **File** | NFS, SMB |
-| 🗄️ **Object** | S3 API |
+Everything is a **capsule** — a universal 128-bit ID that can be viewed through *any* protocol:
 
-**✨ The same capsule. Three different views. Zero data copies.**
+<div align="center">
+
+| Protocol | Access Method | Status |
+|:--------:|:-------------:|:------:|
+| 🔲 **Block** | NVMe-oF, iSCSI | ✅ Ready |
+| 📁 **File** | NFS, SMB | ✅ Ready |
+| 🗄️ **Object** | S3 API | ✅ Ready |
+
+</div>
+
+### ✨ One capsule. Three views. Zero copies.
 
 ---
 
-## 📊 Current Status: Phase 3.3 - Advanced Security Landed
+## 📊 What Works Today
 
-**🎯 Status:** Phase 3.3 Complete - Advanced Security hardened!
+<div align="center">
 
-**✅ What exists NOW:**
+**🎯 Phase 3.3 Complete — Advanced Security Hardened**
+
+</div>
+
+### ✅ Core Features
 - 🔮 Universal capsule storage with persistent metadata
 - 💻 CLI create/read operations
 - 🌐 S3-compatible REST API (protocol view proof-of-concept)
@@ -50,13 +95,18 @@ Traditional storage forces you into boxes: **block** *or* **file** *or* **object
 - 🔮 **Post-quantum crypto toggle** (Kyber + AES hybrid) selectable via `Policy::crypto_profile`
 - 🏗️ **Dedicated `security` module** so Bloom/audit/PQ/eBPF logic stays feature gated
 
-**🔜 What's coming next:**
-- 🔄 Full mesh federation & cross-zone routing (Step 4)
-- 🤖 ML-driven heatmaps & adaptive placement
+### 🔜 Coming Next
+- **Full mesh federation** & cross-zone routing (Step 4)
+- **ML-driven heatmaps** & adaptive placement
 
-## 🌐 PODMS Scaling: Policy Compiler Intelligence (Step 3 Complete)
+---
 
-**Policy-Orchestrated Disaggregated Mesh Scaling** is SPACE's distributed scaling model. **Step 3 is now complete**, bringing the policy compiler—the "brain" of PODMS that translates declarative policies into autonomous scaling actions. Capsules now exhibit swarm intelligence: self-replicating, migrating, and transforming based on policy rules and real-time telemetry.
+## 🌐 PODMS Scaling
+### Policy Compiler Intelligence — Step 3 Complete
+
+**Policy-Orchestrated Disaggregated Mesh Scaling** is SPACE's distributed scaling model.
+
+Step 3 brings the **policy compiler** — the "brain" that translates declarative policies into autonomous scaling actions. Capsules now exhibit **swarm intelligence**: self-replicating, migrating, and transforming based on policy rules and real-time telemetry.
 
 ### ⚡ Quick Enable
 
@@ -85,18 +135,25 @@ cargo test --features podms podms_metro_sync
 
 ### 🗺️ Scaling Policies
 
+<div align="center">
+
+| Policy | RPO | Latency | Sovereignty | Use Case |
+|:------:|:---:|:-------:|:-----------:|:---------|
+| **Metro-sync** | 0ms (sync) | 2ms | Zone | Low-latency critical data |
+| **Geo-replicated** | 5min | 100ms | Global | Global availability |
+| **Edge-optimized** | 5min | 50ms | Local | Edge computing |
+
+</div>
+
 ```rust
 // Metro-sync: Low latency, synchronous replication
 let policy = Policy::metro_sync();
-// RPO: 0ms (sync), Latency: 2ms, Sovereignty: Zone
 
 // Geo-replicated: Higher latency, async replication
 let policy = Policy::geo_replicated();
-// RPO: 5min, Latency: 100ms, Sovereignty: Global
 
 // Edge-optimized: Local-only, no replication
 let policy = Policy::edge_optimized();
-// RPO: 5min, Latency: 50ms, Sovereignty: Local
 ```
 
 ### 📊 What Works Today (Step 3 Complete)
@@ -124,75 +181,108 @@ let policy = Policy::edge_optimized();
 - ✅ **Agent integration** with action execution layer
 - ✅ **Comprehensive tests** (90%+ coverage on compiler logic)
 
-### 🔜 Roadmap
+### 🔜 PODMS Roadmap
 
-- **Step 4**: Full mesh federation & cross-zone routing with gossip
-- **Future**: Adaptive RPO, cost-aware placement, ML-driven heatmaps
+- **Step 4** — Full mesh federation & cross-zone routing with gossip
+- **Future** — Adaptive RPO, cost-aware placement, ML-driven heatmaps
 
-See [docs/podms.md](docs/podms.md) for architecture details and implementation guide.
+📚 See [docs/podms.md](docs/podms.md) for architecture details and implementation guide.
 
 ---
 
-## ✨ What This MVP Proves
+## ✨ Development Phases
 
-**🎉 Phase 3.3 Complete: Compression ✅ | Dedup ✅ | Protocol Views ✅ | Advanced Security ✅**
+<details open>
+<summary><b>📦 Phase 1: Core Storage</b> ✅</summary>
 
-### 📦 Phase 1: Core Storage ✅
-- ✅ **Universal Capsule IDs** -- 128-bit UUIDs as the single storage primitive
-- ✅ **Persistent NVRAM Log** -- Append-only durability with automatic fsync
-- ✅ **Intelligent Segmentation** -- Auto-split to 4MB chunks for efficiency
-- ✅ **CLI Tool** -- Create and read capsules from the command line
-- ✅ **JSON Metadata** -- Human-readable registry for debugging and inspection
+- ✅ Universal Capsule IDs (128-bit UUIDs)
+- ✅ Persistent NVRAM Log with automatic fsync
+- ✅ Intelligent 4MB Segmentation
+- ✅ CLI Tool for create/read operations
+- ✅ JSON Metadata Registry
 
-### 🗜️ Phase 2.1: Compression ✅
-- ✅ **LZ4 Fast Compression** -- Sub-millisecond compression for hot data
-- ✅ **Zstd Balanced Compression** -- High compression ratios for cold data
-- ✅ **Entropy Detection** -- Skip compression on random/pre-compressed data
-- ✅ **Policy-Driven** -- Configure compression per capsule with presets
-- ✅ **Zero-Copy Fast-Path** -- Borrow slices when compression can reuse input to avoid extra allocations
+</details>
 
-### 🔗 Phase 2.2: Deduplication ✅
-- ✅ **Content-Addressed Storage** -- BLAKE3 hashing of compressed segments
-- ✅ **Automatic Dedup** -- Reuse identical segments across capsules
-- ✅ **Space Savings Tracking** -- Monitor dedup ratios and bytes saved
-- ✅ **Post-Compression Dedup** -- Foundation for "dedupe over ciphertext"
-- ✅ **Borrowed Hashing Path** -- Zero-copy buffers flow through hashing/encryption without cloning
+<details open>
+<summary><b>🗜️ Phase 2.1: Compression</b> ✅</summary>
 
-### 🌐 Phase 2.3: Protocol Views ✅
-- ✅ **S3 REST API** -- PUT/GET/HEAD/LIST/DELETE operations
-- ✅ **Protocol Abstraction** -- Same capsule accessible via multiple APIs
-- ✅ **NFS namespace view** - Hierarchical directories backed by capsules
-- ✅ **Block volume view** - Logical LUN facade with copy-on-write rewrites
+- ✅ **LZ4** — Sub-millisecond compression for hot data
+- ✅ **Zstd** — High compression ratios for cold data
+- ✅ **Entropy Detection** — Skip compression on random data
+- ✅ **Policy-Driven** — Configure per capsule
+- ✅ **Zero-Copy Fast-Path** — Borrow slices to avoid allocations
 
-### 🔐 Phase 3.1: Encryption & Integrity ✅
-- ✅ **XTS-AES-256 Encryption** -- Per-segment encryption with hardware acceleration
-- ✅ **BLAKE3-MAC Integrity** -- Tamper detection with keyed MAC
-- ✅ **Deterministic Encryption** -- Content-derived tweaks preserve deduplication
-- ✅ **Key Management** -- Version-tracked key derivation with rotation support
-- ✅ **Zero-Trust Design** -- Keys from environment, zeroized on drop
+</details>
 
-### 🛡️ Phase 3.3: Advanced Security ✅
-- 🌸 **Counting Bloom filters** guard the registry from multi-million entry dedup explosions while keeping false positives ~0.1%.
-- 📝 **Immutable audit log** persists every capsule/segment event with BLAKE3 hash chaining plus optional TSA webhooks (`security::audit_log`).
-- 🔒 **Zero-trust ingress** — the SPIFFE + mTLS gateway (feature `advanced-security`) layers an eBPF policy filter and refreshable workload allow-list.
-- 🔮 **Post-quantum crypto toggle** — `Policy::crypto_profile = HybridKyber` wraps AES keys with Kyber ML-KEM material for forward secrecy.
-- 🏗️ **Modular security crate** keeps Bloom/Audit/PQ/eBPF code feature gated so sovereign deployments can opt in/out cleanly.
+<details open>
+<summary><b>🔗 Phase 2.2: Deduplication</b> ✅</summary>
+
+- ✅ **BLAKE3 Content Hashing** — Content-addressed storage
+- ✅ **Automatic Dedup** — Reuse identical segments
+- ✅ **Space Savings Tracking** — Monitor dedup ratios
+- ✅ **Post-Compression Dedup** — Foundation for encrypted dedup
+- ✅ **Zero-Copy Buffers** — Flow through hashing without cloning
+
+</details>
+
+<details open>
+<summary><b>🌐 Phase 2.3: Protocol Views</b> ✅</summary>
+
+- ✅ **S3 REST API** — PUT/GET/HEAD/LIST/DELETE
+- ✅ **NFS Namespace** — Hierarchical directories
+- ✅ **Block Volumes** — Logical LUN facade with COW
+- ✅ **Protocol Abstraction** — Same capsule, multiple APIs
+
+</details>
+
+<details open>
+<summary><b>🔐 Phase 3.1: Encryption & Integrity</b> ✅</summary>
+
+- ✅ **XTS-AES-256** — Per-segment encryption with hardware acceleration
+- ✅ **BLAKE3-MAC** — Tamper detection with keyed MAC
+- ✅ **Deterministic Encryption** — Preserves deduplication
+- ✅ **Key Management** — Version-tracked derivation with rotation
+- ✅ **Zero-Trust Design** — Keys from environment, zeroized on drop
+
+</details>
+
+<details open>
+<summary><b>🛡️ Phase 3.3: Advanced Security</b> ✅</summary>
+
+- 🌸 **Counting Bloom Filters** — Guard registry from multi-million entry explosions (~0.1% false positives)
+- 📝 **Immutable Audit Log** — BLAKE3 hash chaining + optional TSA webhooks
+- 🔒 **Zero-Trust Ingress** — SPIFFE + mTLS gateway with eBPF policy filter
+- 🔮 **Post-Quantum Crypto** — Kyber ML-KEM hybrid for forward secrecy
+- 🏗️ **Modular Security** — Feature-gated Bloom/Audit/PQ/eBPF code
+
+</details>
+
+---
 
 ---
 
 ## 🚀 Quick Start
 
 ### 💻 System Requirements
-- 🐧 Linux, macOS, or Windows
-- 🦀 Rust 1.78+
-- 💾 2GB free disk space
+
+<div align="center">
+
+| Requirement | Version/Details |
+|:-----------:|:---------------:|
+| 🐧 **OS** | Linux, macOS, or Windows |
+| 🦀 **Rust** | 1.78+ |
+| 💾 **Disk** | 2GB free space |
+
+</div>
 
 ### 🔨 Build
+
 ```bash
 cargo build --release
 ```
 
-### 🔐 Setup Encryption (Optional)
+### 🔐 Setup Encryption *(Optional)*
+
 ```bash
 # Generate master key for encryption
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
@@ -201,7 +291,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 echo ${#SPACE_MASTER_KEY}  # Should output 64
 ```
 
-### 🛡️ Advanced Security Setup (Optional)
+### 🛡️ Advanced Security Setup *(Optional)*
 ```bash
 # Opt-in to Bloom/audit/SPIFFE/PQ via the feature flag
 cargo build --features advanced-security
@@ -232,22 +322,27 @@ Run the zero-trust S3 test on Linux (aya/ebpf requires a unix target):
 cargo test -p protocol-s3 --features advanced-security
 ```
 
-### 📝 Create a Capsule
-```bash
-# Basic usage (no encryption)
-echo "Hello SPACE!" > test.txt
-./target/release/spacectl create --file test.txt
+### 📝 Create Your First Capsule
 
-# Output:
-# [x] Capsule created: 550e8400-e29b-41d4-a716-446655440000
-#    Size: 13 bytes
-#     Segment 0: 1.85x compression (13 -> 7 bytes, lz4_1)
-# [x] Capsule 550e8400-...: 1.85x compression, 0 dedup hits
+```bash
+# Create a test file
+echo "Hello SPACE!" > test.txt
+
+# Create a capsule
+./target/release/spacectl create --file test.txt
+```
+
+**Output:**
+```
+✅ Capsule created: 550e8400-e29b-41d4-a716-446655440000
+   Size: 13 bytes
+   Segment 0: 1.85x compression (13 -> 7 bytes, lz4_1)
+   1.85x compression, 0 dedup hits
 ```
 
 ### 📖 Read It Back
+
 ```bash
-# Replace UUID with your capsule ID
 ./target/release/spacectl read 550e8400-e29b-41d4-a716-446655440000 > output.txt
 ```
 
@@ -313,53 +408,57 @@ curl http://localhost:8080/demo-bucket/hello.txt
 ---
 
 ## 🏗️ Architecture
+
+### System Overview
+
 ```
-+-------------------------------------------------------------+
-|                  💻 spacectl (CLI)                          |
-|           Your interface to the storage fabric               |
-+--------------------+----------------------------------------+
-                     |
-+--------------------v----------------------------------------+
-|            📋 CapsuleRegistry                               |
-|      Manages capsule metadata & segment mappings            |
-|      Content Store: ContentHash -> SegmentId                 |
-+--------------------------------------------------------------+
-|            ⚙️ WritePipeline                                 |
-|   Segments -> Compress -> Hash -> Encrypt -> MAC -> Dedup -> Store|
-+--------------------+----------------------------------------+
-                     |
-+--------------------v----------------------------------------+
-|               💾 NvramLog                                   |
-|         Durable append-only segment storage                  |
-+--------------------------------------------------------------+
+╔══════════════════════════════════════════════════════════╗
+║                  💻 spacectl (CLI)                       ║
+║           Your interface to the storage fabric           ║
+╚══════════════════════════╦═══════════════════════════════╝
+                           ║
+╔══════════════════════════╩═══════════════════════════════╗
+║              📋 CapsuleRegistry                          ║
+║      Metadata & Segment Mappings                         ║
+║      Content Store: ContentHash → SegmentId              ║
+╠══════════════════════════════════════════════════════════╣
+║              ⚙️ WritePipeline                            ║
+║   Segment → Compress → Hash → Encrypt → MAC → Dedup     ║
+╚══════════════════════════╦═══════════════════════════════╝
+                           ║
+╔══════════════════════════╩═══════════════════════════════╗
+║                 💾 NvramLog                              ║
+║         Durable append-only segment storage              ║
+╚══════════════════════════════════════════════════════════╝
 ```
 
-### 🔄 Data Flow (Write Path with Compression, Encryption & Dedup)
+### 🔄 Write Pipeline Data Flow
+
 ```
-Input File
-    |
-    +-> Split into 4MB segments
-    |
-    +-> Compress each segment (LZ4/Zstd)
-    |   +-> Skip if high entropy (random data)
-    |
-    +-> Hash compressed data (BLAKE3)
-    |
-    +-> Encrypt (if enabled)
-    |   +- Derive deterministic tweak from hash
-    |   +- XTS-AES-256 encryption
-    |
-    +-> Compute MAC (BLAKE3-keyed)
-    |
-    +-> Check content store
-    |   +- Hit?  -> Reuse existing segment (dedup!)
-    |   +- Miss? -> Write new segment
-    |
-    +-> Append to NVRAM log (fsync)
-    |
-    +-> Update metadata registry
-         |
-         +-> Return CapsuleID to user
+📄 Input File
+   │
+   ├─➤ Split into 4MB segments
+   │
+   ├─➤ 🗜️ Compress (LZ4/Zstd)
+   │   └─➤ Skip if high entropy
+   │
+   ├─➤ #️⃣ Hash (BLAKE3)
+   │
+   ├─➤ 🔐 Encrypt (XTS-AES-256)
+   │   ├─➤ Derive deterministic tweak from hash
+   │   └─➤ Preserves deduplication
+   │
+   ├─➤ ✅ Compute MAC (BLAKE3-keyed)
+   │
+   ├─➤ 🔍 Check Content Store
+   │   ├─➤ Hit?  ➜ Reuse existing segment (dedup!)
+   │   └─➤ Miss? ➜ Write new segment
+   │
+   ├─➤ 💾 Append to NVRAM log (fsync)
+   │
+   ├─➤ 📋 Update Metadata Registry
+   │
+   └─➤ ✨ Return CapsuleID
 ```
 
 ---
@@ -412,78 +511,83 @@ space.nvram.segments   -> Segment metadata with encryption info (JSON)
 ---
 
 ## 🧪 Testing
+
+### Run Tests
+
 ```bash
 # Run all tests
 cargo test --workspace
 
-# Run with output to see compression/dedup/encryption stats
+# Run with output (see compression/dedup/encryption stats)
 cargo test --workspace -- --nocapture
 
-# Run encryption tests
+# Run specific test suites
 cargo test -p encryption -- --nocapture
-
-# Run dedup-specific tests
-cargo test --test dedup_test -- --nocapture
-
-# Exercise the modular pipeline prototype (compression/dedup/encryption traits)
-cargo test -p capsule-registry --features modular_pipeline -- --nocapture
-
-# Run S3 protocol tests
 cargo test -p protocol-s3 -- --nocapture
+cargo test --features advanced-security -- --nocapture
 
-# Zero-trust ingress tests (Linux + advanced-security feature)
-cargo test -p protocol-s3 --features advanced-security -- --nocapture
-
-
-# Automated dedup demo (Linux/macOS/Git Bash)
-./test_dedup.sh
-
-# Automated dedup demo (Windows PowerShell)
-.\test_dedup.ps1
+# Automated dedup demo
+./test_dedup.sh          # Linux/macOS/Git Bash
+.\test_dedup.ps1         # Windows PowerShell
 ```
 
-**✅ Test Coverage:**
-- ✅ Write/read round-trip with compression
-- ✅ Multi-segment handling
-- ✅ Metadata persistence
-- ✅ NVRAM log recovery
-- ✅ Compression entropy detection
-- ✅ Deduplication across capsules
-- ✅ S3 protocol views (PUT/GET/HEAD/LIST/DELETE)
-- ✅ **Encryption/decryption round-trip**
-- ✅ **MAC integrity verification**
-- ✅ **Key derivation & rotation**
-- ✅ **Deterministic encryption for dedup**
+### ✅ Test Coverage
+
+<div align="center">
+
+| Feature | Status |
+|:--------|:------:|
+| Write/read round-trip | ✅ |
+| Multi-segment handling | ✅ |
+| Metadata persistence | ✅ |
+| NVRAM log recovery | ✅ |
+| Compression entropy detection | ✅ |
+| Deduplication across capsules | ✅ |
+| S3 protocol views | ✅ |
+| Encryption/decryption | ✅ |
+| MAC integrity verification | ✅ |
+| Key derivation & rotation | ✅ |
+| Deterministic encryption | ✅ |
+
+</div>
 
 ---
 
 ## 💡 Why This Matters
 
-### ⚠️ Traditional Storage Problems
+### The Problem with Traditional Storage
 
-| Problem | SPACE Solution |
-|---------|----------------|
-| 🔒 Protocol lock-in (block vs file vs object) | ✅ **One capsule, multiple views** |
-| 📦 Data duplication across tiers | ✅ **Content-addressed deduplication** |
-| 🔄 Complex migration between protocols | ✅ **Instant protocol switching** |
-| 🚚 Forklift upgrades required | ✅ **Microservice-based evolution** |
-| 🛡️ Security bolted on afterward | ✅ **Built-in encryption per segment** |
-| 🔐 Encryption breaks deduplication | ✅ **Deterministic tweaks preserve dedup** |
-| 💾 Wasted space on duplicate data | ✅ **Automatic dedup with 2-3x savings** |
-| ⚡ CPU overhead for compression | ✅ **Entropy detection skips random data** |
-| ✔️ No integrity verification | ✅ **BLAKE3-MAC on every segment** |
+<div align="center">
 
-### 🎯 Proven Architecture
+| ⚠️ Problem | ✅ SPACE Solution |
+|:-----------|:------------------|
+| 🔒 Protocol lock-in | **One capsule, multiple views** |
+| 📦 Data duplication | **Content-addressed deduplication** |
+| 🔄 Complex migrations | **Instant protocol switching** |
+| 🚚 Forklift upgrades | **Microservice evolution** |
+| 🛡️ Bolt-on security | **Built-in per-segment encryption** |
+| 🔐 Encryption kills dedup | **Deterministic tweaks preserve dedup** |
+| 💾 Wasted space | **Automatic 2-3x savings** |
+| ⚡ CPU overhead | **Entropy detection skips random data** |
+| ✔️ No integrity checks | **BLAKE3-MAC on every segment** |
 
-This MVP proves the core innovations outlined in the architecture documents:
+</div>
 
-✅ **Dedup Over Encrypted Data** -- Deterministic encryption preserves space efficiency
-✅ **Adaptive Compression** -- LZ4/Zstd with entropy-based selection
-✅ **Content-Addressed Storage** -- BLAKE3 hashing enables global dedup
-✅ **Protocol Views** -- S3 API proves universal namespace works
-✅ **Space Efficiency** -- 2-3x savings maintained with encryption
-✅ **Key Management** -- Version-tracked derivation with rotation
-✅ **Integrity Verification** -- BLAKE3-MAC detects tampering
+### 🎯 Proven Innovations
+
+<div align="center">
+
+| Innovation | Status | Impact |
+|:-----------|:------:|:-------|
+| 🔐 **Dedup Over Encrypted Data** | ✅ | Deterministic encryption preserves efficiency |
+| 🗜️ **Adaptive Compression** | ✅ | LZ4/Zstd with entropy-based selection |
+| #️⃣ **Content-Addressed Storage** | ✅ | BLAKE3 hashing enables global dedup |
+| 🌐 **Protocol Views** | ✅ | Universal namespace with S3/NFS/Block |
+| 💾 **Space Efficiency** | ✅ | 2-3x savings maintained with encryption |
+| 🔑 **Key Management** | ✅ | Version-tracked derivation with rotation |
+| ✅ **Integrity Verification** | ✅ | BLAKE3-MAC detects tampering |
+
+</div>
 
 ---
 
@@ -491,41 +595,68 @@ This MVP proves the core innovations outlined in the architecture documents:
 
 ### 💎 The Core Innovation
 
-Traditional encryption **destroys** deduplication:
+<table>
+<tr>
+<td width="50%">
+
+**❌ Traditional Encryption**
 ```
-Plaintext A + Random IV -> Ciphertext X
-Plaintext A + Random IV -> Ciphertext Y (different!)
+Plaintext A + Random IV
+   ↓
+Ciphertext X
+
+Plaintext A + Random IV
+   ↓
+Ciphertext Y (different!)
+
 Result: Dedup FAILS ❌
 ```
 
-**🚀 SPACE's breakthrough:**
+</td>
+<td width="50%">
+
+**✅ SPACE's Breakthrough**
 ```
-Plaintext A -> Compress -> Hash -> Deterministic Tweak -> Ciphertext X
-Plaintext A -> Compress -> Hash -> Same Tweak         -> Ciphertext X ✅
-Result: Dedup WORKS while maintaining encryption! 🎉
+Plaintext A → Compress → Hash
+   ↓ Deterministic Tweak
+Ciphertext X
+
+Plaintext A → Compress → Hash
+   ↓ Same Tweak
+Ciphertext X
+
+Result: Dedup WORKS! 🎉
 ```
+
+</td>
+</tr>
+</table>
 
 ### 🛡️ Security Properties
 
+<div align="center">
+
 | Property | Implementation | Strength |
-|----------|----------------|----------|
+|:---------|:--------------:|:--------:|
 | 🔒 **Confidentiality** | XTS-AES-256 | 256-bit |
 | ✅ **Integrity** | BLAKE3-MAC | 128-bit |
-| 🔗 **Deduplication** | Deterministic tweaks | Preserved |
+| 🔗 **Deduplication** | Deterministic tweaks | ✅ Preserved |
 | 🔑 **Key Derivation** | BLAKE3-KDF | Cryptographic |
 | 🔄 **Key Rotation** | Version tracking | Zero downtime |
-| 🧹 **Memory Safety** | Zeroization | Keys cleared on drop |
+| 🧹 **Memory Safety** | Zeroization | Secure |
+
+</div>
 
 ### ⚡ Quick Encryption Setup
+
 ```bash
 # Generate 256-bit master key
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
-# Encryption now auto-enabled for all writes
-# Read operations auto-decrypt when keys available
+# Encryption now auto-enabled! ✨
 ```
 
-For detailed security documentation, see [ENCRYPTION_IMPLEMENTATION.md](docs/ENCRYPTION_IMPLEMENTATION.md)
+📚 **Detailed documentation:** [ENCRYPTION_IMPLEMENTATION.md](docs/ENCRYPTION_IMPLEMENTATION.md)
 
 ---
 
@@ -595,58 +726,76 @@ For detailed security documentation, see [ENCRYPTION_IMPLEMENTATION.md](docs/ENC
 
 ---
 
-## ⚡ Performance Characteristics
+## ⚡ Performance
 
-### 🗜️ Compression (Phase 2.1)
+### 🗜️ Compression Performance
 
-| Data Type | Algorithm | Compression Ratio | Throughput |
-|-----------|-----------|-------------------|------------|
-| 📝 Text/logs | Zstd level 3 | 3-5x | ~500 MB/s |
-| 📦 Binary/mixed | LZ4 level 1 | 1.5-2.5x | ~2 GB/s |
-| 🎲 Random/encrypted | None (skipped) | 1.0x | ~5 GB/s |
+<div align="center">
 
-### 🔗 Deduplication (Phase 2.2)
+| Data Type | Algorithm | Compression | Throughput |
+|:----------|:---------:|:-----------:|:----------:|
+| 📝 **Text/Logs** | Zstd-3 | 3-5x | ~500 MB/s |
+| 📦 **Binary** | LZ4-1 | 1.5-2.5x | ~2 GB/s |
+| 🎲 **Random** | None | 1.0x | ~5 GB/s |
+
+</div>
+
+### 🔗 Deduplication Ratios
+
+<div align="center">
 
 | Scenario | Dedup Ratio | Space Saved |
-|----------|-------------|-------------|
-| 💿 VM images (identical) | 10-20x | 90-95% |
-| 📋 Log files (repeated) | 2-5x | 50-80% |
-| 👤 User data (mixed) | 1.5-3x | 30-65% |
-| ✨ Unique data | 1.0x | 0% |
+|:---------|:-----------:|:-----------:|
+| 💿 **VM Images** | 10-20x | 90-95% |
+| 📋 **Log Files** | 2-5x | 50-80% |
+| 👤 **User Data** | 1.5-3x | 30-65% |
+| ✨ **Unique Data** | 1.0x | 0% |
 
-### 🔐 Encryption (Phase 3.1)
+</div>
+
+### 🔐 Encryption Overhead
+
+<div align="center">
 
 | Operation | Baseline | With Encryption | Overhead |
-|-----------|----------|-----------------|----------|
-| Write | 2.1 GB/s | 2.0 GB/s | +5% |
-| Read | 3.5 GB/s | 3.2 GB/s | +9% |
-| Dedup | Works | **Still Works** | 0% impact |
+|:---------:|:--------:|:---------------:|:--------:|
+| **Write** | 2.1 GB/s | 2.0 GB/s | +5% |
+| **Read** | 3.5 GB/s | 3.2 GB/s | +9% |
+| **Dedup** | ✅ Works | ✅ **Still Works** | **0%** |
 
-**📊 Breakdown per 4MB segment:**
+</div>
+
+### 📊 Per-Segment Breakdown (4MB)
+
 ```
-🗜️  Compression (LZ4):     ~0.5ms  (2.5 GB/s)
-#️⃣  Hashing (BLAKE3):      ~0.3ms  (13 GB/s)
-🔐 Encryption (XTS-AES):  ~0.8ms  (5 GB/s with AES-NI)
-✅ MAC (BLAKE3):          ~0.3ms  (13 GB/s)
-💾 NVRAM write:           ~0.1ms  (fsync)
---------------------------------
-⚡ Total:                 ~2.0ms per 4MB segment
+🗜️  Compression (LZ4)    ~0.5ms   2.5 GB/s
+#️⃣  Hashing (BLAKE3)     ~0.3ms   13 GB/s
+🔐 Encryption (XTS-AES) ~0.8ms   5 GB/s (AES-NI)
+✅ MAC (BLAKE3)         ~0.3ms   13 GB/s
+💾 NVRAM write          ~0.1ms   (fsync)
+──────────────────────────────────────────
+⚡ Total                ~2.0ms per segment
 ```
 
-### 📈 Overhead Summary
+### 📈 Total Overhead
 
-- #️⃣ Hash computation (BLAKE3): ~2ms per 4MB segment
-- 🔍 Content store lookup: <1us (HashMap)
-- 🔐 Encryption overhead: <5% of write time
-- ✅ MAC overhead: <1% of write time
-- 🔗 Dedup overhead: <1% of write time
-- **⚡ Combined overhead: <10% increase in write latency**
+<div align="center">
+
+**Combined pipeline overhead: <10% increase in write latency**
+
+</div>
 
 ---
 
 ## 🤝 Contributing
 
-This is an experimental platform exploring radical new storage architectures. We welcome:
+<div align="center">
+
+**We're exploring radical new storage architectures — join us!**
+
+</div>
+
+### We Welcome
 
 - 🐛 Bug reports and fixes
 - 💡 Architecture suggestions
@@ -655,96 +804,120 @@ This is an experimental platform exploring radical new storage architectures. We
 - ⚡ Performance optimizations
 - 🔒 Security reviews
 
-**📝 Before submitting PRs:**
+### Before Submitting PRs
+
 1. ✨ Run `cargo fmt` and `cargo clippy`
-2. ✅ Ensure all tests pass (`cargo test --workspace`)
-3. 📖 Update documentation for new features
+2. ✅ Ensure `cargo test --workspace` passes
+3. 📖 Update documentation
 4. 🧪 Add tests for new functionality
 
 ---
 
-## 📚 Learn More
+## 📚 Documentation
 
-- 🏗️ **[Architecture Overview](docs/architecture.md)** -- Full system design
-- 🔮 **[Future State Architecture](docs/future_state_architecture.md)** -- Vision and roadmap
-- 💡 **[Patentable Concepts](docs/patentable_concepts.md)** - Novel mechanisms
-- 🔗 **[Dedup Implementation](docs/DEDUP_IMPLEMENTATION.md)** - Phase 2.2 technical details
-- 🔐 **[Encryption Implementation](docs/ENCRYPTION_IMPLEMENTATION.md)** - **NEW: Phase 3 security details**
-- 🌐 **[Protocol Views Integration](docs/protocol_views.md)** - CLI workflow for S3/NFS/block facades
-- 🚀 **[S3 Quick Start](QUICKSTART_S3.md)** -- Protocol view demo
-- 🔨 **[Build Guide](BUILD.md)** -- Compilation and testing
+<div align="center">
+
+| Document | Description |
+|:---------|:------------|
+| 🏗️ [Architecture Overview](docs/architecture.md) | Full system design |
+| 🔮 [Future State Architecture](docs/future_state_architecture.md) | Vision and roadmap |
+| 💡 [Patentable Concepts](docs/patentable_concepts.md) | Novel mechanisms |
+| 🔗 [Dedup Implementation](docs/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
+| 🔐 [Encryption Implementation](docs/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
+| 🌐 [Protocol Views](docs/protocol_views.md) | S3/NFS/block facades |
+| 🚀 [S3 Quick Start](QUICKSTART_S3.md) | Protocol view demo |
+| 🔨 [Build Guide](BUILD.md) | Compilation and testing |
+
+</div>
 
 ---
 
 ## 📜 License
 
+<div align="center">
+
 **Apache 2.0** — Permissive open source license with patent grant
 
-- ✅ Open use: commercial, research, and personal deployments are all allowed
-- 📝 Keep notices: retain copyright and license text when distributing
-- 🤝 Contributions: submitted patches are accepted under Apache 2.0 (see CONTRIBUTING.md)
+✅ **Commercial use allowed** • 📝 **Retain attribution** • 🤝 **Contributions welcome**
 
-[📄 Full license details](LICENSE) | [🤝 Contribution guidelines](CONTRIBUTING.md)
+[📄 Full License](LICENSE) • [🤝 Contributing Guide](CONTRIBUTING.md)
 
-### 🤝 Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work shall be licensed as above, without any additional terms or conditions.
+</div>
 
 ---
 
 ## 📊 Project Status
 
-**🎯 Current Phase:** Phase 3.3 Complete (Advanced Security)
-**🔬 Stability:** Experimental -- API subject to change
-**🚀 Production Ready:** Not yet (educational/research purposes)
+<div align="center">
 
-**✅ What works today:**
-- ✅ Capsule storage with compression and deduplication
-- ✅ Counting Bloom + audit log (feature `advanced-security`)
-- ✅ SPIFFE + mTLS gateway with optional eBPF + Kyber toggle
-- ✅ **XTS-AES-256 encryption with integrity verification**
-- ✅ **Deterministic encryption preserving deduplication**
-- ✅ **Key management with rotation support**
-- ✅ S3-compatible REST API
-- ✅ CLI tools for basic operations
-- ✅ Persistent metadata and NVRAM log
+| Aspect | Status |
+|:-------|:-------|
+| **🎯 Current Phase** | Phase 3.3 Complete (Advanced Security) |
+| **🔬 Stability** | Experimental — API subject to change |
+| **🚀 Production** | Not yet (educational/research) |
 
-**⚠️ Known limitations:**
+</div>
+
+### ✅ What Works Today
+
+- Capsule storage with compression and deduplication
+- Counting Bloom + audit log (`advanced-security`)
+- SPIFFE + mTLS gateway with eBPF + Kyber
+- XTS-AES-256 encryption with integrity verification
+- Deterministic encryption preserving deduplication
+- Key management with rotation support
+- S3-compatible REST API
+- CLI tools for basic operations
+- Persistent metadata and NVRAM log
+
+### ⚠️ Known Limitations
+
 - 📋 Log-space reclamation pending (Phase 4)
-- 📋 CLI doesn't have --encrypt flag yet (Phase 3.2)
+- 📋 CLI `--encrypt` flag (Phase 3.2)
 - 📋 Single-node only (clustering = Phase 5)
-- 📋 No authentication/authorization (Phase 4)
+- 📋 Authentication/authorization (Phase 4)
 
 ---
 
 ## 🎬 Quick Demo
+
+### Basic Usage
+
 ```bash
-# Build
+# Build SPACE
 cargo build --release
 
-# Setup encryption (optional)
+# Optional: Enable encryption
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 # Create a file with repeated content
 echo "SPACE STORAGE PLATFORM" > demo.txt
 for i in {1..1000}; do echo "SPACE STORAGE PLATFORM" >> demo.txt; done
 
-# First capsule - no dedup yet
+# First capsule (establishes baseline)
 ./target/release/spacectl create --file demo.txt
 
-# Second capsule - watch the dedup magic!
+# Second capsule (watch dedup in action!)
 ./target/release/spacectl create --file demo.txt
+```
 
-# Expected output:
-# *  Dedup hit: Reusing segment 0 (saved 24576 bytes)
-#  Segment 1: encrypted with key v1 (if SPACE_MASTER_KEY set)
-# [x] Capsule ...: 5.2x compression, 1 dedup hits (24576 bytes saved)  encrypted
+**Expected Output:**
+```
+✨ Dedup hit: Reusing segment 0 (saved 24576 bytes)
+🔐 Segment 1: encrypted with key v1
+✅ Capsule ...: 5.2x compression, 1 dedup hits (24576 bytes saved)
+```
 
+### S3 Protocol Demo
+
+```bash
 # Start S3 server
 ./target/release/spacectl serve-s3 --port 8080 &
 
-# Access via S3 API
+# Store object via S3 API
 curl -X PUT http://localhost:8080/demo/test.txt -d "Hello SPACE!"
+
+# Retrieve object
 curl http://localhost:8080/demo/test.txt
 ```
 
@@ -764,36 +937,56 @@ spacectl block delete vol1
 ```
 
 ### 📊 Telemetry & Logging
-- 🎨 `SPACE_LOG_FORMAT` controls console output (`compact` by default, set to `json` for structured logs).
-- 📝 `RUST_LOG` follows `tracing` filters (example: `RUST_LOG=info,space=debug`).
-- 📡 All pipeline stages emit structured spans/events (`pipeline::compression`, `telemetry::compression`) for the future telemetry hub.
-- 🚨 Primary error surfaces for on-call runbooks:
-  | Code | Level | Description | Suggested Action |
-  |------|-------|-------------|------------------|
-  | `CompressionError::EntropySkip` | `WARN` | High-entropy payload skipped compression, includes entropy + segment size | Optional; review workload mix if persistent |
-  | `CompressionError::IneffectiveRatio` | `INFO` | Compression reverted due to poor ratio, includes achieved ratio | Tune policy thresholds if noisy |
-  | `PipelineError::Compression` | `ERROR` | Compression subsystem hard-failed for a segment (includes index) | Retry segment; inspect codec health |
-  | `PipelineError::Nvram` / `PipelineError::Registry` | `ERROR` | Storage metadata IO failure with operation identifier | Investigate backing store, retry once safe |
-  | `PipelineError::Telemetry` | `WARN` | Downstream telemetry sink rejected structured event | Defer to hub health; logs still written locally |
 
----
+**Environment Variables:**
+- `SPACE_LOG_FORMAT` — Console output format (`compact` or `json`)
+- `RUST_LOG` — Tracing filters (e.g., `RUST_LOG=info,space=debug`)
 
-## ?? Contributing
-See [CONTRIBUTING.md](CONTRIBUTING.md) � [Code of Conduct](CODE_OF_CONDUCT.md) � [Security](SECURITY.md)
+**Structured Events:**
+- All pipeline stages emit spans/events (`pipeline::compression`, `telemetry::compression`)
+
+**Error Surfaces:**
 
 <div align="center">
 
-**Built with 🦀 Rust**
+| Code | Level | Description | Action |
+|:-----|:-----:|:------------|:-------|
+| `CompressionError::EntropySkip` | `WARN` | High-entropy payload skipped | Review workload if persistent |
+| `CompressionError::IneffectiveRatio` | `INFO` | Compression reverted | Tune policy thresholds |
+| `PipelineError::Compression` | `ERROR` | Compression subsystem failed | Retry segment; inspect codec |
+| `PipelineError::Nvram/Registry` | `ERROR` | Storage metadata IO failure | Investigate backing store |
+| `PipelineError::Telemetry` | `WARN` | Telemetry sink rejected event | Defer to hub health |
 
-*Breaking storage silos, one encrypted capsule at a time.* 🚀
-
-**🎉 Phase 3.3 Complete: Compression ✅ | Dedup ✅ | Protocol Views ✅ | Advanced Security ✅**
+</div>
 
 ---
 
-[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Request Feature](https://github.com/saworbit/SPACE/issues) • [💬 Discussions](https://github.com/saworbit/SPACE/discussions)
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) • [Code of Conduct](CODE_OF_CONDUCT.md) • [Security](SECURITY.md)
+
+---
+
+<div align="center">
+
+## 🌟 Support SPACE
 
 **⭐ Star us on GitHub if you find this project interesting! ⭐**
+
+[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Request Feature](https://github.com/saworbit/SPACE/issues) • [💬 Discussions](https://github.com/saworbit/SPACE/discussions)
+
+---
+
+**Built with 🦀 Rust**
+
+*Breaking storage silos, one encrypted capsule at a time.*
+
+**🎉 Phase 3.3 Complete**
+Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
+
+---
+
+**© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
 
