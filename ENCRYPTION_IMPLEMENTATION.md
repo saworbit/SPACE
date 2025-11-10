@@ -495,11 +495,11 @@ pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
 ---
 
 ### 4. Hybrid Kyber (Phase 3.3)
-- **Security crate**: `common::security::crypto_profiles` provides the Kyber key manager + nonce helpers behind the `advanced-security` feature.
-- **Key persistence**: `KyberKeyManager::load_or_generate` stores the ML-KEM keypair at `SPACE_KYBER_KEY_PATH` (default `space.kyber.key`).
-- **Policy toggle**: `Policy::crypto_profile` defaults to `Classical`. Setting `HybridKyber` wraps the AES key pair and stores the Kyber ciphertext/nonce in each segment.
-- **Write path**: Kyber material is derived alongside AES keys; the nonce mixes into the deterministic tweak so dedupe is preserved.
-- **Read path**: when `HybridKyber`, the Kyber ciphertext is decapsulated before MAC verification + decryption, keeping backward compatibility.
+- **Security crate**: `common::security::crypto_profiles` provides the ML-KEM key manager + nonce helpers behind the `advanced-security` feature.
+- **Key persistence**: `MlkemKeyManager::load_or_generate` stores the ML-KEM keypair at `SPACE_KYBER_KEY_PATH` (default `space.kyber.key`).
+- **Policy toggle**: `Policy::crypto_profile` defaults to `Classical`. Setting `HybridKyber` wraps the AES key pair and stores the ML-KEM ciphertext/nonce in each segment.
+- **Write path**: ML-KEM material is derived alongside AES keys; the nonce mixes into the deterministic tweak so dedupe is preserved.
+- **Read path**: when `HybridKyber`, the ML-KEM ciphertext is decapsulated before MAC verification + decryption, keeping backward compatibility.
 - **Feature gating**: sovereign builds keep `advanced-security` disabled to avoid PQ dependencies entirely.
 
 ## Configuration

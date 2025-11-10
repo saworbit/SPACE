@@ -25,7 +25,7 @@ use common::security::audit_log::AuditLog;
 #[cfg(feature = "advanced-security")]
 #[cfg_attr(feature = "pipeline_async", allow(unused_imports))]
 use common::security::crypto_profiles::{
-    collect_base_material, serialize_ciphertext, HybridKeyMaterial, KyberKeyManager, KyberNonceExt,
+    collect_base_material, serialize_ciphertext, HybridKeyMaterial, MlkemKeyManager, MlkemNonceExt,
 };
 #[cfg(feature = "advanced-security")]
 use encryption::keymanager::XtsKeyPair;
@@ -209,7 +209,7 @@ pub struct WritePipeline {
     #[cfg(feature = "advanced-security")]
     audit_log: Option<AuditLog>,
     #[cfg(feature = "advanced-security")]
-    kyber_manager: Option<KyberKeyManager>,
+    mlkem_manager: Option<MlkemKeyManager>,
     #[cfg(feature = "modular_pipeline")]
     modular: Option<Arc<TokioMutex<crate::modular_pipeline::RegistryPipelineHandle>>>,
     #[cfg(feature = "modular_pipeline")]
@@ -245,7 +245,7 @@ impl WritePipeline {
         }
 
         #[cfg(feature = "advanced-security")]
-        let kyber_manager = KyberKeyManager::from_env().ok();
+        let mlkem_manager = MlkemKeyManager::from_env().ok();
 
         if key_manager.is_some() {
             info!("encryption enabled (key manager initialised)");
@@ -284,7 +284,7 @@ impl WritePipeline {
             #[cfg(feature = "advanced-security")]
             audit_log,
             #[cfg(feature = "advanced-security")]
-            kyber_manager,
+            mlkem_manager,
             #[cfg(feature = "modular_pipeline")]
             modular,
             #[cfg(feature = "modular_pipeline")]
@@ -315,7 +315,7 @@ impl WritePipeline {
         #[cfg(feature = "advanced-security")]
         let audit_log = AuditLog::from_env().ok();
         #[cfg(feature = "advanced-security")]
-        let kyber_manager = KyberKeyManager::from_env().ok();
+        let mlkem_manager = MlkemKeyManager::from_env().ok();
         #[cfg(feature = "advanced-security")]
         let mut nvram = nvram;
         #[cfg(feature = "advanced-security")]
@@ -357,7 +357,7 @@ impl WritePipeline {
             #[cfg(feature = "advanced-security")]
             audit_log,
             #[cfg(feature = "advanced-security")]
-            kyber_manager,
+            mlkem_manager,
             #[cfg(feature = "modular_pipeline")]
             modular,
             #[cfg(feature = "modular_pipeline")]
@@ -535,7 +535,7 @@ impl WritePipeline {
                 let mut derived_pair: Option<XtsKeyPair> = None;
                 #[cfg(feature = "advanced-security")]
                 if policy.crypto_profile == CryptoProfile::HybridKyber {
-                    if let Some(manager) = &self.kyber_manager {
+                    if let Some(manager) = &self.mlkem_manager {
                         match manager.wrap_xts_key(
                             policy.crypto_profile,
                             &collect_base_material((key_pair.key1(), key_pair.key2())),
@@ -548,10 +548,10 @@ impl WritePipeline {
                                 hybrid_state = Some(material);
                             }
                             Ok(None) => {}
-                            Err(err) => warn!(error = %err, "kyber key wrapping failed"),
+                            Err(err) => warn!(error = %err, "mlkem key wrapping failed"),
                         }
                     } else {
-                        warn!("policy requested hybrid crypto but kyber manager is unavailable");
+                        warn!("policy requested hybrid crypto but ML-KEM manager is unavailable");
                     }
                 }
 
@@ -1432,7 +1432,7 @@ impl WritePipeline {
                 #[cfg(feature = "advanced-security")]
                 if capsule.policy.crypto_profile == CryptoProfile::HybridKyber {
                     if let (Some(manager), Some(cipher_hex), Some(hash)) = (
-                        self.kyber_manager.as_ref(),
+                        self.mlkem_manager.as_ref(),
                         &segment.pq_ciphertext,
                         &segment.content_hash,
                     ) {
@@ -1448,7 +1448,7 @@ impl WritePipeline {
                                 derived_pair = Some(XtsKeyPair::from_bytes(material.wrapped_key));
                             }
                             Ok(None) => {}
-                            Err(err) => warn!(error = %err, "kyber unwrap failed"),
+                            Err(err) => warn!(error = %err, "mlkem unwrap failed"),
                         }
                     }
                 }

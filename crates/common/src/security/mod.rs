@@ -12,7 +12,7 @@ pub mod ebpf_gateway;
 pub use audit_log::{AuditLog, AuditLogBuilder, AuditRecord, AuditTrail, TsaClient, TsaProof};
 pub use bloom_dedup::{BloomFilterWrapper, BloomStats, DedupOptimizer};
 pub use crypto_profiles::{
-    HybridKeyMaterial, KyberKeyManager, KyberKeyMaterialState, KyberNonceExt,
+    HybridKeyMaterial, MlkemKeyManager, MlkemKeyMaterialState, MlkemNonceExt,
 };
 pub use ebpf_gateway::{
     EbpfGateway, MtlsLayer, MtlsRejection, SpiffeIdentity, SpiffeWorkloadClient, ZeroTrustConfig,

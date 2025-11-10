@@ -7,20 +7,20 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use blake3::Hasher;
-use pqcrypto_kyber::kyber768::{self, Ciphertext, PublicKey, SecretKey};
+use pqcrypto_mlkem::mlkem768::{self, Ciphertext, PublicKey, SecretKey};
 use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{CapsuleId, ContentHash, CryptoProfile, SegmentId};
 
-/// Persistent Kyber key manager that stores the node's keypair on disk.
+/// Persistent ML-KEM key manager that stores the node's keypair on disk.
 #[derive(Clone)]
-pub struct KyberKeyManager {
-    state: Arc<Mutex<KyberKeyMaterialState>>,
+pub struct MlkemKeyManager {
+    state: Arc<Mutex<MlkemKeyMaterialState>>,
 }
 
-pub struct KyberKeyMaterialState {
+pub struct MlkemKeyMaterialState {
     pub public: PublicKey,
     pub secret: SecretKey,
     pub path: PathBuf,
@@ -33,11 +33,11 @@ pub struct HybridKeyMaterial {
     pub ciphertext: Vec<u8>,
 }
 
-pub trait KyberNonceExt {
+pub trait MlkemNonceExt {
     fn mix_with(&self, base: [u8; 16]) -> [u8; 16];
 }
 
-impl KyberNonceExt for [u8; 16] {
+impl MlkemNonceExt for [u8; 16] {
     fn mix_with(&self, base: [u8; 16]) -> [u8; 16] {
         let mut hasher = Hasher::new();
         hasher.update(&base);
@@ -49,16 +49,16 @@ impl KyberNonceExt for [u8; 16] {
     }
 }
 
-impl KyberKeyManager {
+impl MlkemKeyManager {
     pub fn load_or_generate(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let material = if path.exists() {
             load_keys(&path)?
         } else {
-            let (public, secret) = kyber768::keypair();
+            let (public, secret) = mlkem768::keypair();
             store_keys(&path, &public, &secret)?;
-            info!("generated new Kyber keypair at {}", path.display());
-            KyberKeyMaterialState {
+            info!("generated new ML-KEM keypair at {}", path.display());
+            MlkemKeyMaterialState {
                 public,
                 secret,
                 path: path.clone(),
@@ -89,7 +89,7 @@ impl KyberKeyManager {
             return Ok(None);
         }
         let state = self.state.lock().unwrap();
-        let (shared, ciphertext) = kyber768::encapsulate(&state.public);
+        let (shared, ciphertext) = mlkem768::encapsulate(&state.public);
         Ok(Some(derive_material(
             base_key,
             capsule,
@@ -115,10 +115,10 @@ impl KyberKeyManager {
 
         let bytes = hex::decode(ciphertext_hex)?;
         let cipher = Ciphertext::from_bytes(&bytes)
-            .map_err(|err| anyhow!("invalid kyber ciphertext: {err:?}"))?;
+            .map_err(|err| anyhow!("invalid ML-KEM ciphertext: {err:?}"))?;
 
         let state = self.state.lock().unwrap();
-        let shared = kyber768::decapsulate(&cipher, &state.secret);
+        let shared = mlkem768::decapsulate(&cipher, &state.secret);
         Ok(Some(derive_material(
             base_key,
             capsule,
@@ -159,15 +159,15 @@ fn derive_material(
     }
 }
 
-fn load_keys(path: &Path) -> Result<KyberKeyMaterialState> {
+fn load_keys(path: &Path) -> Result<MlkemKeyMaterialState> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("unable to read {}", path.display()))?;
-    let disk: StoredKyberKey = serde_json::from_str(&contents)?;
+    let disk: StoredMlkemKey = serde_json::from_str(&contents)?;
     let public = PublicKey::from_bytes(&hex::decode(disk.public)?)
         .map_err(|err| anyhow!("invalid public key: {err:?}"))?;
     let secret = SecretKey::from_bytes(&hex::decode(disk.secret)?)
         .map_err(|err| anyhow!("invalid secret key: {err:?}"))?;
-    Ok(KyberKeyMaterialState {
+    Ok(MlkemKeyMaterialState {
         public,
         secret,
         path: path.to_path_buf(),
@@ -178,7 +178,7 @@ fn store_keys(path: &Path, public: &PublicKey, secret: &SecretKey) -> Result<()>
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let disk = StoredKyberKey {
+    let disk = StoredMlkemKey {
         public: hex::encode(public.as_bytes()),
         secret: hex::encode(secret.as_bytes()),
     };
@@ -188,7 +188,7 @@ fn store_keys(path: &Path, public: &PublicKey, secret: &SecretKey) -> Result<()>
 }
 
 #[derive(Serialize, Deserialize)]
-struct StoredKyberKey {
+struct StoredMlkemKey {
     public: String,
     secret: String,
 }
@@ -210,8 +210,8 @@ mod tests {
 
     #[test]
     fn derive_and_restore_material() {
-        let path = std::env::temp_dir().join("space-kyber-test.key");
-        let manager = KyberKeyManager::load_or_generate(&path).unwrap();
+        let path = std::env::temp_dir().join("space-mlkem-test.key");
+        let manager = MlkemKeyManager::load_or_generate(&path).unwrap();
         let base_key = [0x42u8; 64];
         let capsule = CapsuleId::new();
         let hash = ContentHash("abc123".into());

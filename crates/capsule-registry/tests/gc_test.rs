@@ -168,6 +168,6 @@ mod modular_pipeline_gc {
         let _ = fs::remove_file(log_path);
         let _ = fs::remove_file(segments_path.as_str());
 
-        std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
+        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
     }
 }
