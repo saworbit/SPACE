@@ -64,7 +64,6 @@ fn refcounts_increase_and_decrease_with_capsules() {
     let _ = fs::remove_file(log_path.as_str());
     let _ = fs::remove_file(format!("{}.segments", log_path));
     let _ = fs::remove_file(meta_path.as_str());
-
 }
 
 #[test]
@@ -106,7 +105,6 @@ fn garbage_collect_reclaims_orphan_segments() {
     let _ = fs::remove_file(log_path.as_str());
     let _ = fs::remove_file(format!("{}.segments", log_path));
     let _ = fs::remove_file(meta_path.as_str());
-
 }
 
 #[cfg(feature = "modular_pipeline")]
