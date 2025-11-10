@@ -2,9 +2,18 @@ use capsule_registry::CapsuleRegistry;
 use nvram_sim::NvramLog;
 use protocol_s3::S3View;
 use std::fs;
+use std::sync::Once;
+
+fn init_native_pipeline() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
+    });
+}
 
 #[tokio::test]
 async fn test_s3_put_and_get() {
+    init_native_pipeline();
     // Setup
     let log_path = "test_s3.nvram";
     let meta_path = "test_s3.metadata";
@@ -60,6 +69,7 @@ async fn test_s3_put_and_get() {
 
 #[tokio::test]
 async fn test_s3_multiple_objects() {
+    init_native_pipeline();
     let log_path = "test_s3_multi.nvram";
     let meta_path = "test_s3_multi.metadata";
     let _ = fs::remove_file(log_path);
@@ -105,6 +115,7 @@ async fn test_s3_multiple_objects() {
 
 #[tokio::test]
 async fn test_s3_large_object() {
+    init_native_pipeline();
     let log_path = "test_s3_large.nvram";
     let meta_path = "test_s3_large.metadata";
     let _ = fs::remove_file(log_path);
