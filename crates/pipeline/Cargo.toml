@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 common = { path = "../common" }
+layout-engine = { path = "../layout-engine" }
 compression = { path = "../compression" }
 dedup = { path = "../dedup" }
 storage = { path = "../storage" }

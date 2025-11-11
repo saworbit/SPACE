@@ -15,8 +15,18 @@ libfuzzer-sys = "0.4"
 path = "../crates/encryption"
 default-features = true
 
+[dependencies.layout-engine]
+path = "../crates/layout-engine"
+default-features = true
+
 [[bin]]
 name = "encrypt_roundtrip"
 path = "fuzz_targets/encrypt_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "policy_fuzz"
+path = "fuzz_targets/policy_fuzz.rs"
 test = false
 doc = false

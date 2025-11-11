@@ -19,6 +19,7 @@ use tracing::instrument;
 use encryption::{
     compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE, KeyManager,
 };
+use layout_engine::LayoutEngine;
 
 /// Minimal encryptor that performs no-op transformations.
 #[derive(Default, Clone)]
@@ -394,73 +395,91 @@ where
         let compression_policy = self
             .evaluator
             .evaluate_compression(policy, &data[..data.len().min(1024)])?;
-
-        let (view, summary) = self.compressor.compress(data, &compression_policy)?;
-        let hash = self.deduper.hash_content(view.as_ref());
+        let chunk_size = policy.layout.strategy.default_segment_size();
+        let data_slices: Vec<&[u8]> = data.chunks(chunk_size).collect();
+        let layout_engine = LayoutEngine::new(policy);
+        let zone_plan = layout_engine.synthesize(&[capsule_id], &data_slices, policy)?;
+        let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
 
         let mut segment_ids = Vec::new();
         let mut dedup_stats = DedupStats::new();
 
-        if let Some(existing) = self.catalog.lookup_content(&hash) {
-            let mut metadata = self.storage.metadata(existing).await?;
-            metadata.ref_count += 1;
-            metadata.deduplicated = metadata.ref_count > 1;
-            let mut txn = self.storage.begin_txn().await?;
-            txn.set_segment_metadata(existing, metadata).await?;
-            txn.commit().await?;
-            self.deduper.update_stats(summary.output_size as u64, true);
-            self.stats.record(summary.output_size as u64, true);
-            dedup_stats.record(summary.output_size as u64, true);
-            segment_ids.push(existing);
-        } else {
-            let mut txn = self.storage.begin_txn().await?;
-            let seg_id = self.catalog.allocate_segment()?;
+        for zone in zone_plan.zones {
+            for seg in zone.segments {
+                let start = seg.offset as usize;
+                let end = start.saturating_add(seg.length as usize);
+                if end > data.len() {
+                    return Err(anyhow!(
+                        "zone plan refers beyond input data: {} > {}",
+                        end,
+                        data.len()
+                    ));
+                }
+                let chunk = &data[start..end];
+                let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
+                let hash = self.deduper.hash_content(view.as_ref());
 
-            let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
-            let (payload, encryption_summary) = if encryption_policy.is_enabled() {
-                let _key = self
-                    .keyring
-                    .as_ref()
-                    .map(|keyring| keyring.derive_key(capsule_id, seg_id))
-                    .transpose()?;
-                let (encrypted, summary) = self.encryptor.encrypt(
-                    Cow::Borrowed(view.as_ref()),
-                    &encryption_policy,
-                    seg_id,
-                )?;
-                (encrypted, summary)
-            } else {
-                (view.into_owned(), EncryptionSummary::new("none"))
-            };
+                if let Some(existing) = self.catalog.lookup_content(&hash) {
+                    let mut metadata = self.storage.metadata(existing).await?;
+                    metadata.ref_count += 1;
+                    metadata.deduplicated = metadata.ref_count > 1;
+                    let mut txn = self.storage.begin_txn().await?;
+                    txn.set_segment_metadata(existing, metadata).await?;
+                    txn.commit().await?;
+                    self.deduper.update_stats(summary.output_size as u64, true);
+                    self.stats.record(summary.output_size as u64, true);
+                    dedup_stats.record(summary.output_size as u64, true);
+                    segment_ids.push(existing);
+                } else {
+                    let mut txn = self.storage.begin_txn().await?;
+                    let seg_id = self.catalog.allocate_segment()?;
 
-            txn.append(seg_id, &payload).await?;
-            let metadata = Segment {
-                id: seg_id,
-                offset: 0,
-                len: payload.len() as u32,
-                compressed: summary.compressed,
-                compression_algo: summary.algorithm.clone(),
-                content_hash: Some(hash.clone()),
-                ref_count: 1,
-                deduplicated: false,
-                access_count: 0,
-                encryption_version: encryption_summary.encryption_version,
-                key_version: encryption_summary.key_version,
-                tweak_nonce: encryption_summary.tweak_nonce,
-                integrity_tag: encryption_summary.integrity_tag,
-                encrypted: encryption_policy.is_enabled(),
-                pq_ciphertext: None,
-                pq_nonce: None,
-            };
-            txn.set_segment_metadata(seg_id, metadata).await?;
-            txn.commit().await?;
+                    let (payload, encryption_summary) = if encryption_policy.is_enabled() {
+                        let _key = self
+                            .keyring
+                            .as_ref()
+                            .map(|keyring| keyring.derive_key(capsule_id, seg_id))
+                            .transpose()?;
+                        let (encrypted, summary) = self.encryptor.encrypt(
+                            Cow::Borrowed(view.as_ref()),
+                            &encryption_policy,
+                            seg_id,
+                        )?;
+                        (encrypted, summary)
+                    } else {
+                        (view.into_owned(), EncryptionSummary::new("none"))
+                    };
 
-            self.catalog.register_content(hash.clone(), seg_id)?;
-            self.deduper.register_content(hash, seg_id)?;
-            self.deduper.update_stats(summary.output_size as u64, false);
-            self.stats.record(summary.output_size as u64, false);
-            dedup_stats.record(summary.output_size as u64, false);
-            segment_ids.push(seg_id);
+                    txn.append(seg_id, &payload).await?;
+                    let metadata = Segment {
+                        id: seg_id,
+                        offset: 0,
+                        len: payload.len() as u32,
+                        compressed: summary.compressed,
+                        compression_algo: summary.algorithm.clone(),
+                        content_hash: Some(hash.clone()),
+                        ref_count: 1,
+                        deduplicated: false,
+                        access_count: 0,
+                        encryption_version: encryption_summary.encryption_version,
+                        key_version: encryption_summary.key_version,
+                        tweak_nonce: encryption_summary.tweak_nonce,
+                        integrity_tag: encryption_summary.integrity_tag,
+                        encrypted: encryption_policy.is_enabled(),
+                        pq_ciphertext: None,
+                        pq_nonce: None,
+                    };
+                    txn.set_segment_metadata(seg_id, metadata).await?;
+                    txn.commit().await?;
+
+                    self.catalog.register_content(hash.clone(), seg_id)?;
+                    self.deduper.register_content(hash, seg_id)?;
+                    self.deduper.update_stats(summary.output_size as u64, false);
+                    self.stats.record(summary.output_size as u64, false);
+                    dedup_stats.record(summary.output_size as u64, false);
+                    segment_ids.push(seg_id);
+                }
+            }
         }
 
         self.catalog.create_capsule(

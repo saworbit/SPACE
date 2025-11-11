@@ -1,0 +1,24 @@
+[package]
+name = "layout-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["cpu"]
+cpu = []
+zns = []
+ml = ["tch"]
+pq = ["sha3"]
+
+[dependencies]
+anyhow = "1.0"
+blake3 = "1.5"
+sha3 = { version = "0.10", optional = true }
+tch = { version = "0.15", optional = true }
+common = { path = "../common" }
+
+[dev-dependencies]
+criterion = "0.5"

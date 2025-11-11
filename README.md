@@ -14,6 +14,13 @@
 ---
 
 ### 🎉 Phase 3.3 Complete
+
+### Phase 3.0: CapsuleFlow Layout Engine
+- **Policy-compiled layout synthesis**
+- **ZNS-native graph zoning**
+- **ML-augmented heat prediction**
+- **Post-quantum Merkle anchors**
+- **Hardware offload (CPU/DPU/GPU/CSD)**
 Encryption ✅ • Bloom Filters ✅ • Audit Log ✅ • SPIFFE/mTLS ✅ • PODMS Scaling ✅
 
 [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [💡 Why SPACE](#-why-this-matters)
@@ -989,7 +996,6 @@ Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
-
 
 
 

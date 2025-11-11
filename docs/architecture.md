@@ -78,6 +78,13 @@ Modern workloads are scattered across VMs, containers, GPUs, DPUs and edge devic
      +---------+ +---------+           +-----------+         +------------+
 ```
 
+### CapsuleFlow Layout Engine
+[Policy Compiler] → [LayoutEngine] → [Offload Registry]
+                                    ├─ CPU
+                                    ├─ DPU (RDMA)
+                                    ├─ GPU (tch-rs)
+                                    └─ CSD (libzbd)
+
 ---
 
 ### 3.1 Protocol containers (current)

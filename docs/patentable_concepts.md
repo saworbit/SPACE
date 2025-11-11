@@ -191,6 +191,28 @@ Output: “Async fan‑out + nightly snap” or “Metro‑Sync + hourly snap”
 
 ---
 
+## 8  CapsuleFlow Policy-to-Kernel Compiler
+
+### 8.1  Claim
+
+Compiles declarative storage policy directly into executable GPU/DPU kernels that emit ZNS zone plans tailored to telemetry and hardware availability in real time.
+
+### 8.2  Technical detail
+
+```rust
+let compiler = PolicyCompiler::new(policy);
+let kernel = compiler.compile_to_kernel();
+let plan = kernel.run(telemetry);
+```
+
+Kernel generation includes constraint solving across heat thresholds, EC profiles, and available offloads so the resulting code can be shipped to CPU, DPU or GPU backends without changing the high-level intent.
+
+### 8.3  Prior art
+
+Most policy engines emit static scripts or orchestration trees. CapsuleFlow’s compiler lowers high-level intent to runnable kernels that materialize optimal ZNS layouts at IO speed, bridging policy and hardware without human intervention.
+
+---
+
 ## Contributors & Contact
 
 *Shane Wall* (concept synthesis)\

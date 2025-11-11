@@ -53,6 +53,66 @@ impl EncryptionPolicy {
     }
 }
 
+/// Layout strategy choice for CapsuleFlow.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LayoutStrategy {
+    Fixed {
+        segment_size: usize,
+    },
+    AdaptiveEntropy,
+    ZnsGraph {
+        zone_size_mib: u32,
+        graph_radius: u32,
+    },
+    Learned {
+        model_path: String,
+    },
+    QuantumReady {
+        merkle_algo: MerkleAlgo,
+    },
+}
+
+/// Merkle variant for QuantumReady mode.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum MerkleAlgo {
+    Blake3,
+    SphincsPlus,
+}
+
+/// Policy knobs for layout planning.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LayoutPolicy {
+    pub strategy: LayoutStrategy,
+    pub ec_profile: (usize, usize),
+    pub heat_threshold: f32,
+}
+
+impl Default for LayoutPolicy {
+    fn default() -> Self {
+        LayoutPolicy {
+            strategy: LayoutStrategy::Fixed {
+                segment_size: 4 * 1024 * 1024,
+            },
+            ec_profile: (6, 2),
+            heat_threshold: 0.7,
+        }
+    }
+}
+
+impl LayoutStrategy {
+    pub fn default_segment_size(&self) -> usize {
+        match self {
+            LayoutStrategy::Fixed { segment_size } => *segment_size,
+            LayoutStrategy::AdaptiveEntropy => 4 * 1024 * 1024,
+            LayoutStrategy::ZnsGraph { zone_size_mib, .. } => {
+                (*zone_size_mib as usize).saturating_mul(1024 * 1024)
+            }
+            LayoutStrategy::Learned { .. } => 4 * 1024 * 1024,
+            LayoutStrategy::QuantumReady { .. } => 4 * 1024 * 1024,
+        }
+    }
+}
+
 /// Storage efficiency policy
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -75,6 +135,10 @@ pub struct Policy {
     /// Cryptography profile (Phase 3.3)
     #[serde(default)]
     pub crypto_profile: CryptoProfile,
+
+    /// Layout policy driving CapsuleFlow.
+    #[serde(default)]
+    pub layout: LayoutPolicy,
 
     // ========================================================================
     // PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) Fields
@@ -118,6 +182,7 @@ impl Default for Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -138,6 +203,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -156,6 +222,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -174,6 +241,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: std::time::Duration::from_secs(300), // 5 min RPO for edge
             #[cfg(feature = "podms")]
@@ -192,6 +260,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -210,6 +279,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -230,6 +300,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             rpo: std::time::Duration::ZERO, // Synchronous replication
             latency_target: std::time::Duration::from_millis(2), // 2ms target
             sovereignty: crate::podms::SovereigntyLevel::Zone,
@@ -246,6 +317,7 @@ impl Policy {
             erasure_profile: None,
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
+            layout: LayoutPolicy::default(),
             rpo: std::time::Duration::from_secs(300), // 5 min async
             latency_target: std::time::Duration::from_millis(100), // 100ms target
             sovereignty: crate::podms::SovereigntyLevel::Global,
