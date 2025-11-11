@@ -12,7 +12,7 @@ fn hash_chunk(data: &[u8]) -> ContentHash {
 }
 
 fn capsule_id_for(capsules: &[CapsuleId]) -> CapsuleId {
-    capsules.get(0).copied().unwrap_or_default()
+    capsules.first().copied().unwrap_or_default()
 }
 
 pub struct CpuFixed {

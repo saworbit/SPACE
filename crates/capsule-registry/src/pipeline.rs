@@ -1404,9 +1404,12 @@ impl WritePipeline {
 
         let mut result = Vec::with_capacity(capsule.size as usize);
 
-        for (_seg_index, seg_id) in capsule.segments.iter().enumerate() {
-            #[cfg(feature = "advanced-security")]
-            let seg_index = _seg_index;
+        #[cfg_attr(
+            not(feature = "advanced-security"),
+            allow(clippy::unused_enumerate_index)
+        )]
+        #[cfg_attr(not(feature = "advanced-security"), allow(unused_variables))]
+        for (seg_index, seg_id) in capsule.segments.iter().enumerate() {
             // Read raw data from NVRAM
             let raw_data = self.nvram.read(*seg_id)?;
 

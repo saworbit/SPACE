@@ -1,4 +1,4 @@
-use common::{LayoutPolicy, LayoutStrategy, Policy};
+use common::{LayoutStrategy, Policy};
 use layout_engine::LayoutEngine;
 
 #[test]
