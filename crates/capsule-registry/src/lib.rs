@@ -6,7 +6,6 @@ use common::security::DedupOptimizer;
 use common::Policy;
 use common::*;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;

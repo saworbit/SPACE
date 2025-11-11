@@ -245,7 +245,7 @@ impl MeshNode {
     #[cfg(feature = "phase4")]
     pub async fn resolve_federated(&self, id: CapsuleId) -> Result<NodeId> {
         let peers = self.discover_peers().await?;
-        let target = peers.get(0).copied().unwrap_or(self.id);
+        let target = peers.first().copied().unwrap_or(self.id);
         info!(
             capsule = %id.as_uuid(),
             target = %target,

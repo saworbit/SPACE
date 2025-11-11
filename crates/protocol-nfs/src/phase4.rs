@@ -1,5 +1,4 @@
 //! Phase 4 NFS exports.
-#![cfg(feature = "phase4")]
 
 use anyhow::Result;
 use capsule_registry::CapsuleRegistry;

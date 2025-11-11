@@ -32,6 +32,7 @@ impl ShardKey {
 
 /// Lightweight Raft cluster stub used for metadata sharding in Phase 4.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RaftCluster {
     config: RaftClusterConfig,
     zone_hint: Option<String>,

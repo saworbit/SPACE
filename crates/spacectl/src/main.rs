@@ -29,8 +29,6 @@ use protocol_nfs::NfsView;
 use protocol_nvme::project_nvme_view;
 #[cfg(feature = "phase4")]
 use scaling::MeshNode;
-#[cfg(feature = "phase4")]
-use serde_yaml;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

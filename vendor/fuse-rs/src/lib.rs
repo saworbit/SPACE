@@ -28,6 +28,7 @@ impl FilesystemImpl {
 
 /// Handle representing a mounted FUSE view.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MountHandle {
     mountpoint: String,
     mounted_data: Vec<u8>,

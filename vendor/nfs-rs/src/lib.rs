@@ -42,3 +42,9 @@ impl NfsServer {
         Ok(self)
     }
 }
+
+impl Default for NfsServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
