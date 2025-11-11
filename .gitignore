@@ -30,7 +30,7 @@ test_dedup*.metadata
 .idea/
 
 # Claude Code
-.claude/
+/.claude/
 
 # OS
 .DS_Store

@@ -19,6 +19,8 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+        # Default features avoid torch-sys / libtorch requirement in CI.
       - name: Test
-        run: cargo test --workspace --all-features --locked
+        run: cargo test --workspace --locked
+        # Run with the workspace default feature set (CPU-only layout engine).
