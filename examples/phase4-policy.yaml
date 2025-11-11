@@ -1,0 +1,14 @@
+capsule:
+  name: phase4-demo
+  policy:
+    compression:
+      zstd:
+        level: 5
+    dedupe: true
+    compact_interval_secs: 600
+    encryption: disabled
+    latency_target: 2ms
+    sovereignty: zone
+    view: nvme
+    federate: true
+    audit: true

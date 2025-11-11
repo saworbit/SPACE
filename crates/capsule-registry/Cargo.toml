@@ -12,6 +12,10 @@ pipeline_async = ["dep:tokio", "dep:futures", "dep:num_cpus"]
 modular_pipeline = ["dep:pipeline", "dep:tokio"]
 advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
 podms = ["dep:tokio", "pipeline_async", "common/podms", "dep:scaling"]
+phase4 = [
+    "podms",
+    "scaling/phase4",
+]
 
 [dependencies]
 common = { path = "../common" }

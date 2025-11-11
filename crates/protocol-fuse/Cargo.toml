@@ -1,5 +1,5 @@
 [package]
-name = "protocol-nfs"
+name = "protocol-fuse"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -14,9 +14,4 @@ phase4 = ["common/podms"]
 anyhow = { workspace = true }
 capsule-registry = { path = "../capsule-registry" }
 common = { path = "../common" }
-nvram-sim = { path = "../nvram-sim" }
-serde = { workspace = true }
-serde_json = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tracing = { workspace = true }

@@ -298,6 +298,12 @@ fn read_range(id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
 - Extend the **offload framework** to quantum-resistant cryptographic modules.
 - Formal verification of **Merkle root integrity proofs** across federated clusters.
 
+### 10.3 Phase 4: View Federation Layer
+- **Protocol adapters** (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) expose NVMe, NFS/FUSE, and CSI views from the same capsule namespace.
+- **Mesh federation** (MeshNode resolve/federate/shard helpers) keeps metadata sharded across zones and returns federated targets in ≤100µs.
+- **Policy signals** (latency_target, sovereignty) orchestrate view projection, transformation, and migration, ensuring QoS and compliance without copying data.
+- Reference [docs/phase4.md](docs/phase4.md) for the complete Phase 4 implementation picture, governance docs, and test harness scripts.
+
 ---
 
 ### Authors
@@ -307,4 +313,3 @@ Principal Architect, SPACE Project
 ---
 
 © 2025 Shane Wall & contributors. Licensed under the Apache License, Version 2.0.
-

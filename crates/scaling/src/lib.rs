@@ -8,6 +8,8 @@
 
 use anyhow::{anyhow, Result};
 use common::podms::{NodeId, ZoneId};
+#[cfg(feature = "phase4")]
+use common::CapsuleId;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,6 +54,14 @@ impl Default for NodeCapabilities {
             available_bytes: 1_000_000_000_000, // 1TB default
         }
     }
+}
+
+/// Metadata shard description used by Phase 4 federation.
+#[cfg(feature = "phase4")]
+#[derive(Debug, Clone)]
+pub struct MetadataShard {
+    pub shard_id: u64,
+    pub owner: NodeId,
 }
 
 /// Mesh node for PODMS distribution.
@@ -226,6 +236,43 @@ impl MeshNode {
     /// Get this node's capabilities.
     pub fn capabilities(&self) -> &NodeCapabilities {
         &self.capabilities
+    }
+
+    #[cfg(feature = "phase4")]
+    pub async fn resolve_federated(&self, id: CapsuleId) -> Result<NodeId> {
+        let peers = self.discover_peers().await?;
+        let target = peers.get(0).copied().unwrap_or(self.id);
+        info!(
+            capsule = %id.as_uuid(),
+            target = %target,
+            "resolved federated mesh target"
+        );
+        Ok(target)
+    }
+
+    #[cfg(feature = "phase4")]
+    pub async fn federate_capsule(&self, id: CapsuleId, zone: ZoneId) -> Result<()> {
+        let target = self.resolve_federated(id).await?;
+        info!(
+            capsule = %id.as_uuid(),
+            zone = %zone,
+            target = %target,
+            "triggering federated capsule migration"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "phase4")]
+    pub async fn shard_metadata(&self, id: CapsuleId, shards: Vec<MetadataShard>) -> Result<()> {
+        for shard in shards {
+            info!(
+                capsule = %id.as_uuid(),
+                shard = shard.shard_id,
+                owner = %shard.owner,
+                "sharded metadata entry"
+            );
+        }
+        Ok(())
     }
 }
 

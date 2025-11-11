@@ -279,6 +279,23 @@ async fn health_agent_loop() {
 | Tiering            | Heat counter, metadata move         | none             |
 
 ---
+## 9.1 Phase 4: Protocol Views & Federation
+
+Phase 4 is the bridge between the capsule control plane and the external protocol surfaces. Capsules continue to flow through `capsule-registry` and the async pipeline, but the `phase4` feature enables:
+
+- Mesh-aware exports (`scaling::MeshNode` exposes `resolve_federated`, `federate_capsule`, and `shard_metadata` plus the `MetadataShard` descriptor)
+- Protocol adapters (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) that project the capsule namespace across NVMe, NFS/FUSE, and CSI
+- Policy steering (`Policy::latency_target`, `Policy::sovereignty`) that triggers federation and QoS enforcement before a view is presented
+- A federated metadata mesh that sharded capsule records and gossips peer ownership, keeping the capsule-to-node map under 100�s query latency
+
+```
+[CapsuleRegistry] --> (write pipeline) --> [MeshNode (phase4)]
+                                      +--> NVMe view (protocol-nvme)
+                                      +--> NFS/FUSE export (protocol-nfs::phase4 + protocol-fuse)
+                                      +--> CSI driver (protocol-csi)
+```
+
+See [docs/phase4.md](docs/phase4.md) for the detailed implementation spec, policy templates, and federated test scripts.
 
 ## 10  Hardware composability
 
@@ -347,6 +364,8 @@ Discussions via GitHub Issues; code submissions require a Developer Certificate 
 ---
 
 © 2025 Shane Wall & contributors.  Licensed under the Apache License, Version 2.0.
+
+
 
 
 

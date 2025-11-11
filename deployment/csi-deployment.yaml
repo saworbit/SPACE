@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: space-csi
+  labels:
+    app: space-csi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: space-csi
+  template:
+    metadata:
+      labels:
+        app: space-csi
+    spec:
+      containers:
+        - name: space-csi
+          image: ghcr.io/saworbit/space:phase4-csi
+          args:
+            - "--view=csi"
+            - "--mesh-node=auto"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPACE_PHASE4
+              value: "true"

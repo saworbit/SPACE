@@ -23,6 +23,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "phase4")]
+pub mod phase4;
+
 /// Public metadata returned to callers.  We expose only the minimum that higher
 /// layers (CLI/tests) need today; additional fields can be wired through later.
 #[derive(Debug, Clone, Serialize, Deserialize)]

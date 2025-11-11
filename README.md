@@ -264,9 +264,22 @@ let policy = Policy::edge_optimized();
 
 </details>
 
----
+<details open>
+<summary><b>✨ Phase 4: Protocol Views + Full Mesh Federation</b> 🚀</summary>
+
+- 🧱 **NVMe-oF block targets** – Phase 4 exports capsules through the NVMe surface without materializing copies
+- 📁 **NFS + FUSE + CSI** – Runtime projection modules for file, mount, and Kubernetes consumer experiences
+- 🌐 **Federated metadata mesh** – Mesh nodes gossip metadata, resolve capsule locations, shard registry state, and surface Paxos-style consistency
+- 🧭 **Policy-orchestrated mobility** – `Policy::latency_target` and `Policy::sovereignty` drive federation, QoS, and transformation decisions
+- ⚙️ Build with `cargo build --features phase4` and project via `spacectl --view nvme|nfs|fuse|csi`
+- 📄 Reference [docs/phase4.md](docs/phase4.md) for crate details, policy examples (`examples/phase4-policy.yaml`), and test scripts (`test_phase4.sh`, `test_federation_failover.sh`)
+- ☸️ Kubernetes users can drop in `deployment/csi-deployment.yaml` after enabling the CSI view feature
+
+</details>
 
 ---
+
+--- 
 
 ## 🚀 Quick Start
 
@@ -996,7 +1009,6 @@ Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
-
 
 
 

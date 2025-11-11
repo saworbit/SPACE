@@ -8,6 +8,8 @@ use crate::{gc::GarbageCollector, CapsuleRegistry};
 use anyhow::{Error as AnyhowError, Result};
 #[cfg(feature = "pipeline_async")]
 use bytes::Bytes;
+#[cfg(all(feature = "phase4", feature = "podms"))]
+use common::podms::SovereigntyLevel;
 use common::*;
 use compression::{compress_segment, decompress_lz4, decompress_zstd};
 use nvram_sim::NvramLog;
@@ -1180,6 +1182,15 @@ impl WritePipeline {
                     capsule = %capsule_id.as_uuid(),
                     "emitted PODMS telemetry: NewCapsule"
                 );
+            }
+        }
+
+        #[cfg(all(feature = "phase4", feature = "podms"))]
+        if let Some(mesh_node) = &self.mesh_node {
+            if policy.sovereignty != SovereigntyLevel::Local {
+                mesh_node
+                    .federate_capsule(capsule_id, mesh_node.zone().clone())
+                    .await?;
             }
         }
 
