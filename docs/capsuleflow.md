@@ -1,35 +1,34 @@
+---
+id: capsuleflow
+title: CapsuleFlow Layout Engine
+---
+
 # CapsuleFlow Layout Engine
 
-CapsuleFlow is the Phase 3.0 layout engine that compiles declarative storage policy into executable zoning kernels, keeps the pipeline thin, and exposes modular offloads (CPU, DPU, GPU, CSD) without forcing the entire stack to depend on pipeline internals.
+CapsuleFlow is the Phase 3.0 layout engine for SPACE. It builds zone plans from policy intent, materializes deterministic IV seeds, and ships work to the optimal offload (CPU, DPU, GPU, or computational SSD) without bloating the write pipeline crate.
 
-## Architecture
+## Key Concepts
 
-1. **Policy Compiler** turns `Policy.layout` into a `LayoutOffload` implementation via feature-gated traits and helpers.
-2. **Layout Engine** synthesizes a `ZonePlan` per capsule write, projecting deterministic IV seeds, segment references and optional Merkle roots for quantum-ready workflows.
-3. **Offload Registry** routes the plan to the best hardware: CPU (default), DPU (RDMA), GPU (`tch`), or computational SSD (`libzbd`).
+- **Policy-compiled layout:** `Policy.layout` drives the compiler, which instantiates a `LayoutOffload` implementation. This keeps the write pipeline thin—its job is now just to call into `LayoutEngine::synthesize`.
+- **ZonePlan outputs:** Each synthesis produces `zones`, deterministic `iv_seed`s, and optional PQ-capable `merkle_root`s that later flow into the encryption/dedup path.
+- **Feature gating:** CPU fallback (`CpuFixed`) is always on. ZNS graphs, Torch-based layouts, and post-quantum anchors are gated behind `zns`, `ml`, and `pq` features so we can test the standard path without needing libzbd or libtorch.
+- **Hardware offload registry:** The compiler dispatches to a `LayoutOffload` trait object, so DPUs, GPUs, or CSDs can register without touching the pipeline crate.
 
-```
-[Policy Compiler] ? [LayoutEngine] ? [Offload Registry]
-                                    +- CPU
-                                    +- DPU (RDMA)
-                                    +- GPU (tch-rs)
-                                    +- CSD (libzbd)
-```
+## Behavior
 
-## Threat Model
+1. **Policy evaluation → LayoutPolicy.** Policies acquired from protocol containers carry a `LayoutPolicy` with strategy, EC profile, and heat thresholds.
+2. **LayoutEngine invocation.** `pipeline::WritePipeline::write_capsule` builds `data_slices` and calls `LayoutEngine::synthesize`, which forwards to the compiled offload.
+3. **Segment-level flow.** The returned `ZonePlan` feeds the compression/dedup/encryption loop instead of chunking blindly.
+4. **Optional accelerators.** Torch-based logic generates layouts via `tch` when `ml` is enabled, while `zns` lets `libzbd` drive zone append calls. Both are invisible unless specifically enabled.
 
-- **Policy enforcement** is deterministic: compilation and zone planning happen inside the trusted runtime.
-- **Data layout** uses deterministic IV seeds per zone to maintain dedupe-friendly encryption while resisting replay attacks.
-- **Execution isolation** is maintained by keeping ML inference localized to sandboxed offloads (`tch`/libtorch) and deferring ML feature gates.
+## Diagnostics
 
-## Performance Model
+- Metricize zone plans: note counts, merkle roots, and runtime (target <80 µs CPU, <15 µs GPU).
+- Log the offload used per capsule so hardware swaps appear in observability feeds.
+- Validate `zone_plan.merkle_root` when `Policy.layout.strategy == QuantumReady`.
 
-- CPU baseline must handle 80 �s synthesis by emitting simple fixed 4 MiB zones.
-- GPU offload (TorchScript) should hit ~15 �s by evaluating heat histograms and telemetry vectors.
-- ZNS layout engine maps adjacency graphs to zone lists, growing linearly with capsule count but constant with scheduler depth.
+## Next Steps
 
-## Open Questions
-
-- TorchScript model format and telemetry exporters.
-- ZNS device discovery and configuration (`--zns-dev`).
-- Real PQ crypto anchoring (SPHINCS+ or `pqcrypto` bridge).
+1. Provide a TorchScript model for the `Learned` strategy and publish docs for training telemetry vectors.
+2. Extend the ZNS graph planner with `libzbd::Zone::append()` integration and fallback for non-ZNS devices.
+3. Hook GPU/DPU diagnostics into the policy compiler registry so we can monitor offload utilization per write.
