@@ -1,4 +1,6 @@
-use anyhow::{anyhow, Result};
+#[cfg(feature = "phase4")]
+use anyhow::anyhow;
+use anyhow::Result;
 #[cfg(feature = "modular_pipeline")]
 use capsule_registry::modular_pipeline;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
@@ -31,6 +33,7 @@ use protocol_nvme::project_nvme_view;
 use scaling::MeshNode;
 use std::fs;
 use std::io::{self, Write};
+#[cfg(feature = "phase4")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(feature = "phase4")]
 use std::sync::Arc;
