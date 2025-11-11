@@ -152,6 +152,22 @@ impl ScalingAgent {
                 self.execute_migration(capsule_id, reason, destination, transform)
                     .await?;
             }
+            ScalingAction::Federate { capsule_id, zone } => {
+                info!(
+                    capsule = %capsule_id.as_uuid(),
+                    zone = %zone,
+                    "phase4 federate action (agent noop)"
+                );
+            }
+            ScalingAction::ShardEC {
+                capsule_id, zones, ..
+            } => {
+                info!(
+                    capsule = %capsule_id.as_uuid(),
+                    shard_targets = zones.len(),
+                    "phase4 shard action (agent noop)"
+                );
+            }
             ScalingAction::Evacuate {
                 source_node,
                 reason,

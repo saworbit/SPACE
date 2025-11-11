@@ -18,6 +18,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "phase4")]
+use raft_rs::{RaftCluster, RaftClusterConfig, ShardKey};
+
 pub mod agent;
 pub mod compiler;
 #[cfg(test)]
@@ -62,6 +65,7 @@ impl Default for NodeCapabilities {
 pub struct MetadataShard {
     pub shard_id: u64,
     pub owner: NodeId,
+    pub zone: ZoneId,
 }
 
 /// Mesh node for PODMS distribution.
@@ -252,24 +256,37 @@ impl MeshNode {
 
     #[cfg(feature = "phase4")]
     pub async fn federate_capsule(&self, id: CapsuleId, zone: ZoneId) -> Result<()> {
-        let target = self.resolve_federated(id).await?;
+        let cluster = RaftCluster::new(RaftClusterConfig::default());
+        let zone_ref = zone.to_string();
+        cluster
+            .replicate(&id.as_uuid().to_string(), &zone_ref)
+            .await?;
         info!(
             capsule = %id.as_uuid(),
-            zone = %zone,
-            target = %target,
-            "triggering federated capsule migration"
+            zone = %zone_ref,
+            "triggering federated capsule replication"
         );
         Ok(())
     }
 
     #[cfg(feature = "phase4")]
-    pub async fn shard_metadata(&self, id: CapsuleId, shards: Vec<MetadataShard>) -> Result<()> {
+    pub async fn shard_metadata(
+        &self,
+        id: CapsuleId,
+        shards: Vec<MetadataShard>,
+        payload: &[u8],
+    ) -> Result<()> {
         for shard in shards {
+            let cluster = RaftCluster::for_zone(&shard.zone.to_string());
+            cluster
+                .store_shard(&ShardKey::new(shard.shard_id), payload)
+                .await?;
             info!(
                 capsule = %id.as_uuid(),
                 shard = shard.shard_id,
                 owner = %shard.owner,
-                "sharded metadata entry"
+                zone = %shard.zone,
+                "stored metadata shard"
             );
         }
         Ok(())

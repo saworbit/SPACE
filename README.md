@@ -12,6 +12,15 @@
 **The future of storage starts with a single primitive that breaks down protocol silos.**
 
 ---
+### Phase 4: Multi-Protocol Views & Federation
+
+Phase 4 wires NVMe-oF, NFS v4.2, FUSE, and CSI view projections into the PODMS mesh plus Paxos sharded metadata. Enable the new surface with `cargo build --features phase4` and run:
+
+```
+spacectl project --view nvme --id 550e8400-e29b-41d4-a716-446655440000 --policy-file examples/phase4-policy.yaml
+```
+
+See [docs/phase4.md](docs/phase4.md) for scripts, timeline, and risk notes; the federated Raft mesh is summarized in [docs/federation.md](docs/federation.md).
 
 ### 🎉 Phase 3.3 Complete
 
@@ -872,7 +881,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 | Aspect | Status |
 |:-------|:-------|
-| **🎯 Current Phase** | Phase 3.3 Complete (Advanced Security) |
+| **🎯 Current Phase** | Phase 4: Views & Federation |
 | **🔬 Stability** | Experimental — API subject to change |
 | **🚀 Production** | Not yet (educational/research) |
 

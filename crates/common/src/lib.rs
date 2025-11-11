@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::convert::TryInto;
 use uuid::Uuid;
 
 #[cfg(feature = "advanced-security")]
@@ -30,6 +31,16 @@ impl CapsuleId {
 
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
+    }
+
+    /// Derive deterministic shard keys for metadata distribution.
+    pub fn shard_keys(&self, count: usize) -> Vec<u64> {
+        let count = count.max(1);
+        let bytes = self.as_uuid().as_bytes();
+        let base = u64::from_le_bytes(bytes[0..8].try_into().unwrap_or_default());
+        (0..count)
+            .map(|idx| base.wrapping_add(idx as u64))
+            .collect()
     }
 }
 
@@ -253,6 +264,8 @@ pub mod podms {
         },
         /// Node health degraded - may trigger evacuation
         NodeDegraded { node_id: NodeId, reason: String },
+        /// Request to project a capsule into a protocol-specific view.
+        ViewProjection { id: CapsuleId, view: String },
     }
 
     /// Swarm behavior trait for capsule self-transformation during migrations.

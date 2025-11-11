@@ -6,6 +6,7 @@ use common::security::DedupOptimizer;
 use common::Policy;
 use common::*;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -314,6 +315,13 @@ impl CapsuleRegistry {
             .get(&id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Capsule not found"))
+    }
+
+    /// Serialize capsule metadata for federation sharding.
+    pub fn serialize_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
+        let capsule = self.lookup(id)?;
+        let payload = serde_json::to_vec(&capsule)?;
+        Ok(payload)
     }
 
     pub fn alloc_segment(&self) -> SegmentId {

@@ -8,13 +8,14 @@ publish = false
 
 [features]
 default = []
-phase4 = ["common/podms"]
+phase4 = ["common/podms", "scaling/phase4"]
 
 [dependencies]
 anyhow = { workspace = true }
 capsule-registry = { path = "../capsule-registry" }
 common = { path = "../common" }
-scaling = { path = "../scaling" }
+scaling = { path = "../scaling", features = ["phase4"] }
+spdk-rs = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

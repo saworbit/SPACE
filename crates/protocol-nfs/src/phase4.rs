@@ -3,67 +3,87 @@
 
 use anyhow::Result;
 use capsule_registry::CapsuleRegistry;
-use common::podms::ZoneId;
+use common::podms::Telemetry;
 use common::{CapsuleId, Policy};
-use scaling::MeshNode;
-use std::time::Duration;
+use nfs_rs::{ExportOptions, NfsServer};
+use scaling::compiler::{compile_scaling, MeshState, ScalingAction};
+use scaling::{MeshNode, MetadataShard};
 use tracing::{info, info_span};
 
-/// Descriptor returned to callers after exporting a capsule over NFS.
-pub struct NfsExport {
-    capsule_id: CapsuleId,
-    export_path: String,
-}
-
-impl NfsExport {
-    /// The capsule associated with this export.
-    pub fn capsule_id(&self) -> CapsuleId {
-        self.capsule_id
-    }
-}
-
-/// Exports a capsule via a Phase 4 NFS view.
+/// Export a capsule via a Phase 4 NFS view.
 pub async fn export_nfs_view(
     id: CapsuleId,
     policy: &Policy,
     mesh: &MeshNode,
     registry: &CapsuleRegistry,
-) -> Result<NfsExport> {
+) -> Result<NfsServer> {
     let span = info_span!("nfs_export", capsule = %id.as_uuid());
     let _enter = span.enter();
 
     registry.lookup(id)?;
 
-    if policy.latency_target < Duration::from_millis(2) {
-        info!(
-            capsule = %id.as_uuid(),
-            target_zone = %mesh.zone(),
-            "latency target triggered metro federation"
-        );
-        mesh.federate_capsule(id, mesh.zone().clone()).await?;
+    let telemetry = Telemetry::ViewProjection {
+        id,
+        view: "nfs".into(),
+    };
+
+    let mesh_state = MeshState::empty(mesh.zone().clone());
+    let actions = compile_scaling(policy, &telemetry, &mesh_state);
+
+    for action in actions {
+        match action {
+            ScalingAction::Federate { capsule_id, zone } => {
+                mesh.federate_capsule(capsule_id, zone).await?;
+            }
+            ScalingAction::ShardEC {
+                capsule_id, zones, ..
+            } => {
+                if zones.is_empty() {
+                    continue;
+                }
+                let payload = registry.serialize_capsule(capsule_id)?;
+                let shard_keys = capsule_id.shard_keys(zones.len());
+                let shards: Vec<MetadataShard> = zones
+                    .into_iter()
+                    .zip(shard_keys.into_iter())
+                    .map(|(zone, shard_id)| MetadataShard {
+                        shard_id,
+                        owner: mesh.id(),
+                        zone,
+                    })
+                    .collect();
+                mesh.shard_metadata(capsule_id, shards, &payload).await?;
+            }
+            _ => {}
+        }
     }
 
     let export_path = format!("/capsules/{}", id.as_uuid());
+    let mut server = NfsServer::new();
+    server.export(
+        id.as_uuid().to_string(),
+        ExportOptions::new(export_path.clone()),
+    );
+
     info!(capsule = %id.as_uuid(), export_path, "registered NFS export");
 
-    Ok(NfsExport {
-        capsule_id: id,
-        export_path,
-    })
+    server.start().await
 }
 
 #[cfg(all(test, feature = "phase4"))]
 mod tests {
     use super::*;
     use capsule_registry::CapsuleRegistry;
+    use common::podms::ZoneId;
     use common::Policy;
+    use scaling::MeshNode;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[tokio::test]
-    async fn exports_nfs_path_for_capsule() {
+    async fn exports_nfs_target() {
         let registry = CapsuleRegistry::new();
         let capsule_id = CapsuleId::new();
-        let policy = Policy::default();
+        let policy = Policy::metro_sync();
         registry
             .create_capsule_with_segments(capsule_id, 0, Vec::new(), policy.clone())
             .unwrap();
@@ -77,9 +97,9 @@ mod tests {
         .await
         .unwrap();
 
-        let export = export_nfs_view(capsule_id, &policy, &mesh, &registry)
+        let server = export_nfs_view(capsule_id, &policy, &mesh, &registry)
             .await
             .unwrap();
-        assert_eq!(export.capsule_id(), capsule_id);
+        assert!(server.start().await.is_ok());
     }
 }

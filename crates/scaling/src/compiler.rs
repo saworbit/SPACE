@@ -46,6 +46,14 @@ pub enum ScalingAction {
         overloaded_nodes: Vec<NodeId>,
         underutilized_nodes: Vec<NodeId>,
     },
+    /// Federate metadata so the view is reachable locally or in the metro zone.
+    Federate { capsule_id: CapsuleId, zone: ZoneId },
+    /// Shard metadata with parity for quick lookups across zones.
+    ShardEC {
+        capsule_id: CapsuleId,
+        parity: usize,
+        zones: Vec<ZoneId>,
+    },
 }
 
 /// Replication strategies derived from policy RPO targets.
@@ -157,6 +165,27 @@ impl PolicyCompiler {
                         threshold = normalized_threshold,
                         "capacity below threshold; skipping rebalancing"
                     );
+                }
+            }
+            Telemetry::ViewProjection { id, view } => {
+                debug!(
+                    capsule = %id.as_uuid(),
+                    view = %view,
+                    "view projection telemetry received"
+                );
+                if policy.sovereignty != SovereigntyLevel::Local {
+                    actions.push(ScalingAction::Federate {
+                        capsule_id: *id,
+                        zone: mesh_state.local_zone.clone(),
+                    });
+                }
+                let target_zones = mesh_state.zone_ids();
+                if !target_zones.is_empty() {
+                    actions.push(ScalingAction::ShardEC {
+                        capsule_id: *id,
+                        parity: 2,
+                        zones: target_zones,
+                    });
                 }
             }
             Telemetry::NodeDegraded { node_id, reason } => {
@@ -402,6 +431,7 @@ impl PolicyCompiler {
                         let _ = destination;
                         true // Placeholder for now
                     }
+                    ScalingAction::Federate { .. } | ScalingAction::ShardEC { .. } => true,
                     ScalingAction::Evacuate { .. } | ScalingAction::Rebalance { .. } => {
                         // Evacuation/rebalancing are always allowed
                         true
@@ -460,6 +490,17 @@ impl MeshState {
     /// Get all available node IDs.
     fn available_nodes(&self) -> Vec<NodeId> {
         self.nodes.iter().map(|(id, _)| *id).collect()
+    }
+
+    /// Enumerate unique zones the mesh currently knows about.
+    fn zone_ids(&self) -> Vec<ZoneId> {
+        let mut zones = vec![self.local_zone.clone()];
+        for (_, info) in &self.nodes {
+            if !zones.iter().any(|zone| zone == &info.zone) {
+                zones.push(info.zone.clone());
+            }
+        }
+        zones
     }
 
     /// Check if a node satisfies sovereignty constraints.
@@ -557,6 +598,15 @@ impl MeshState {
             false
         }
     }
+}
+
+/// Convenience wrapper that exposes policy compilation without instantiating an agent.
+pub fn compile_scaling(
+    policy: &Policy,
+    event: &Telemetry,
+    mesh_state: &MeshState,
+) -> Vec<ScalingAction> {
+    PolicyCompiler::with_defaults().compile_scaling_actions(event, policy, mesh_state)
 }
 
 #[cfg(test)]

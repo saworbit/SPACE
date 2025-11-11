@@ -17,6 +17,15 @@ modular_pipeline = [
     "capsule-registry/modular_pipeline",
     "protocol-s3/modular_pipeline",
 ]
+phase4 = [
+    "protocol-nvme/phase4",
+    "protocol-nfs/phase4",
+    "protocol-fuse/phase4",
+    "protocol-csi/phase4",
+    "scaling/phase4",
+    "common/podms",
+    "csi-driver-rs",
+]
 
 [dependencies]
 common = { path = "../common" }
@@ -25,8 +34,15 @@ nvram-sim = { path = "../nvram-sim" }
 protocol-s3 = { path = "../protocol-s3" }
 protocol-nfs = { path = "../protocol-nfs" }
 protocol-block = { path = "../protocol-block" }
+protocol-nvme = { path = "../protocol-nvme" }
+protocol-fuse = { path = "../protocol-fuse" }
+protocol-csi = { path = "../protocol-csi" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+scaling = { path = "../scaling", features = ["phase4"] }
+serde_yaml = { workspace = true }
+uuid = { workspace = true }
+csi-driver-rs = { workspace = true, optional = true }

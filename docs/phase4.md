@@ -1,52 +1,97 @@
 # Phase 4: Advanced Protocol Views & Full Mesh Federation
 
-Phase 4 realizes the “one capsule, infinite views” promise by projecting the universal capsule namespace onto NVMe-oF, NFS/FUSE, and CSI surfaces while federating metadata across distributed mesh nodes. All new Rust code is gated behind the `phase4` feature so operators opt into the expanded surface consciously.
+## Purpose & Goals
 
-## Crate Map
+*Phase 4 realizes the patentable* �one capsule, infinite views� *thesis by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
 
-- `protocol-nvme`: Exposes `project_nvme_view` to turn a capsule into an NVMe namespace. It consults `scaling::MeshNode` to resolve federated targets, migrate the capsule when sovereignty/latency demands it, and shard metadata entries through `shard_metadata`.
-- `protocol-nfs::phase4`: Builds a policy-aware export that triggers federation when `Policy::latency_target` is ultra-low and logs the export path. It reuses the existing NFS namespace code while keeping the new view code isolated under feature flags.
-- `protocol-fuse`: Offers `mount_fuse_view`, delivering a local FUSE mount that respects policy guards and serves from the same capsule metadata as the other views.
-- `protocol-csi`: Provides `csi_provision_volume`, which federates capsules, shards metadata, and hands back a CSI-friendly volume identifier for Kubernetes.
-- `scaling::MeshNode`: Gains `resolve_federated`, `federate_capsule`, and `shard_metadata` helpers plus the `MetadataShard` descriptor so distributed nodes can answer “where is capsule X?” in ~100µs while respecting policy sovereignty constraints.
-- `capsule-registry::pipeline`: The async write path emits telemetry, and when `phase4` is enabled it uses the mesh node to federate capsules whose `Policy::sovereignty` is not `Local`.
+Goals:
 
-## Federation Flow
+1. Project capsules into multiple view pipelines with zero-copy re-encryption/recompression hooks.
+2. Extend PODMS scaling with Raft-powered metadata shards, zone-aware routing, and telemetry-driven federation.
+3. Gate new functionality behind `phase4` so single-node users have no regressions.
+4. Provide CLI, docs, and scripts that prove the mesh works end-to-end (NVMe discovery, CSI provisioning, geo federation).
 
+## Scope & Assumptions
+
+- Linux hosts with SPDK-friendly toolchains, eBPF, and optionally RDMA hardware (Mellanox/ConnectX or mocks).
+- Docker/Kind for system tests; no Windows/macOS support yet.
+- Zonal policy compiler (PODMS Step 3) already wired through `common::podms` and the Scaling Agent.
+- All new code lives in `crates/protocol-nvme`, `crates/protocol-nfs`, `crates/protocol-fuse`, `crates/protocol-csi`, and `crates/scaling` under the `phase4` feature.
+
+## Architecture & Actions
+
+### Views
+
+- `protocol-nvme` returns `NvmeView` backed by `spdk-rs` namespaces. It calls `policy_compiler::compile_scaling` (via `scaling::compiler`) with `Telemetry::ViewProjection` to emit `ScalingAction::Federate`/`ShardEC` hooks.
+- `protocol-nfs` exposes `export_nfs_view()` returning a running `nfs-rs::NfsServer`. Federation actions mirror the NVMe flow.
+- `protocol-fuse` mounts a FUSE filesystem locally via `fuse-rs`, reusing the same scaling hooks for federation and metadata sharding.
+- `protocol-csi` provisions Kubernetes volumes through `csi-driver-rs`, sharding metadata before calling the CSI server.
+
+Each protocol forwards actions to `MeshNode::federate_capsule` and `MeshNode::shard_metadata`, which now talks to a lightweight `raft-rs` cluster stub storing shards per zone.
+
+### Federation
+
+- `MeshNode` now uses `RaftCluster::{new, for_zone}` and `ShardKey::new` when encrypting metadata shards, writing serialized capsule records to Raft logs.
+- Capsules derive deterministic shard IDs via `CapsuleId::shard_keys(count)`.
+- The CLI triggers these flows through the `spacectl project --view <nvme|nfs|fuse|csi>` command (see below).
+
+### CLI Command
+
+```bash
+cargo run -p spacectl -- project \
+  --view nvme \
+  --id 550e8400-e29b-41d4-a716-446655440000 \
+  --policy-file examples/phase4-policy.yaml
 ```
-CapsuleRegistry  -> write pipeline -> MeshNode (phase4 helpers)
-         ↳ protocol-nvme -> NVMe-oF target
-         ↳ protocol-nfs::phase4 + protocol-fuse -> file mounts
-         ↳ protocol-csi -> Kubernetes CSI volume
-```
 
-- Mesh nodes gossip peers, select targets, and call `federate_capsule` before exposing a view.
-- Metadata shards (`MetadataShard`) keep the capsule-to-node mapping distributed, so federated reads consult a handful of owners instead of every mesh peer.
-- Policies that request low latency or global sovereignty trigger `mesh.federate_capsule` before the view becomes available.
+- The command loads a YAML policy, spins up a minimal `MeshNode` (Metro zone, `127.0.0.1:0`), and routes to the right protocol helper.
+- Policies live in `examples/phase4-policy.yaml` and can request zero RPO, 2ms latency, and zone sovereignty by editing `rpo`, `latency_target`, and `sovereignty` fields.
+- Enable the entire pipeline with `cargo build --features phase4` or `spacectl --features phase4 project ...`.
 
-## Policy Template
+## Tests & Benchmarks
 
-See `examples/phase4-policy.yaml` for a declarative capsule policy that binds NVMe projection, metro federation, and audit-level QoS controls. A snippet:
+1. **Unit Tests per crate**
+   - `protocol-nvme` ensures `project_nvme_view` returns an `NvmeView` and exercises Raft stubs.
+   - `protocol-nfs` reuses the metadata assertions and validates the `NfsServer` is configured even after federation.
+   - `protocol-fuse` and `protocol-csi` have tokio tests that mount/provision volumes and assert the handles are live.
+2. **Integration idea**
+   - Multi-node KIND scenario (Phase4 script) writes capsules, projects an NFS view, federates to a geo zone, and re-reads data.
+3. **Security / Chaos**
+   - `scripts/test_federation_resilience.sh` injects partitions (Chaos Mesh) to ensure Raft shards maintain consistency.
+4. **Benchmarks (future)**
+   - Use Criterion for `project_nvme_view` latency (<50ms) and `MeshNode::federate_capsule` (<100�s) by mocking RDMA loops.
 
-```yaml
-capsule:
-  name: "prod-data"
-  policy:
-    latency_target: 2ms
-    sovereignty: zone
-    view: nvme
-    federate: metro
-```
+## Scripts & Deployments
 
-## Testing & Scripts
+- `scripts/test_phase4_views.sh`: Builds `spacectl` with `--features phase4`, runs a KIND multi-node cluster (`deployment/kind-config.yaml`), projects NVMe/NFS/CSI views, and relies on `kind` `kubectl` to deploy the driver (`deployment/csi-driver.yaml`).
+- `scripts/test_federation_resilience.sh`: Installs Chaos Mesh into KIND, partitions pods, and ensures `spacectl project` still returns consistent metadata.
 
-- `test_phase4.sh` spins up a lightweight KIND cluster, builds with `cargo build --features phase4`, deploys the CSI driver, and exercises NVMe/NFS projections end-to-end.
-- `test_federation_failover.sh` simulates mesh node churn to prove federated views stay consistent when targets fail.
-- Benchmarks should spot-check that projection latency stays under 100µs and federation emits <50ms migrations.
+### Deployment Assets
 
-## Activation
+- `deployment/kind-config.yaml` describes a 3-node cluster (control-plane + 2 workers) with port mappings for NVMe/TCP.
+- `deployment/csi-driver.yaml` is a namespaced Deployment + Service for the CSI driver built from `spacectl`.
 
-1. Build with `cargo build --features phase4`.
-2. Use `spacectl --view nvme|nfs|fuse|csi --policy-file examples/phase4-policy.yaml`.
-3. Deploy `deployment/csi-deployment.yaml` when using the CSI driver in Kubernetes.
-4. Run the scripts above to validate federation, failover, and policy compliance before enabling the feature in production.
+## Timeline (5-6 week push)
+
+1. **Week 1**: Bootstrap `phase4` feature, add protocol crates, confirm `phase4` gating.
+2. **Week 2**: Wire new views, metadata sharding, `MeshNode` federation, and CLI hooks.
+3. **Week 3**: Integration scripts + KIND/CAPI manifest; add tests.
+4. **Week 4**: Benchmarks, security validators (eBPF policy gate placeholders, Chaos testing).
+5. **Week 5**: Docs, demos, multi-node recordings. (Weeks 5-6 buffer for polish.)
+
+## Risks & Mitigation
+
+- **SPDK, NFS, FUSE dependencies**: We vendor minimal crates (`spdk-rs`, `nfs-rs`, `fuse-rs`, `csi-driver-rs`) as placeholders and keep the hardware-specific logic wrapped in feature gates.
+- **Raft/Paxos complexity**: Start with single `MeshNode` shards and a `raft-rs` stub. Replace stub with a negotiable cluster when production hardware is ready.
+- **Latency**: Sampling with Criterion and tracing (`tokio::time::Instant`) ensures views stay under 50ms; fall back to TCP/TLS transport when RDMA not present.
+- **Kubernetes integration**: Scripts deploy the CSI driver to KIND for sanity checking; the driver is still a facade around `spacectl project csi`.
+
+## FAQ
+
+- **Why now?** Phase 3 proved the universal capsule and PODMS scaling. This phase completes the fabric by adding cross-protocol views and federated metadata.
+- **Hardware required?** Linux only today. RDMA/Mellanox optional � the scripts and vendor crates mock transport with TCP ports.
+- **Does single-node mode break?** No. `phase4` is opt-in. Without `--features phase4`, the new crates and CLI path remain unused.
+- **Can we add SMB or iSCSI later?** Yes. The new phases expose `project_nvme_view` hooks where future protocols can plug right in.
+- **How do we prove compliance?** Logs include tracing spans (`nvme_project`, `nfs_export`, `fuse_mount`, `csi_provision`). `MeshNode` emits `info!` events when shards are stored, making audit chains easy to follow.
+
+Refer to [docs/federation.md](docs/federation.md) for zonal routing + Raft shard details and [README](README.md) for quick-start commands.

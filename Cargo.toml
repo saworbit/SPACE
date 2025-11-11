@@ -19,6 +19,11 @@ members = [
     "crates/encryption",    # NEW: Phase 3 encryption crate
     "crates/scaling",       # NEW: PODMS Step 2 scaling crate
     "xtask",
+    "vendor/raft-rs",
+    "vendor/spdk-rs",
+    "vendor/nfs-rs",
+    "vendor/fuse-rs",
+    "vendor/csi-driver-rs",
 ]
 
 [workspace.package]
@@ -26,6 +31,16 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Shane Wall <shane@adaptive-storage.dev>"]
 license = "Apache-2.0"
+
+[workspace.features]
+phase4 = [
+    "common/podms",
+    "protocol-nvme/phase4",
+    "protocol-nfs/phase4",
+    "protocol-fuse/phase4",
+    "protocol-csi/phase4",
+    "scaling/phase4",
+]
 
 [workspace.dependencies]
 # Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)
@@ -47,13 +62,14 @@ semver = { version = "^1.0.27" } # 2025-11-03 sw: version range evaluation for d
 # Tier 0 — cryptography, serialization, dedup core (2025-11-03 sw; see docs/dependency-security.md#tier-0)
 serde = { version = "=1.0.228", features = ["derive"] } # 2025-11-03 sw: canonical serialization; CT reviewed
 serde_json = { version = "=1.0.145" } # 2025-11-03 sw: deterministic JSON for protocol surfaces
+serde_yaml = { version = "0.9" } # YAML parsing for CLI policies
 blake3 = { version = "=1.8.2" } # 2025-11-03 sw: convergent hash, SIMD constant-time per upstream audit
 bloomfilter = { version = "=1.0.13" } # 2025-11-03 sw: dedupe candidate screening, bounded memory
 aya = { version = "=0.11.0" } # 2025-11-09 sw: eBPF loader for zero-trust ingress hooks
 tokio-tungstenite = { version = "=0.21.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] } # 2025-11-09 sw: mTLS control plane for zero-trust frontends
 pqcrypto-mlkem = { version = "=0.1.1" } # 2025-11-09 sw: ML-KEM hybrid wrapping
 reqwest = { version = "=0.11.27", default-features = false, features = ["json", "blocking", "rustls-tls"] } # 2025-11-09 sw: TSA client with rustls backend
- hex = { version = "=0.4.3" } # 2025-11-03 sw: hex encoding for key material, constant-time encode/decode
+hex = { version = "=0.4.3" } # 2025-11-03 sw: hex encoding for key material, constant-time encode/decode
 lz4 = { version = "=1.28.1" } # 2025-11-03 sw: hot-path compression, SIMD routines audited
 zstd = { version = "=0.13.3" } # 2025-11-03 sw: deep compression with wasm off, see audit log entry CRS-132
 zeroize = { version = "=1.8.2" } # 2025-11-03 sw: memory clearing policy alignment
@@ -65,6 +81,12 @@ cpufeatures = { version = "=0.2.17" } # 2025-11-03 sw: runtime AES capability de
 subtle = { version = "=2.6.1" } # 2025-11-03 sw: constant-time comparisons for key/tweak handling
 hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for key derivation
 sha2 = { version = "=0.10.8" } # 2025-11-04 sw: Hash core for HKDF extractor
+
+raft-rs = { path = "vendor/raft-rs", version = "0.7.0" }
+spdk-rs = { path = "vendor/spdk-rs", version = "0.1.0" }
+nfs-rs = { path = "vendor/nfs-rs", version = "0.2.0" }
+fuse-rs = { path = "vendor/fuse-rs", version = "0.3.0" }
+csi-driver-rs = { path = "vendor/csi-driver-rs", version = "0.4.0" }
 
 [workspace.metadata.space.allowed-features]
 "capsule-registry" = ["pipeline_async"]

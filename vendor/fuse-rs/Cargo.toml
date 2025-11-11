@@ -1,0 +1,12 @@
+[package]
+name = "fuse-rs"
+version = "0.3.0"
+edition = "2021"
+authors = ["SPACE Team <space@adaptive-storage.dev>"]
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+tracing = "0.1"
+

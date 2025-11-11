@@ -8,14 +8,16 @@ publish = false
 
 [features]
 default = []
-phase4 = ["common/podms"]
+phase4 = ["common/podms", "scaling/phase4"]
 
 [dependencies]
 anyhow = { workspace = true }
 capsule-registry = { path = "../capsule-registry" }
 common = { path = "../common" }
-scaling = { path = "../scaling" }
+scaling = { path = "../scaling", features = ["phase4"] }
 tracing = { workspace = true }
+csi-driver-rs = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

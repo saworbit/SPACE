@@ -8,15 +8,18 @@ publish = false
 
 [features]
 default = []
-phase4 = ["common/podms"]
+phase4 = ["common/podms", "scaling/phase4"]
 
 [dependencies]
 anyhow = { workspace = true }
 capsule-registry = { path = "../capsule-registry" }
 common = { path = "../common" }
 nvram-sim = { path = "../nvram-sim" }
+scaling = { path = "../scaling", features = ["phase4"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+nfs-rs = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

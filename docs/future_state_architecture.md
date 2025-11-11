@@ -313,3 +313,11 @@ Principal Architect, SPACE Project
 ---
 
 © 2025 Shane Wall & contributors. Licensed under the Apache License, Version 2.0.
+## Phase 5: Beyond the Mesh
+
+Phase 4 closes the loop on universal views and full-mesh metadata shards. Phase 5 will build on what we shipped:\\
+- **Distributed EC plans** based on Paxos shards that already know owner zones.\
+- **Policy-driven view migrations** with transformation hooks (re-encryption, recompression) that we rehearsed in `SwarmBehavior`.\
+- **Geo-aware telemetry** that feeds `MeshNode` so future hardware (CXL, RDMA, DPUs) can participate without new plumbing.
+
+For now, Phase 4 gives operators a resilient, sovereign fabric with audit traces, zero-copy projections, and CLI control via `spacectl project`. Phase 5 will raise the abstraction to federated, policy-orchestrated compute + storage meshes.

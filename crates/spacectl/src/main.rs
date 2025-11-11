@@ -1,20 +1,49 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 #[cfg(feature = "modular_pipeline")]
 use capsule_registry::modular_pipeline;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
+#[cfg(feature = "phase4")]
+use clap::{Args, ValueEnum};
 use clap::{Parser, Subcommand};
+#[cfg(feature = "phase4")]
+use common::podms::ZoneId;
 use common::CapsuleId;
-#[cfg(any(feature = "pipeline_async", feature = "modular_pipeline"))]
+#[cfg(any(
+    feature = "pipeline_async",
+    feature = "modular_pipeline",
+    feature = "phase4"
+))]
 use common::Policy;
+#[cfg(feature = "phase4")]
+use csi_driver_rs::ProvisionRequest;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
+#[cfg(feature = "phase4")]
+use protocol_csi::csi_provision_capsule;
+#[cfg(feature = "phase4")]
+use protocol_fuse::mount_fuse_view;
+#[cfg(feature = "phase4")]
+use protocol_nfs::phase4::export_nfs_view;
 use protocol_nfs::NfsView;
+#[cfg(feature = "phase4")]
+use protocol_nvme::project_nvme_view;
+#[cfg(feature = "phase4")]
+use scaling::MeshNode;
+#[cfg(feature = "phase4")]
+use serde_yaml;
 use std::fs;
 use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(feature = "phase4")]
+use std::sync::Arc;
 use std::sync::Once;
 #[cfg(feature = "modular_pipeline")]
 use tokio::runtime::Runtime as TokioRuntime;
+#[cfg(feature = "phase4")]
+use tokio::runtime::Runtime;
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "phase4")]
+use uuid::Uuid;
 
 const NVRAM_PATH: &str = "space.nvram";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
@@ -50,6 +79,29 @@ fn init_tracing() {
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Phase4View {
+    Nvme,
+    Nfs,
+    Fuse,
+    Csi,
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Clone, Debug, Args)]
+struct ProjectArgs {
+    /// Protocol view to project.
+    #[arg(long, value_enum)]
+    view: Phase4View,
+    /// Capsule UUID to materialize.
+    #[arg(long)]
+    id: String,
+    /// YAML policy file driving the projection.
+    #[arg(long)]
+    policy_file: String,
 }
 
 #[derive(Subcommand)]
@@ -326,6 +378,8 @@ enum Commands {
         #[arg(long)]
         modular: bool,
     },
+    #[cfg(feature = "phase4")]
+    Project(ProjectArgs),
     /// Interact with the NFS namespace view
     Nfs {
         #[command(subcommand)]
@@ -336,6 +390,72 @@ enum Commands {
         #[command(subcommand)]
         command: BlockCommands,
     },
+}
+
+#[cfg(feature = "phase4")]
+fn load_policy_file(path: &str) -> Result<Policy> {
+    let text = fs::read_to_string(path)?;
+    serde_yaml::from_str(&text).map_err(|err| anyhow!(err))
+}
+
+#[cfg(feature = "phase4")]
+fn handle_project_command(args: ProjectArgs) -> Result<()> {
+    let ProjectArgs {
+        view,
+        id,
+        policy_file,
+    } = args;
+    let uuid = Uuid::parse_str(&id).map_err(|err| anyhow!(err))?;
+    let capsule_id = CapsuleId::from_uuid(uuid);
+    let policy = load_policy_file(&policy_file)?;
+    let registry = Arc::new(CapsuleRegistry::new());
+
+    let rt = Runtime::new()?;
+    let mesh = rt.block_on(async {
+        MeshNode::new(
+            ZoneId::Metro {
+                name: "local".into(),
+            },
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        )
+        .await
+    })?;
+    let mesh = Arc::new(mesh);
+
+    rt.block_on({
+        let mesh = mesh.clone();
+        let registry = Arc::clone(&registry);
+        async move {
+            match view {
+                Phase4View::Nvme => {
+                    project_nvme_view(capsule_id, &policy, mesh.as_ref(), registry.as_ref())
+                        .await?;
+                }
+                Phase4View::Nfs => {
+                    export_nfs_view(capsule_id, &policy, mesh.as_ref(), registry.as_ref()).await?;
+                }
+                Phase4View::Fuse => {
+                    mount_fuse_view(
+                        capsule_id,
+                        &policy,
+                        mesh.as_ref(),
+                        "/tmp/space",
+                        registry.as_ref(),
+                    )
+                    .await?;
+                }
+                Phase4View::Csi => {
+                    let req = ProvisionRequest::from_capsule(&capsule_id.as_uuid().to_string());
+                    csi_provision_capsule(req, &policy, mesh.as_ref(), registry.as_ref()).await?;
+                }
+            }
+
+            tracing::info!(view = ?view, capsule = %capsule_id.as_uuid(), "projected view");
+            Ok::<(), anyhow::Error>(())
+        }
+    })?;
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -446,6 +566,10 @@ fn main() -> Result<()> {
 
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async { server.run().await })?;
+        }
+        #[cfg(feature = "phase4")]
+        Commands::Project(args) => {
+            handle_project_command(args)?;
         }
         Commands::Nfs { command } => {
             run_nfs_command(command)?;

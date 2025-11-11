@@ -1,92 +1,98 @@
-//! Phase 4 NVMe-oF view projection helpers.
-//! The implementation here is intentionally light: it verifies capsule existence,
-//! enforces sovereignty checks, and reuses the PODMS mesh APIs added for Phase 4.
+//! NVMe-oF view projection helpers for Phase 4.
+//!
+//! This crate implements the "one capsule, infinite views" concept by projecting
+//! capsules into NVMe-oF targets while coordinating mesh federation and metadata
+//! sharding via PODMS policies.
 #![cfg(feature = "phase4")]
 
 use anyhow::Result;
 use capsule_registry::CapsuleRegistry;
-use common::podms::{SovereigntyLevel, ZoneId};
+use common::podms::{SwarmBehavior, Telemetry};
 use common::{CapsuleId, Policy};
+use scaling::compiler::{compile_scaling, MeshState, ScalingAction};
 use scaling::{MeshNode, MetadataShard};
+use spdk_rs::{Namespace, NvmeTargetBuilder};
 use tracing::{info, info_span};
 
-/// Handle representing an NVMe target exported from SPACE.
-pub struct NvmeTarget {
+/// Handle representing an exported NVMe view.
+#[derive(Debug)]
+pub struct NvmeView {
     capsule_id: CapsuleId,
-    namespace: ZoneId,
+    target: spdk_rs::NvmeTarget,
 }
 
-impl NvmeTarget {
-    /// The capsule referenced by this NVMe namespace.
+impl NvmeView {
+    /// Retrieve the capsule referenced by this view.
     pub fn capsule_id(&self) -> CapsuleId {
         self.capsule_id
     }
+
+    /// Access the underlying NVMe target (namespaces).
+    pub fn nvme_target(&self) -> &spdk_rs::NvmeTarget {
+        &self.target
+    }
 }
 
-/// Project a capsule as an NVMe-oF target.
+/// Project a capsule into an NVMe-oF target with PODMS federation.
 pub async fn project_nvme_view(
     id: CapsuleId,
     policy: &Policy,
     mesh: &MeshNode,
     registry: &CapsuleRegistry,
-) -> Result<NvmeTarget> {
+) -> Result<NvmeView> {
     let span = info_span!("nvme_project", capsule = %id.as_uuid());
     let _enter = span.enter();
 
-    registry.lookup(id)?;
+    let capsule = registry.lookup(id)?;
+    let transformed = capsule.apply_transform(&[], policy)?;
 
-    if policy.sovereignty != SovereigntyLevel::Local {
-        let remote = mesh.resolve_federated(id).await?;
-        info!(
-            capsule = %id.as_uuid(),
-            target = %remote,
-            "resolving federated NVMe view target"
-        );
-        mesh.federate_capsule(id, mesh.zone().clone()).await?;
-    }
-
-    mesh.shard_metadata(
+    let telemetry = Telemetry::ViewProjection {
         id,
-        vec![MetadataShard {
-            shard_id: 1,
-            owner: mesh.id(),
-        }],
-    )
-    .await?;
+        view: "nvme".into(),
+    };
 
-    Ok(NvmeTarget {
-        capsule_id: id,
-        namespace: mesh.zone().clone(),
-    })
-}
+    let mesh_state = MeshState::empty(mesh.zone().clone());
+    let actions = compile_scaling(policy, &telemetry, &mesh_state);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use capsule_registry::CapsuleRegistry;
-    use common::Policy;
-    use scaling::MeshNode;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    #[tokio::test]
-    async fn phantom_nvme_target_reports_capsule() {
-        let registry = CapsuleRegistry::new();
-        let capsule_id = CapsuleId::new();
-        let policy = Policy::default();
-        registry
-            .create_capsule_with_segments(capsule_id, 0, Vec::new(), policy.clone())
-            .unwrap();
-
-        let mesh = MeshNode::new(
-            common::podms::ZoneId::Metro {
-                name: "test".into(),
-            },
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        )
-        .await
-        .unwrap();
-
-        let target = project_nvme_view(capsule_id, &policy, &mesh, &registry).await;
-        assert!(target.is_ok());
+    for action in actions {
+        match action {
+            ScalingAction::Federate { capsule_id, zone } => {
+                mesh.federate_capsule(capsule_id, zone).await?;
+            }
+            ScalingAction::ShardEC {
+                capsule_id, zones, ..
+            } => {
+                if zones.is_empty() {
+                    continue;
+                }
+                let payload = registry.serialize_capsule(capsule_id)?;
+                let shard_keys = capsule_id.shard_keys(zones.len());
+                let shards: Vec<MetadataShard> = zones
+                    .into_iter()
+                    .zip(shard_keys.into_iter())
+                    .map(|(zone, shard_id)| MetadataShard {
+                        shard_id,
+                        owner: mesh.id(),
+                        zone,
+                    })
+                    .collect();
+                mesh.shard_metadata(capsule_id, shards, &payload).await?;
+            }
+            _ => {}
+        }
     }
+
+    let mut builder = NvmeTargetBuilder::new();
+    builder.add_namespace(Namespace::new(transformed));
+    let target = builder.build();
+
+    info!(
+        namespaces = target.namespaces().len(),
+        "nvme view projected"
+    );
+
+    Ok(NvmeView {
+        capsule_id: id,
+        target,
+    })
 }

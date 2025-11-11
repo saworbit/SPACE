@@ -1,91 +1,99 @@
-//! Phase 4 CSI provisioning helpers.
+//! Phase 4 CSI provisioning with federated metadata and mesh sharding.
 #![cfg(feature = "phase4")]
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use capsule_registry::CapsuleRegistry;
-use common::podms::SovereigntyLevel;
+use common::podms::Telemetry;
 use common::{CapsuleId, Policy};
+use csi_driver_rs::{CsiServer, ProvisionRequest};
+use scaling::compiler::{compile_scaling, MeshState, ScalingAction};
 use scaling::{MeshNode, MetadataShard};
-use tracing::{info, info_span};
+use tracing::info_span;
+use uuid::Uuid;
 
-/// Simple representation of a CSI provisioned volume.
-pub struct CsiVolume {
-    capsule_id: CapsuleId,
-    driver_path: String,
-}
-
-impl CsiVolume {
-    /// Retrieve the capsule ID associated with the volume.
-    pub fn capsule_id(&self) -> CapsuleId {
-        self.capsule_id
-    }
-}
-
-/// Provision a CSI volume backed by SPACE capsules.
-pub async fn csi_provision_volume(
-    id: CapsuleId,
+/// Provision a CSI volume backed by a SPACE capsule.
+pub async fn csi_provision_capsule(
+    req: ProvisionRequest,
     policy: &Policy,
     mesh: &MeshNode,
     registry: &CapsuleRegistry,
-) -> Result<CsiVolume> {
-    let span = info_span!("csi_provision", capsule = %id.as_uuid());
+) -> Result<CsiServer> {
+    let span = info_span!("csi_provision", request = ?req);
     let _enter = span.enter();
 
+    let id = CapsuleId::from_uuid(Uuid::parse_str(&req.capsule_id).map_err(|e| anyhow!(e))?);
     registry.lookup(id)?;
 
-    if policy.sovereignty == SovereigntyLevel::Zone {
-        let target = mesh.resolve_federated(id).await?;
-        info!(
-            capsule = %id.as_uuid(),
-            target = %target,
-            "federating CSI volume to zone peer"
-        );
-        mesh.federate_capsule(id, mesh.zone().clone()).await?;
+    let telemetry = Telemetry::ViewProjection {
+        id,
+        view: "csi".into(),
+    };
+
+    let mesh_state = MeshState::empty(mesh.zone().clone());
+    let actions = compile_scaling(policy, &telemetry, &mesh_state);
+
+    for action in actions {
+        match action {
+            ScalingAction::Federate { capsule_id, zone } => {
+                mesh.federate_capsule(capsule_id, zone).await?;
+            }
+            ScalingAction::ShardEC {
+                capsule_id, zones, ..
+            } => {
+                if zones.is_empty() {
+                    continue;
+                }
+                let payload = registry.serialize_capsule(capsule_id)?;
+                let shard_keys = capsule_id.shard_keys(zones.len());
+                let shards: Vec<MetadataShard> = zones
+                    .into_iter()
+                    .zip(shard_keys.into_iter())
+                    .map(|(zone, shard_id)| MetadataShard {
+                        shard_id,
+                        owner: mesh.id(),
+                        zone,
+                    })
+                    .collect();
+                mesh.shard_metadata(capsule_id, shards, &payload).await?;
+            }
+            _ => {}
+        }
     }
 
-    mesh.shard_metadata(
-        id,
-        vec![MetadataShard {
-            shard_id: 42,
-            owner: mesh.id(),
-        }],
-    )
-    .await?;
-
-    Ok(CsiVolume {
-        capsule_id: id,
-        driver_path: format!("/csi/volumes/{}", id.as_uuid()),
-    })
+    CsiServer::provision(&id.as_uuid().to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "phase4"))]
 mod tests {
     use super::*;
     use capsule_registry::CapsuleRegistry;
+    use common::podms::ZoneId;
     use common::Policy;
+    use scaling::MeshNode;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[tokio::test]
-    async fn csi_volume_roundtrip_honors_mesh() {
+    async fn provisions_csi_volume() {
         let registry = CapsuleRegistry::new();
         let capsule_id = CapsuleId::new();
-        let policy = Policy::default();
+        let policy = Policy::metro_sync();
         registry
             .create_capsule_with_segments(capsule_id, 0, Vec::new(), policy.clone())
             .unwrap();
 
         let mesh = MeshNode::new(
-            common::podms::ZoneId::Metro {
-                name: "zone".into(),
+            ZoneId::Metro {
+                name: "csi-test".into(),
             },
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         )
         .await
         .unwrap();
 
-        let volume = csi_provision_volume(capsule_id, &policy, &mesh, &registry)
+        let req = ProvisionRequest::from_capsule(&capsule_id.as_uuid().to_string());
+        let server = csi_provision_capsule(req, &policy, &mesh, &registry)
             .await
             .unwrap();
-        assert_eq!(volume.capsule_id(), capsule_id);
+        assert_eq!(server.capsule_id(), capsule_id.as_uuid().to_string());
     }
 }

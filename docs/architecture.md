@@ -369,3 +369,13 @@ Discussions via GitHub Issues; code submissions require a Developer Certificate 
 
 
 
+## Phase 4: Views and Full Mesh Federation
+
+Phase 4 introduces the remaining protocol surfaces (NVMe-oF, NFS v4.2, FUSE, CSI) plus Paxos-style metadata shards so capsules can route across metros and geos without copying bytes.
+
+- Each protocol crate (`protocol-nvme`, `protocol-nfs`, `protocol-fuse`, `protocol-csi`) is gated by the `phase4` feature and reuses the `scaling::compiler::compile_scaling` helper with `Telemetry::ViewProjection`.
+- `MeshNode::federate_capsule` and `MeshNode::shard_metadata` now talk to a lightweight `raft-rs` cluster, storing serialized capsules with `ShardKey`s derived from `CapsuleId::shard_keys`.
+- The new CLI command `spacectl project --view <nvme|nfs|fuse|csi>` loads policy YAML, spins up a Metro `MeshNode`, and executes the proper view projection. See [docs/phase4.md](docs/phase4.md) for the command flow and scripts.
+- Metadata shards are protected by tracing spans so auditors can reconstruct cross-zone moves; consult [docs/federation.md](docs/federation.md) for the Paxos mesh narrative.
+
+Feature gate: `cargo build --features phase4`.

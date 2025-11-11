@@ -1,14 +1,18 @@
-capsule:
-  name: phase4-demo
-  policy:
-    compression:
-      zstd:
-        level: 5
-    dedupe: true
-    compact_interval_secs: 600
-    encryption: disabled
-    latency_target: 2ms
-    sovereignty: zone
-    view: nvme
-    federate: true
-    audit: true
+compression:
+  LZ4:
+    level: 1
+dedupe: true
+compact_interval_secs: 600
+encryption:
+  XtsAes256:
+    key_version: null
+crypto_profile: Classical
+rpo:
+  secs: 0
+  nanos: 0
+latency_target:
+  secs: 0
+  nanos: 2000000
+sovereignty: zone
+view: nvme
+
