@@ -12,25 +12,10 @@
 **The future of storage starts with a single primitive that breaks down protocol silos.**
 
 ---
-### Phase 4: Multi-Protocol Views & Federation
 
-Phase 4 wires NVMe-oF, NFS v4.2, FUSE, and CSI view projections into the PODMS mesh plus Paxos sharded metadata. Enable the new surface with `cargo build --features phase4` and run:
+**🎉 Phase 3.3 Complete:** Encryption ✅ • Bloom Filters ✅ • Audit Log ✅ • SPIFFE/mTLS ✅ • PODMS Scaling ✅
 
-```
-spacectl project --view nvme --id 550e8400-e29b-41d4-a716-446655440000 --policy-file examples/phase4-policy.yaml
-```
-
-See [docs/phase4.md](docs/phase4.md) for scripts, timeline, and risk notes; the federated Raft mesh is summarized in [docs/federation.md](docs/federation.md).
-
-### 🎉 Phase 3.3 Complete
-
-### Phase 3.0: CapsuleFlow Layout Engine
-- **Policy-compiled layout synthesis**
-- **ZNS-native graph zoning**
-- **ML-augmented heat prediction**
-- **Post-quantum Merkle anchors**
-- **Hardware offload (CPU/DPU/GPU/CSD)**
-Encryption ✅ • Bloom Filters ✅ • Audit Log ✅ • SPIFFE/mTLS ✅ • PODMS Scaling ✅
+**🚀 Phase 4 Active:** Multi-Protocol Views (NVMe-oF, NFS, FUSE, CSI) + Full Mesh Federation
 
 [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [💡 Why SPACE](#-why-this-matters)
 
@@ -287,8 +272,6 @@ let policy = Policy::edge_optimized();
 </details>
 
 ---
-
---- 
 
 ## 🚀 Quick Start
 
@@ -855,8 +838,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 </div>
 
-### We Welcome
-
+**We Welcome:**
 - 🐛 Bug reports and fixes
 - 💡 Architecture suggestions
 - 📚 Documentation improvements
@@ -864,12 +846,13 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 - ⚡ Performance optimizations
 - 🔒 Security reviews
 
-### Before Submitting PRs
-
+**Before Submitting PRs:**
 1. ✨ Run `cargo fmt` and `cargo clippy`
 2. ✅ Ensure `cargo test --workspace` passes
 3. 📖 Update documentation
 4. 🧪 Add tests for new functionality
+
+📄 See [CONTRIBUTING.md](CONTRIBUTING.md) • [Code of Conduct](CODE_OF_CONDUCT.md) • [Security](SECURITY.md)
 
 ---
 
@@ -920,24 +903,22 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 </div>
 
-### ✅ What Works Today
+### ✅ What's Working
 
-- Capsule storage with compression and deduplication
-- Counting Bloom + audit log (`advanced-security`)
-- SPIFFE + mTLS gateway with eBPF + Kyber
-- XTS-AES-256 encryption with integrity verification
-- Deterministic encryption preserving deduplication
-- Key management with rotation support
-- S3-compatible REST API
-- CLI tools for basic operations
-- Persistent metadata and NVRAM log
+- ✅ Capsule storage with compression and deduplication
+- ✅ XTS-AES-256 encryption preserving dedup
+- ✅ Counting Bloom filters + immutable audit log
+- ✅ SPIFFE/mTLS gateway + eBPF policy enforcement
+- ✅ Post-quantum Kyber hybrid mode
+- ✅ S3-compatible REST API
+- ✅ NFS, FUSE, and CSI protocol views (Phase 4)
+- ✅ CLI tools and persistent metadata
 
 ### ⚠️ Known Limitations
 
-- 📋 Log-space reclamation pending (Phase 4)
-- 📋 CLI `--encrypt` flag (Phase 3.2)
+- 📋 Log-space reclamation (in progress)
 - 📋 Single-node only (clustering = Phase 5)
-- 📋 Authentication/authorization (Phase 4)
+- 📋 Authentication/authorization (Phase 4/5)
 
 ---
 
@@ -998,34 +979,28 @@ spacectl block read vol1 4096 --length 512 > sector.verify
 spacectl block delete vol1
 ```
 
-### 📊 Telemetry & Logging
+### 📊 Advanced: Telemetry & Error Handling
 
 **Environment Variables:**
 - `SPACE_LOG_FORMAT` — Console output format (`compact` or `json`)
 - `RUST_LOG` — Tracing filters (e.g., `RUST_LOG=info,space=debug`)
 
-**Structured Events:**
-- All pipeline stages emit spans/events (`pipeline::compression`, `telemetry::compression`)
+**Pipeline Events:**
+- All stages emit structured spans (`pipeline::compression`, `telemetry::compression`)
 
-**Error Surfaces:**
+**Error Reference:**
 
 <div align="center">
 
-| Code | Level | Description | Action |
-|:-----|:-----:|:------------|:-------|
-| `CompressionError::EntropySkip` | `WARN` | High-entropy payload skipped | Review workload if persistent |
-| `CompressionError::IneffectiveRatio` | `INFO` | Compression reverted | Tune policy thresholds |
-| `PipelineError::Compression` | `ERROR` | Compression subsystem failed | Retry segment; inspect codec |
-| `PipelineError::Nvram/Registry` | `ERROR` | Storage metadata IO failure | Investigate backing store |
-| `PipelineError::Telemetry` | `WARN` | Telemetry sink rejected event | Defer to hub health |
+| Error Code | Level | Description | Action |
+|:-----------|:-----:|:------------|:-------|
+| `CompressionError::EntropySkip` | WARN | High-entropy data skipped | Review if persistent |
+| `CompressionError::IneffectiveRatio` | INFO | Compression reverted | Tune thresholds |
+| `PipelineError::Compression` | ERROR | Compression failed | Retry/inspect codec |
+| `PipelineError::Nvram` | ERROR | Storage I/O failure | Check backing store |
+| `PipelineError::Telemetry` | WARN | Telemetry rejected | Check hub health |
 
 </div>
-
----
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) • [Code of Conduct](CODE_OF_CONDUCT.md) • [Security](SECURITY.md)
 
 ---
 
@@ -1051,11 +1026,3 @@ Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
-
-
-
-
-
-
-
-
