@@ -8,8 +8,8 @@ license.workspace = true
 [dependencies]
 # Core dependencies
 anyhow.workspace = true
-nvram-sim = { path = "../nvram-sim" }
-common = { path = "../common" }
+nvram-sim = { path = "../nvram-sim", version = "0.1.0" }
+common = { path = "../common", version = "0.1.0" }
 
 # Tracing for observability
 tracing.workspace = true

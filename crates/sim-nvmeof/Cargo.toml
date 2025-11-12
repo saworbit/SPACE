@@ -20,7 +20,7 @@ tracing-subscriber.workspace = true
 spdk-rs = { workspace = true }
 
 # Common types
-common = { path = "../common" }
+common = { path = "../common", version = "0.1.0" }
 
 [dev-dependencies]
 tracing-test.workspace = true
