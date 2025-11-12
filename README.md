@@ -310,6 +310,37 @@ let policy = Policy::edge_optimized();
 cargo build --release
 ```
 
+### 🐳 Development Setup with Simulations *(Recommended for Testing)*
+
+SPACE includes Docker-based simulations for testing without physical hardware:
+
+```bash
+# Quick setup: Build images and start environment
+./scripts/setup_home_lab_sim.sh
+
+# View running services
+docker compose ps
+
+# Run end-to-end tests
+./scripts/test_e2e_sim.sh
+
+# View simulation logs
+docker compose logs -f sim
+
+# Stop environment
+docker compose down
+```
+
+**What you get**:
+- ✅ **NVRAM simulation**: File-backed log for testing pipeline
+- ✅ **NVMe-oF simulation**: TCP-based fabric (SPDK on Linux with hugepages)
+- ✅ **Multi-node setup**: Simulate distributed capsule mesh
+
+**For more details**:
+- 📘 [SIMULATIONS.md](docs/SIMULATIONS.md): Detailed simulation guide
+- 🐳 [CONTAINERIZATION.md](docs/CONTAINERIZATION.md): Docker architecture
+- 🧪 Run tests: `cargo test -p sim-nvram -p capsule-registry --test pipeline_sim_integration`
+
 ### 🔐 Setup Encryption *(Optional)*
 
 ```bash
@@ -854,6 +885,8 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 | 🔗 [Dedup Implementation](docs/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
 | 🔐 [Encryption Implementation](docs/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
 | 🌐 [Protocol Views](docs/protocol_views.md) | S3/NFS/block facades |
+| 🧪 [Simulations Guide](docs/SIMULATIONS.md) | Testing without hardware |
+| 🐳 [Containerization Guide](docs/CONTAINERIZATION.md) | Docker deployment |
 | 🚀 [S3 Quick Start](QUICKSTART_S3.md) | Protocol view demo |
 | 🔨 [Build Guide](BUILD.md) | Compilation and testing |
 

@@ -1,0 +1,22 @@
+[package]
+name = "sim-nvram"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core dependencies
+anyhow.workspace = true
+nvram-sim = { path = "../nvram-sim" }
+common = { path = "../common" }
+
+# Tracing for observability
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-test.workspace = true
+
+[features]
+default = []
+# No extra features needed; enable via workspace includes

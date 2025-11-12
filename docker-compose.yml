@@ -1,0 +1,128 @@
+# Docker Compose configuration for SPACE development/testing
+#
+# This orchestrates core SPACE components and optional simulation containers
+# for end-to-end testing without physical hardware.
+#
+# Usage:
+#   # Start all services (including sims):
+#   docker compose up -d
+#
+#   # Start without sims (production-like):
+#   docker compose up -d spacectl metadata-mesh
+#
+#   # View logs:
+#   docker compose logs -f sim
+#
+# Services:
+#   - spacectl: CLI and S3 protocol view
+#   - io-engine-1, io-engine-2: Data pipeline nodes
+#   - metadata-mesh: KV store for capsule registry
+#   - sim: Optional simulation hub (NVRAM, NVMe-oF)
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # Core Services: Production components
+  # ============================================================================
+
+  # Metadata mesh: Raft-based KV store for capsule metadata
+  metadata-mesh:
+    image: space-core:latest
+    container_name: space-metadata-mesh
+    command: ["sh", "-c", "echo 'Metadata mesh placeholder - integrate with capsule-registry' && sleep infinity"]
+    networks:
+      - space-net
+    volumes:
+      - metadata-data:/data
+    environment:
+      RUST_LOG: info
+    restart: unless-stopped
+
+  # IO Engine Node 1: Data pipeline (compression, dedup, encryption)
+  io-engine-1:
+    image: space-core:latest
+    container_name: space-io-engine-1
+    command: ["sh", "-c", "echo 'IO Engine 1 placeholder - integrate with pipeline' && sleep infinity"]
+    networks:
+      - space-net
+    volumes:
+      - io-engine-1-data:/data
+    environment:
+      RUST_LOG: debug
+      NODE_ID: io-engine-1
+      # Optional: Connect to sim NVRAM
+      # SPACE_SIM_MODE: "1"
+    depends_on:
+      - metadata-mesh
+    restart: unless-stopped
+
+  # IO Engine Node 2: Second pipeline node for multi-node tests
+  io-engine-2:
+    image: space-core:latest
+    container_name: space-io-engine-2
+    command: ["sh", "-c", "echo 'IO Engine 2 placeholder - integrate with pipeline' && sleep infinity"]
+    networks:
+      - space-net
+    volumes:
+      - io-engine-2-data:/data
+    environment:
+      RUST_LOG: debug
+      NODE_ID: io-engine-2
+    depends_on:
+      - metadata-mesh
+    restart: unless-stopped
+
+  # Spacectl: CLI + S3 server (protocol-s3)
+  spacectl:
+    image: space-core:latest
+    container_name: space-spacectl
+    command: ["sh", "-c", "spacectl --version && echo 'Spacectl ready. TODO: Integrate S3 server startup' && sleep infinity"]
+    networks:
+      - space-net
+    ports:
+      - "8080:8080"  # S3 API
+    volumes:
+      - spacectl-data:/data
+    environment:
+      RUST_LOG: info
+    depends_on:
+      - metadata-mesh
+      - io-engine-1
+    restart: unless-stopped
+
+  # ============================================================================
+  # Simulation Service: Dev/test only
+  # ============================================================================
+
+  # Sim container: Orchestrates NVRAM, NVMe-oF, and other simulations
+  sim:
+    image: space-sim:latest
+    container_name: space-sim
+    privileged: true  # Required for SPDK hugepages (use capabilities in prod)
+    networks:
+      - space-net
+    ports:
+      - "4420:4420"  # NVMe-oF target port
+    volumes:
+      - sim-data:/sim
+    environment:
+      # Comma-separated list of modules to run
+      SIM_MODULES: nvram,nvmeof
+      NODE_ID: sim-node1
+      RUST_LOG: debug
+    # Uncomment to disable sims in production-like environments:
+    # profiles:
+    #   - dev
+    restart: unless-stopped
+
+networks:
+  space-net:
+    driver: bridge
+
+volumes:
+  metadata-data:
+  io-engine-1-data:
+  io-engine-2-data:
+  spacectl-data:
+  sim-data:

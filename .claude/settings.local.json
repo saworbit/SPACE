@@ -8,7 +8,8 @@
       "Bash(set RUST_BACKTRACE=1:*)",
       "Bash(dir \"c:\\space\")",
       "Bash(cat:*)",
-      "Bash(git -C /c/space log:*)"
+      "Bash(git -C /c/space log:*)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []

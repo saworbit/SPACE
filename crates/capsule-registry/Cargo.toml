@@ -46,6 +46,7 @@ scaling = { path = "../scaling", optional = true }
 tracing-test = { workspace = true }
 futures = { workspace = true }
 criterion = "0.5"
+sim-nvram = { path = "../sim-nvram" }  # For simulation-based integration tests
 
 [[bench]]
 name = "pipeline"

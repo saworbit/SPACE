@@ -1,0 +1,67 @@
+# Simulation Dockerfile
+#
+# Builds a privileged container for running SPACE simulations (NVRAM, NVMe-oF, etc.)
+# Requires Linux host with hugepages support for NVMe-oF simulation.
+#
+# Build: docker build -t space-sim:latest -f Dockerfile.sim .
+# Run: docker run --privileged -e SIM_MODULES=nvram,nvmeof space-sim:latest
+
+# ============================================================================
+# Builder Stage: Compile simulation crates
+# ============================================================================
+FROM rust:1.78 as builder
+
+WORKDIR /usr/src/space
+
+# Copy workspace manifests
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+COPY vendor/ ./vendor/
+
+# Build simulation crates and their binaries
+# Build everything first, then we'll copy selectively
+RUN cargo build --release -p sim-nvram -p sim-nvmeof -p sim-other
+
+# ============================================================================
+# Runtime Stage: Ubuntu with simulation tools
+# ============================================================================
+FROM ubuntu:24.04
+
+# Install runtime dependencies + simulation tools
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    numactl \
+    pciutils \
+    iproute2 \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create directories for simulation modules
+RUN mkdir -p /sim/nvram /sim/nvmeof /sim/other /data
+
+# Copy simulation binaries
+COPY --from=builder /usr/src/space/target/release/sim-nvmeof /usr/local/bin/
+
+# Copy entrypoint script (created in next step)
+COPY scripts/sim-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Create non-root user (but we'll run as root for SPDK hugepages access)
+# Production note: Use capabilities instead of --privileged in real deployments
+RUN useradd -m -u 1000 space
+
+WORKDIR /data
+
+# Set default environment
+ENV SIM_MODULES=nvram
+ENV RUST_LOG=info
+
+# Entrypoint handles selective module loading
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# Metadata
+LABEL org.opencontainers.image.title="SPACE Simulation" \
+      org.opencontainers.image.description="Dev/Test simulation container for SPACE" \
+      org.opencontainers.image.vendor="Adaptive Storage" \
+      org.opencontainers.image.licenses="Apache-2.0"

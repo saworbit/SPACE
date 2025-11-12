@@ -1,0 +1,18 @@
+[package]
+name = "sim-other"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-test.workspace = true
+
+[features]
+default = []
+# Future features for GPU offload, CapsuleFlow, etc.
+gpu-offload = []

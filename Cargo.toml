@@ -18,6 +18,9 @@ members = [
     "crates/spacectl",
     "crates/encryption",    # NEW: Phase 3 encryption crate
     "crates/scaling",       # NEW: PODMS Step 2 scaling crate
+    "crates/sim-nvram",     # NEW: Lightweight NVRAM simulation wrapper
+    "crates/sim-nvmeof",    # NEW: NVMe-oF fabric simulation
+    "crates/sim-other",     # NEW: Placeholder for future sims (GPU, etc.)
     "xtask",
     "vendor/raft-rs",
     "vendor/spdk-rs",

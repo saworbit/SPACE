@@ -1,0 +1,29 @@
+[package]
+name = "sim-nvmeof"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sim-nvmeof"
+path = "src/bin/main.rs"
+
+[dependencies]
+# Core dependencies
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# SPDK bindings (from vendor)
+spdk-rs = { workspace = true }
+
+# Common types
+common = { path = "../common" }
+
+[dev-dependencies]
+tracing-test.workspace = true
+
+[features]
+default = []
