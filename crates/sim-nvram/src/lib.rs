@@ -21,8 +21,10 @@
 
 use anyhow::Result;
 use nvram_sim::{NvramLog, NvramTransaction};
+use tracing::{debug, info};
+
+#[cfg(test)]
 use common::SegmentId;
-use tracing::{info, debug};
 
 /// Configuration for NVRAM simulation.
 ///
@@ -103,7 +105,10 @@ pub fn start_nvram_sim_with_config(config: NvramSimConfig) -> Result<NvramLog> {
     let log = NvramLog::open(&config.backing_path)?;
 
     if config.simulated_latency_us > 0 {
-        debug!(latency_us = config.simulated_latency_us, "Simulated latency enabled");
+        debug!(
+            latency_us = config.simulated_latency_us,
+            "Simulated latency enabled"
+        );
         // Future: Wrap log methods with std::thread::sleep
     }
 

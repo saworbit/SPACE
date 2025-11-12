@@ -9,7 +9,8 @@
       "Bash(dir \"c:\\space\")",
       "Bash(cat:*)",
       "Bash(git -C /c/space log:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(cargo fmt:*)"
     ],
     "deny": [],
     "ask": []

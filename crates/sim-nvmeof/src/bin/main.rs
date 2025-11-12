@@ -20,14 +20,12 @@
 use anyhow::Result;
 use sim_nvmeof::{start_nvmeof_sim_with_config, NvmeofSimConfig};
 use std::env;
-use tracing::{info, error};
+use tracing::{error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
 fn main() -> Result<()> {
     // Initialize tracing
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
     info!("Starting NVMe-oF simulation binary");
 

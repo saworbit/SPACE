@@ -28,7 +28,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Configuration for NVMe-oF simulation.
 #[derive(Debug, Clone)]
@@ -145,8 +145,8 @@ pub fn start_nvmeof_sim_with_config(config: NvmeofSimConfig) -> Result<()> {
 fn check_hugepages_available() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let meminfo = std::fs::read_to_string("/proc/meminfo")
-            .context("Failed to read /proc/meminfo")?;
+        let meminfo =
+            std::fs::read_to_string("/proc/meminfo").context("Failed to read /proc/meminfo")?;
 
         let hugepages_total = meminfo
             .lines()
@@ -222,12 +222,11 @@ fn is_spdk_available() -> bool {
 fn run_tcp_fallback_sim(config: NvmeofSimConfig) -> Result<()> {
     info!("Starting TCP fallback simulation (no SPDK)");
 
-    use std::net::TcpListener;
     use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     let addr = format!("{}:{}", config.listen_addr, config.listen_port);
-    let listener = TcpListener::bind(&addr)
-        .context(format!("Failed to bind to {}", addr))?;
+    let listener = TcpListener::bind(&addr).context(format!("Failed to bind to {}", addr))?;
 
     info!(
         node_id = config.node_id,

@@ -35,16 +35,6 @@ edition = "2021"
 authors = ["Shane Wall <shane@adaptive-storage.dev>"]
 license = "Apache-2.0"
 
-[workspace.features]
-phase4 = [
-    "common/podms",
-    "protocol-nvme/phase4",
-    "protocol-nfs/phase4",
-    "protocol-fuse/phase4",
-    "protocol-csi/phase4",
-    "scaling/phase4",
-]
-
 [workspace.dependencies]
 # Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)
 uuid = { version = "^1.18.1", features = ["v4", "serde"] } # 2025-11-03 sw: deterministic object IDs for registry state
