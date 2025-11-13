@@ -21,10 +21,10 @@ capsule-registry = { path = "../capsule-registry" }
 nvram-sim = { path = "../nvram-sim" }
 
 # HTTP server
-axum = { version = "^0.7.9" } # 2025-11-03 sw: Tier1 HTTP surface per docs/dependency-security.md
+axum = { version = "^0.8.6" } # 2025-11-03 sw: Tier1 HTTP surface per docs/dependency-security.md
 tokio = { workspace = true }
-tower = { version = "^0.4.13" } # 2025-11-03 sw: aligns with axum 0.7 require
-tower-http = { version = "^0.5.2", features = ["cors", "trace"] } # 2025-11-03 sw: HTTP middleware review logged
+tower = { version = "^0.5.2" } # 2025-11-03 sw: aligns with axum 0.7 require
+tower-http = { version = "^0.6.6", features = ["cors", "trace"] } # 2025-11-03 sw: HTTP middleware review logged
 
 # Serialization
 serde = { workspace = true }
