@@ -39,7 +39,7 @@ license = "Apache-2.0"
 # Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)
 uuid = { version = "^1.18.1", features = ["v4", "serde"] } # 2025-11-03 sw: deterministic object IDs for registry state
 anyhow = { version = "^1.0.100" } # 2025-11-03 sw: ergonomic error context, low risk per audit log
-thiserror = { version = "^1.0.69" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
+thiserror = { version = "^2.0.17" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
 tokio = { version = "^1.48.0", features = ["full"] } # 2025-11-03 sw: async runtime staple, reviewed for LTS support
 futures = { version = "^0.3.31" } # 2025-11-03 sw: combinators align with tokio 1.48, no unsafe diff
 num_cpus = { version = "^1.17.0" } # 2025-11-03 sw: worker sizing, perf only
