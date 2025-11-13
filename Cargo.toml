@@ -48,7 +48,7 @@ tracing-subscriber = { version = "^0.3.20", features = ["env-filter", "fmt", "js
 tracing-test = { version = "^0.2.5" } # 2025-11-03 sw: ensures span assertions match runtime wiring
 clap = { version = "^4.5.49", features = ["derive"] } # 2025-11-03 sw: CLI + xtask parsing, Tier1 review
 cargo_metadata = { version = "^0.18.1" } # 2025-11-03 sw: workspace graph inspection for xtask
-toml = { version = "^0.8.19" } # 2025-11-03 sw: manifest parsing in xtask
+toml = { version = "^0.9.8" } # 2025-11-03 sw: manifest parsing in xtask
 time = { version = "^0.3.36", features = ["macros", "formatting"] } # 2025-11-03 sw: ISO-8601 timestamps for drift reports
 semver = { version = "^1.0.27" } # 2025-11-03 sw: version range evaluation for drift detection
 
