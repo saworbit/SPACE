@@ -41,12 +41,12 @@ subtle = { workspace = true }
 bytes = "1.7"
 pipeline = { path = "../pipeline", optional = true }
 scaling = { path = "../scaling", optional = true }
+sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation mode support
 
 [dev-dependencies]
 tracing-test = { workspace = true }
 futures = { workspace = true }
 criterion = "0.5"
-sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation-based integration tests
 
 [[bench]]
 name = "pipeline"

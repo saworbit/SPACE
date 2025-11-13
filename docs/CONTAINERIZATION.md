@@ -223,7 +223,46 @@ services:
 
 **Purpose**: Orchestrates simulation modules
 **Privileged**: Yes (for SPDK/hugepages)
-**Selective Loading**: Set `SIM_MODULES` environment variable
+
+#### Environment Variables
+
+| Variable | Values | Description | Default |
+|----------|--------|-------------|---------|
+| `SIM_MODULES` | `nvram`, `nvmeof`, `other` (comma-separated) | Selects which simulation modules to load in sim container | `nvram` |
+| `SPACE_SIM_MODE` | `nvram` | Overrides NVRAM log with simulation in pipeline | (none) |
+| `NODE_ID` | Any string | Unique identifier for this sim node | `sim-node1` |
+
+**Examples**:
+
+```yaml
+services:
+  sim:
+    environment:
+      SIM_MODULES: nvram,nvmeof  # Load NVRAM and NVMe-oF simulations
+      NODE_ID: sim-node1
+
+  io-engine-1:
+    environment:
+      SPACE_SIM_MODE: nvram      # Use simulation NVRAM in pipeline
+    volumes:
+      - sim-data:/sim            # Mount sim directory for access
+```
+
+**Selective Loading**:
+
+```bash
+# Lightweight: Only NVRAM (<1GB RAM)
+export SIM_MODULES=nvram
+docker compose up -d
+
+# Full stack: NVRAM + NVMe-oF (~4GB RAM, Linux only)
+export SIM_MODULES=nvram,nvmeof
+docker compose up -d
+
+# No simulations (production-like)
+docker compose up -d spacectl metadata-mesh io-engine-1
+# Omit sim service
+```
 
 **Disable in Production**:
 ```yaml

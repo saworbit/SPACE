@@ -268,23 +268,69 @@ fn test_with_sim() -> Result<()> {
 }
 ```
 
-#### Environment Variable Hook
+#### Pipeline Integration Hook
 
-Set `SPACE_SIM_MODE=1` to make pipeline use simulations at runtime:
+The `WritePipeline` automatically detects simulation mode via the `SPACE_SIM_MODE` environment variable:
 
 ```rust
-// In pipeline.rs (conditional compilation)
-#[cfg(test)]
+use capsule_registry::WritePipeline;
+use common::CapsuleRegistry;
+use nvram_sim::NvramLog;
+
+// Method 1: Automatic simulation override
+std::env::set_var("SPACE_SIM_MODE", "nvram");
+let pipeline = WritePipeline::new(registry, nvram);
+// Pipeline automatically uses sim-nvram at /sim/nvram/sim.log
+
+// Method 2: Direct simulation usage (for tests)
 use sim_nvram::start_nvram_sim;
 
-fn get_nvram_log() -> Result<NvramLog> {
-    if std::env::var("SPACE_SIM_MODE").is_ok() {
-        start_nvram_sim("sim_nvram.log")
-    } else {
-        NvramLog::open("/dev/nvram") // Production path
+let sim_log = start_nvram_sim("test.log")?;
+let pipeline = WritePipeline::new(registry, sim_log);
+```
+
+**Implementation Details** (from [pipeline.rs:232-251](../crates/capsule-registry/src/pipeline.rs#L232-L251)):
+
+```rust
+impl WritePipeline {
+    pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
+        // Pipeline Integration Hook: Check for simulation mode override
+        let nvram = if env::var("SPACE_SIM_MODE").ok().as_deref() == Some("nvram") {
+            info!("SPACE_SIM_MODE=nvram detected, initializing simulation NVRAM");
+            match start_nvram_sim("/sim/nvram/sim.log") {
+                Ok(sim_log) => {
+                    info!("Simulation NVRAM initialized at /sim/nvram/sim.log");
+                    sim_log
+                }
+                Err(err) => {
+                    warn!(error = %err, "Failed to initialize simulation NVRAM, using provided NVRAM");
+                    nvram
+                }
+            }
+        } else {
+            nvram
+        };
+        // ... rest of initialization
     }
 }
 ```
+
+**Usage in Docker**:
+
+```bash
+# Set environment variable in docker-compose.yml
+services:
+  io-engine-1:
+    environment:
+      SPACE_SIM_MODE: nvram  # Enable simulation mode
+    volumes:
+      - sim-data:/sim        # Mount sim directory
+```
+
+**Benefits**:
+- ✅ **Zero code changes**: Tests automatically use simulation when `SPACE_SIM_MODE=nvram` is set
+- ✅ **Graceful fallback**: Falls back to provided NVRAM if simulation init fails
+- ✅ **Production safety**: Simulation code only active when explicitly enabled
 
 ## Testing
 

@@ -1,0 +1,37 @@
+# NVMe-oF Simulation Configuration
+#
+# This config controls the NVMe-over-Fabrics simulation behavior.
+# Mounted at /sim/nvmeof/config.toml in the sim container.
+
+[simulation]
+# Backing image file (created if doesn't exist)
+backing_file = "backing.img"
+
+# Backing image size in GB
+backing_size_gb = 4
+
+# Transport protocol: "tcp" or "rdma"
+transport = "tcp"
+
+# Listen address (0.0.0.0 for all interfaces in container)
+listen_addr = "0.0.0.0"
+
+# NVMe-oF target port
+listen_port = 4420
+
+# NVMe subsystem NQN (NVMe Qualified Name)
+subsystem_nqn = "nqn.2024-01.dev.adaptive-storage:space-sim"
+
+[spdk]
+# Enable SPDK mode (requires hugepages)
+enable_spdk = true
+
+# Fallback to TCP mode if SPDK unavailable
+tcp_fallback = true
+
+# Hugepages required (in MB)
+hugepages_mb = 2048
+
+[logging]
+level = "debug"
+format = "compact"

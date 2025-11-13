@@ -1,0 +1,24 @@
+# NVRAM Simulation Configuration
+#
+# This config file controls the behavior of the NVRAM log simulation.
+# It's mounted into the sim container at /sim/nvram/config.toml
+
+[simulation]
+# Backing file path (relative to /sim/nvram in container)
+backing_file = "sim.log"
+
+# Enable fault injection for resilience testing
+enable_fault_injection = false
+
+# Simulated latency in microseconds (0 = no artificial latency)
+latency_us = 0
+
+# Maximum segment size in bytes
+max_segment_size = 4194304  # 4 MiB
+
+[logging]
+# Log level for NVRAM simulation events
+level = "debug"
+
+# Log format: "compact" or "json"
+format = "compact"
