@@ -463,3 +463,17 @@ impl Clone for CapsuleRegistry {
         }
     }
 }
+
+// Implement ContentStore trait for mesh replication (PODMS feature only)
+#[cfg(feature = "podms")]
+impl scaling::ContentStore for CapsuleRegistry {
+    fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
+        self.content_store.read().ok()?.get(hash).copied()
+    }
+
+    fn register_content(&self, hash: &ContentHash, segment_id: SegmentId) {
+        if let Ok(mut store) = self.content_store.write() {
+            store.insert(hash.clone(), segment_id);
+        }
+    }
+}

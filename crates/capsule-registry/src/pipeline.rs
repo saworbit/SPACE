@@ -225,7 +225,7 @@ pub struct WritePipeline {
     telemetry_tx: Option<tokio::sync::mpsc::UnboundedSender<common::podms::Telemetry>>,
     // PODMS: Mesh node for metro-sync replication
     #[cfg(all(feature = "podms", feature = "pipeline_async"))]
-    mesh_node: Option<std::sync::Arc<scaling::MeshNode>>,
+    mesh_node: Option<std::sync::Arc<scaling::MeshNode<CapsuleRegistry>>>,
 }
 
 impl WritePipeline {
@@ -435,7 +435,7 @@ impl WritePipeline {
     /// Set the mesh node for PODMS metro-sync replication.
     /// Call this method to enable autonomous segment mirroring for zero-RPO policies.
     #[cfg(all(feature = "podms", feature = "pipeline_async"))]
-    pub fn with_mesh_node(mut self, mesh_node: std::sync::Arc<scaling::MeshNode>) -> Self {
+    pub fn with_mesh_node(mut self, mesh_node: std::sync::Arc<scaling::MeshNode<CapsuleRegistry>>) -> Self {
         self.mesh_node = Some(mesh_node);
         self
     }
@@ -1246,7 +1246,7 @@ impl WritePipeline {
         &self,
         capsule_id: CapsuleId,
         segment_ids: &[SegmentId],
-        mesh_node: &std::sync::Arc<scaling::MeshNode>,
+        mesh_node: &std::sync::Arc<scaling::MeshNode<CapsuleRegistry>>,
     ) -> Result<usize> {
         let span = tracing::info_span!(
             "metro_sync_replication",
