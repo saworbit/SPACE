@@ -10,6 +10,8 @@ use anyhow::{anyhow, Result};
 use common::podms::{NodeId, ZoneId};
 #[cfg(feature = "phase4")]
 use common::CapsuleId;
+use encryption::keymanager::KeyManager;
+use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,6 +25,7 @@ use raft_rs::{RaftCluster, RaftClusterConfig, ShardKey};
 
 pub mod agent;
 pub mod compiler;
+pub mod replication;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +33,9 @@ mod tests;
 pub use compiler::{
     EvacuationUrgency, MeshState, NodeInfo, PolicyCompiler, ReplicationStrategy, ScalingAction,
 };
+
+// Re-export replication types for external use
+pub use replication::{ContentStore, ReplicationFrame, ReplicationHandler};
 
 /// Mesh node capabilities for disaggregated access.
 /// Nodes advertise their capabilities (e.g., GPU, NVRAM, network tier) via gossip.
@@ -70,7 +76,7 @@ pub struct MetadataShard {
 
 /// Mesh node for PODMS distribution.
 /// Handles peer discovery via gossip and provides zero-copy segment mirroring.
-pub struct MeshNode {
+pub struct MeshNode<C: ContentStore> {
     id: NodeId,
     zone: ZoneId,
     capabilities: NodeCapabilities,
@@ -80,12 +86,20 @@ pub struct MeshNode {
     peers: Arc<RwLock<HashMap<NodeId, SocketAddr>>>,
     /// Local listen address for mirroring
     listen_addr: SocketAddr,
+    /// Replication handler for inbound segment mirroring
+    replication_handler: Arc<ReplicationHandler<C>>,
 }
 
-impl MeshNode {
+impl<C: ContentStore + 'static> MeshNode<C> {
     /// Create a new mesh node in the specified zone.
     /// Initializes gossip discovery but doesn't join until `start()` is called.
-    pub async fn new(zone: ZoneId, listen_addr: SocketAddr) -> Result<Self> {
+    pub async fn new(
+        zone: ZoneId,
+        listen_addr: SocketAddr,
+        content_store: Arc<RwLock<C>>,
+        nvram_log: Arc<RwLock<NvramLog>>,
+        key_manager: Arc<RwLock<KeyManager>>,
+    ) -> Result<Self> {
         let id = NodeId::new();
         let capabilities = NodeCapabilities::default();
 
@@ -93,8 +107,14 @@ impl MeshNode {
             node_id = %id,
             zone = %zone,
             listen_addr = %listen_addr,
-            "creating mesh node"
+            "creating mesh node with replication support"
         );
+
+        let replication_handler = Arc::new(ReplicationHandler::new(
+            content_store,
+            nvram_log,
+            key_manager,
+        ));
 
         Ok(Self {
             id,
@@ -102,6 +122,7 @@ impl MeshNode {
             capabilities,
             peers: Arc::new(RwLock::new(HashMap::new())),
             listen_addr,
+            replication_handler,
         })
     }
 
@@ -124,13 +145,16 @@ impl MeshNode {
 
         info!(addr = %self.listen_addr, "mirror listener started");
 
-        let peers = self.peers.clone();
+        let handler = self.replication_handler.clone();
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((socket, addr)) => {
                         debug!(remote = %addr, "accepted mirror connection");
-                        tokio::spawn(Self::handle_mirror_connection(socket, peers.clone()));
+                        let handler_clone = handler.clone();
+                        tokio::spawn(async move {
+                            handler_clone.handle_connection(socket).await;
+                        });
                     }
                     Err(e) => {
                         warn!(error = %e, "failed to accept connection");
@@ -140,30 +164,6 @@ impl MeshNode {
         });
 
         Ok(())
-    }
-
-    /// Handle an incoming mirror connection (segment replication).
-    async fn handle_mirror_connection(
-        socket: TcpStream,
-        _peers: Arc<RwLock<HashMap<NodeId, SocketAddr>>>,
-    ) {
-        // TODO: Implement segment receive logic
-        // For now, just read and discard data
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match socket.try_read(&mut buf) {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    debug!(bytes = n, "received mirror data");
-                    // TODO: Persist segment via NvramLog
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    warn!(error = %e, "mirror read error");
-                    break;
-                }
-            }
-        }
     }
 
     /// Discover peer nodes via gossip.

@@ -19,12 +19,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 raft-rs = { workspace = true, optional = true }
+bytes = "1"
+blake3 = { workspace = true }
+bincode = "1"
 
 # Note: Gossip discovery (memberlist) will be added in Step 3
 # For Step 2 POC, we use manual peer registration
 
 # Sibling dependencies
 common = { path = "../common", features = ["podms"] }
+encryption = { path = "../encryption" }
+nvram-sim = { path = "../nvram-sim" }
 
 [dev-dependencies]
 tracing-test = { workspace = true }
