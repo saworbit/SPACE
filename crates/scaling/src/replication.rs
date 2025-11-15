@@ -11,7 +11,7 @@
 
 use anyhow::{anyhow, Result};
 use blake3;
-use common::{ContentHash, Segment, SegmentId};
+use common::{ContentHash, SegmentId};
 use encryption::keymanager::KeyManager;
 use encryption::mac::verify_mac;
 use encryption::policy::EncryptionMetadata;
@@ -25,11 +25,12 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Trait for content lookup and registration (to avoid circular dependency with capsule-registry)
-pub trait ContentStore: Send + Sync {
+/// Implementations should use interior mutability (e.g., Arc<RwLock<HashMap<...>>>)
+pub trait ContentStore: Send + Sync + 'static {
     /// Look up content by hash, returns segment ID if exists
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId>;
-    /// Register content with hash and segment ID
-    fn register_content(&mut self, hash: &ContentHash, segment_id: SegmentId);
+    /// Register content with hash and segment ID (uses interior mutability)
+    fn register_content(&self, hash: &ContentHash, segment_id: SegmentId);
 }
 
 /// Wire protocol frame for segment replication
@@ -196,7 +197,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
             .key_version
             .ok_or_else(|| anyhow!("missing key version in metadata"))?;
 
-        let key_manager = self.key_manager.read().await;
+        let mut key_manager = self.key_manager.write().await;
         let key_pair = key_manager
             .get_key(key_version)
             .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?;
@@ -251,7 +252,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
 
             // Update reference count
             drop(content_store); // Release read lock
-            let mut nvram_log = self.nvram_log.write().await;
+            let nvram_log = self.nvram_log.write().await;
             nvram_log.increment_refcount(existing_id)?;
             debug!(
                 existing_id = existing_id.0,
@@ -269,27 +270,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
             "persisting new segment to NvramLog"
         );
 
-        let mut nvram_log = self.nvram_log.write().await;
-
-        // Create segment metadata
-        let segment = Segment {
-            id: segment_id,
-            offset: 0, // Will be set by append()
-            len: ciphertext.len() as u32,
-            compressed: false, // Assume compression already applied
-            compression_algo: String::new(),
-            content_hash: Some(content_hash.clone()),
-            ref_count: 1,
-            deduplicated: false,
-            access_count: 0,
-            encryption_version: metadata.encryption_version,
-            key_version: metadata.key_version,
-            tweak_nonce: metadata.tweak_nonce,
-            integrity_tag: metadata.integrity_tag,
-            encrypted: true,
-            pq_ciphertext: None,
-            pq_nonce: None,
-        };
+        let nvram_log = self.nvram_log.write().await;
 
         // Append to NVRAM log
         let segment_metadata = nvram_log
@@ -306,8 +287,8 @@ impl<C: ContentStore> ReplicationHandler<C> {
         drop(nvram_log); // Release write lock
 
         // Step 6: Register in ContentStore for dedup lookups
-        let mut content_store = self.content_store.write().await;
-        content_store.register_content(&content_hash, segment_id);
+        // ContentStore uses interior mutability, so we can call directly
+        self.content_store.read().await.register_content(&content_hash, segment_id);
         debug!(
             segment_id = segment_id.0,
             content_hash = %content_hash.as_str(),
