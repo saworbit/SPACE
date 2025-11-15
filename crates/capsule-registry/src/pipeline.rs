@@ -435,7 +435,10 @@ impl WritePipeline {
     /// Set the mesh node for PODMS metro-sync replication.
     /// Call this method to enable autonomous segment mirroring for zero-RPO policies.
     #[cfg(all(feature = "podms", feature = "pipeline_async"))]
-    pub fn with_mesh_node(mut self, mesh_node: std::sync::Arc<scaling::MeshNode<CapsuleRegistry>>) -> Self {
+    pub fn with_mesh_node(
+        mut self,
+        mesh_node: std::sync::Arc<scaling::MeshNode<CapsuleRegistry>>,
+    ) -> Self {
         self.mesh_node = Some(mesh_node);
         self
     }

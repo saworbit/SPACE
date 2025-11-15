@@ -64,8 +64,8 @@ impl ReplicationFrame {
 
     /// Serialize frame to bytes with length prefix
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let payload = bincode::serialize(self)
-            .map_err(|e| anyhow!("failed to serialize frame: {}", e))?;
+        let payload =
+            bincode::serialize(self).map_err(|e| anyhow!("failed to serialize frame: {}", e))?;
 
         let len = payload.len() as u32;
         let mut buf = Vec::with_capacity(4 + payload.len());
@@ -202,12 +202,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
             .get_key(key_version)
             .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?;
 
-        if let Err(e) = verify_mac(
-            &ciphertext,
-            &metadata,
-            key_pair.key1(),
-            key_pair.key2(),
-        ) {
+        if let Err(e) = verify_mac(&ciphertext, &metadata, key_pair.key1(), key_pair.key2()) {
             warn!(
                 segment_id = segment_id.0,
                 error = %e,
@@ -288,7 +283,10 @@ impl<C: ContentStore> ReplicationHandler<C> {
 
         // Step 6: Register in ContentStore for dedup lookups
         // ContentStore uses interior mutability, so we can call directly
-        self.content_store.read().await.register_content(&content_hash, segment_id);
+        self.content_store
+            .read()
+            .await
+            .register_content(&content_hash, segment_id);
         debug!(
             segment_id = segment_id.0,
             content_hash = %content_hash.as_str(),
