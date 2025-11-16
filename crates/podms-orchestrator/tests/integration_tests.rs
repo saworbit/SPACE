@@ -61,8 +61,8 @@ mod orchestrator_tests {
     /// Test policy compiler generates correct scaling actions.
     #[tokio::test]
     async fn test_policy_compilation() -> Result<()> {
-        use scaling::compiler::{MeshState, PolicyCompiler, ScalingAction};
         use common::podms::ZoneId;
+        use scaling::compiler::{MeshState, PolicyCompiler, ScalingAction};
 
         // Create compiler with metro-sync policy
         let compiler = PolicyCompiler::with_defaults();

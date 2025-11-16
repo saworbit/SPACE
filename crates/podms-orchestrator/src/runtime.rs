@@ -87,7 +87,7 @@ impl<C: ContentStore + 'static> OrchestratorRuntime<C> {
             node_id: self.orchestrator.node_id(),
             used_bytes,
             total_bytes,
-            threshold_pct: threshold_pct as f64,  // Convert to expected type
+            threshold_pct: threshold_pct as f64, // Convert to expected type
         };
 
         self.emit_telemetry(event)
@@ -181,10 +181,7 @@ impl<C: ContentStore + 'static> OrchestratorBuilder<C> {
     }
 
     /// Set the NVRAM log.
-    pub fn with_nvram_log(
-        mut self,
-        log: Arc<tokio::sync::RwLock<nvram_sim::NvramLog>>,
-    ) -> Self {
+    pub fn with_nvram_log(mut self, log: Arc<tokio::sync::RwLock<nvram_sim::NvramLog>>) -> Self {
         self.nvram_log = Some(log);
         self
     }
@@ -200,9 +197,7 @@ impl<C: ContentStore + 'static> OrchestratorBuilder<C> {
 
     /// Build and start the orchestrator, returning Arc-wrapped orchestrator and runtime handle.
     pub async fn build_and_start(self) -> Result<(Arc<Orchestrator<C>>, OrchestratorRuntime<C>)> {
-        let content_store = self
-            .content_store
-            .context("content store not configured")?;
+        let content_store = self.content_store.context("content store not configured")?;
         let catalog = self.catalog.context("catalog not configured")?;
         let nvram_log = self.nvram_log.context("nvram log not configured")?;
         let key_manager = self.key_manager.context("key manager not configured")?;
