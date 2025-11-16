@@ -48,6 +48,6 @@ default = []
 metrics = ["prometheus"]
 
 [dependencies.prometheus]
-version = "0.13"
+version = "0.14"
 optional = true
 features = ["process"]

@@ -89,7 +89,7 @@ bytes = { version = "^1.10.1" } # 2025-11-16 sw: Zero-copy byte buffers
 rand = { version = "=0.8.5" } # 2025-11-16 sw: Random peer selection for gossip
 backoff = { version = "=0.4.0" } # 2025-11-16 sw: Retry logic with exponential backoff
 lru = { version = "=0.12.1" } # 2025-11-16 sw: LRU cache for peer views
-prometheus = { version = "=0.13.3", features = ["process"] } # 2025-11-16 sw: Metrics collection
+prometheus = { version = "=0.14.0", features = ["process"] } # 2025-11-16 sw: Metrics collection (updated for RUSTSEC-2024-0437)
 leptos = { version = "=0.6.3", features = ["csr"] } # 2025-11-16 sw: Reactive web framework
 leptos_axum = { version = "=0.6.3" } # 2025-11-16 sw: Leptos integration with Axum
 wasm-bindgen = { version = "^0.2.91" } # 2025-11-16 sw: Wasm interop
