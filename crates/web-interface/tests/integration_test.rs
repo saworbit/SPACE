@@ -13,7 +13,11 @@ use web_interface::{build_router, AppState};
 
 async fn create_test_app_state() -> AppState {
     let config = GossipConfig::default();
-    let gossip = Arc::new(GossipImpl::new(config).await.expect("Failed to create gossip"));
+    let gossip = Arc::new(
+        GossipImpl::new(config)
+            .await
+            .expect("Failed to create gossip"),
+    );
     AppState::new(gossip)
 }
 
@@ -148,7 +152,9 @@ async fn test_broadcast_message_endpoint() {
                 .method("POST")
                 .uri("/api/gossip/broadcast")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&broadcast_request).unwrap()))
+                .body(Body::from(
+                    serde_json::to_string(&broadcast_request).unwrap(),
+                ))
                 .unwrap(),
         )
         .await

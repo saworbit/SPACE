@@ -1,6 +1,6 @@
 //! Integration tests for the gossip layer.
 
-use gossip_layer::{GossipImpl, current_timestamp};
+use gossip_layer::{current_timestamp, GossipImpl};
 use mesh_core::{GossipConfig, GossipHandler, GossipMessage};
 
 #[tokio::test]
@@ -13,7 +13,9 @@ async fn test_gossip_layer_creation() {
 #[tokio::test]
 async fn test_broadcast_heartbeat() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config).await.expect("Failed to create gossip layer");
+    let gossip = GossipImpl::new(config)
+        .await
+        .expect("Failed to create gossip layer");
 
     let msg = GossipMessage::Heartbeat {
         peer_id: "test-peer-123".to_string(),
@@ -28,7 +30,9 @@ async fn test_broadcast_heartbeat() {
 #[tokio::test]
 async fn test_subscribe_to_topic() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config).await.expect("Failed to create gossip layer");
+    let gossip = GossipImpl::new(config)
+        .await
+        .expect("Failed to create gossip layer");
 
     let result = gossip.subscribe("test-topic").await;
     assert!(result.is_ok(), "Failed to subscribe to topic");
@@ -37,7 +41,9 @@ async fn test_subscribe_to_topic() {
 #[tokio::test]
 async fn test_get_stats() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config).await.expect("Failed to create gossip layer");
+    let gossip = GossipImpl::new(config)
+        .await
+        .expect("Failed to create gossip layer");
 
     let stats = gossip.get_stats().await;
     assert!(stats.is_ok(), "Failed to get stats");
@@ -50,7 +56,9 @@ async fn test_get_stats() {
 #[tokio::test]
 async fn test_broadcast_file_uploaded() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config).await.expect("Failed to create gossip layer");
+    let gossip = GossipImpl::new(config)
+        .await
+        .expect("Failed to create gossip layer");
 
     let msg = GossipMessage::FileUploaded {
         path: "/data/test.txt".to_string(),
@@ -66,7 +74,9 @@ async fn test_broadcast_file_uploaded() {
 #[tokio::test]
 async fn test_broadcast_security_alert() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config).await.expect("Failed to create gossip layer");
+    let gossip = GossipImpl::new(config)
+        .await
+        .expect("Failed to create gossip layer");
 
     let msg = GossipMessage::SecurityAlert {
         severity: "high".to_string(),
@@ -82,7 +92,9 @@ async fn test_broadcast_security_alert() {
 #[tokio::test]
 async fn test_multiple_subscriptions() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config).await.expect("Failed to create gossip layer");
+    let gossip = GossipImpl::new(config)
+        .await
+        .expect("Failed to create gossip layer");
 
     // Subscribe to multiple topics
     let topics = vec!["updates", "alerts", "metrics"];

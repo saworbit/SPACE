@@ -35,20 +35,16 @@
 //! ```
 
 use libp2p::{
-    gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, TopicHash},
+    gossipsub::{self, IdentTopic, MessageAuthenticity},
     identity::Keypair,
-    swarm::SwarmEvent,
-    Multiaddr, PeerId, Swarm,
+    PeerId,
 };
-use mesh_core::{
-    CoreError, GossipConfig, GossipHandler, GossipMessage, GossipStats, Peer, Result,
-};
-use rand::seq::SliceRandom;
+use mesh_core::{CoreError, GossipConfig, GossipHandler, GossipMessage, GossipStats, Peer, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 mod behaviour;
 mod heartbeat;
@@ -56,7 +52,7 @@ mod message;
 
 pub use behaviour::GossipBehaviour;
 pub use heartbeat::heartbeat_task;
-pub use message::{SignedMessage, verify_message};
+pub use message::{verify_message, SignedMessage};
 
 /// Implementation of the gossip protocol using libp2p.
 pub struct GossipImpl {
@@ -67,12 +63,15 @@ pub struct GossipImpl {
     config: Arc<GossipConfig>,
 
     /// Message channels for each subscribed topic
+    #[allow(dead_code)]
     topic_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GossipMessage>>>>,
 
     /// Known peers
+    #[allow(dead_code)]
     peers: Arc<RwLock<Vec<Peer>>>,
 
     /// Gossip statistics
+    #[allow(dead_code)]
     stats: Arc<RwLock<GossipStats>>,
 
     /// Command channel sender
@@ -149,8 +148,14 @@ impl GossipImpl {
         let peers_clone = peers.clone();
 
         tokio::spawn(async move {
-            Self::event_loop(cmd_rx, gossipsub, topic_channels_clone, stats_clone, peers_clone)
-                .await;
+            Self::event_loop(
+                cmd_rx,
+                gossipsub,
+                topic_channels_clone,
+                stats_clone,
+                peers_clone,
+            )
+            .await;
         });
 
         Ok(Self {

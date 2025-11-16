@@ -102,8 +102,8 @@ pub fn verify_message(signed_msg: &SignedMessage, signing_key: &[u8]) -> Result<
         .map_err(|e| CoreError::SerializationError(e.to_string()))?;
 
     // Create HMAC verifier
-    let mut mac = HmacSha256::new_from_slice(signing_key)
-        .map_err(|e| CoreError::AuthError(e.to_string()))?;
+    let mut mac =
+        HmacSha256::new_from_slice(signing_key).map_err(|e| CoreError::AuthError(e.to_string()))?;
     mac.update(&serialized);
     mac.update(signed_msg.message_id.as_bytes());
     mac.update(&signed_msg.timestamp.to_le_bytes());
@@ -128,7 +128,7 @@ fn generate_message_id(message: &GossipMessage, sender: &str, timestamp: u64) ->
 
     // Add sender and timestamp
     hasher.update(sender.as_bytes());
-    hasher.update(&timestamp.to_le_bytes());
+    hasher.update(timestamp.to_le_bytes());
 
     // Return hex digest
     format!("{:x}", hasher.finalize())
@@ -148,13 +148,7 @@ mod tests {
             timestamp: 12345,
         };
 
-        let signed = SignedMessage::new(
-            message.clone(),
-            "sender-1".to_string(),
-            10,
-            key,
-        )
-        .unwrap();
+        let signed = SignedMessage::new(message.clone(), "sender-1".to_string(), 10, key).unwrap();
 
         assert!(signed.verify(key).is_ok());
     }
@@ -170,13 +164,7 @@ mod tests {
             timestamp: 12345,
         };
 
-        let signed = SignedMessage::new(
-            message.clone(),
-            "sender-1".to_string(),
-            10,
-            key,
-        )
-        .unwrap();
+        let signed = SignedMessage::new(message.clone(), "sender-1".to_string(), 10, key).unwrap();
 
         assert!(signed.verify(wrong_key).is_err());
     }
@@ -190,13 +178,8 @@ mod tests {
             timestamp: 12345,
         };
 
-        let mut signed = SignedMessage::new(
-            message.clone(),
-            "sender-1".to_string(),
-            2,
-            key,
-        )
-        .unwrap();
+        let mut signed =
+            SignedMessage::new(message.clone(), "sender-1".to_string(), 2, key).unwrap();
 
         assert_eq!(signed.ttl, 2);
         assert!(signed.decrement_ttl());

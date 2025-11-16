@@ -10,9 +10,7 @@ use axum::{
     Router,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use mesh_core::GossipMessage;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -43,10 +41,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// WebSocket upgrade handler
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> Response {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -90,13 +85,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     // Parse the message
                     match serde_json::from_str::<WsMessage>(&text) {
                         Ok(ws_msg) => {
-                            handle_ws_message(
-                                ws_msg,
-                                &state_clone,
-                                &tx,
-                                &mut subscriptions,
-                            )
-                            .await;
+                            handle_ws_message(ws_msg, &state_clone, &tx, &mut subscriptions).await;
                         }
                         Err(e) => {
                             error!("Failed to parse WebSocket message: {}", e);
@@ -109,7 +98,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                 }
-                Ok(Message::Ping(data)) => {
+                Ok(Message::Ping(_data)) => {
                     debug!("Received ping");
                     // Axum handles pongs automatically
                 }

@@ -77,12 +77,13 @@ pub type Result<T> = std::result::Result<T, CoreError>;
 /// Enum for node roles with different permission levels.
 ///
 /// This supports Role-Based Access Control (RBAC) in the mesh network.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum NodeRole {
     /// Administrator with full control
     Admin,
 
     /// Read-only viewer
+    #[default]
     Viewer,
 
     /// Can read and modify data
@@ -93,12 +94,6 @@ pub enum NodeRole {
 
     /// Gateway node for external access
     Gateway,
-}
-
-impl Default for NodeRole {
-    fn default() -> Self {
-        NodeRole::Viewer
-    }
 }
 
 /// Struct representing a mesh peer with gossip state.

@@ -11,7 +11,6 @@ use base64::Engine;
 use mesh_core::{GossipMessage, Peer};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, error};
 
 use crate::state::{AppState, MeshCommand, StoredFile};
@@ -94,9 +93,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Get all known peers
-async fn get_peers(
-    State(state): State<AppState>,
-) -> Result<Json<PeersResponse>, StatusCode> {
+async fn get_peers(State(state): State<AppState>) -> Result<Json<PeersResponse>, StatusCode> {
     debug!("GET /api/peers");
 
     // Refresh peers from gossip
@@ -121,8 +118,7 @@ async fn get_peers(
     let mut gossip_metrics = HashMap::new();
     gossip_metrics.insert("convergence_time_ms".to_string(), stats.avg_convergence_ms);
     gossip_metrics.insert("duplication_rate".to_string(), stats.duplication_rate);
-    gossip_metrics
-        .insert("bandwidth_usage".to_string(), stats.bandwidth_usage as f64);
+    gossip_metrics.insert("bandwidth_usage".to_string(), stats.bandwidth_usage as f64);
 
     Ok(Json(PeersResponse {
         total_count: peers.len(),
@@ -187,9 +183,10 @@ async fn upload_file(
         uploaded_at,
     };
 
-    if let Err(e) = state.mesh_tx.send(MeshCommand::StoreFile {
-        file: stored_file,
-    }) {
+    if let Err(e) = state
+        .mesh_tx
+        .send(MeshCommand::StoreFile { file: stored_file })
+    {
         error!("Failed to store file: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -202,13 +199,10 @@ async fn upload_file(
         hash: hash.clone(),
     };
 
-    if let Err(e) = state
-        .mesh_tx
-        .send(MeshCommand::BroadcastGossip {
-            topic: "data_ops".to_string(),
-            msg,
-        })
-    {
+    if let Err(e) = state.mesh_tx.send(MeshCommand::BroadcastGossip {
+        topic: "data_ops".to_string(),
+        msg,
+    }) {
         error!("Failed to broadcast upload notification: {}", e);
     }
 
@@ -220,9 +214,7 @@ async fn upload_file(
 }
 
 /// List all stored files
-async fn list_files(
-    State(state): State<AppState>,
-) -> Result<Json<FilesListResponse>, StatusCode> {
+async fn list_files(State(state): State<AppState>) -> Result<Json<FilesListResponse>, StatusCode> {
     debug!("GET /api/files");
 
     let files_lock = state.files.read().await;
@@ -264,9 +256,7 @@ async fn download_file(
     debug!("GET /api/files{}", clean_path);
 
     let files_lock = state.files.read().await;
-    let file = files_lock
-        .get(&clean_path)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let file = files_lock.get(&clean_path).ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(file.content.clone())
 }
@@ -328,14 +318,11 @@ async fn broadcast_message(
 }
 
 /// Get Prometheus metrics
-async fn get_metrics(
-    State(state): State<AppState>,
-) -> Result<String, StatusCode> {
+async fn get_metrics(State(state): State<AppState>) -> Result<String, StatusCode> {
     state
         .get_metrics()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -354,12 +341,18 @@ mod tests {
             Ok(())
         }
 
-        async fn subscribe(&self, _topic: &str) -> Result<tokio::sync::mpsc::Receiver<mesh_core::GossipMessage>> {
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<mesh_core::GossipMessage>> {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(rx)
         }
 
-        async fn pull_state(&self, _peer_id: &str) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+        async fn pull_state(
+            &self,
+            _peer_id: &str,
+        ) -> Result<std::collections::HashMap<String, Vec<u8>>> {
             Ok(std::collections::HashMap::new())
         }
 

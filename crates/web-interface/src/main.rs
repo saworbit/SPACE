@@ -17,8 +17,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "web_interface=debug,gossip_layer=debug,tower_http=debug,axum=trace".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "web_interface=debug,gossip_layer=debug,tower_http=debug,axum=trace".into()
+            }),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -45,10 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         signing_key: get_signing_key(),
     };
 
-    info!("Gossip config: fanout={}, heartbeat={}ms, ttl={}",
-        gossip_config.fanout,
-        gossip_config.heartbeat_interval_ms,
-        gossip_config.message_ttl
+    info!(
+        "Gossip config: fanout={}, heartbeat={}ms, ttl={}",
+        gossip_config.fanout, gossip_config.heartbeat_interval_ms, gossip_config.message_ttl
     );
 
     // Initialize gossip layer

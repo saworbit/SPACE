@@ -29,12 +29,7 @@ pub mod frontend;
 
 pub use state::AppState;
 
-use axum::{
-    extract::DefaultBodyLimit,
-    response::Html,
-    routing::get,
-    Router,
-};
+use axum::{extract::DefaultBodyLimit, response::Html, routing::get, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 

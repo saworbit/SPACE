@@ -182,7 +182,10 @@ mod tests {
             Ok(())
         }
 
-        async fn subscribe(&self, _topic: &str) -> Result<mpsc::Receiver<mesh_core::GossipMessage>> {
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> Result<mpsc::Receiver<mesh_core::GossipMessage>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(rx)
         }
@@ -208,9 +211,7 @@ mod tests {
 
         state
             .mesh_tx
-            .send(MeshCommand::AddPeer {
-                peer: peer.clone(),
-            })
+            .send(MeshCommand::AddPeer { peer: peer.clone() })
             .unwrap();
 
         // Give some time for the command to process

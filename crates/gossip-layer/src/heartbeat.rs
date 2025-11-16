@@ -78,27 +78,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl GossipHandler for MockGossipHandler {
-        async fn broadcast(
-            &self,
-            _topic: &str,
-            _msg: GossipMessage,
-        ) -> Result<()> {
+        async fn broadcast(&self, _topic: &str, _msg: GossipMessage) -> Result<()> {
             *self.broadcast_count.write().await += 1;
             Ok(())
         }
 
-        async fn subscribe(
-            &self,
-            _topic: &str,
-        ) -> Result<mpsc::Receiver<GossipMessage>> {
+        async fn subscribe(&self, _topic: &str) -> Result<mpsc::Receiver<GossipMessage>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(rx)
         }
 
-        async fn pull_state(
-            &self,
-            _peer_id: &str,
-        ) -> Result<HashMap<String, Vec<u8>>> {
+        async fn pull_state(&self, _peer_id: &str) -> Result<HashMap<String, Vec<u8>>> {
             Ok(HashMap::new())
         }
 
