@@ -1,0 +1,14 @@
+# ───── SIMULATION IMAGE – privileged only for hugepages ─────
+FROM rust:1.78-bookworm AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p nvram-sim
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y ca-certificates numactl && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/nvram-sim /usr/local/bin/
+COPY containerization/sim-entrypoint.sh /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/sim-entrypoint.sh"]
+ENV SIM_MODULES=nvram,nvmeof
+VOLUME /sim

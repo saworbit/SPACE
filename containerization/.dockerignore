@@ -1,0 +1,7 @@
+# Build 5× faster
+target/
+**/*.rs.bk
+Cargo.lock
+.git
+README.md
+docs/

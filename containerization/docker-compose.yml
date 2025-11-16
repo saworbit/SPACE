@@ -1,0 +1,29 @@
+version: "3.9"
+services:
+  registry:
+    image: space-core:latest
+    command: ["registry"]
+    volumes: [registry:/capsules]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+
+  node1:
+    image: space-core:latest
+    command: ["s3"]
+    ports: ["8080:8080"]
+    environment:
+      - RUST_LOG=info
+      - DEDUP_ENABLED=true
+      - ENCRYPTION_ALGO=xts-aes-256
+    depends_on:
+      registry:
+        condition: service_healthy
+    volumes: [node1:/capsules]
+
+  sim:
+    image: space-sim:latest
+    cap_add: [IPC_LOCK, SYS_ADMIN]
+    volumes: [sim:/sim]
+
+volumes: [registry, node1, sim]

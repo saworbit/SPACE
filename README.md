@@ -298,6 +298,45 @@ spacectl queue-stats  # Check batch queue depth
 
 ## 🚀 Quick Start
 
+### 🐳 Docker Quick Start (90 Seconds)
+
+Run a 3-node encrypted dedup S3 cluster in under 90 seconds:
+
+```bash
+# Clone and run
+git clone https://github.com/saworbit/SPACE && cd SPACE
+docker compose -f containerization/docker-compose.yml up -d
+
+# S3 endpoint ready at http://localhost:8080
+# Test upload
+curl -X PUT --data-binary @myfile.bin http://localhost:8080/bucket/myfile.bin
+```
+
+#### 🔧 Troubleshooting Cheat-Sheet
+```bash
+# Build stuck?
+docker builder prune
+
+# Port 8080 busy?
+docker compose down
+
+# Hugepages error?
+sudo sysctl vm.nr_hugepages=128
+
+# View logs
+docker compose logs -f node1
+
+# Rebuild fresh
+docker compose build --no-cache
+```
+
+#### 💡 Pro Tips
+1. **Policy Injection** — Mount policies: `-v ./policies.toml:/capsules/policies.toml`
+2. **Zero-Downtime Rollout** — `docker compose up -d --no-deps --build node1`
+3. **Air-gapped Deploy** — `docker save space-core | gzip > space.tar.gz`
+
+---
+
 ### 💻 System Requirements
 
 <div align="center">
