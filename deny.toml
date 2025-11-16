@@ -89,7 +89,9 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "ISC",      # ISC License (OSI approved, FSF Free/Libre) - used by ring, rustls-webpki, simple_asn1, untrusted
     "MIT",
+    "MPL-2.0",  # Mozilla Public License 2.0 (OSI approved, FSF Free/Libre, weak copyleft) - used by webpki-roots
     "Unicode-3.0",
 ]
 confidence-threshold = 0.85

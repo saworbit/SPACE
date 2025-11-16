@@ -73,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replication handler integrated into mesh listener spawn logic
 - Updated Cargo.toml dependencies for scaling crate
 - Updated mirror_segment documentation and call sites to the replication-frame signature
+- Added ISC and MPL-2.0 to allowed licenses in deny.toml (both OSI-approved and FSF Free/Libre)
 
 ### Fixed
 - **Critical:** Inbound replication data discard issue - segments now properly validated, decrypted, deduplicated, and persisted
