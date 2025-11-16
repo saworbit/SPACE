@@ -220,9 +220,8 @@ tokio::spawn(async move {
 
 ```rust
 use capsule_registry::pipeline::WritePipeline;
-use capsule_registry::CapsuleRegistry;
+use capsule_registry::runtime::RuntimeHandles;
 use common::Policy;
-use nvram_sim::NvramLog;
 use scaling::MeshNode;
 use common::podms::ZoneId;
 use std::sync::Arc;
@@ -240,8 +239,9 @@ async fn main() -> anyhow::Result<()> {
     mesh_node.start(seeds).await?;
 
     // Create pipeline with mesh and telemetry
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::open("./nvram.log")?;
+    let runtime = RuntimeHandles::from_env()?;
+    let registry = (*runtime.registry).clone();
+    let nvram = runtime.nvram.read().await.clone();
     let (tx, rx) = mpsc::unbounded_channel();
 
     let pipeline = WritePipeline::new(registry, nvram)
@@ -249,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
         .with_telemetry_channel(tx);
 
     // Spawn scaling agent
-    let agent = scaling::agent::ScalingAgent::new(mesh_node.clone());
+    let agent = runtime.build_scaling_agent(mesh_node.clone(), Policy::metro_sync());
     tokio::spawn(async move { agent.run(rx).await });
 
     // Write with metro-sync policy (RPO=0)

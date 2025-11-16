@@ -38,7 +38,7 @@ sequenceDiagram
 
         Note over Agent,Remote: 3. Mirror with dedup check
         loop For each target (parallel)
-            Agent->>Mesh: mirror_segment(segment_data, target)
+            Agent->>Mesh: mirror_segment(segment_id, segment_data, target)
             Mesh->>Remote: Send BLAKE3 hash (32 bytes)
             Remote-->>Mesh: Response (0=need data, 1=dedup hit)
 
@@ -92,7 +92,7 @@ sequenceDiagram
 
     Note over Queue,Remote: 3. Flush batch to remote zones
     loop For each batch item
-        Queue->>Mesh: mirror_segment(segment_data, remote_target)
+        Queue->>Mesh: mirror_segment(segment_id, segment_data, remote_target)
         Mesh->>Remote: Send hash + segment
         Remote-->>Mesh: Ack
     end
@@ -205,8 +205,9 @@ let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 ### Agent Execution
 
 ```rust
-// ScalingAgent consumes telemetry and executes actions
-let agent = ScalingAgent::with_policy(mesh_node, default_policy);
+// ScalingAgent consumes telemetry and executes actions with production handles
+let runtime = capsule_registry::runtime::RuntimeHandles::from_env()?;
+let agent = runtime.build_scaling_agent(mesh_node, default_policy);
 agent.run(telemetry_rx).await?;
 
 // Internally:

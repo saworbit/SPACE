@@ -95,6 +95,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 - 🛡️ **SPIFFE + mTLS eBPF gateway** when the `advanced-security` feature is enabled (`protocol-s3`)
 - 🔮 **Post-quantum crypto toggle** (Kyber + AES hybrid) selectable via `Policy::crypto_profile`
 - 🏗️ **Dedicated `security` module** so Bloom/audit/PQ/eBPF logic stays feature gated
+- Automation handlers for migration/evacuation/rebalancing using mesh streaming + MAC validation
 
 ### 🔜 Coming Next
 - **Full mesh federation** & cross-zone routing (Step 4)
@@ -121,6 +122,7 @@ cargo test --features podms
 # Run metro-sync specific tests
 cargo test --features podms podms_metro_sync
 ```
+Production wiring: set `SPACE_METADATA_PATH`, `SPACE_NVRAM_PATH`, and `SPACE_MASTER_KEY`, then build agents via `capsule_registry::runtime::RuntimeHandles::from_env()` so `ScalingAgent::with_runtime` uses real registry/log/key-manager handles.
 
 ### 🎯 Key Features (Step 3)
 
@@ -128,6 +130,7 @@ cargo test --features podms podms_metro_sync
 - **🐝 Swarm Intelligence**: Capsules self-adapt (migrate, replicate, transform) based on telemetry
 - **⚡ Autonomous Actions**: Heat spikes → migrations, capacity thresholds → rebalancing
 - **🔄 Smart Replication**: RPO-driven strategies (metro-sync, async batching, none)
+- **Automation Handlers**: Migration, evacuation, and rebalancing stream replication frames with MAC validation (enable via `ScalingAgent::with_runtime`)
 - **🔒 Sovereignty Enforcement**: Policies block actions that violate zone constraints
 - **🎭 On-the-Fly Transformation**: Re-encrypt/recompress during migrations
 - **📡 Telemetry Events**: Real-time capsule lifecycle events for autonomous agents

@@ -8,13 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Automation handlers** - Migration, evacuation, and rebalancing now perform real data movement via `ScalingAgent::with_runtime`
+  - MAC validation and optional re-encryption during moves
+  - Capsule streaming uses replication frames with post-receive deduplication
+  - Evacuation parallelism and balanced fan-out over discovered peers
+- **Runtime handles** - `capsule_registry::runtime::RuntimeHandles::from_env` wires registry/log/key-manager for production ScalingAgent construction
 - **Replication Execution System** - Materialized real replicas from policy actions
-  - **Hash-first dedup mirroring** - Send 32-byte hash before full segment, skip on dedup hit
+  - **Replication-frame mirroring** - `mirror_segment()` wraps segments in `ReplicationFrame`
   - **Metro-sync execution** - Synchronous replication for zero-RPO policies
   - **Async batching queue** - Geo-replication with configurable RPO intervals (default 5 min)
-  - **Dedup-preserving protocol** - Wire protocol: hash → response (hit/miss) → optional full data
   - **Batch queue implementation** with interval-based and size-based flushing
-  - **Outbound sender methods** - `mirror_segment()` with dedup check, `send_replication_frame()`
+  - **Outbound sender methods** - `mirror_segment()` (frame-based), `send_replication_frame()`
   - **Agent execution layer** - `execute_metro_sync_replication()` with segment loading
   - **Queue statistics** - Track batch depth, unique capsules, total bytes
   - **Comprehensive documentation** - [docs/replication-actions.md](docs/replication-actions.md) with Mermaid flow diagrams
@@ -56,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ScalingAgent` now generic over `ContentStore` implementation
 - Replication handler integrated into mesh listener spawn logic
 - Updated Cargo.toml dependencies for scaling crate
+- Updated mirror_segment documentation and call sites to the replication-frame signature
 
 ### Fixed
 - **Critical:** Inbound replication data discard issue - segments now properly validated, decrypted, deduplicated, and persisted

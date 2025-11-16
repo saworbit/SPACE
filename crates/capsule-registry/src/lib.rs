@@ -15,8 +15,12 @@ pub mod dedup; // NEW
 pub mod error;
 pub mod gc;
 pub mod pipeline;
+#[cfg(feature = "podms")]
+pub mod runtime;
 
 pub use error::{CompressionError, DedupError, PipelineError};
+#[cfg(feature = "podms")]
+pub use runtime::RuntimeHandles;
 
 #[cfg(feature = "modular_pipeline")]
 pub mod modular_pipeline {

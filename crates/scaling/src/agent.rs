@@ -322,7 +322,9 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         // for segment_id in capsule.segments {
         //     let segment_data = self.nvram_log.read(segment_id).await?;
         //     for target in targets.iter().take(replica_count) {
-        //         self.mesh_node.mirror_segment(&segment_data, *target).await?;
+        //         self.mesh_node
+        //             .mirror_segment(segment_id, &segment_data, *target)
+        //             .await?;
         //     }
         // }
 
