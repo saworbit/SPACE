@@ -43,25 +43,30 @@
 //!
 //! # Example Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use podms_orchestrator::{Orchestrator, OrchestratorConfig};
 //! use common::Policy;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     // Configure orchestrator with default PODMS policy
-//!     let config = OrchestratorConfig {
-//!         node_id: "node-1".to_string(),
-//!         listen_addr: "127.0.0.1:9000".parse()?,
-//!         default_policy: Policy::metro_sync(),
-//!         seed_peers: vec![],
-//!     };
+//!     // Load configuration from YAML or environment
+//!     let config = OrchestratorConfig::from_yaml_file("/etc/space/orchestrator.yml")?;
+//!
+//!     // Create orchestrator with required dependencies
+//!     // (content_store, catalog, nvram_log, key_manager)
+//!     let mut orchestrator = Orchestrator::new(
+//!         config,
+//!         content_store,
+//!         catalog,
+//!         nvram_log,
+//!         key_manager,
+//!     ).await?;
 //!
 //!     // Start orchestrator (launches all subsystems)
-//!     let mut orchestrator = Orchestrator::new(config).await?;
 //!     orchestrator.start().await?;
 //!
 //!     // Orchestrator now running autonomously...
+//!     orchestrator.wait().await?;
 //!     Ok(())
 //! }
 //! ```
