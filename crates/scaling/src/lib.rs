@@ -210,10 +210,9 @@ impl<C: ContentStore + 'static> MeshNode<C> {
     ) -> Result<()> {
         // Lookup target address from peer registry
         let peers = self.peers.read().await;
-        let target_addr = peers
+        let target_addr = *peers
             .get(&target)
-            .ok_or_else(|| anyhow!("target node {} not found in peer registry", target))?
-            .clone();
+            .ok_or_else(|| anyhow!("target node {} not found in peer registry", target))?;
         drop(peers);
 
         debug!(

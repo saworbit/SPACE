@@ -27,6 +27,20 @@ use tracing::{debug, info, warn};
 use crate::compiler::{MeshState, NodeInfo, PolicyCompiler, ScalingAction};
 use crate::{ContentStore, MeshNode};
 
+type AgentRuntimeParts = (
+    Arc<dyn CapsuleCatalog + Send + Sync>,
+    Arc<RwLock<NvramLog>>,
+    Option<Arc<RwLock<KeyManager>>>,
+);
+
+struct MigrationTaskCtx<C: ContentStore> {
+    mesh_node: Arc<MeshNode<C>>,
+    catalog: Arc<dyn CapsuleCatalog + Send + Sync>,
+    nvram_log: Arc<RwLock<NvramLog>>,
+    key_manager: Option<Arc<RwLock<KeyManager>>>,
+    destination: NodeId,
+}
+
 /// Scaling agent that consumes telemetry and performs autonomous actions.
 ///
 /// Step 3: Now integrates PolicyCompiler for swarm intelligence - translating
@@ -166,13 +180,7 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         Ok(MeshState::new(nodes, self.mesh_node.zone().clone()))
     }
 
-    fn runtime_handles(
-        &self,
-    ) -> Result<(
-        Arc<dyn CapsuleCatalog + Send + Sync>,
-        Arc<RwLock<NvramLog>>,
-        Option<Arc<RwLock<KeyManager>>>,
-    )> {
+    fn runtime_handles(&self) -> Result<AgentRuntimeParts> {
         let catalog = self
             .catalog
             .as_ref()
@@ -348,17 +356,15 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             "starting migration"
         );
 
-        let migrated = Self::migrate_capsule_task(
-            Arc::clone(&self.mesh_node),
+        let ctx = MigrationTaskCtx {
+            mesh_node: Arc::clone(&self.mesh_node),
             catalog,
             nvram_log,
             key_manager,
-            capsule_id,
             destination,
-            transform,
-            &reason,
-        )
-        .await?;
+        };
+
+        let migrated = Self::migrate_capsule_task(ctx, capsule_id, transform, &reason).await?;
 
         info!(
             capsule_id = %capsule_id.as_uuid(),
@@ -421,23 +427,16 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
                 let mut set: JoinSet<Result<usize>> = JoinSet::new();
                 for (idx, capsule) in capsules.into_iter().enumerate() {
                     let target = targets[idx % targets.len()];
-                    let mesh = Arc::clone(&self.mesh_node);
-                    let catalog_clone = Arc::clone(&catalog);
-                    let log_clone = Arc::clone(&nvram_log);
-                    let km_clone = key_manager.clone();
+                    let ctx = MigrationTaskCtx {
+                        mesh_node: Arc::clone(&self.mesh_node),
+                        catalog: Arc::clone(&catalog),
+                        nvram_log: Arc::clone(&nvram_log),
+                        key_manager: key_manager.clone(),
+                        destination: target,
+                    };
                     let reason_clone = format!("{reason} (evacuation)");
                     set.spawn(async move {
-                        Self::migrate_capsule_task(
-                            mesh,
-                            catalog_clone,
-                            log_clone,
-                            km_clone,
-                            capsule.id,
-                            target,
-                            true,
-                            &reason_clone,
-                        )
-                        .await
+                        Self::migrate_capsule_task(ctx, capsule.id, true, &reason_clone).await
                     });
                 }
 
@@ -448,13 +447,16 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             EvacuationUrgency::Gradual => {
                 for (idx, capsule) in capsules.into_iter().enumerate() {
                     let target = targets[idx % targets.len()];
+                    let ctx = MigrationTaskCtx {
+                        mesh_node: Arc::clone(&self.mesh_node),
+                        catalog: Arc::clone(&catalog),
+                        nvram_log: Arc::clone(&nvram_log),
+                        key_manager: key_manager.clone(),
+                        destination: target,
+                    };
                     Self::migrate_capsule_task(
-                        Arc::clone(&self.mesh_node),
-                        Arc::clone(&catalog),
-                        Arc::clone(&nvram_log),
-                        key_manager.clone(),
+                        ctx,
                         capsule.id,
-                        target,
                         false,
                         &format!("{reason} (gradual)"),
                     )
@@ -504,17 +506,14 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
 
         for (idx, capsule) in capsules.into_iter().enumerate() {
             let target = underutilized_nodes[idx % underutilized_nodes.len()];
-            Self::migrate_capsule_task(
-                Arc::clone(&self.mesh_node),
-                Arc::clone(&catalog),
-                Arc::clone(&nvram_log),
-                key_manager.clone(),
-                capsule.id,
-                target,
-                false,
-                "rebalance",
-            )
-            .await?;
+            let ctx = MigrationTaskCtx {
+                mesh_node: Arc::clone(&self.mesh_node),
+                catalog: Arc::clone(&catalog),
+                nvram_log: Arc::clone(&nvram_log),
+                key_manager: key_manager.clone(),
+                destination: target,
+            };
+            Self::migrate_capsule_task(ctx, capsule.id, false, "rebalance").await?;
         }
 
         info!(
@@ -536,29 +535,26 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
     }
 
     async fn migrate_capsule_task(
-        mesh_node: Arc<MeshNode<C>>,
-        catalog: Arc<dyn CapsuleCatalog + Send + Sync>,
-        nvram_log: Arc<RwLock<NvramLog>>,
-        key_manager: Option<Arc<RwLock<KeyManager>>>,
+        ctx: MigrationTaskCtx<C>,
         capsule_id: CapsuleId,
-        destination: NodeId,
         transform: bool,
         reason: &str,
     ) -> Result<usize> {
-        let capsule = catalog
+        let capsule = ctx
+            .catalog
             .lookup_capsule(capsule_id)
             .with_context(|| format!("lookup capsule {}", capsule_id.as_uuid()))?;
 
         // Validate sovereignty and placement constraints
         capsule
-            .on_migrate(destination, mesh_node.zone())
+            .on_migrate(ctx.destination, ctx.mesh_node.zone())
             .with_context(|| format!("sovereignty validation for {}", capsule_id.as_uuid()))?;
 
         let mut migrated = 0usize;
 
         for segment_id in capsule.segments.iter().copied() {
             let (segment_meta, mut payload) = {
-                let log = nvram_log.read().await;
+                let log = ctx.nvram_log.read().await;
                 let metadata = log
                     .get_segment_metadata(segment_id)
                     .with_context(|| format!("segment metadata {}", segment_id.0))?;
@@ -570,7 +566,7 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
 
             let mut encryption_meta = Self::build_encryption_metadata(&segment_meta, payload.len());
 
-            if encryption_meta.key_version.is_none() && key_manager.is_none() {
+            if encryption_meta.key_version.is_none() && ctx.key_manager.is_none() {
                 warn!(
                     segment = segment_id.0,
                     capsule = %capsule_id.as_uuid(),
@@ -580,29 +576,30 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             }
 
             // If metadata is incomplete, try to harden it with the key manager
-            if encryption_meta.key_version.is_none() && key_manager.is_some() {
-                let km = key_manager.as_ref().unwrap();
-                let mut guard = km.write().await;
-                let target_version = guard.current_version();
-                let target_pair = guard.get_key(target_version)?;
-                let tweak = derive_tweak_from_hash(blake3::hash(&payload).as_bytes());
-                let (ciphertext, mut new_meta) =
-                    encrypt_segment(&payload, target_pair, target_version, tweak)?;
-                let mac = compute_mac(
-                    &ciphertext,
-                    &new_meta,
-                    target_pair.key1(),
-                    target_pair.key2(),
-                )?;
-                new_meta.set_integrity_tag(mac);
-                new_meta.ciphertext_len = Some(ciphertext.len() as u32);
-                payload = ciphertext;
-                encryption_meta = new_meta;
+            if encryption_meta.key_version.is_none() {
+                if let Some(km) = ctx.key_manager.as_ref() {
+                    let mut guard = km.write().await;
+                    let target_version = guard.current_version();
+                    let target_pair = guard.get_key(target_version)?;
+                    let tweak = derive_tweak_from_hash(blake3::hash(&payload).as_bytes());
+                    let (ciphertext, mut new_meta) =
+                        encrypt_segment(&payload, target_pair, target_version, tweak)?;
+                    let mac = compute_mac(
+                        &ciphertext,
+                        &new_meta,
+                        target_pair.key1(),
+                        target_pair.key2(),
+                    )?;
+                    new_meta.set_integrity_tag(mac);
+                    new_meta.ciphertext_len = Some(ciphertext.len() as u32);
+                    payload = ciphertext;
+                    encryption_meta = new_meta;
+                }
             }
 
-            if let Some(km) = &key_manager {
+            if let Some(km) = ctx.key_manager.as_ref() {
+                let mut guard = km.write().await;
                 if let Some(key_version) = encryption_meta.key_version {
-                    let mut guard = km.write().await;
                     let key_pair = guard.get_key(key_version)?;
 
                     // Validate MAC if present
@@ -667,16 +664,18 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
 
             let frame =
                 crate::replication::ReplicationFrame::new(segment_id, encryption_meta, payload);
-            mesh_node
-                .send_replication_frame(&frame, destination)
+            ctx.mesh_node
+                .send_replication_frame(&frame, ctx.destination)
                 .await
-                .with_context(|| format!("stream segment {} to {}", segment_id.0, destination))?;
+                .with_context(|| {
+                    format!("stream segment {} to {}", segment_id.0, ctx.destination)
+                })?;
             migrated += 1;
         }
 
         info!(
             capsule = %capsule_id.as_uuid(),
-            destination = %destination,
+            destination = %ctx.destination,
             segments = migrated,
             reason = reason,
             "migration task finished"
