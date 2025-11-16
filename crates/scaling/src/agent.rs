@@ -9,11 +9,19 @@
 //! Step 3 Integration: The agent now uses the PolicyCompiler to translate
 //! telemetry events into concrete ScalingActions based on declarative policies.
 
-use anyhow::Result;
-use common::podms::{NodeId, Telemetry};
-use common::{CapsuleId, Policy};
+use anyhow::{anyhow, Context, Result};
+use common::podms::{NodeId, SwarmBehavior, Telemetry};
+use common::traits::CapsuleCatalog;
+use common::{CapsuleId, Policy, Segment};
+use encryption::keymanager::KeyManager;
+use encryption::mac::{compute_mac, verify_mac};
+use encryption::policy::EncryptionMetadata;
+use encryption::xts::{decrypt_segment, derive_tweak_from_hash, encrypt_segment};
+use nvram_sim::NvramLog;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::compiler::{MeshState, NodeInfo, PolicyCompiler, ScalingAction};
@@ -26,6 +34,9 @@ use crate::{ContentStore, MeshNode};
 pub struct ScalingAgent<C: ContentStore> {
     mesh_node: Arc<MeshNode<C>>,
     compiler: PolicyCompiler,
+    catalog: Option<Arc<dyn CapsuleCatalog + Send + Sync>>,
+    nvram_log: Option<Arc<RwLock<NvramLog>>>,
+    key_manager: Option<Arc<RwLock<KeyManager>>>,
 }
 
 impl<C: ContentStore + 'static> ScalingAgent<C> {
@@ -34,6 +45,9 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         Self {
             mesh_node,
             compiler: PolicyCompiler::with_defaults(),
+            catalog: None,
+            nvram_log: None,
+            key_manager: None,
         }
     }
 
@@ -42,6 +56,29 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         Self {
             mesh_node,
             compiler: PolicyCompiler::new(default_policy),
+            catalog: None,
+            nvram_log: None,
+            key_manager: None,
+        }
+    }
+
+    /// Create a scaling agent with full runtime dependencies for data movement.
+    ///
+    /// This constructor wires in the capsule catalog, NvramLog, and KeyManager
+    /// so migration/evacuation/rebalancing handlers can stream real data.
+    pub fn with_runtime(
+        mesh_node: Arc<MeshNode<C>>,
+        default_policy: Policy,
+        catalog: Arc<dyn CapsuleCatalog + Send + Sync>,
+        nvram_log: Arc<RwLock<NvramLog>>,
+        key_manager: Arc<RwLock<KeyManager>>,
+    ) -> Self {
+        Self {
+            mesh_node,
+            compiler: PolicyCompiler::new(default_policy),
+            catalog: Some(catalog),
+            nvram_log: Some(nvram_log),
+            key_manager: Some(key_manager),
         }
     }
 
@@ -127,6 +164,25 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         }
 
         Ok(MeshState::new(nodes, self.mesh_node.zone().clone()))
+    }
+
+    fn runtime_handles(
+        &self,
+    ) -> Result<(
+        Arc<dyn CapsuleCatalog + Send + Sync>,
+        Arc<RwLock<NvramLog>>,
+        Option<Arc<RwLock<KeyManager>>>,
+    )> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| anyhow!("capsule catalog not configured for scaling agent"))?;
+        let nvram = self
+            .nvram_log
+            .as_ref()
+            .ok_or_else(|| anyhow!("NVRAM log not configured for scaling agent"))?;
+
+        Ok((catalog.clone(), nvram.clone(), self.key_manager.clone()))
     }
 
     /// Execute a compiled scaling action.
@@ -281,27 +337,33 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         destination: NodeId,
         transform: bool,
     ) -> Result<()> {
+        let (catalog, nvram_log, key_manager) = self.runtime_handles()?;
         info!(
             capsule_id = %capsule_id.as_uuid(),
             destination = %destination,
             reason = %reason,
             transform = transform,
-            "executing migration"
+            "starting migration"
         );
 
-        // TODO: Step 3 - Implement migration with transformation hooks
-        // 1. Load capsule segments from current node
-        // 2. If transform: Apply SwarmBehavior.apply_transform()
-        // 3. Mirror to destination via mesh_node.mirror_segment()
-        // 4. Update routing/registry to point to new location
-        // 5. Verify success, then delete old copy
+        let migrated = Self::migrate_capsule_task(
+            Arc::clone(&self.mesh_node),
+            catalog,
+            nvram_log,
+            key_manager,
+            capsule_id,
+            destination,
+            transform,
+            &reason,
+        )
+        .await?;
 
-        if transform {
-            debug!("would apply transformation during migration");
-            // Use SwarmBehavior trait from common::podms
-        }
-
-        debug!("migration queued for execution");
+        info!(
+            capsule_id = %capsule_id.as_uuid(),
+            destination = %destination,
+            segments = migrated,
+            "migration complete"
+        );
         Ok(())
     }
 
@@ -312,27 +374,98 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         reason: String,
         urgency: crate::compiler::EvacuationUrgency,
     ) -> Result<()> {
+        if source_node != self.mesh_node.id() {
+            debug!(
+                source_node = %source_node,
+                local = %self.mesh_node.id(),
+                "evacuation request not for this node, ignoring"
+            );
+            return Ok(());
+        }
+
+        let (catalog, nvram_log, key_manager) = self.runtime_handles()?;
+        let targets: Vec<NodeId> = self
+            .mesh_node
+            .discover_peers()
+            .await?
+            .into_iter()
+            .filter(|peer| peer != &source_node)
+            .collect();
+
+        if targets.is_empty() {
+            warn!(
+                source_node = %source_node,
+                "no healthy peers available for evacuation"
+            );
+            return Ok(());
+        }
+
+        let capsules = catalog.capsules();
+        if capsules.is_empty() {
+            debug!("no capsules to evacuate from node");
+            return Ok(());
+        }
+
         warn!(
             source_node = %source_node,
-            reason = %reason,
+            capsule_count = capsules.len(),
             urgency = ?urgency,
-            "executing evacuation"
+            "evacuation starting"
         );
 
         use crate::compiler::EvacuationUrgency;
         match urgency {
             EvacuationUrgency::Immediate => {
-                // Parallel evacuation for critical failures
-                debug!("initiating immediate parallel evacuation");
-                // TODO: Enumerate capsules, migrate all in parallel
+                let mut set: JoinSet<Result<usize>> = JoinSet::new();
+                for (idx, capsule) in capsules.into_iter().enumerate() {
+                    let target = targets[idx % targets.len()];
+                    let mesh = Arc::clone(&self.mesh_node);
+                    let catalog_clone = Arc::clone(&catalog);
+                    let log_clone = Arc::clone(&nvram_log);
+                    let km_clone = key_manager.clone();
+                    let reason_clone = format!("{reason} (evacuation)");
+                    set.spawn(async move {
+                        Self::migrate_capsule_task(
+                            mesh,
+                            catalog_clone,
+                            log_clone,
+                            km_clone,
+                            capsule.id,
+                            target,
+                            true,
+                            &reason_clone,
+                        )
+                        .await
+                    });
+                }
+
+                while let Some(result) = set.join_next().await {
+                    result??;
+                }
             }
             EvacuationUrgency::Gradual => {
-                // Gradual evacuation (cold capsules first)
-                debug!("initiating gradual evacuation (cold-first)");
-                // TODO: Sort capsules by access frequency, migrate in order
+                for (idx, capsule) in capsules.into_iter().enumerate() {
+                    let target = targets[idx % targets.len()];
+                    Self::migrate_capsule_task(
+                        Arc::clone(&self.mesh_node),
+                        Arc::clone(&catalog),
+                        Arc::clone(&nvram_log),
+                        key_manager.clone(),
+                        capsule.id,
+                        target,
+                        false,
+                        &format!("{reason} (gradual)"),
+                    )
+                    .await?;
+                }
             }
         }
 
+        info!(
+            source_node = %source_node,
+            urgency = ?urgency,
+            "evacuation complete"
+        );
         Ok(())
     }
 
@@ -348,14 +481,206 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             "executing rebalancing"
         );
 
-        // TODO: Step 3 - Implement rebalancing logic
-        // 1. Enumerate capsules on overloaded nodes
-        // 2. Sort by access frequency (coldest first)
-        // 3. Calculate target distribution
-        // 4. Migrate capsules to underutilized nodes
+        if !overloaded_nodes.contains(&self.mesh_node.id()) {
+            debug!("local node not overloaded, skipping rebalancing work");
+            return Ok(());
+        }
 
-        debug!("rebalancing queued for execution");
+        if underutilized_nodes.is_empty() {
+            warn!("no underutilized targets available for rebalancing");
+            return Ok(());
+        }
+
+        let (catalog, nvram_log, key_manager) = self.runtime_handles()?;
+        let capsules = catalog.capsules();
+        if capsules.is_empty() {
+            debug!("no capsules to rebalance");
+            return Ok(());
+        }
+
+        let total_capsules = capsules.len();
+
+        for (idx, capsule) in capsules.into_iter().enumerate() {
+            let target = underutilized_nodes[idx % underutilized_nodes.len()];
+            Self::migrate_capsule_task(
+                Arc::clone(&self.mesh_node),
+                Arc::clone(&catalog),
+                Arc::clone(&nvram_log),
+                key_manager.clone(),
+                capsule.id,
+                target,
+                false,
+                "rebalance",
+            )
+            .await?;
+        }
+
+        info!(
+            migrated = total_capsules,
+            targets = underutilized_nodes.len(),
+            "rebalancing actions finished"
+        );
         Ok(())
+    }
+
+    fn build_encryption_metadata(segment: &Segment, len: usize) -> EncryptionMetadata {
+        EncryptionMetadata {
+            encryption_version: segment.encryption_version,
+            key_version: segment.key_version,
+            tweak_nonce: segment.tweak_nonce,
+            integrity_tag: segment.integrity_tag,
+            ciphertext_len: Some(len as u32),
+        }
+    }
+
+    async fn migrate_capsule_task(
+        mesh_node: Arc<MeshNode<C>>,
+        catalog: Arc<dyn CapsuleCatalog + Send + Sync>,
+        nvram_log: Arc<RwLock<NvramLog>>,
+        key_manager: Option<Arc<RwLock<KeyManager>>>,
+        capsule_id: CapsuleId,
+        destination: NodeId,
+        transform: bool,
+        reason: &str,
+    ) -> Result<usize> {
+        let capsule = catalog
+            .lookup_capsule(capsule_id)
+            .with_context(|| format!("lookup capsule {}", capsule_id.as_uuid()))?;
+
+        // Validate sovereignty and placement constraints
+        capsule
+            .on_migrate(destination, mesh_node.zone())
+            .with_context(|| format!("sovereignty validation for {}", capsule_id.as_uuid()))?;
+
+        let mut migrated = 0usize;
+
+        for segment_id in capsule.segments.iter().copied() {
+            let (segment_meta, mut payload) = {
+                let log = nvram_log.read().await;
+                let metadata = log
+                    .get_segment_metadata(segment_id)
+                    .with_context(|| format!("segment metadata {}", segment_id.0))?;
+                let data = log
+                    .read(segment_id)
+                    .with_context(|| format!("read segment {}", segment_id.0))?;
+                (metadata, data)
+            };
+
+            let mut encryption_meta = Self::build_encryption_metadata(&segment_meta, payload.len());
+
+            if encryption_meta.key_version.is_none() && key_manager.is_none() {
+                warn!(
+                    segment = segment_id.0,
+                    capsule = %capsule_id.as_uuid(),
+                    "missing key metadata and no key manager available; skipping segment"
+                );
+                continue;
+            }
+
+            // If metadata is incomplete, try to harden it with the key manager
+            if encryption_meta.key_version.is_none() && key_manager.is_some() {
+                let km = key_manager.as_ref().unwrap();
+                let mut guard = km.write().await;
+                let target_version = guard.current_version();
+                let target_pair = guard.get_key(target_version)?;
+                let tweak = derive_tweak_from_hash(blake3::hash(&payload).as_bytes());
+                let (ciphertext, mut new_meta) =
+                    encrypt_segment(&payload, target_pair, target_version, tweak)?;
+                let mac = compute_mac(
+                    &ciphertext,
+                    &new_meta,
+                    target_pair.key1(),
+                    target_pair.key2(),
+                )?;
+                new_meta.set_integrity_tag(mac);
+                new_meta.ciphertext_len = Some(ciphertext.len() as u32);
+                payload = ciphertext;
+                encryption_meta = new_meta;
+            }
+
+            if let Some(km) = &key_manager {
+                if let Some(key_version) = encryption_meta.key_version {
+                    let mut guard = km.write().await;
+                    let key_pair = guard.get_key(key_version)?;
+
+                    // Validate MAC if present
+                    if encryption_meta.has_integrity_tag() {
+                        if let Err(err) =
+                            verify_mac(&payload, &encryption_meta, key_pair.key1(), key_pair.key2())
+                        {
+                            warn!(
+                                segment = segment_id.0,
+                                capsule = %capsule_id.as_uuid(),
+                                error = %err,
+                                "integrity validation failed, skipping segment"
+                            );
+                            continue;
+                        }
+                    } else {
+                        // Populate MAC so the receiver enforces integrity
+                        let mac = compute_mac(
+                            &payload,
+                            &encryption_meta,
+                            key_pair.key1(),
+                            key_pair.key2(),
+                        )?;
+                        encryption_meta.set_integrity_tag(mac);
+                    }
+
+                    if transform && encryption_meta.is_encrypted() {
+                        let plaintext = decrypt_segment(&payload, key_pair, &encryption_meta)
+                            .with_context(|| format!("decrypt segment {}", segment_id.0))?;
+                        let target_version = guard.current_version();
+                        let target_pair = guard.get_key(target_version)?;
+                        let tweak = encryption_meta.tweak_nonce.unwrap_or_else(|| {
+                            derive_tweak_from_hash(blake3::hash(&plaintext).as_bytes())
+                        });
+                        let (ciphertext, mut new_meta) =
+                            encrypt_segment(&plaintext, target_pair, target_version, tweak)?;
+                        let mac = compute_mac(
+                            &ciphertext,
+                            &new_meta,
+                            target_pair.key1(),
+                            target_pair.key2(),
+                        )?;
+                        new_meta.set_integrity_tag(mac);
+                        new_meta.ciphertext_len = Some(ciphertext.len() as u32);
+                        payload = ciphertext;
+                        encryption_meta = new_meta;
+                    }
+                } else if transform {
+                    warn!(
+                        segment = segment_id.0,
+                        capsule = %capsule_id.as_uuid(),
+                        "transform requested but key metadata missing"
+                    );
+                }
+            } else if transform {
+                warn!(
+                    segment = segment_id.0,
+                    capsule = %capsule_id.as_uuid(),
+                    "transform requested but key manager unavailable"
+                );
+            }
+
+            let frame =
+                crate::replication::ReplicationFrame::new(segment_id, encryption_meta, payload);
+            mesh_node
+                .send_replication_frame(&frame, destination)
+                .await
+                .with_context(|| format!("stream segment {} to {}", segment_id.0, destination))?;
+            migrated += 1;
+        }
+
+        info!(
+            capsule = %capsule_id.as_uuid(),
+            destination = %destination,
+            segments = migrated,
+            reason = reason,
+            "migration task finished"
+        );
+
+        Ok(migrated)
     }
 }
 

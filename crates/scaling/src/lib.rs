@@ -8,6 +8,7 @@
 
 use anyhow::{anyhow, Result};
 use common::podms::{NodeId, ZoneId};
+use common::SegmentId;
 #[cfg(feature = "phase4")]
 use common::CapsuleId;
 use encryption::keymanager::KeyManager;
@@ -15,7 +16,7 @@ use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -182,87 +183,23 @@ impl<C: ContentStore + 'static> MeshNode<C> {
         Ok(peer_ids)
     }
 
-    /// Mirror a segment to a target node using dedup-preserving protocol.
+    /// Mirror a segment to a target node.
     ///
-    /// Protocol:
-    /// 1. Send hash first for dedup check
-    /// 2. Receive response (0=need full data, 1=dedup hit)
-    /// 3. If dedup hit, skip sending full data
-    /// 4. Otherwise, send full ReplicationFrame
-    ///
-    /// In production, this would use RDMA verbs for zero-copy transfer.
-    pub async fn mirror_segment(&self, segment_data: &[u8], target: NodeId) -> Result<()> {
-        // Lookup target address from peer registry
-        let peers = self.peers.read().await;
-        let target_addr = peers
-            .get(&target)
-            .ok_or_else(|| anyhow!("target node {} not found in peer registry", target))?
-            .clone();
-        drop(peers);
+    /// This wraps the payload in a replication frame so inbound handlers can
+    /// apply MAC validation, encryption, and deduplication consistently.
+    pub async fn mirror_segment(
+        &self,
+        segment_id: SegmentId,
+        segment_data: &[u8],
+        target: NodeId,
+    ) -> Result<()> {
+        let mut metadata = encryption::policy::EncryptionMetadata::new_unencrypted();
+        metadata.ciphertext_len = Some(segment_data.len() as u32);
 
-        debug!(
-            target_id = %target,
-            target_addr = %target_addr,
-            bytes = segment_data.len(),
-            "mirroring segment with dedup check"
-        );
+        let frame =
+            replication::ReplicationFrame::new(segment_id, metadata, segment_data.to_vec());
 
-        // Connect to target
-        let mut stream = TcpStream::connect(&target_addr)
-            .await
-            .map_err(|e| anyhow!("failed to connect to target {}: {}", target_addr, e))?;
-
-        // Compute content hash for dedup check
-        let hash = blake3::hash(segment_data);
-        let hash_bytes = hash.as_bytes();
-
-        // Send hash first (32 bytes)
-        stream
-            .write_all(hash_bytes)
-            .await
-            .map_err(|e| anyhow!("failed to write hash: {}", e))?;
-
-        // Wait for dedup response (1 byte: 0=need data, 1=dedup hit)
-        let mut response = [0u8; 1];
-        stream
-            .read_exact(&mut response)
-            .await
-            .map_err(|e| anyhow!("failed to read dedup response: {}", e))?;
-
-        if response[0] == 1 {
-            // Dedup hit - no need to send full data
-            info!(
-                target_id = %target,
-                hash = %hex::encode(hash_bytes),
-                "segment dedup hit, skipped transfer"
-            );
-            return Ok(());
-        }
-
-        // Dedup miss - send full segment data
-        debug!(
-            target_id = %target,
-            bytes = segment_data.len(),
-            "sending full segment (dedup miss)"
-        );
-
-        stream
-            .write_all(segment_data)
-            .await
-            .map_err(|e| anyhow!("failed to write segment: {}", e))?;
-
-        stream
-            .shutdown()
-            .await
-            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-
-        info!(
-            target_id = %target,
-            bytes = segment_data.len(),
-            "segment mirrored successfully"
-        );
-
-        Ok(())
+        self.send_replication_frame(&frame, target).await
     }
 
     /// Send a complete replication frame to a target node.

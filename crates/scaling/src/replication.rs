@@ -190,42 +190,57 @@ impl<C: ContentStore> ReplicationHandler<C> {
         let segment_id = frame.segment_id;
         let metadata = frame.metadata;
         let ciphertext = frame.encrypted_data;
+        let ciphertext_len = ciphertext.len();
 
-        // Step 1: Validate MAC
-        debug!(segment_id = segment_id.0, "validating MAC");
-        let key_version = metadata
-            .key_version
-            .ok_or_else(|| anyhow!("missing key version in metadata"))?;
+        // Step 1: Validate MAC if encrypted
+        let (plaintext, stored_payload) = if metadata.is_encrypted() {
+            debug!(segment_id = segment_id.0, "validating MAC");
+            let key_version = metadata
+                .key_version
+                .ok_or_else(|| anyhow!("missing key version in metadata"))?;
 
-        let mut key_manager = self.key_manager.write().await;
-        let key_pair = key_manager
-            .get_key(key_version)
-            .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?;
+            let mut key_manager = self.key_manager.write().await;
+            let key_pair = key_manager
+                .get_key(key_version)
+                .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?;
 
-        if let Err(e) = verify_mac(&ciphertext, &metadata, key_pair.key1(), key_pair.key2()) {
-            warn!(
+            if metadata.has_integrity_tag() {
+                if let Err(e) = verify_mac(&ciphertext, &metadata, key_pair.key1(), key_pair.key2())
+                {
+                    warn!(
+                        segment_id = segment_id.0,
+                        error = %e,
+                        "MAC validation failed for replicated segment"
+                    );
+                    return Err(anyhow!("MAC validation failed: {}", e));
+                }
+            } else {
+                warn!(
+                    segment_id = segment_id.0,
+                    "missing integrity tag for encrypted segment, proceeding without MAC verification"
+                );
+            }
+
+            debug!(segment_id = segment_id.0, "MAC validation successful");
+
+            // Step 2: Decrypt segment
+            debug!(segment_id = segment_id.0, "decrypting segment");
+            let plaintext = decrypt_segment(&ciphertext, key_pair, &metadata)
+                .map_err(|e| anyhow!("decryption failed: {}", e))?;
+
+            debug!(
                 segment_id = segment_id.0,
-                error = %e,
-                "MAC validation failed for replicated segment"
+                plaintext_len = plaintext.len(),
+                "decryption successful"
             );
-            return Err(anyhow!("MAC validation failed: {}", e));
-        }
 
-        debug!(segment_id = segment_id.0, "MAC validation successful");
+            drop(key_manager);
 
-        // Step 2: Decrypt segment
-        debug!(segment_id = segment_id.0, "decrypting segment");
-        let plaintext = decrypt_segment(&ciphertext, key_pair, &metadata)
-            .map_err(|e| anyhow!("decryption failed: {}", e))?;
-
-        debug!(
-            segment_id = segment_id.0,
-            plaintext_len = plaintext.len(),
-            "decryption successful"
-        );
-
-        // Release key_manager lock before long operations
-        drop(key_manager);
+            (plaintext, ciphertext.clone())
+        } else {
+            debug!(segment_id = segment_id.0, "processing unencrypted replication frame");
+            (ciphertext.clone(), ciphertext.clone())
+        };
 
         // Step 3: Compute content hash for deduplication
         let content_hash = ContentHash::from_bytes(blake3::hash(&plaintext).as_bytes());
@@ -261,7 +276,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
         // Step 5: Persist to NvramLog (segment is new)
         debug!(
             segment_id = segment_id.0,
-            ciphertext_len = ciphertext.len(),
+            ciphertext_len = ciphertext_len,
             "persisting new segment to NvramLog"
         );
 
@@ -269,7 +284,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
 
         // Append to NVRAM log
         let segment_metadata = nvram_log
-            .append(segment_id, &ciphertext)
+            .append(segment_id, &stored_payload)
             .map_err(|e| anyhow!("failed to append segment to NvramLog: {}", e))?;
 
         info!(

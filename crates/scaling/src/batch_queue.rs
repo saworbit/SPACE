@@ -75,22 +75,30 @@ impl BatchQueue {
         loop {
             tokio::select! {
                 // Incoming batch item
-                Some(item) = self.rx.recv() => {
-                    let mut pending = self.pending.write().await;
-                    pending.push(item);
+                item = self.rx.recv() => {
+                    match item {
+                        Some(item) => {
+                            let mut pending = self.pending.write().await;
+                            pending.push(item);
 
-                    // Check if we need to flush due to size limit
-                    if pending.len() >= self.max_batch_size {
-                        let batch = std::mem::take(&mut *pending);
-                        drop(pending);
+                            // Check if we need to flush due to size limit
+                            if pending.len() >= self.max_batch_size {
+                                let batch = std::mem::take(&mut *pending);
+                                drop(pending);
 
-                        info!(
-                            batch_size = batch.len(),
-                            "flushing batch (size limit reached)"
-                        );
+                                info!(
+                                    batch_size = batch.len(),
+                                    "flushing batch (size limit reached)"
+                                );
 
-                        if let Err(e) = flush_fn(batch).await {
-                            warn!(error = %e, "failed to flush batch");
+                                if let Err(e) = flush_fn(batch).await {
+                                    warn!(error = %e, "failed to flush batch");
+                                }
+                            }
+                        }
+                        None => {
+                            info!("batch queue channel closed, shutting down");
+                            break;
                         }
                     }
                 }
@@ -272,9 +280,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_queue_stats() {
-        let (_queue, sender) = BatchQueue::new(Duration::from_secs(60), 1000);
+        let (queue, sender) = BatchQueue::new(Duration::from_secs(60), 1000);
+
+        let queue_handle = tokio::spawn(async move {
+            queue
+                .run(|_| async { Ok(()) })
+                .await
+        });
 
         let capsule_id = CapsuleId::new();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Enqueue items
         for i in 0..3 {
@@ -287,10 +303,21 @@ mod tests {
                 .unwrap();
         }
 
+        // Wait for queue to observe items
+        for _ in 0..10 {
+            if sender.stats().await.total_items == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
         // Check stats
         let stats = sender.stats().await;
         assert_eq!(stats.total_items, 3);
         assert_eq!(stats.unique_capsules, 1);
         assert_eq!(stats.total_bytes, 300);
+
+        drop(sender);
+        let _ = queue_handle.await;
     }
 }

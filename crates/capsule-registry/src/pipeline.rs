@@ -1301,7 +1301,10 @@ impl WritePipeline {
                 );
                 let _mirror_enter = mirror_span.enter();
 
-                match mesh_node.mirror_segment(&segment_data, *target_id).await {
+                match mesh_node
+                    .mirror_segment(seg_id, &segment_data, *target_id)
+                    .await
+                {
                     Ok(_) => {
                         trace!(
                             segment = seg_id.0,

@@ -16,9 +16,7 @@ struct MockContentStore {
 
 impl ContentStore for MockContentStore {
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        futures::executor::block_on(async {
-            self.store.read().await.get(hash).copied()
-        })
+        futures::executor::block_on(async { self.store.read().await.get(hash).copied() })
     }
 
     fn register_content(&self, hash: &ContentHash, segment_id: SegmentId) {
@@ -104,7 +102,9 @@ mod mesh_tests {
         let data = b"test segment data";
 
         // Should fail: peer not registered
-        let result = node.mirror_segment(data, unknown_peer).await;
+        let result = node
+            .mirror_segment(common::SegmentId(1), data, unknown_peer)
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -117,10 +117,18 @@ mod mesh_tests {
 
         // Create two nodes
         let node1_addr = "127.0.0.1:19005".parse().unwrap();
-        let node1 = Arc::new(create_test_mesh_node(zone.clone(), node1_addr).await.unwrap());
+        let node1 = Arc::new(
+            create_test_mesh_node(zone.clone(), node1_addr)
+                .await
+                .unwrap(),
+        );
 
         let node2_addr = "127.0.0.1:19006".parse().unwrap();
-        let node2 = Arc::new(create_test_mesh_node(zone.clone(), node2_addr).await.unwrap());
+        let node2 = Arc::new(
+            create_test_mesh_node(zone.clone(), node2_addr)
+                .await
+                .unwrap(),
+        );
 
         // Start node2 to accept mirrors
         node2.start(vec![]).await.unwrap();
@@ -133,7 +141,9 @@ mod mesh_tests {
 
         // Mirror data from node1 to node2
         let test_data = b"test segment for mirroring";
-        let result = node1.mirror_segment(test_data, node2.id()).await;
+        let result = node1
+            .mirror_segment(common::SegmentId(42), test_data, node2.id())
+            .await;
 
         // Should succeed
         assert!(result.is_ok());
