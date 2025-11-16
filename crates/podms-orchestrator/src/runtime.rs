@@ -223,8 +223,6 @@ impl<C: ContentStore + 'static> OrchestratorBuilder<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Tests require concrete ContentStore implementation
     // They will be added once we integrate with CapsuleRegistry
 }

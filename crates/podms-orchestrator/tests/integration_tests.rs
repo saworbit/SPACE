@@ -8,14 +8,27 @@
 //! - Replication and migration
 
 use anyhow::Result;
-use common::podms::{NodeId, Telemetry};
+use common::podms::Telemetry;
 use common::{CapsuleId, Policy};
-use mesh_core::{GossipHandler, GossipMessage};
-use std::time::Duration;
+use mesh_core::GossipMessage;
 
 // Note: These tests require a concrete ContentStore implementation.
 // They are included as examples and will be enabled once CapsuleRegistry
 // implements the ContentStore trait.
+
+// Helper functions for tests (to be implemented)
+
+#[allow(dead_code)]
+async fn setup_test_node(_node_id: &str, _port: u16) -> Result<()> {
+    // TODO: Setup test node with mock ContentStore
+    Ok(())
+}
+
+#[allow(dead_code)]
+async fn setup_test_cluster(_count: usize) -> Result<Vec<()>> {
+    // TODO: Setup test cluster
+    Ok(vec![])
+}
 
 #[cfg(test)]
 mod orchestrator_tests {
@@ -62,7 +75,7 @@ mod orchestrator_tests {
     #[tokio::test]
     async fn test_policy_compilation() -> Result<()> {
         use common::podms::ZoneId;
-        use scaling::compiler::{MeshState, PolicyCompiler, ScalingAction};
+        use scaling::compiler::{MeshState, PolicyCompiler};
 
         // Create compiler with metro-sync policy
         let compiler = PolicyCompiler::with_defaults();
@@ -82,7 +95,7 @@ mod orchestrator_tests {
         };
 
         // Compile actions
-        let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
+        let _actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 
         // Verify replication action was generated
         // (Will be empty if no nodes available, which is expected for empty mesh)
@@ -297,18 +310,4 @@ mod orchestrator_tests {
 
         Ok(())
     }
-}
-
-// Helper functions for tests (to be implemented)
-
-#[allow(dead_code)]
-async fn setup_test_node(_node_id: &str, _port: u16) -> Result<()> {
-    // TODO: Setup test node with mock ContentStore
-    Ok(())
-}
-
-#[allow(dead_code)]
-async fn setup_test_cluster(_count: usize) -> Result<Vec<()>> {
-    // TODO: Setup test cluster
-    Ok(vec![])
 }
