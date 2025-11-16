@@ -238,7 +238,10 @@ impl<C: ContentStore> ReplicationHandler<C> {
 
             (plaintext, ciphertext.clone())
         } else {
-            debug!(segment_id = segment_id.0, "processing unencrypted replication frame");
+            debug!(
+                segment_id = segment_id.0,
+                "processing unencrypted replication frame"
+            );
             (ciphertext.clone(), ciphertext.clone())
         };
 

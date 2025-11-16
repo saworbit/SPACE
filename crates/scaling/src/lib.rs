@@ -8,9 +8,9 @@
 
 use anyhow::{anyhow, Result};
 use common::podms::{NodeId, ZoneId};
-use common::SegmentId;
 #[cfg(feature = "phase4")]
 use common::CapsuleId;
+use common::SegmentId;
 use encryption::keymanager::KeyManager;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
@@ -196,8 +196,7 @@ impl<C: ContentStore + 'static> MeshNode<C> {
         let mut metadata = encryption::policy::EncryptionMetadata::new_unencrypted();
         metadata.ciphertext_len = Some(segment_data.len() as u32);
 
-        let frame =
-            replication::ReplicationFrame::new(segment_id, metadata, segment_data.to_vec());
+        let frame = replication::ReplicationFrame::new(segment_id, metadata, segment_data.to_vec());
 
         self.send_replication_frame(&frame, target).await
     }

@@ -282,11 +282,7 @@ mod tests {
     async fn test_queue_stats() {
         let (queue, sender) = BatchQueue::new(Duration::from_secs(60), 1000);
 
-        let queue_handle = tokio::spawn(async move {
-            queue
-                .run(|_| async { Ok(()) })
-                .await
-        });
+        let queue_handle = tokio::spawn(async move { queue.run(|_| async { Ok(()) }).await });
 
         let capsule_id = CapsuleId::new();
 
