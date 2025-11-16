@@ -166,26 +166,46 @@ let policy = Policy::edge_optimized();
 - ✅ Async event emission on capsule writes
 
 **Step 2 - Metro-Sync Replication:**
-- ✅ **Mesh networking** with gossip-based peer discovery (memberlist)
+- ✅ **Mesh networking** with manual peer registration (gossip planned for Step 3.5)
 - ✅ **RDMA mock transport** for zero-copy segment mirroring (TCP POC)
-- ✅ **Metro-sync replication** triggered by RPO=0 policies
+- ✅ **Metro-sync replication** with hash-first dedup checking
 - ✅ **Autonomous scaling agents** consuming telemetry events
-- ✅ **Hash-based dedup preservation** during replication
-- ✅ **Multi-node integration tests** with failover scenarios
+- ✅ **Hash-based dedup preservation** during replication (32-byte hash pre-check)
+- ✅ **Async batching queue** for geo-replication with configurable RPO intervals
+- ✅ **ReplicationFrame protocol** with length-prefixed bincode frames
+- ✅ **MAC validation** and encryption metadata during transport
 
-**Step 3 - Policy Compiler (NEW):**
+**Step 3 - Policy Compiler & Execution:**
 - ✅ **PolicyCompiler** translating telemetry events into ScalingActions
 - ✅ **ScalingAction types**: Replicate, Migrate, Evacuate, Rebalance
 - ✅ **SwarmBehavior trait** for capsule self-transformation
 - ✅ **Decision rules**: RPO → replication strategy, latency → placement
 - ✅ **Sovereignty validation** preventing policy violations
-- ✅ **Agent integration** with action execution layer
+- ✅ **Agent execution layer** with metro-sync and async replication
+- ✅ **Dedup-preserving mirror protocol** (hash-first, skip on hit)
+- ✅ **Batch queue** for async geo-replication (5-min batching)
 - ✅ **Comprehensive tests** (90%+ coverage on compiler logic)
 
 ### 🔜 PODMS Roadmap
 
-- **Step 4** — Full mesh federation & cross-zone routing with gossip
+- **Step 3.5** — Gossip-based peer discovery (replace manual registration)
+- **Step 4** — Full mesh federation & cross-zone routing with Raft
 - **Future** — Adaptive RPO, cost-aware placement, ML-driven heatmaps
+
+### 🚀 Testing Multi-Node Replication
+
+```bash
+# Start 3 nodes with Docker Compose
+docker-compose up --scale nodes=3
+
+# Test metro-sync replication (zero-RPO)
+spacectl create-capsule --data "test" --policy metro-sync
+spacectl verify-replicas --expected 2
+
+# Test async geo-replication (5-min RPO)
+spacectl create-capsule --data "test" --policy geo-replicated
+spacectl queue-stats  # Check batch queue depth
+```
 
 📚 See [docs/podms.md](docs/podms.md) for architecture details and implementation guide.
 

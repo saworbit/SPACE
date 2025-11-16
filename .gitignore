@@ -13,6 +13,8 @@ Cargo.lock
 test.txt
 test*.bin
 test*.nvram*
+test_nvram_*.log
+test_nvram_*.log.segments
 bigfile.bin
 output.txt
 retrieved_s3.txt

@@ -15,7 +15,7 @@ use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 use raft_rs::{RaftCluster, RaftClusterConfig, ShardKey};
 
 pub mod agent;
+pub mod batch_queue;
 pub mod compiler;
 pub mod replication;
 #[cfg(test)]
@@ -36,6 +37,9 @@ pub use compiler::{
 
 // Re-export replication types for external use
 pub use replication::{ContentStore, ReplicationFrame, ReplicationHandler};
+
+// Re-export batch queue types for external use
+pub use batch_queue::{BatchItem, BatchQueue, BatchQueueSender, QueueStats};
 
 /// Mesh node capabilities for disaggregated access.
 /// Nodes advertise their capabilities (e.g., GPU, NVRAM, network tier) via gossip.
@@ -178,27 +182,69 @@ impl<C: ContentStore + 'static> MeshNode<C> {
         Ok(peer_ids)
     }
 
-    /// Mirror a segment to a target node using RDMA mock (TCP for POC).
+    /// Mirror a segment to a target node using dedup-preserving protocol.
+    ///
+    /// Protocol:
+    /// 1. Send hash first for dedup check
+    /// 2. Receive response (0=need full data, 1=dedup hit)
+    /// 3. If dedup hit, skip sending full data
+    /// 4. Otherwise, send full ReplicationFrame
+    ///
     /// In production, this would use RDMA verbs for zero-copy transfer.
     pub async fn mirror_segment(&self, segment_data: &[u8], target: NodeId) -> Result<()> {
         // Lookup target address from peer registry
         let peers = self.peers.read().await;
         let target_addr = peers
             .get(&target)
-            .ok_or_else(|| anyhow!("target node {} not found in peer registry", target))?;
+            .ok_or_else(|| anyhow!("target node {} not found in peer registry", target))?
+            .clone();
+        drop(peers);
 
         debug!(
             target_id = %target,
             target_addr = %target_addr,
             bytes = segment_data.len(),
-            "mirroring segment"
+            "mirroring segment with dedup check"
         );
 
-        // RDMA mock: Use TCP for simulation
-        // In production: Use rdma-sys or similar for zero-copy RDMA writes
-        let mut stream = TcpStream::connect(target_addr)
+        // Connect to target
+        let mut stream = TcpStream::connect(&target_addr)
             .await
             .map_err(|e| anyhow!("failed to connect to target {}: {}", target_addr, e))?;
+
+        // Compute content hash for dedup check
+        let hash = blake3::hash(segment_data);
+        let hash_bytes = hash.as_bytes();
+
+        // Send hash first (32 bytes)
+        stream
+            .write_all(hash_bytes)
+            .await
+            .map_err(|e| anyhow!("failed to write hash: {}", e))?;
+
+        // Wait for dedup response (1 byte: 0=need data, 1=dedup hit)
+        let mut response = [0u8; 1];
+        stream
+            .read_exact(&mut response)
+            .await
+            .map_err(|e| anyhow!("failed to read dedup response: {}", e))?;
+
+        if response[0] == 1 {
+            // Dedup hit - no need to send full data
+            info!(
+                target_id = %target,
+                hash = %hex::encode(hash_bytes),
+                "segment dedup hit, skipped transfer"
+            );
+            return Ok(());
+        }
+
+        // Dedup miss - send full segment data
+        debug!(
+            target_id = %target,
+            bytes = segment_data.len(),
+            "sending full segment (dedup miss)"
+        );
 
         stream
             .write_all(segment_data)
@@ -214,6 +260,55 @@ impl<C: ContentStore + 'static> MeshNode<C> {
             target_id = %target,
             bytes = segment_data.len(),
             "segment mirrored successfully"
+        );
+
+        Ok(())
+    }
+
+    /// Send a complete replication frame to a target node.
+    /// This is the full replication protocol that includes encryption metadata.
+    pub async fn send_replication_frame(
+        &self,
+        frame: &replication::ReplicationFrame,
+        target: NodeId,
+    ) -> Result<()> {
+        // Lookup target address from peer registry
+        let peers = self.peers.read().await;
+        let target_addr = peers
+            .get(&target)
+            .ok_or_else(|| anyhow!("target node {} not found in peer registry", target))?
+            .clone();
+        drop(peers);
+
+        debug!(
+            target_id = %target,
+            target_addr = %target_addr,
+            segment_id = frame.segment_id.0,
+            "sending replication frame"
+        );
+
+        // Connect to target
+        let mut stream = TcpStream::connect(&target_addr)
+            .await
+            .map_err(|e| anyhow!("failed to connect to target {}: {}", target_addr, e))?;
+
+        // Serialize and send frame with length prefix
+        let frame_bytes = frame.to_bytes()?;
+        stream
+            .write_all(&frame_bytes)
+            .await
+            .map_err(|e| anyhow!("failed to write frame: {}", e))?;
+
+        stream
+            .shutdown()
+            .await
+            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+
+        info!(
+            target_id = %target,
+            segment_id = frame.segment_id.0,
+            bytes = frame_bytes.len(),
+            "replication frame sent successfully"
         );
 
         Ok(())

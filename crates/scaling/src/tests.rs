@@ -1,8 +1,54 @@
 //! Comprehensive tests for PODMS scaling module
 
+use crate::ContentStore;
+use common::{ContentHash, SegmentId};
+use encryption::keymanager::KeyManager;
+use nvram_sim::NvramLog;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+// Mock ContentStore for testing
+#[derive(Clone, Default)]
+struct MockContentStore {
+    store: Arc<RwLock<HashMap<ContentHash, SegmentId>>>,
+}
+
+impl ContentStore for MockContentStore {
+    fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
+        futures::executor::block_on(async {
+            self.store.read().await.get(hash).copied()
+        })
+    }
+
+    fn register_content(&self, hash: &ContentHash, segment_id: SegmentId) {
+        futures::executor::block_on(async {
+            self.store.write().await.insert(hash.clone(), segment_id);
+        });
+    }
+}
+
+// Helper to create test MeshNode with mocks
+async fn create_test_mesh_node(
+    zone: common::podms::ZoneId,
+    addr: std::net::SocketAddr,
+) -> anyhow::Result<crate::MeshNode<MockContentStore>> {
+    let content_store = Arc::new(RwLock::new(MockContentStore::default()));
+    let nvram_log = Arc::new(RwLock::new(NvramLog::open(format!(
+        "test_nvram_{}.log",
+        uuid::Uuid::new_v4()
+    ))?));
+    // Create a test master key (all zeros for testing)
+    let master_key = [0u8; 32];
+    let key_manager = Arc::new(RwLock::new(KeyManager::new(master_key)));
+
+    crate::MeshNode::new(zone, addr, content_store, nvram_log, key_manager).await
+}
+
 #[cfg(test)]
 mod mesh_tests {
-    use crate::{MeshNode, NetworkTier};
+    use super::*;
+    use crate::NetworkTier;
     use common::podms::ZoneId;
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
@@ -14,7 +60,7 @@ mod mesh_tests {
         };
         let addr = "127.0.0.1:19000".parse().unwrap();
 
-        let node = MeshNode::new(zone.clone(), addr).await.unwrap();
+        let node = create_test_mesh_node(zone.clone(), addr).await.unwrap();
         assert_eq!(node.zone(), &zone);
         assert!(node.capabilities().has_nvram);
         assert_eq!(
@@ -29,7 +75,7 @@ mod mesh_tests {
             name: "test-zone".into(),
         };
         let addr = "127.0.0.1:19001".parse().unwrap();
-        let node = MeshNode::new(zone, addr).await.unwrap();
+        let node = create_test_mesh_node(zone, addr).await.unwrap();
 
         // Register multiple peers
         let peer1_id = common::podms::NodeId::new();
@@ -52,7 +98,7 @@ mod mesh_tests {
             name: "test-zone".into(),
         };
         let addr = "127.0.0.1:19004".parse().unwrap();
-        let node = MeshNode::new(zone, addr).await.unwrap();
+        let node = create_test_mesh_node(zone, addr).await.unwrap();
 
         let unknown_peer = common::podms::NodeId::new();
         let data = b"test segment data";
@@ -71,10 +117,10 @@ mod mesh_tests {
 
         // Create two nodes
         let node1_addr = "127.0.0.1:19005".parse().unwrap();
-        let node1 = Arc::new(MeshNode::new(zone.clone(), node1_addr).await.unwrap());
+        let node1 = Arc::new(create_test_mesh_node(zone.clone(), node1_addr).await.unwrap());
 
         let node2_addr = "127.0.0.1:19006".parse().unwrap();
-        let node2 = Arc::new(MeshNode::new(zone.clone(), node2_addr).await.unwrap());
+        let node2 = Arc::new(create_test_mesh_node(zone.clone(), node2_addr).await.unwrap());
 
         // Start node2 to accept mirrors
         node2.start(vec![]).await.unwrap();
@@ -96,8 +142,8 @@ mod mesh_tests {
 
 #[cfg(test)]
 mod agent_tests {
+    use super::*;
     use crate::agent::ScalingAgent;
-    use crate::MeshNode;
     use common::podms::{Telemetry, ZoneId};
     use common::{CapsuleId, Policy};
     use std::sync::Arc;
@@ -110,7 +156,7 @@ mod agent_tests {
             name: "test".into(),
         };
         let addr = "127.0.0.1:19100".parse().unwrap();
-        let mesh_node = Arc::new(MeshNode::new(zone, addr).await.unwrap());
+        let mesh_node = Arc::new(create_test_mesh_node(zone, addr).await.unwrap());
 
         let agent = ScalingAgent::new(mesh_node);
 
@@ -145,7 +191,7 @@ mod agent_tests {
             name: "test".into(),
         };
         let addr = "127.0.0.1:19101".parse().unwrap();
-        let mesh_node = Arc::new(MeshNode::new(zone, addr).await.unwrap());
+        let mesh_node = Arc::new(create_test_mesh_node(zone, addr).await.unwrap());
 
         let agent = ScalingAgent::new(mesh_node);
 
@@ -172,7 +218,7 @@ mod agent_tests {
             name: "test".into(),
         };
         let addr = "127.0.0.1:19102".parse().unwrap();
-        let mesh_node = Arc::new(MeshNode::new(zone, addr).await.unwrap());
+        let mesh_node = Arc::new(create_test_mesh_node(zone, addr).await.unwrap());
 
         let agent = ScalingAgent::new(mesh_node.clone());
 
@@ -200,7 +246,7 @@ mod agent_tests {
             name: "test".into(),
         };
         let addr = "127.0.0.1:19103".parse().unwrap();
-        let mesh_node = Arc::new(MeshNode::new(zone, addr).await.unwrap());
+        let mesh_node = Arc::new(create_test_mesh_node(zone, addr).await.unwrap());
 
         let agent = ScalingAgent::new(mesh_node.clone());
 

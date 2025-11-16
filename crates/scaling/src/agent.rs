@@ -211,27 +211,64 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         match strategy {
             ReplicationStrategy::MetroSync { replica_count } => {
                 // Synchronous replication for zero-RPO
-                // In production: Mirror segments to targets in parallel
-                debug!(
-                    replica_count = replica_count,
-                    "performing metro-sync replication"
-                );
-
-                for target in targets.iter().take(replica_count) {
-                    debug!(target = %target, "would mirror segments to target");
-                    // TODO: Load capsule segments and call mesh_node.mirror_segment()
-                }
+                self.execute_metro_sync_replication(capsule_id, replica_count, &targets)
+                    .await?;
             }
             ReplicationStrategy::AsyncWithBatching { rpo } => {
                 // Async replication with batching
                 debug!(rpo_secs = rpo.as_secs(), "queuing async replication");
                 // TODO: Add to replication queue with RPO-based batching
+                // For now, we just log that async replication would be queued
+                info!(
+                    capsule_id = %capsule_id.as_uuid(),
+                    rpo_secs = rpo.as_secs(),
+                    "async replication would be queued (not yet implemented)"
+                );
             }
             ReplicationStrategy::None => {
                 // No replication needed
                 debug!("no replication required");
             }
         }
+
+        Ok(())
+    }
+
+    /// Execute metro-sync replication: load segments and mirror to targets.
+    async fn execute_metro_sync_replication(
+        &self,
+        capsule_id: CapsuleId,
+        replica_count: usize,
+        targets: &[NodeId],
+    ) -> Result<()> {
+        debug!(
+            capsule_id = %capsule_id.as_uuid(),
+            replica_count = replica_count,
+            "performing metro-sync replication"
+        );
+
+        // Note: In a real implementation, we would need access to:
+        // 1. CapsuleCatalog to lookup capsule and get segment IDs
+        // 2. NvramLog to read segment data
+        //
+        // For now, this is a placeholder that demonstrates the flow.
+        // The actual implementation would require the agent to have
+        // these dependencies injected.
+
+        info!(
+            capsule_id = %capsule_id.as_uuid(),
+            target_count = targets.len().min(replica_count),
+            "metro-sync replication: would load and mirror segments to targets"
+        );
+
+        // Placeholder for actual implementation:
+        // let capsule = self.catalog.lookup_capsule(capsule_id)?;
+        // for segment_id in capsule.segments {
+        //     let segment_data = self.nvram_log.read(segment_id).await?;
+        //     for target in targets.iter().take(replica_count) {
+        //         self.mesh_node.mirror_segment(&segment_data, *target).await?;
+        //     }
+        // }
 
         Ok(())
     }

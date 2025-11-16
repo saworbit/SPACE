@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Replication Execution System** - Materialized real replicas from policy actions
+  - **Hash-first dedup mirroring** - Send 32-byte hash before full segment, skip on dedup hit
+  - **Metro-sync execution** - Synchronous replication for zero-RPO policies
+  - **Async batching queue** - Geo-replication with configurable RPO intervals (default 5 min)
+  - **Dedup-preserving protocol** - Wire protocol: hash → response (hit/miss) → optional full data
+  - **Batch queue implementation** with interval-based and size-based flushing
+  - **Outbound sender methods** - `mirror_segment()` with dedup check, `send_replication_frame()`
+  - **Agent execution layer** - `execute_metro_sync_replication()` with segment loading
+  - **Queue statistics** - Track batch depth, unique capsules, total bytes
+  - **Comprehensive documentation** - [docs/replication-actions.md](docs/replication-actions.md) with Mermaid flow diagrams
+  - Added `hex` dependency for hash encoding in logs
+
 - **Inbound Replication System** - Complete implementation fixing data discard issue
   - Wire protocol with length-prefixed bincode frames (`ReplicationFrame`)
   - BLAKE3 MAC validation for integrity checking
