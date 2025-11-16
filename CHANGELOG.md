@@ -78,9 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Critical:** Inbound replication data discard issue - segments now properly validated, decrypted, deduplicated, and persisted
 - Compilation errors in `ScalingAgent` due to missing generic parameters
 - Lifetime bound issues with async spawning
+- Code quality issues identified by clippy and cargo fmt
+  - Removed unused imports in gossip-layer and web-interface
+  - Fixed derivable Default implementation in mesh-core NodeRole
+  - Fixed needless borrow in gossip-layer message.rs
+  - Added #[allow(dead_code)] for intentionally stored fields in GossipImpl
 - Unused variable and import warnings
 
 ### Security
+- **RUSTSEC-2024-0437:** Fixed critical protobuf vulnerability (uncontrolled recursion)
+  - Upgraded prometheus from 0.13.3 to 0.14.0
+  - Upgraded protobuf from 2.28.0 to 3.7.2 (transitive dependency)
+  - Added `.cargo/audit.toml` to ignore unmaintained warnings from transitive dependencies
 - Added BLAKE3-based MAC validation to prevent tampering
 - Implemented constant-time MAC comparison to prevent timing attacks
 - Enforced key version validation via KeyManager

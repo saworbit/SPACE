@@ -1,0 +1,11 @@
+# Cargo audit configuration
+# See: https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# Ignore unmaintained warnings for transitive dependencies from libp2p and leptos
+# These are not actual security vulnerabilities, just maintenance status warnings
+ignore = [
+    "RUSTSEC-2024-0384",  # instant - unmaintained (from libp2p)
+    "RUSTSEC-2024-0436",  # paste - unmaintained (from leptos/netlink)
+    "RUSTSEC-2024-0370",  # proc-macro-error - unmaintained (from leptos)
+]
