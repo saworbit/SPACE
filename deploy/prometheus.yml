@@ -1,0 +1,35 @@
+# Prometheus configuration for SPACE multi-node mesh
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'space-dev'
+    environment: 'docker-compose'
+
+# Scrape configurations
+scrape_configs:
+  # Scrape all SPACE nodes
+  - job_name: 'space-nodes'
+    metrics_path: '/api/metrics'
+    static_configs:
+      - targets:
+          - 'space-node-1:8081'
+          - 'space-node-2:8082'
+          - 'space-node-3:8083'
+        labels:
+          component: 'space'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Alerting rules
+rule_files:
+  # - 'alerts/*.yml'
+
+# Optional: Alertmanager configuration
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']

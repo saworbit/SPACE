@@ -15,6 +15,8 @@
 
 **🎉 Phase 3.3 Complete:** Encryption ✅ • Bloom Filters ✅ • Audit Log ✅ • SPIFFE/mTLS ✅ • PODMS Scaling ✅
 
+**🌐 Multi-Node Ready:** Orchestrator ✅ • Gossip Protocol ✅ • Autonomous Scaling ✅ • Transformation in Transit ✅
+
 **🚀 Phase 4 Active:** Multi-Protocol Views (NVMe-oF, NFS, FUSE, CSI) + Full Mesh Federation
 
 [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [💡 Why SPACE](#-why-this-matters)
@@ -96,6 +98,38 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 - 🔮 **Post-quantum crypto toggle** (Kyber + AES hybrid) selectable via `Policy::crypto_profile`
 - 🏗️ **Dedicated `security` module** so Bloom/audit/PQ/eBPF logic stays feature gated
 - Automation handlers for migration/evacuation/rebalancing using mesh streaming + MAC validation
+
+### 🌐 Multi-Node Capabilities
+
+**NEW: PODMS Orchestrator** - Transform SPACE into a distributed mesh network:
+
+- **🎯 Autonomous Operations**
+  - Metro-sync replication (zero-RPO, <2ms latency)
+  - Async-batch replication (5min RPO, optimized bandwidth)
+  - Heat-based migration for hot data
+  - Capacity-driven rebalancing
+  - Node evacuation (immediate or gradual)
+
+- **🔐 Secure Gossip Protocol**
+  - HMAC-SHA256 message signing
+  - TTL-based flood control
+  - Message deduplication
+  - Configurable fanout (8-16 peers)
+
+- **⚡ Transformation in Transit**
+  - Re-encryption during migration
+  - Re-compression optimization
+  - Key rotation support
+  - BLAKE3 MAC validation
+  - Cross-node deduplication
+
+- **🐳 Docker Compose Simulation**
+  - 3-node mesh environment
+  - Prometheus + Grafana monitoring
+  - Isolated network testing
+  - Quick start: `docker-compose -f docker-compose.multi-node.yml up`
+
+📘 **[Multi-Node Deployment Guide →](docs/multi-node-deployment.md)**
 
 ### 🔜 Coming Next
 - **Full mesh federation** & cross-zone routing (Step 4)

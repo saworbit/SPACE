@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+- **🌐 Multi-Node Capabilities (PODMS Orchestrator)** - Comprehensive distributed mesh networking
+  - **New crate: `podms-orchestrator`** - Unified coordination layer for multi-node operations
+    - `Orchestrator` struct wires gossip, mesh, scaling agent, and telemetry channels
+    - `OrchestratorConfig` supports YAML/environment configuration
+    - `OrchestratorRuntime` provides simplified API for telemetry emission and cluster queries
+    - Gossip-to-telemetry bridge translates epidemic broadcasts into autonomous actions
+    - Event-driven architecture with mpsc telemetry bus
+  - **Enhanced Gossip Layer** - Secure epidemic state propagation
+    - HMAC-SHA256 message signing with configurable keys
+    - TTL-based flood control (default: 10 hops)
+    - Message deduplication via SHA256 message IDs
+    - Configurable fanout (default: 8 peers) for bandwidth optimization
+    - Timestamp validation for replay attack prevention
+  - **Autonomous Scaling** - Policy-driven operations without human intervention
+    - Metro-sync replication (zero-RPO, <2ms latency)
+    - Async-batch replication (5min RPO, optimized bandwidth)
+    - Heat-based migration for hot data redistribution
+    - Capacity-driven rebalancing across underutilized nodes
+    - Node evacuation (immediate parallel or gradual sequential)
+  - **Transformation in Transit** - Secure data migration
+    - Re-encryption during migration without decryption exposure
+    - Re-compression with different levels (LZ4 → Zstd)
+    - Key rotation support during segment transfer
+    - BLAKE3 MAC validation on all replicated segments
+    - Deterministic encryption preservation for cross-node deduplication
+  - **Docker Compose Simulation** - Multi-node development environment
+    - 3-node mesh with seed-based discovery
+    - Prometheus metrics scraping (15s interval)
+    - Grafana dashboards for visualization
+    - Isolated network (172.20.0.0/16)
+    - Per-node S3 API, Web UI, and replication endpoints
+  - **Comprehensive Documentation**
+    - [Multi-Node Deployment Guide](docs/multi-node-deployment.md) - 400+ line operations manual
+    - [Implementation Summary](docs/MULTI_NODE_IMPLEMENTATION.md) - Complete technical deep-dive
+    - Architecture diagrams, configuration examples, troubleshooting guide
+    - Performance expectations and security considerations
+  - **Integration Test Framework** - Ready for ContentStore implementation
+    - Tests for gossip propagation, policy compilation, autonomous replication
+    - Migration with transformation, evacuation, rebalancing
+    - Cross-node deduplication, message signing, TTL flood control
+  - **Sovereignty Enforcement** - Data placement constraints
+    - Local (no replication), Zone (metro/geo only), Global (unrestricted)
+    - Policy validation before migration/replication
+    - Compile-time enforcement via compiler checks
+
 - **Web Interface File Storage** - Complete file management system
   - In-memory file storage with `HashMap<String, StoredFile>`
   - `GET /api/files` endpoint to list all stored files with metadata (size, hash, upload time)

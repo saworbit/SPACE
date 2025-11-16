@@ -222,9 +222,26 @@ impl GossipImpl {
                         }
                     }
                 }
-                // Handle gossipsub events
-                // Note: In a real implementation, we would poll the swarm here
-                // For now, this is a simplified version
+                // TODO: In a full libp2p swarm implementation, we would poll swarm events here:
+                // event = swarm.select_next_some() => {
+                //     match event {
+                //         SwarmEvent::Behaviour(GossipBehaviourEvent::Gossipsub(event)) => {
+                //             handle_gossipsub_event(event, topic_channels, stats, peers).await;
+                //         }
+                //         SwarmEvent::NewListenAddr { address, .. } => {
+                //             info!("Listening on {}", address);
+                //         }
+                //         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                //             debug!("Connection established with {}", peer_id);
+                //             update_peer_list(peer_id, peers).await;
+                //         }
+                //         _ => {}
+                //     }
+                // }
+                //
+                // For this implementation, gossipsub is used in a simplified mode
+                // without a full swarm. This works for the current use case but
+                // should be upgraded to full libp2p swarm for production.
             }
         }
     }

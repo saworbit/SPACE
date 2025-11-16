@@ -1,0 +1,177 @@
+# Docker Compose configuration for multi-node SPACE deployment
+#
+# This sets up a 3-node SPACE mesh for testing multi-node capabilities:
+# - Node 1 (Seed): Initial seed node for the mesh
+# - Node 2: Joins mesh via seed node
+# - Node 3: Joins mesh via seed node
+#
+# Each node runs with:
+# - PODMS orchestrator (gossip + scaling + replication)
+# - S3 protocol gateway
+# - Web interface for monitoring
+# - Prometheus metrics
+#
+# Usage:
+#   docker-compose -f docker-compose.multi-node.yml up --build
+#
+# Access points:
+#   - Node 1 S3:  http://localhost:9001
+#   - Node 1 Web: http://localhost:8081
+#   - Node 2 S3:  http://localhost:9002
+#   - Node 2 Web: http://localhost:8082
+#   - Node 3 S3:  http://localhost:9003
+#   - Node 3 Web: http://localhost:8083
+
+version: '3.8'
+
+services:
+  # Node 1 - Seed Node
+  space-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: space-node-1
+    hostname: node-1
+    environment:
+      - SPACE_NODE_ID=node-1
+      - SPACE_ZONE=us-west-metro
+      - SPACE_LISTEN_ADDR=0.0.0.0:9000
+      - SPACE_S3_PORT=9001
+      - SPACE_WEB_PORT=8081
+      - SPACE_SEED_PEERS=
+      - SPACE_DEFAULT_POLICY=metro-sync
+      - SPACE_GOSSIP_FANOUT=8
+      - RUST_LOG=info,space=debug,podms_orchestrator=debug
+    ports:
+      - "9001:9001"  # S3 API
+      - "8081:8081"  # Web UI
+      - "9000:9000"  # Mesh replication
+    volumes:
+      - space-node-1-data:/data
+    networks:
+      space-mesh:
+        ipv4_address: 172.20.0.10
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Node 2 - Joins via seed
+  space-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: space-node-2
+    hostname: node-2
+    environment:
+      - SPACE_NODE_ID=node-2
+      - SPACE_ZONE=us-west-metro
+      - SPACE_LISTEN_ADDR=0.0.0.0:9000
+      - SPACE_S3_PORT=9002
+      - SPACE_WEB_PORT=8082
+      - SPACE_SEED_PEERS=172.20.0.10:9000
+      - SPACE_DEFAULT_POLICY=metro-sync
+      - SPACE_GOSSIP_FANOUT=8
+      - RUST_LOG=info,space=debug,podms_orchestrator=debug
+    ports:
+      - "9002:9002"  # S3 API
+      - "8082:8082"  # Web UI
+      - "9100:9000"  # Mesh replication
+    volumes:
+      - space-node-2-data:/data
+    networks:
+      space-mesh:
+        ipv4_address: 172.20.0.11
+    depends_on:
+      - space-node-1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Node 3 - Joins via seed
+  space-node-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: space-node-3
+    hostname: node-3
+    environment:
+      - SPACE_NODE_ID=node-3
+      - SPACE_ZONE=us-west-metro
+      - SPACE_S3_PORT=9003
+      - SPACE_WEB_PORT=8083
+      - SPACE_LISTEN_ADDR=0.0.0.0:9000
+      - SPACE_SEED_PEERS=172.20.0.10:9000
+      - SPACE_DEFAULT_POLICY=metro-sync
+      - SPACE_GOSSIP_FANOUT=8
+      - RUST_LOG=info,space=debug,podms_orchestrator=debug
+    ports:
+      - "9003:9003"  # S3 API
+      - "8083:8083"  # Web UI
+      - "9200:9000"  # Mesh replication
+    volumes:
+      - space-node-3-data:/data
+    networks:
+      space-mesh:
+        ipv4_address: 172.20.0.12
+    depends_on:
+      - space-node-1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: space-prometheus
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - space-mesh
+    depends_on:
+      - space-node-1
+      - space-node-2
+      - space-node-3
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: space-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=space
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./deploy/grafana-dashboards:/etc/grafana/provisioning/dashboards
+      - ./deploy/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - space-mesh
+    depends_on:
+      - prometheus
+
+networks:
+  space-mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  space-node-1-data:
+  space-node-2-data:
+  space-node-3-data:
+  prometheus-data:
+  grafana-data:

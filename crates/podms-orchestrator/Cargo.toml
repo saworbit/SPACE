@@ -1,0 +1,41 @@
+[package]
+name = "podms-orchestrator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace crates
+common = { path = "../common", features = ["podms"] }
+mesh-core = { path = "../mesh-core" }
+gossip-layer = { path = "../gossip-layer" }
+scaling = { path = "../scaling" }
+capsule-registry = { path = "../capsule-registry", features = ["podms"] }
+encryption = { path = "../encryption" }
+nvram-sim = { path = "../nvram-sim" }
+
+# Core dependencies
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = { workspace = true }
+
+# Networking
+libp2p.workspace = true
+
+# Async
+futures.workspace = true
+
+[features]
+default = []
+phase4 = ["scaling/phase4"]
+
+[dev-dependencies]
+tracing-test.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
