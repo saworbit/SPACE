@@ -1,0 +1,68 @@
+[package]
+name = "web-interface"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "web-server"
+path = "src/main.rs"
+
+[dependencies]
+# Local crates
+mesh-core = { path = "../mesh-core" }
+gossip-layer = { path = "../gossip-layer" }
+
+# Web framework
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+futures.workspace = true
+async-trait = "0.1"
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Metrics
+prometheus.workspace = true
+
+# Utilities
+bytes.workspace = true
+uuid.workspace = true
+hex.workspace = true
+blake3 = "1.5"
+base64 = "0.22"
+
+# Frontend (Leptos)
+leptos = { workspace = true, optional = true }
+leptos_axum = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+gloo = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+js-sys = { version = "0.3.82", optional = true }
+
+# Auth
+jsonwebtoken = "9.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+axum-test = "14.4"
+
+[features]
+default = ["backend"]
+backend = []
+frontend = ["leptos", "leptos_axum", "wasm-bindgen", "gloo", "web-sys", "js-sys"]
+ssr = ["leptos/ssr", "leptos_axum"]

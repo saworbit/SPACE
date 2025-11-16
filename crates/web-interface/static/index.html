@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPACE Web Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+            color: #e0e0e0;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(30, 41, 59, 0.6);
+            border-radius: 12px;
+        }
+        h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #60a5fa 0%, #818cf8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card h2 {
+            color: #818cf8;
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+        }
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #334155;
+        }
+        .stat:last-child {
+            border-bottom: none;
+        }
+        .stat-label {
+            color: #94a3b8;
+        }
+        .stat-value {
+            color: #60a5fa;
+            font-weight: bold;
+        }
+        .status-online {
+            color: #10b981;
+        }
+        .status-offline {
+            color: #ef4444;
+        }
+        button {
+            background: #60a5fa;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #3b82f6;
+            transform: translateY(-2px);
+        }
+        button:disabled {
+            background: #475569;
+            cursor: not-allowed;
+            transform: none;
+        }
+        input[type="text"], input[type="file"], textarea {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #e0e0e0;
+            margin: 5px 0;
+        }
+        .upload-form {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .success {
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid #10b981;
+            padding: 10px;
+            border-radius: 6px;
+            margin: 10px 0;
+            color: #10b981;
+        }
+        .error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid #ef4444;
+            padding: 10px;
+            border-radius: 6px;
+            margin: 10px 0;
+            color: #ef4444;
+        }
+        .peer-list, .metrics-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .peer-item {
+            background: #0f172a;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 6px;
+            border-left: 3px solid #60a5fa;
+        }
+        .refresh-btn {
+            background: #8b5cf6;
+            padding: 5px 10px;
+            font-size: 0.9rem;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .tab {
+            padding: 8px 16px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tab.active {
+            background: #60a5fa;
+            border-color: #60a5fa;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        pre {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.85rem;
+        }
+        .loading {
+            text-align: center;
+            color: #64748b;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 SPACE Mesh Dashboard</h1>
+            <p>Storage Platform for Adaptive Computational Ecosystems</p>
+        </header>
+
+        <div class="grid">
+            <!-- Server Status -->
+            <div class="card">
+                <h2>🖥️ Server Status</h2>
+                <div class="stat">
+                    <span class="stat-label">Health</span>
+                    <span class="stat-value status-online" id="health-status">Checking...</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Uptime</span>
+                    <span class="stat-value" id="uptime">--</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Last Check</span>
+                    <span class="stat-value" id="last-check">Never</span>
+                </div>
+                <button onclick="checkHealth()" style="margin-top: 10px; width: 100%;">Refresh</button>
+            </div>
+
+            <!-- Gossip Stats -->
+            <div class="card">
+                <h2>📡 Gossip Protocol</h2>
+                <div class="stat">
+                    <span class="stat-label">Messages Sent</span>
+                    <span class="stat-value" id="msg-sent">0</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Messages Received</span>
+                    <span class="stat-value" id="msg-received">0</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Active Topics</span>
+                    <span class="stat-value" id="active-topics">0</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Connected Peers</span>
+                    <span class="stat-value" id="connected-peers">0</span>
+                </div>
+                <button onclick="loadGossipStats()" style="margin-top: 10px; width: 100%;">Refresh</button>
+            </div>
+
+            <!-- Peers -->
+            <div class="card">
+                <h2>👥 Connected Peers</h2>
+                <div class="peer-list" id="peer-list">
+                    <div class="loading">Loading peers...</div>
+                </div>
+                <button onclick="loadPeers()" style="margin-top: 10px; width: 100%;">Refresh</button>
+            </div>
+        </div>
+
+        <!-- File Upload -->
+        <div class="card" style="margin: 20px 0;">
+            <h2>📤 Upload File</h2>
+            <div class="upload-form">
+                <label>File Path:</label>
+                <input type="text" id="file-path" placeholder="/data/myfile.txt" value="/data/test.txt">
+
+                <label>Select File:</label>
+                <input type="file" id="file-input">
+
+                <button onclick="uploadFile()" id="upload-btn">Upload to Mesh</button>
+
+                <div id="upload-result"></div>
+            </div>
+        </div>
+
+        <!-- Stored Files -->
+        <div class="card" style="margin: 20px 0;">
+            <h2>📁 Stored Files</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div>
+                    <span class="stat-label">Total Files: </span>
+                    <span class="stat-value" id="total-files">0</span>
+                    <span class="stat-label" style="margin-left: 20px;">Total Size: </span>
+                    <span class="stat-value" id="total-size">0 B</span>
+                </div>
+                <button onclick="loadFiles()" class="refresh-btn">Refresh</button>
+            </div>
+            <div class="peer-list" id="files-list">
+                <div class="loading">Loading files...</div>
+            </div>
+        </div>
+
+        <!-- API Explorer -->
+        <div class="card" style="margin: 20px 0;">
+            <h2>🔍 API Explorer</h2>
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('peers-tab')">Peers JSON</div>
+                <div class="tab" onclick="switchTab('stats-tab')">Stats JSON</div>
+                <div class="tab" onclick="switchTab('metrics-tab')">Metrics</div>
+                <div class="tab" onclick="switchTab('docs-tab')">API Docs</div>
+            </div>
+
+            <div id="peers-tab" class="tab-content active">
+                <button onclick="loadPeersJSON()" class="refresh-btn">Refresh</button>
+                <pre id="peers-json">Click Refresh to load...</pre>
+            </div>
+
+            <div id="stats-tab" class="tab-content">
+                <button onclick="loadStatsJSON()" class="refresh-btn">Refresh</button>
+                <pre id="stats-json">Click Refresh to load...</pre>
+            </div>
+
+            <div id="metrics-tab" class="tab-content">
+                <button onclick="loadMetrics()" class="refresh-btn">Refresh</button>
+                <pre id="metrics-text">Click Refresh to load...</pre>
+            </div>
+
+            <div id="docs-tab" class="tab-content">
+                <h3>Available Endpoints:</h3>
+                <ul style="list-style: none; padding: 10px;">
+                    <li style="padding: 5px;">GET /health</li>
+                    <li style="padding: 5px;">GET /api/peers</li>
+                    <li style="padding: 5px;">GET /api/gossip/stats</li>
+                    <li style="padding: 5px;">GET /api/metrics</li>
+                    <li style="padding: 5px;">POST /api/upload</li>
+                    <li style="padding: 5px;">POST /api/gossip/broadcast</li>
+                    <li style="padding: 5px;">WS /ws/live</li>
+                </ul>
+                <p style="margin-top: 20px;">📚 Full documentation: <code>docs/API.md</code></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let startTime = Date.now();
+
+        // Auto-refresh on page load
+        window.onload = function() {
+            checkHealth();
+            loadPeers();
+            loadGossipStats();
+            loadFiles();
+
+            // Auto-refresh every 5 seconds
+            setInterval(() => {
+                checkHealth();
+                loadGossipStats();
+                loadFiles();
+            }, 5000);
+
+            // Update uptime every second
+            setInterval(updateUptime, 1000);
+        };
+
+        function updateUptime() {
+            const seconds = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+
+            if (hours > 0) {
+                document.getElementById('uptime').textContent = `${hours}h ${minutes % 60}m`;
+            } else if (minutes > 0) {
+                document.getElementById('uptime').textContent = `${minutes}m ${seconds % 60}s`;
+            } else {
+                document.getElementById('uptime').textContent = `${seconds}s`;
+            }
+        }
+
+        async function checkHealth() {
+            try {
+                const response = await fetch('/health');
+                const text = await response.text();
+                const status = document.getElementById('health-status');
+                if (text === 'OK') {
+                    status.textContent = '✅ Online';
+                    status.className = 'stat-value status-online';
+                } else {
+                    status.textContent = '❌ Error';
+                    status.className = 'stat-value status-offline';
+                }
+                document.getElementById('last-check').textContent = new Date().toLocaleTimeString();
+            } catch (error) {
+                document.getElementById('health-status').textContent = '❌ Offline';
+                document.getElementById('health-status').className = 'stat-value status-offline';
+            }
+        }
+
+        async function loadPeers() {
+            try {
+                const response = await fetch('/api/peers');
+                const data = await response.json();
+
+                const peerList = document.getElementById('peer-list');
+                if (data.peers.length === 0) {
+                    peerList.innerHTML = '<div class="loading">No peers connected (single node mode)</div>';
+                } else {
+                    peerList.innerHTML = data.peers.map(peer => `
+                        <div class="peer-item">
+                            <strong>${peer.id}</strong><br>
+                            <small>${peer.addr} | ${peer.role} | ${formatBytes(peer.storage_usage)}</small>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                document.getElementById('peer-list').innerHTML = '<div class="error">Failed to load peers</div>';
+            }
+        }
+
+        async function loadGossipStats() {
+            try {
+                const response = await fetch('/api/gossip/stats');
+                const data = await response.json();
+
+                document.getElementById('msg-sent').textContent = data.stats.messages_sent;
+                document.getElementById('msg-received').textContent = data.stats.messages_received;
+                document.getElementById('active-topics').textContent = data.stats.active_topics;
+                document.getElementById('connected-peers').textContent = data.stats.connected_peers;
+            } catch (error) {
+                console.error('Failed to load gossip stats:', error);
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('file-input');
+            const pathInput = document.getElementById('file-path');
+            const resultDiv = document.getElementById('upload-result');
+            const uploadBtn = document.getElementById('upload-btn');
+
+            if (!fileInput.files[0]) {
+                resultDiv.innerHTML = '<div class="error">Please select a file</div>';
+                return;
+            }
+
+            if (!pathInput.value) {
+                resultDiv.innerHTML = '<div class="error">Please enter a file path</div>';
+                return;
+            }
+
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+
+            try {
+                const file = fileInput.files[0];
+                const reader = new FileReader();
+
+                reader.onerror = function() {
+                    resultDiv.innerHTML = '<div class="error">❌ Failed to read file</div>';
+                    uploadBtn.disabled = false;
+                    uploadBtn.textContent = 'Upload to Mesh';
+                };
+
+                reader.onload = async function(e) {
+                    try {
+                        // Convert ArrayBuffer to base64 efficiently (handles large files)
+                        const bytes = new Uint8Array(e.target.result);
+                        let binary = '';
+                        const chunkSize = 8192;
+                        for (let i = 0; i < bytes.length; i += chunkSize) {
+                            const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+                            binary += String.fromCharCode.apply(null, chunk);
+                        }
+                        const base64 = btoa(binary);
+
+                        const response = await fetch('/api/upload', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                path: pathInput.value,
+                                content: base64
+                            })
+                        });
+
+                        const result = await response.json();
+
+                        if (response.ok) {
+                            resultDiv.innerHTML = `<div class="success">
+                                ✅ ${result.message}<br>
+                                <small>Hash: ${result.hash}</small>
+                            </div>`;
+                            fileInput.value = '';
+                            // Refresh file list
+                            loadFiles();
+                        } else {
+                            resultDiv.innerHTML = `<div class="error">❌ Upload failed: ${result.message || 'Unknown error'}</div>`;
+                        }
+
+                        uploadBtn.disabled = false;
+                        uploadBtn.textContent = 'Upload to Mesh';
+                    } catch (error) {
+                        resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+                        uploadBtn.disabled = false;
+                        uploadBtn.textContent = 'Upload to Mesh';
+                    }
+                };
+
+                reader.readAsArrayBuffer(file);
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Upload to Mesh';
+            }
+        }
+
+        async function loadFiles() {
+            try {
+                const response = await fetch('/api/files');
+                const data = await response.json();
+
+                document.getElementById('total-files').textContent = data.total;
+                document.getElementById('total-size').textContent = formatBytes(data.total_size);
+
+                const filesList = document.getElementById('files-list');
+                if (data.files.length === 0) {
+                    filesList.innerHTML = '<div class="loading">No files stored yet</div>';
+                } else {
+                    filesList.innerHTML = data.files.map(file => {
+                        const uploadDate = new Date(file.uploaded_at * 1000).toLocaleString();
+                        return `
+                        <div class="peer-item">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <strong>${file.path}</strong><br>
+                                    <small>
+                                        ${formatBytes(file.size)} |
+                                        ${uploadDate}<br>
+                                        Hash: ${file.hash.substring(0, 16)}...
+                                    </small>
+                                </div>
+                                <button onclick="downloadFile('${file.path}')" style="padding: 5px 10px; font-size: 0.9rem;">
+                                    ⬇️ Download
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    }).join('');
+                }
+            } catch (error) {
+                console.error('Failed to load files:', error);
+                document.getElementById('files-list').innerHTML = '<div class="error">Failed to load files</div>';
+            }
+        }
+
+        function downloadFile(path) {
+            // Encode the path for the URL
+            const encodedPath = path.substring(1); // Remove leading slash
+            window.location.href = `/api/files${path}`;
+        }
+
+        async function loadPeersJSON() {
+            try {
+                const response = await fetch('/api/peers');
+                const data = await response.json();
+                document.getElementById('peers-json').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('peers-json').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function loadStatsJSON() {
+            try {
+                const response = await fetch('/api/gossip/stats');
+                const data = await response.json();
+                document.getElementById('stats-json').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('stats-json').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function loadMetrics() {
+            try {
+                const response = await fetch('/api/metrics');
+                const text = await response.text();
+                document.getElementById('metrics-text').textContent = text || 'No metrics available yet';
+            } catch (error) {
+                document.getElementById('metrics-text').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        function switchTab(tabId) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+        }
+    </script>
+</body>
+</html>

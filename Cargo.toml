@@ -21,6 +21,9 @@ members = [
     "crates/sim-nvram",     # NEW: Lightweight NVRAM simulation wrapper
     "crates/sim-nvmeof",    # NEW: NVMe-oF fabric simulation
     "crates/sim-other",     # NEW: Placeholder for future sims (GPU, etc.)
+    "crates/mesh-core",     # NEW: Core types and traits for mesh and gossip
+    "crates/gossip-layer",  # NEW: Gossip protocol layer using libp2p
+    "crates/web-interface", # NEW: Next-gen web interface with Axum + Leptos
     "xtask",
     "vendor/raft-rs",
     "vendor/spdk-rs",
@@ -74,6 +77,25 @@ cpufeatures = { version = "=0.2.17" } # 2025-11-03 sw: runtime AES capability de
 subtle = { version = "=2.6.1" } # 2025-11-03 sw: constant-time comparisons for key/tweak handling
 hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for key derivation
 sha2 = { version = "=0.10.8" } # 2025-11-04 sw: Hash core for HKDF extractor
+
+# Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
+axum = { version = "^0.7.9", features = ["ws", "macros"] } # 2025-11-16 sw: Web server framework
+tower-http = { version = "^0.5.2", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
+libp2p = { version = "=0.53.2", features = ["gossipsub", "kad", "tcp", "dns", "noise", "yamux", "websocket"] } # 2025-11-16 sw: P2P networking
+libp2p-gossipsub = { version = "=0.46.1" } # 2025-11-16 sw: Gossip protocol
+libp2p-swarm = { version = "^0.44.1" } # 2025-11-16 sw: Swarm behavior
+bincode = { version = "=1.3.3" } # 2025-11-16 sw: Binary serialization for gossip messages
+bytes = { version = "^1.10.1" } # 2025-11-16 sw: Zero-copy byte buffers
+rand = { version = "=0.8.5" } # 2025-11-16 sw: Random peer selection for gossip
+backoff = { version = "=0.4.0" } # 2025-11-16 sw: Retry logic with exponential backoff
+lru = { version = "=0.12.1" } # 2025-11-16 sw: LRU cache for peer views
+prometheus = { version = "=0.13.3", features = ["process"] } # 2025-11-16 sw: Metrics collection
+leptos = { version = "=0.6.3", features = ["csr"] } # 2025-11-16 sw: Reactive web framework
+leptos_axum = { version = "=0.6.3" } # 2025-11-16 sw: Leptos integration with Axum
+wasm-bindgen = { version = "^0.2.91" } # 2025-11-16 sw: Wasm interop
+gloo = { version = "=0.11.0" } # 2025-11-16 sw: Browser utilities for Wasm
+web-sys = { version = "^0.3.68", features = ["WebSocket", "MessageEvent", "CloseEvent"] } # 2025-11-16 sw: Web APIs
+tower = { version = "=0.4.13", features = ["util"] } # 2025-11-16 sw: Service abstractions
 
 raft-rs = { path = "vendor/raft-rs", version = "0.7.0" }
 spdk-rs = { path = "vendor/spdk-rs", version = "0.1.0" }

@@ -1,0 +1,53 @@
+[package]
+name = "gossip-layer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Local crates
+mesh-core = { path = "../mesh-core" }
+
+# P2P networking
+libp2p.workspace = true
+libp2p-gossipsub.workspace = true
+libp2p-swarm = { workspace = true, features = ["macros"] }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+bincode.workspace = true
+
+# Cryptography
+ring = "0.17"
+sha2.workspace = true
+hmac.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+futures.workspace = true
+async-trait = "0.1"
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Utilities
+bytes.workspace = true
+rand.workspace = true
+lru.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.13"
+
+[features]
+default = []
+metrics = ["prometheus"]
+
+[dependencies.prometheus]
+version = "0.13"
+optional = true
+features = ["process"]

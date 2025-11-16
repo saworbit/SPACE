@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Web Interface File Storage** - Complete file management system
+  - In-memory file storage with `HashMap<String, StoredFile>`
+  - `GET /api/files` endpoint to list all stored files with metadata (size, hash, upload time)
+  - `GET /api/files/:path` endpoint for binary file downloads
+  - Enhanced `POST /api/upload` to persist files after gossip broadcast
+  - Interactive dashboard with "Stored Files" section showing real-time file list
+  - One-click download buttons for each stored file
+  - Auto-refresh every 5 seconds for live file list updates
+  - Fixed JavaScript upload with chunked base64 encoding for large files
+  - File operations trigger gossip `FileUploaded` messages to notify peers
+  - Comprehensive integration tests for upload, list, and download flows
+
 - **Automation handlers** - Migration, evacuation, and rebalancing now perform real data movement via `ScalingAgent::with_runtime`
   - MAC validation and optional re-encryption during moves
   - Capsule streaming uses replication frames with post-receive deduplication

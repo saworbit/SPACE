@@ -103,6 +103,52 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 
 ---
 
+## 🌐 Next-Gen Web Interface
+
+**NEW: Real-time mesh monitoring and management dashboard**
+
+SPACE now includes a comprehensive web interface for visualizing and managing the distributed mesh network with integrated gossip protocol support.
+
+### ✨ Features
+
+- 📊 **Real-time peer discovery** with gossip protocol visualization
+- 🔄 **Live WebSocket updates** for mesh topology changes
+- 📈 **Prometheus metrics** for gossip convergence and bandwidth
+- 🗂️ **File operations** - Upload, browse, and download files with Blake3 verification
+- 💾 **File storage dashboard** - View all stored files with metadata and one-click downloads
+- 🔐 **Security alerts** broadcast via gossip
+- 🎯 **RBAC support** (Admin, Editor, Viewer, StorageNode, Gateway roles)
+- ⚡ **Reactive frontend** built with Leptos (optional, feature-gated)
+
+### 🚀 Quick Start
+
+```bash
+# Build and run the web server
+cargo run -p web-interface --bin web-server
+
+# Access the dashboard
+open http://localhost:3000
+
+# With custom configuration
+BIND_ADDR=0.0.0.0:8080 GOSSIP_FANOUT=12 cargo run -p web-interface --bin web-server
+```
+
+### 📚 API Endpoints
+
+- `GET /health` - Health check
+- `GET /api/peers` - List all peers with gossip metrics
+- `GET /api/gossip/stats` - Gossip protocol statistics
+- `POST /api/upload` - Upload file to mesh
+- `GET /api/files` - List all stored files with metadata
+- `GET /api/files/:path` - Download file by path
+- `POST /api/gossip/broadcast` - Broadcast custom message
+- `GET /api/metrics` - Prometheus metrics
+- `WS /ws/live` - Real-time WebSocket updates
+
+For complete documentation, see [docs/WEB_INTERFACE.md](docs/WEB_INTERFACE.md).
+
+---
+
 ## 🌐 PODMS Scaling
 ### Policy Compiler Intelligence — Step 3 Complete
 
