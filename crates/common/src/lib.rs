@@ -451,7 +451,9 @@ pub mod podms {
         #[test]
         fn test_transformation_pipeline() {
             let mut policy = Policy::default();
-            policy.encryption = EncryptionPolicy::XtsAes256 { key_version: Some(1) };
+            policy.encryption = EncryptionPolicy::XtsAes256 {
+                key_version: Some(1),
+            };
 
             let capsule = Capsule {
                 id: CapsuleId::new(),
@@ -466,8 +468,9 @@ pub mod podms {
             let segment_id = SegmentId(1);
 
             // decrypt (reverse) + encrypt (reverse) yields original buffer
-            let res =
-                capsule.apply_transform(segment_id, &data, &capsule.policy, &MockOps).unwrap();
+            let res = capsule
+                .apply_transform(segment_id, &data, &capsule.policy, &MockOps)
+                .unwrap();
             assert_eq!(res, data);
         }
 
