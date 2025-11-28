@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **SwarmBehavior Transformer Pattern** - Dependency-inverted `TransformOps` trait in `common` enables decrypt -> decompress -> re-compress -> re-encrypt during migration with sovereignty enforcement; documented in `docs/specs/PODMS_SWARM_BEHAVIOR.md`.
+- **SwarmOps runtime adapter** - `crates/scaling/src/swarm_ops.rs` implements `TransformOps` with per-capsule XTS key derivation and LZ4/Zstd bridging; detailed in `docs/specs/PODMS_TRANSFORM_OPS.md`.
 - **🌐 Multi-Node Capabilities (PODMS Orchestrator)** - Comprehensive distributed mesh networking
   - **New crate: `podms-orchestrator`** - Unified coordination layer for multi-node operations
     - `Orchestrator` struct wires gossip, mesh, scaling agent, and telemetry channels
@@ -115,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Implementation status tracking document
 
 ### Changed
+- `TransformOps::encrypt/decrypt` now take `capsule_id` so crypto paths can derive per-capsule keys; `Capsule::apply_transform` forwards the capsule id to the runtime ops.
 - `MeshNode::new()` now requires `ContentStore`, `NvramLog`, and `KeyManager` dependencies
 - `ScalingAgent` now generic over `ContentStore` implementation
 - Replication handler integrated into mesh listener spawn logic

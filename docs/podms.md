@@ -467,10 +467,24 @@ let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 
 Capsules self-transform during migrations via the `SwarmBehavior` trait ([`common/src/lib.rs`](../crates/common/src/lib.rs)). The circular dependency with crypto/compression is resolved through injected `TransformOps` (implemented by the runtime). See the deep-dive at [`docs/specs/PODMS_SWARM_BEHAVIOR.md`](specs/PODMS_SWARM_BEHAVIOR.md).
 
+`TransformOps` now carries `capsule_id` into encrypt/decrypt so runtimes can derive per-capsule keys (see `docs/specs/PODMS_TRANSFORM_OPS.md` for the SwarmOps adapter).
+
 ```rust
 pub trait TransformOps {
-    fn decrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>>;
-    fn encrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>>;
+    fn decrypt(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<Vec<u8>>;
+    fn encrypt(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<Vec<u8>>;
     fn decompress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>>;
     fn compress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>>;
 }
@@ -503,11 +517,23 @@ struct PipelineOps<'a> {
 }
 
 impl TransformOps for PipelineOps<'_> {
-    fn decrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>> {
-        self.crypto.decrypt_segment(data, policy, ctx)
+    fn decrypt(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<Vec<u8>> {
+        self.crypto.decrypt_segment(capsule_id, data, policy, ctx)
     }
-    fn encrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>> {
-        self.crypto.encrypt_segment(data, policy, ctx)
+    fn encrypt(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<Vec<u8>> {
+        self.crypto.encrypt_segment(capsule_id, data, policy, ctx)
     }
     fn decompress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>> {
         self.comp.decompress(data, policy)

@@ -28,6 +28,7 @@ pub mod agent;
 pub mod batch_queue;
 pub mod compiler;
 pub mod replication;
+pub mod swarm_ops;
 #[cfg(test)]
 mod tests;
 
@@ -41,6 +42,9 @@ pub use replication::{ContentStore, ReplicationFrame, ReplicationHandler};
 
 // Re-export batch queue types for external use
 pub use batch_queue::{BatchItem, BatchQueue, BatchQueueSender, QueueStats};
+
+// Re-export SwarmOps for PODMS migrations
+pub use swarm_ops::SwarmOps;
 
 /// Mesh node capabilities for disaggregated access.
 /// Nodes advertise their capabilities (e.g., GPU, NVRAM, network tier) via gossip.

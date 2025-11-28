@@ -31,6 +31,7 @@ hex = "0.4"
 common = { path = "../common", features = ["podms"] }
 encryption = { path = "../encryption" }
 nvram-sim = { path = "../nvram-sim" }
+compression = { path = "../compression" }
 
 [dev-dependencies]
 tracing-test = { workspace = true }

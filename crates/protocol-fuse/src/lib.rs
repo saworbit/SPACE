@@ -3,12 +3,44 @@
 
 use anyhow::Result;
 use capsule_registry::CapsuleRegistry;
-use common::podms::{SwarmBehavior, Telemetry};
-use common::{CapsuleId, Policy};
+use common::podms::{SwarmBehavior, Telemetry, TransformOps};
+use common::{CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, SegmentId};
 use fuse_rs::{FilesystemImpl, MountHandle};
 use scaling::compiler::{compile_scaling, MeshState, ScalingAction};
 use scaling::{MeshNode, MetadataShard};
 use tracing::{info, info_span};
+
+struct IdentityTransformOps;
+
+impl TransformOps for IdentityTransformOps {
+    fn decrypt(
+        &self,
+        _capsule_id: CapsuleId,
+        data: &[u8],
+        _policy: &EncryptionPolicy,
+        _ctx: SegmentId,
+    ) -> anyhow::Result<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+
+    fn encrypt(
+        &self,
+        _capsule_id: CapsuleId,
+        data: &[u8],
+        _policy: &EncryptionPolicy,
+        _ctx: SegmentId,
+    ) -> anyhow::Result<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+
+    fn decompress(&self, data: &[u8], _policy: &CompressionPolicy) -> anyhow::Result<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+
+    fn compress(&self, data: &[u8], _policy: &CompressionPolicy) -> anyhow::Result<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+}
 
 /// Mounts a capsule as a local FUSE view with Phase 4 federation.
 pub async fn mount_fuse_view(
@@ -22,7 +54,7 @@ pub async fn mount_fuse_view(
     let _enter = span.enter();
 
     let capsule = registry.lookup(id)?;
-    let transformed = capsule.apply_transform(&[], policy)?;
+    let transformed = capsule.apply_transform(SegmentId(0), &[], policy, &IdentityTransformOps)?;
 
     let telemetry = Telemetry::ViewProjection {
         id,

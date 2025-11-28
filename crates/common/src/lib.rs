@@ -270,16 +270,20 @@ pub mod podms {
     /// implementation to callers.
     pub trait TransformOps {
         /// Decrypt data using the provided policy and segment context (for tweaks).
+        /// `capsule_id` provides the context needed for per-capsule key derivation.
         fn decrypt(
             &self,
+            capsule_id: CapsuleId,
             data: &[u8],
             policy: &EncryptionPolicy,
             ctx: SegmentId,
         ) -> anyhow::Result<Vec<u8>>;
 
         /// Encrypt data using the provided policy and segment context.
+        /// `capsule_id` provides the context needed for per-capsule key derivation.
         fn encrypt(
             &self,
+            capsule_id: CapsuleId,
             data: &[u8],
             policy: &EncryptionPolicy,
             ctx: SegmentId,
@@ -333,7 +337,7 @@ pub mod podms {
 
             // Unwrap: decrypt if the source policy enabled encryption.
             let mut payload = if self.is_encrypted() {
-                ops.decrypt(data, src_enc, segment_id)?
+                ops.decrypt(self.id, data, src_enc, segment_id)?
             } else {
                 data.to_vec()
             };
@@ -351,7 +355,7 @@ pub mod podms {
 
             // Rewrap: always honor the target encryption policy (re-encrypt to rotate keys).
             if !matches!(dst_enc, EncryptionPolicy::Disabled) {
-                payload = ops.encrypt(&payload, dst_enc, segment_id)?;
+                payload = ops.encrypt(self.id, &payload, dst_enc, segment_id)?;
             }
 
             Ok(payload)
@@ -422,6 +426,7 @@ pub mod podms {
         impl TransformOps for MockOps {
             fn decrypt(
                 &self,
+                _capsule_id: CapsuleId,
                 data: &[u8],
                 _p: &EncryptionPolicy,
                 _id: SegmentId,
@@ -432,6 +437,7 @@ pub mod podms {
             }
             fn encrypt(
                 &self,
+                _capsule_id: CapsuleId,
                 data: &[u8],
                 _p: &EncryptionPolicy,
                 _id: SegmentId,

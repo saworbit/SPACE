@@ -14,12 +14,26 @@ Component: `crates/common` (Swarm Intelligence)
 
 ```rust
 pub trait TransformOps {
-    fn decrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>>;
-    fn encrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>>;
+    fn decrypt(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<Vec<u8>>;
+    fn encrypt(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<Vec<u8>>;
     fn decompress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>>;
     fn compress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>>;
 }
 ```
+
+`capsule_id` is forwarded into crypto ops so runtime implementations can derive per-capsule keys. See `docs/specs/PODMS_TRANSFORM_OPS.md` for the concrete SwarmOps adapter.
 
 ## 3. Data Flow: Unwrap -> Transcode -> Rewrap
 ```mermaid
