@@ -232,14 +232,14 @@ async fn main() -> anyhow::Result<()> {
     // Create mesh node in a zone
     let zone = ZoneId::Metro { name: "us-west-1a".into() };
     let listen_addr = "127.0.0.1:8000".parse().unwrap();
-    let mesh_node = Arc::new(MeshNode::new(zone, listen_addr).await?);
+    let mesh_node = Arc::new(MeshNode::new(zone, listen_addr).await->);
 
     // Start mesh with seed nodes
     let seeds = vec!["127.0.0.1:8001".parse().unwrap()];
-    mesh_node.start(seeds).await?;
+    mesh_node.start(seeds).await->;
 
     // Create pipeline with mesh and telemetry
-    let runtime = RuntimeHandles::from_env()?;
+    let runtime = RuntimeHandles::from_env()->;
     let registry = (*runtime.registry).clone();
     let nvram = runtime.nvram.read().await.clone();
     let (tx, rx) = mpsc::unbounded_channel();
@@ -254,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Write with metro-sync policy (RPO=0)
     let data = b"Important data requiring zero-RPO";
-    let capsule_id = pipeline.write_capsule_with_policy_async(data, &Policy::metro_sync()).await?;
+    let capsule_id = pipeline.write_capsule_with_policy_async(data, &Policy::metro_sync()).await->;
 
     // Segments automatically mirrored to peers!
     println!("Capsule {} replicated", capsule_id.as_uuid());
@@ -441,7 +441,7 @@ The Policy Compiler ([`scaling/src/compiler.rs`](../crates/scaling/src/compiler.
 ```rust
 // PolicyCompiler processes telemetry → actions
 let compiler = PolicyCompiler::with_defaults();
-let mesh_state = build_mesh_state().await?;
+let mesh_state = build_mesh_state().await->;
 
 let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 // Returns: Vec<ScalingAction> (Replicate, Migrate, Evacuate, Rebalance)
@@ -465,20 +465,63 @@ let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 
 ### Swarm Behavior Trait
 
-Capsules self-transform during migrations via the `SwarmBehavior` trait ([`common/src/lib.rs`](../crates/common/src/lib.rs)):
+Capsules self-transform during migrations via the `SwarmBehavior` trait ([`common/src/lib.rs`](../crates/common/src/lib.rs)). The circular dependency with crypto/compression is resolved through injected `TransformOps` (implemented by the runtime). See the deep-dive at [`docs/specs/PODMS_SWARM_BEHAVIOR.md`](specs/PODMS_SWARM_BEHAVIOR.md).
 
 ```rust
+pub trait TransformOps {
+    fn decrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>>;
+    fn encrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>>;
+    fn decompress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>>;
+    fn compress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>>;
+}
+
 pub trait SwarmBehavior {
-    fn apply_transform(&self, data: &[u8], policy: &Policy) -> Result<Vec<u8>>;
+    fn apply_transform<T: TransformOps>(
+        &self,
+        segment_id: SegmentId,
+        data: &[u8],
+        target_policy: &Policy,
+        ops: &T,
+    ) -> Result<Vec<u8>>;
     fn on_migrate(&self, destination: NodeId, dest_zone: &ZoneId) -> Result<()>;
     fn requires_transform(&self, source_zone: &ZoneId, dest_zone: &ZoneId) -> bool;
 }
 ```
 
-**Transformation Logic:**
-- Zone crossing → Re-encrypt with destination zone key (preserves security)
-- Policy change → Recompress (e.g., LZ4 → Zstd for cold storage)
-- Preserves dedup hashes (content-based addressing invariant)
+**Transformation Logic (Unwrap -> Transcode -> Rewrap):**
+- Decrypt when source policy enabled encryption.
+- Decompress -> re-compress only if compression policies differ (short-circuit when they match).
+- Encrypt with target policy (re-key on zone crossing even if policies match).
+- Sovereignty guard: `Local` capsules error before leaving the node; `Zone` capsules log validation; `Global` is unrestricted.
+
+**Runtime Integration (Scaling Agent example):**
+```rust
+/// In crates/scaling (or pipeline), wrap the crypto/compress crates.
+struct PipelineOps<'a> {
+    crypto: &'a CryptoEngine,
+    comp: &'a CompressionEngine,
+}
+
+impl TransformOps for PipelineOps<'_> {
+    fn decrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>> {
+        self.crypto.decrypt_segment(data, policy, ctx)
+    }
+    fn encrypt(&self, data: &[u8], policy: &EncryptionPolicy, ctx: SegmentId) -> Result<Vec<u8>> {
+        self.crypto.encrypt_segment(data, policy, ctx)
+    }
+    fn decompress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>> {
+        self.comp.decompress(data, policy)
+    }
+    fn compress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>> {
+        self.comp.compress(data, policy)
+    }
+}
+
+// During migration:
+let ops = PipelineOps { crypto: &crypto_engine, comp: &compression_engine };
+let transformed = capsule.apply_transform(segment_id, &bytes, &target_policy, &ops)?;
+```
+This keeps `common` free of crypto/compression dependencies while letting the scaling agent orchestrate the full unwrap/transcode/rewrap flow during migration or replication.
 
 ### Example Policy YAML
 
@@ -499,12 +542,12 @@ The `ScalingAgent` ([`scaling/src/agent.rs`](../crates/scaling/src/agent.rs)) us
 ```rust
 async fn handle_telemetry_event(&self, event: Telemetry) -> Result<()> {
     let policy = extract_policy(&event);
-    let mesh_state = self.build_mesh_state().await?;
+    let mesh_state = self.build_mesh_state().await->;
 
     let actions = self.compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 
     for action in actions {
-        self.execute_action(action).await?; // Execute migration, replication, etc.
+        self.execute_action(action).await->; // Execute migration, replication, etc.
     }
 }
 ```
@@ -538,7 +581,7 @@ cargo test --package scaling  # Runs all compiler + agent tests
 
 ## Design Rationale
 
-### Why Not Traditional Clustering?
+### Why Not Traditional Clustering->
 
 | Aspect | Traditional Cluster | PODMS |
 |--------|-------------------|-------|
@@ -548,11 +591,11 @@ cargo test --package scaling  # Runs all compiler + agent tests
 | **Upgrade Path** | Forklift (downtime) | Rolling (zero-downtime) |
 | **Policy Enforcement** | API gateway | Embedded in capsule |
 
-### Why Not Microservices Model?
+### Why Not Microservices Model->
 
 Microservices decompose by *service function*. PODMS decomposes by *data primitive* (capsule). Each capsule is independently scalable, reducing orchestration complexity.
 
-### Why Telemetry Channels?
+### Why Telemetry Channels->
 
 **Alternatives Considered:**
 - Polling: Higher latency, wasted cycles

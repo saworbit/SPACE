@@ -168,22 +168,18 @@ pub mod podms {
     use super::*;
 
     /// Unique identifier for a node in the SPACE mesh.
-    /// Wraps a UUID to represent individual storage nodes.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct NodeId(pub Uuid);
 
     impl NodeId {
-        /// Create a new random NodeId
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }
 
-        /// Create from an existing UUID
         pub fn from_uuid(id: Uuid) -> Self {
             Self(id)
         }
 
-        /// Get the underlying UUID
         pub fn as_uuid(&self) -> &Uuid {
             &self.0
         }
@@ -268,6 +264,34 @@ pub mod podms {
         ViewProjection { id: CapsuleId, view: String },
     }
 
+    /// Interface for crypto/compression operations provided by the runtime.
+    /// This resolves the circular dependency between `common` and
+    /// higher-level crypto/compression crates by pushing the concrete
+    /// implementation to callers.
+    pub trait TransformOps {
+        /// Decrypt data using the provided policy and segment context (for tweaks).
+        fn decrypt(
+            &self,
+            data: &[u8],
+            policy: &EncryptionPolicy,
+            ctx: SegmentId,
+        ) -> anyhow::Result<Vec<u8>>;
+
+        /// Encrypt data using the provided policy and segment context.
+        fn encrypt(
+            &self,
+            data: &[u8],
+            policy: &EncryptionPolicy,
+            ctx: SegmentId,
+        ) -> anyhow::Result<Vec<u8>>;
+
+        /// Decompress data.
+        fn decompress(&self, data: &[u8], policy: &CompressionPolicy) -> anyhow::Result<Vec<u8>>;
+
+        /// Compress data.
+        fn compress(&self, data: &[u8], policy: &CompressionPolicy) -> anyhow::Result<Vec<u8>>;
+    }
+
     /// Swarm behavior trait for capsule self-transformation during migrations.
     ///
     /// This trait enables PODMS "swarm intelligence" where capsules autonomously
@@ -276,73 +300,61 @@ pub mod podms {
     pub trait SwarmBehavior {
         /// Apply policy-driven transformation to capsule data.
         ///
-        /// Transformations preserve security and dedup invariants while adapting
-        /// to new placement contexts (e.g., re-encrypt for zone change, recompress
-        /// for cold storage).
-        ///
-        /// # Arguments
-        /// * `data` - Original capsule data
-        /// * `policy` - Target policy context (may differ from source)
-        ///
-        /// # Returns
-        /// Transformed data ready for new placement
-        fn apply_transform(&self, data: &[u8], policy: &Policy) -> anyhow::Result<Vec<u8>>;
+        /// Transforms follow an unwrap → transcode → rewrap sequence to
+        /// preserve security while adapting to new placement contexts.
+        fn apply_transform<T: TransformOps>(
+            &self,
+            segment_id: SegmentId,
+            data: &[u8],
+            target_policy: &Policy,
+            ops: &T,
+        ) -> anyhow::Result<Vec<u8>>;
 
         /// Hook called before migration to validate and prepare.
-        ///
-        /// # Arguments
-        /// * `destination` - Target node for migration
-        /// * `dest_zone` - Target zone for sovereignty validation
-        ///
-        /// # Returns
-        /// Ok(()) if migration is allowed, Err if sovereignty violated
         fn on_migrate(&self, destination: NodeId, dest_zone: &ZoneId) -> anyhow::Result<()>;
 
         /// Determine if transformation is required for migration.
-        ///
-        /// # Arguments
-        /// * `source_zone` - Current zone
-        /// * `dest_zone` - Target zone
-        ///
-        /// # Returns
-        /// true if data needs transformation (e.g., zone boundary crossing)
         fn requires_transform(&self, source_zone: &ZoneId, dest_zone: &ZoneId) -> bool;
     }
 
     /// Implementation of SwarmBehavior for Capsule.
-    ///
-    /// Provides policy-aware transformation logic that preserves security
-    /// invariants (encryption keys, dedup hashes) while adapting compression
-    /// and encryption to new placement contexts.
     impl SwarmBehavior for Capsule {
-        fn apply_transform(&self, data: &[u8], policy: &Policy) -> anyhow::Result<Vec<u8>> {
-            // For Step 3, implement basic transformation logic
-            // In practice, this would:
-            // 1. Decrypt with current key
-            // 2. Re-encrypt with destination zone key (if zone changed)
-            // 3. Recompress if policy changed (e.g., cold storage)
-            // 4. Preserve dedup hashes for content-based addressing
+        fn apply_transform<T: TransformOps>(
+            &self,
+            segment_id: SegmentId,
+            data: &[u8],
+            target_policy: &Policy,
+            ops: &T,
+        ) -> anyhow::Result<Vec<u8>> {
+            let src_enc = &self.policy.encryption;
+            let dst_enc = &target_policy.encryption;
+            let src_comp = &self.policy.compression;
+            let dst_comp = &target_policy.compression;
 
-            // Determine if we need recompression based on policy
-            let needs_recompression = match &policy.compression {
-                CompressionPolicy::None => false,
-                CompressionPolicy::LZ4 { .. } | CompressionPolicy::Zstd { .. } => {
-                    !self.is_compressed()
-                }
+            // Unwrap: decrypt if the source policy enabled encryption.
+            let mut payload = if self.is_encrypted() {
+                ops.decrypt(data, src_enc, segment_id)?
+            } else {
+                data.to_vec()
             };
 
-            if needs_recompression {
-                // In production: Use compression crate with policy-specified algo
-                // For now, return original data as placeholder
-                tracing::debug!(
-                    capsule_id = ?self.id,
-                    policy_compression = ?policy.compression,
-                    "would apply recompression during transform"
-                );
+            // Transcode: only decompress/re-compress when compression policies differ.
+            let compression_changed = src_comp != dst_comp;
+
+            if self.is_compressed() && compression_changed {
+                payload = ops.decompress(&payload, src_comp)?;
             }
 
-            // Return original data for now (full transformation in later steps)
-            Ok(data.to_vec())
+            if compression_changed && !matches!(dst_comp, CompressionPolicy::None) {
+                payload = ops.compress(&payload, dst_comp)?;
+            }
+
+            // Rewrap: always honor the target encryption policy (re-encrypt to rotate keys).
+            if !matches!(dst_enc, EncryptionPolicy::Disabled) {
+                payload = ops.encrypt(&payload, dst_enc, segment_id)?;
+            }
+
+            Ok(payload)
         }
 
         fn on_migrate(&self, destination: NodeId, dest_zone: &ZoneId) -> anyhow::Result<()> {
@@ -350,13 +362,11 @@ pub mod podms {
             match self.policy.sovereignty {
                 SovereigntyLevel::Local => {
                     return Err(anyhow::anyhow!(
-                        "capsule {:?} has Local sovereignty, cannot migrate",
-                        self.id
+                        "SOVEREIGNTY VIOLATION: Capsule {:?} is restricted to Local scope. Migration to node {} in zone {} denied.",
+                        self.id, destination, dest_zone
                     ));
                 }
                 SovereigntyLevel::Zone => {
-                    // Would need to validate dest_zone matches current zone
-                    // For now, log the check
                     tracing::debug!(
                         capsule_id = ?self.id,
                         destination = %destination,
@@ -382,30 +392,106 @@ pub mod podms {
 
     // Helper methods for Capsule (PODMS-specific)
     impl Capsule {
-        /// Check if capsule data is compressed.
-        fn is_compressed(&self) -> bool {
-            // Check if any segments are compressed
-            // In production, this would check segment metadata
-            false // Placeholder
+        /// Check if capsule data is encrypted based on policy.
+        pub fn is_encrypted(&self) -> bool {
+            self.policy.encryption.is_enabled()
+        }
+
+        /// Check if capsule data is compressed based on policy.
+        pub fn is_compressed(&self) -> bool {
+            !matches!(self.policy.compression, CompressionPolicy::None)
         }
 
         /// Determine if capsule should be treated as cold data.
         ///
         /// Cold data has low access frequency and benefits from higher compression.
         #[allow(dead_code)]
-        fn is_cold_data(&self) -> bool {
-            // In production: Check access patterns from telemetry
-            // For now, use a simple heuristic based on access counts
-            !self.segments.is_empty() && {
-                // Would check segment access_count in real implementation
-                false // Placeholder
-            }
+        pub fn is_cold_data(&self) -> bool {
+            // Placeholder heuristic: requires richer telemetry to evaluate.
+            let _ = self.segments.len();
+            false
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        // Mock Ops for testing the logic flow without full crypto stack.
+        struct MockOps;
+        impl TransformOps for MockOps {
+            fn decrypt(
+                &self,
+                data: &[u8],
+                _p: &EncryptionPolicy,
+                _id: SegmentId,
+            ) -> anyhow::Result<Vec<u8>> {
+                let mut d = data.to_vec();
+                d.reverse();
+                Ok(d)
+            }
+            fn encrypt(
+                &self,
+                data: &[u8],
+                _p: &EncryptionPolicy,
+                _id: SegmentId,
+            ) -> anyhow::Result<Vec<u8>> {
+                let mut d = data.to_vec();
+                d.reverse();
+                Ok(d)
+            }
+            fn decompress(&self, data: &[u8], _p: &CompressionPolicy) -> anyhow::Result<Vec<u8>> {
+                Ok(data.to_vec())
+            }
+            fn compress(&self, data: &[u8], _p: &CompressionPolicy) -> anyhow::Result<Vec<u8>> {
+                Ok(data.to_vec())
+            }
+        }
+
+        #[test]
+        fn test_transformation_pipeline() {
+            let mut policy = Policy::default();
+            policy.encryption = EncryptionPolicy::XtsAes256 { key_version: Some(1) };
+
+            let capsule = Capsule {
+                id: CapsuleId::new(),
+                size: 100,
+                segments: vec![],
+                created_at: 0,
+                policy,
+                deduped_bytes: 0,
+            };
+
+            let data = vec![1, 2, 3, 4];
+            let segment_id = SegmentId(1);
+
+            // decrypt (reverse) + encrypt (reverse) yields original buffer
+            let res =
+                capsule.apply_transform(segment_id, &data, &capsule.policy, &MockOps).unwrap();
+            assert_eq!(res, data);
+        }
+
+        #[test]
+        fn test_sovereignty_block() {
+            let mut policy = Policy::default();
+            policy.sovereignty = SovereigntyLevel::Local;
+
+            let capsule = Capsule {
+                id: CapsuleId::new(),
+                size: 0,
+                segments: vec![],
+                created_at: 0,
+                policy,
+                deduped_bytes: 0,
+            };
+
+            let dest = NodeId::new();
+            let zone = ZoneId::Metro {
+                name: "remote".into(),
+            };
+
+            assert!(capsule.on_migrate(dest, &zone).is_err());
+        }
 
         #[test]
         fn test_node_id_creation() {

@@ -121,6 +121,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
   - Re-compression optimization
   - Key rotation support
   - BLAKE3 MAC validation
+  - Dependency-inverted `TransformOps` pipeline (see `docs/specs/PODMS_SWARM_BEHAVIOR.md`)
   - Cross-node deduplication
 
 - **🐳 Docker Compose Simulation**
