@@ -7,7 +7,7 @@ Thank you for helping harden SPACE. This document highlights day-to-day expectat
 - Run `cargo xtask audit` before opening a pull request to execute formatting, checks, and security tooling in one pass.
 - Generate dependency artefacts with `cargo xtask graph` when introducing new crates or features; attach resulting files if reviewers request them.
 - Install `cargo fuzz` (`cargo install cargo-fuzz`) to exercise the fuzz harnesses when touching encryption or compression code.
-- Follow the coding standards in `docs/architecture.md` and module-specific guides such as `ENCRYPTION_IMPLEMENTATION.md`.
+- Follow the coding standards in `docs/architecture.md` and module-specific guides such as `docs/implementation/ENCRYPTION_IMPLEMENTATION.md`.
 
 ## Dependency Changes
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.

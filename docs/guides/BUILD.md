@@ -124,8 +124,8 @@ SERVER_PID=$!
 curl http://localhost:8080/health
 
 # 6. Run demo
-chmod +x demo_s3.sh
-./demo_s3.sh
+chmod +x scripts/demo_s3.sh
+./scripts/demo_s3.sh
 
 # 7. Stop server
 kill $SERVER_PID
@@ -171,7 +171,7 @@ cargo install mold
 Once built successfully:
 
 1. ✅ Read [QUICKSTART_S3.md](QUICKSTART_S3.md) for usage examples
-2. ✅ Run `./demo_s3.sh` to see it in action
+2. ✅ Run `./scripts/demo_s3.sh` to see it in action
 3. ✅ Start building the next protocol view (NFS or Block)
 
 ---

@@ -108,7 +108,7 @@ This document summarizes the comprehensive implementation of container integrati
 
 ### 5. Documentation
 
-#### ✅ SIMULATIONS.md (`docs/SIMULATIONS.md`)
+#### ✅ SIMULATIONS.md (`../SIMULATIONS.md`)
 - **Sections**:
   - Overview and design principles
   - Module-by-module details (NVRAM, NVMe-oF, Other)
@@ -119,7 +119,7 @@ This document summarizes the comprehensive implementation of container integrati
   - Future extensions
 - **Length**: Comprehensive (400+ lines)
 
-#### ✅ CONTAINERIZATION.md (`docs/CONTAINERIZATION.md`)
+#### ✅ CONTAINERIZATION.md (`../CONTAINERIZATION.md`)
 - **Sections**:
   - Docker images (core vs sim)
   - Docker Compose setup

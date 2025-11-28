@@ -4,7 +4,7 @@ SPACE enforces deterministic, auditable builds for every crate in the workspace.
 
 ## Goals
 - Prevent supply-chain compromise through version pinning, reproducible builds, and continuous auditing.
-- Ensure cryptographic dependencies uphold constant-time guarantees and align with `ENCRYPTION_IMPLEMENTATION.md`.
+- Ensure cryptographic dependencies uphold constant-time guarantees and align with `implementation/ENCRYPTION_IMPLEMENTATION.md`.
 - Minimise dependency bloat while keeping license posture Apache-2.0 / MIT compatible.
 
 ## Workflow Summary
@@ -44,7 +44,7 @@ Record tier assignments inside PR descriptions and keep the table up to date whe
 ## Crypto Review Rubric
 - Require constant-time primitives (`subtle::ConstantTimeEq`, no `PartialEq` on secret data).
 - Verify upstream uses hardware acceleration safely (`cpufeatures` gating, no runtime feature toggles that alter timing).
-- For new algorithms, capture proofs or references in `ENCRYPTION_IMPLEMENTATION.md` and list reviewers.
+- For new algorithms, capture proofs or references in `implementation/ENCRYPTION_IMPLEMENTATION.md` and list reviewers.
 - Key derivation must use HKDF/PBKDF2 with TPM-backed master secrets; ensure `keymanager.rs` aligns with policy.
 
 ## Fuzzing & Side-Channel Probing

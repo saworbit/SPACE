@@ -151,8 +151,8 @@ cargo test --test dedup_test test_dedup_multiple_capsules
 ### Manual Testing
 
 # Run the dedup demo script
-chmod +x test_dedup.sh
-./test_dedup.sh
+chmod +x scripts/test_dedup.sh
+./scripts/test_dedup.sh
 
 ## Metadata Format
 
@@ -219,7 +219,7 @@ chmod +x test_dedup.sh
 
 ## Validation Against Patent Claims
 
-From `docs/patentable_concepts.md` § 3:
+From `../patentable_concepts.md` § 3:
 
 > **Per-Segment Encryption with Inline Dedup & Compression**
 > 

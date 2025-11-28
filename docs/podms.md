@@ -762,7 +762,7 @@ Historical access patterns → LSTM → Predicted spike → Proactive migration
 
 - [architecture.md](architecture.md) - Overall SPACE design
 - [future_state_architecture.md](future_state_architecture.md) - Long-term vision
-- [ENCRYPTION_IMPLEMENTATION.md](ENCRYPTION_IMPLEMENTATION.md) - Security model
+- [ENCRYPTION_IMPLEMENTATION.md](implementation/ENCRYPTION_IMPLEMENTATION.md) - Security model
 - [Cargo.toml features](../Cargo.toml) - Feature flag configuration
 
 ## Changelog

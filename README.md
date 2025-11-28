@@ -369,7 +369,7 @@ spacectl queue-stats  # Check batch queue depth
 - 🌐 **Federated metadata mesh** – Mesh nodes gossip metadata, resolve capsule locations, shard registry state, and surface Paxos-style consistency
 - 🧭 **Policy-orchestrated mobility** – `Policy::latency_target` and `Policy::sovereignty` drive federation, QoS, and transformation decisions
 - ⚙️ Build with `cargo build --features phase4` and project via `spacectl --view nvme|nfs|fuse|csi`
-- 📄 Reference [docs/phase4.md](docs/phase4.md) for crate details, policy examples (`examples/phase4-policy.yaml`), and test scripts (`test_phase4.sh`, `test_federation_failover.sh`)
+- 📄 Reference [docs/phase4.md](docs/phase4.md) for crate details, policy examples (`examples/phase4-policy.yaml`), and test scripts (`scripts/test_phase4.sh`, `scripts/test_federation_failover.sh`)
 - ☸️ Kubernetes users can drop in `deployment/csi-deployment.yaml` after enabling the CSI view feature
 
 </details>
@@ -678,11 +678,31 @@ space/
 |   +-- architecture.md
 |   +-- patentable_concepts.md
 |   +-- future_state_architecture.md
-|   +-- DEDUP_IMPLEMENTATION.md        # Phase 2.2 details
-|   +-- ENCRYPTION_IMPLEMENTATION.md   # NEW: Phase 3 details
+|   +-- guides/
+|   |   +-- BUILD.md                     # Build + test instructions
+|   |   +-- QUICKSTART_S3.md             # Protocol view demo
+|   +-- implementation/
+|   |   +-- DEDUP_IMPLEMENTATION.md      # Phase 2.2 details
+|   |   +-- ENCRYPTION_IMPLEMENTATION.md # NEW: Phase 3 details
+|   |   +-- IMPLEMENTATION_COMPLETE.md   # Replication runbook
+|   |   +-- IMPLEMENTATION_SUMMARY.md    # Implementation overview
+|   +-- status/
+|   |   +-- INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md # Progress tracking
+|   |   +-- MULTI_NODE_STATUS.md                         # Multi-node readiness
+|   +-- ...                                              # See docs/README.md for full index
++-- scripts/
+|   +-- clean.sh
+|   +-- demo_s3.sh
+|   +-- setup_home_lab_sim.sh
+|   +-- sim-entrypoint.sh
+|   +-- test_dedup.sh
+|   +-- test_encryption.sh
+|   +-- test_e2e_sim.sh
+|   +-- test_federation_failover.sh
+|   +-- test_federation_resilience.sh
+|   +-- test_phase4.sh
+|   +-- test_phase4_views.sh
 +-- Cargo.toml               # Workspace configuration
-+-- demo_s3.sh               # S3 protocol demo
-+-- test_dedup.sh            # Deduplication demo (Bash)
 +-- README.md                # You are here
 ```
 
@@ -712,8 +732,7 @@ cargo test -p protocol-s3 -- --nocapture
 cargo test --features advanced-security -- --nocapture
 
 # Automated dedup demo
-./test_dedup.sh          # Linux/macOS/Git Bash
-.\test_dedup.ps1         # Windows PowerShell
+./scripts/test_dedup.sh  # Linux/macOS/Git Bash
 ```
 
 ### ✅ Test Coverage
@@ -841,7 +860,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 # Encryption now auto-enabled! ✨
 ```
 
-📚 **Detailed documentation:** [ENCRYPTION_IMPLEMENTATION.md](docs/ENCRYPTION_IMPLEMENTATION.md)
+📚 **Detailed documentation:** [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md)
 
 ---
 
@@ -1007,13 +1026,16 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 | 🏗️ [Architecture Overview](docs/architecture.md) | Full system design |
 | 🔮 [Future State Architecture](docs/future_state_architecture.md) | Vision and roadmap |
 | 💡 [Patentable Concepts](docs/patentable_concepts.md) | Novel mechanisms |
-| 🔗 [Dedup Implementation](docs/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
-| 🔐 [Encryption Implementation](docs/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
+| 🔗 [Dedup Implementation](docs/implementation/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
+| 🔐 [Encryption Implementation](docs/implementation/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
+| ?? [Implementation Summary](docs/implementation/IMPLEMENTATION_SUMMARY.md) | Cross-cutting milestones |
+| ?? [Inbound Replication Status](docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) | Progress tracking |
+| ?? [Multi-Node Status](docs/status/MULTI_NODE_STATUS.md) | Federation readiness |
 | 🌐 [Protocol Views](docs/protocol_views.md) | S3/NFS/block facades |
 | 🧪 [Simulations Guide](docs/SIMULATIONS.md) | Testing without hardware |
 | 🐳 [Containerization Guide](docs/CONTAINERIZATION.md) | Docker deployment |
-| 🚀 [S3 Quick Start](QUICKSTART_S3.md) | Protocol view demo |
-| 🔨 [Build Guide](BUILD.md) | Compilation and testing |
+| 🚀 [S3 Quick Start](docs/guides/QUICKSTART_S3.md) | Protocol view demo |
+| 🔨 [Build Guide](docs/guides/BUILD.md) | Compilation and testing |
 
 </div>
 

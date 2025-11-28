@@ -173,5 +173,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Note:** This is the first changelog entry. Previous development history can be found in git commit logs.
 
 For detailed implementation notes, see:
-- [IMPLEMENTATION_COMPLETE.md](IMPLEMENTATION_COMPLETE.md) - Inbound replication details
-- [INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md](INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) - Progress tracking
+- [IMPLEMENTATION_COMPLETE.md](docs/implementation/IMPLEMENTATION_COMPLETE.md) - Inbound replication details
+- [INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md](docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) - Progress tracking

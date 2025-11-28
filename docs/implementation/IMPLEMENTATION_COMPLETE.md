@@ -76,7 +76,7 @@ nvram-sim = { path = "../nvram-sim" }
 
 ### 5. Comprehensive Documentation ✅
 
-**File:** `docs/replication.md` (NEW - 550+ lines)
+**File:** `../replication.md` (NEW - 550+ lines)
 
 **Contents:**
 - Architecture overview with Mermaid sequence diagram
@@ -89,7 +89,7 @@ nvram-sim = { path = "../nvram-sim" }
 - Troubleshooting guide
 - Future enhancements roadmap
 
-**File:** `INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md` (CREATED)
+**File:** `status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md` (CREATED)
 - Detailed implementation progress tracking
 - Remaining work items
 - Architecture diagrams
@@ -108,9 +108,9 @@ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.84s
 
 ### Created (NEW)
 1. `crates/scaling/src/replication.rs` - Replication handler implementation
-2. `docs/replication.md` - Comprehensive documentation
-3. `INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md` - Progress tracking
-4. `IMPLEMENTATION_COMPLETE.md` - This file
+2. `../replication.md` - Comprehensive documentation
+3. `status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md` - Progress tracking
+4. `implementation/IMPLEMENTATION_COMPLETE.md` - This file
 
 ### Modified (UPDATED)
 1. `crates/scaling/Cargo.toml` - Added dependencies
@@ -240,7 +240,7 @@ async fn test_mac_validation_failure() {
 
 ### Multi-Node E2E (Docker Compose)
 
-See [docs/replication.md](docs/replication.md#multi-node-setup) for complete setup.
+See [replication.md](../replication.md#multi-node-setup) for complete setup.
 
 ## Performance Characteristics
 
