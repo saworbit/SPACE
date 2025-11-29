@@ -15,9 +15,13 @@ use encryption::keymanager::KeyManager;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+#[cfg(target_os = "linux")]
+use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -45,6 +49,135 @@ pub use batch_queue::{BatchItem, BatchQueue, BatchQueueSender, QueueStats};
 
 // Re-export SwarmOps for PODMS migrations
 pub use swarm_ops::SwarmOps;
+
+#[async_trait::async_trait]
+trait DataTransport: Send + Sync {
+    async fn send_frame(&self, target: SocketAddr, frame: Vec<u8>) -> Result<()>;
+}
+
+/// Standard TCP transport used for cross-platform builds.
+struct TcpTransport;
+
+#[async_trait::async_trait]
+impl DataTransport for TcpTransport {
+    async fn send_frame(&self, target: SocketAddr, frame: Vec<u8>) -> Result<()> {
+        let mut stream = TcpStream::connect(target)
+            .await
+            .map_err(|e| anyhow!("failed to connect to target {}: {}", target, e))?;
+
+        stream
+            .write_all(&frame)
+            .await
+            .map_err(|e| anyhow!("failed to write frame: {}", e))?;
+
+        stream
+            .shutdown()
+            .await
+            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+
+        Ok(())
+    }
+}
+
+/// Linux-native io_uring transport for zero-copy replication.
+#[cfg(target_os = "linux")]
+struct IoUringTransport {
+    _ring_thread: std::thread::JoinHandle<()>,
+    tx: mpsc::Sender<(SocketAddr, Vec<u8>, Arc<AtomicUsize>)>,
+    queue_depth: Arc<AtomicUsize>,
+    max_queue: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl IoUringTransport {
+    fn new() -> Self {
+        const RING_QUEUE: usize = 1024;
+        let queue_depth = Arc::new(AtomicUsize::new(0));
+        let (tx, mut rx) = mpsc::channel::<(SocketAddr, Vec<u8>, Arc<AtomicUsize>)>(RING_QUEUE);
+
+        let handle = std::thread::spawn(move || {
+            tokio_uring::start(async move {
+                while let Some((addr, data, depth)) = rx.recv().await {
+                    tokio_uring::spawn(async move {
+                        if let Err(error) = Self::send_uring(addr, data, depth).await {
+                            tracing::error!(error = %error, "io_uring send failed");
+                        }
+                    });
+                }
+            });
+        });
+
+        Self {
+            _ring_thread: handle,
+            tx,
+            queue_depth,
+            max_queue: RING_QUEUE,
+        }
+    }
+
+    async fn send_uring(
+        addr: SocketAddr,
+        data: Vec<u8>,
+        queue_depth: Arc<AtomicUsize>,
+    ) -> Result<()> {
+        let stream = tokio_uring::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| {
+                queue_depth.fetch_sub(1, Ordering::AcqRel);
+                anyhow!("io_uring connect failed: {}", e)
+            })?;
+
+        let (result, _buf) = stream.write_all(data).await;
+        let write_result = result.map_err(|e| anyhow!("io_uring write failed: {}", e));
+
+        // Decrement queue depth once the write completes (success or failure).
+        queue_depth.fetch_sub(1, Ordering::AcqRel);
+        write_result?;
+
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .map_err(|e| anyhow!("io_uring shutdown failed: {}", e))?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[async_trait::async_trait]
+impl DataTransport for IoUringTransport {
+    async fn send_frame(&self, target: SocketAddr, frame: Vec<u8>) -> Result<()> {
+        let depth = self.queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
+        let warn_threshold = (self.max_queue as f32 * 0.8) as usize;
+
+        if depth >= self.max_queue {
+            tracing::error!(
+                current_queue = depth,
+                capacity = self.max_queue,
+                "io_uring send queue is full; replication will backpressure"
+            );
+        } else if depth >= warn_threshold {
+            tracing::warn!(
+                current_queue = depth,
+                capacity = self.max_queue,
+                "io_uring send queue above 80% capacity"
+            );
+        } else {
+            tracing::debug!(
+                current_queue = depth,
+                capacity = self.max_queue,
+                "io_uring enqueue replication frame"
+            );
+        }
+
+        self.tx
+            .send((target, frame, self.queue_depth.clone()))
+            .await
+            .map_err(|_| {
+                self.queue_depth.fetch_sub(1, Ordering::AcqRel);
+                anyhow!("io_uring runtime closed")
+            })?;
+        Ok(())
+    }
+}
 
 /// Mesh node capabilities for disaggregated access.
 /// Nodes advertise their capabilities (e.g., GPU, NVRAM, network tier) via gossip.
@@ -97,6 +230,8 @@ pub struct MeshNode<C: ContentStore> {
     listen_addr: SocketAddr,
     /// Replication handler for inbound segment mirroring
     replication_handler: Arc<ReplicationHandler<C>>,
+    /// Transport abstraction (io_uring on Linux, TCP elsewhere)
+    transport: Arc<dyn DataTransport>,
 }
 
 impl<C: ContentStore + 'static> MeshNode<C> {
@@ -125,6 +260,18 @@ impl<C: ContentStore + 'static> MeshNode<C> {
             key_manager,
         ));
 
+        #[cfg(target_os = "linux")]
+        let transport: Arc<dyn DataTransport> = {
+            info!("initializing io_uring zero-copy transport");
+            Arc::new(IoUringTransport::new())
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let transport: Arc<dyn DataTransport> = {
+            info!("initializing TCP transport (standard copy path)");
+            Arc::new(TcpTransport)
+        };
+
         Ok(Self {
             id,
             zone,
@@ -132,6 +279,7 @@ impl<C: ContentStore + 'static> MeshNode<C> {
             peers: Arc::new(RwLock::new(HashMap::new())),
             listen_addr,
             replication_handler,
+            transport,
         })
     }
 
@@ -223,31 +371,19 @@ impl<C: ContentStore + 'static> MeshNode<C> {
             target_id = %target,
             target_addr = %target_addr,
             segment_id = frame.segment_id.0,
-            "sending replication frame"
+            "preparing replication frame"
         );
 
-        // Connect to target
-        let mut stream = TcpStream::connect(&target_addr)
-            .await
-            .map_err(|e| anyhow!("failed to connect to target {}: {}", target_addr, e))?;
-
-        // Serialize and send frame with length prefix
         let frame_bytes = frame.to_bytes()?;
-        stream
-            .write_all(&frame_bytes)
-            .await
-            .map_err(|e| anyhow!("failed to write frame: {}", e))?;
+        let frame_len = frame_bytes.len();
 
-        stream
-            .shutdown()
-            .await
-            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+        self.transport.send_frame(target_addr, frame_bytes).await?;
 
         info!(
             target_id = %target,
             segment_id = frame.segment_id.0,
-            bytes = frame_bytes.len(),
-            "replication frame sent successfully"
+            bytes = frame_len,
+            "replication frame enqueued for delivery"
         );
 
         Ok(())

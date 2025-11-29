@@ -992,6 +992,12 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 </div>
 
+### �YO? Zero-Copy Replication (Linux)
+
+- **tokio-uring data plane**: Linux builds enqueue replication frames directly to io_uring SQEs for kernel-side DMA without user/kernel copies; non-Linux keeps the Tokio TCP fallback.
+- **Backpressure-aware**: Bounded queue logs warnings above 80% utilization and backpressures when full to keep the control plane responsive.
+- **Probe script**: `./scripts/replication_io_uring_smoke.sh` (Linux) runs the `uring_probe` example and surfaces queue-depth logs; tune load with `FRAME_COUNT` and `FRAME_BYTES`.
+
 ---
 
 ## 🤝 Contributing

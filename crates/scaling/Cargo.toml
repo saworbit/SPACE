@@ -13,6 +13,7 @@ phase4 = ["dep:raft-rs"]
 [dependencies]
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
+async-trait = "0.1"
 uuid = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -23,6 +24,7 @@ bytes = "1"
 blake3 = { workspace = true }
 bincode = "1"
 hex = "0.4"
+socket2 = { version = "0.5", features = ["all"] }
 
 # Note: Gossip discovery (memberlist) will be added in Step 3
 # For Step 2 POC, we use manual peer registration
@@ -33,6 +35,11 @@ encryption = { path = "../encryption" }
 nvram-sim = { path = "../nvram-sim" }
 compression = { path = "../compression" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-uring = "0.4"
+libc = "0.2"
+
 [dev-dependencies]
 tracing-test = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }

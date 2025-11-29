@@ -324,6 +324,28 @@ spacectl stats --node=node2 | grep dedup
 # Expected: dedup_ratio > 1.0 for identical segments
 ```
 
+## Linux io_uring Zero-Copy Path
+
+On Linux, outbound replication uses `tokio-uring` to bypass kernel-to-user copies. A bounded queue tracks backpressure so heavy fan-out doesn't starve the Tokio control plane.
+
+- Queue telemetry: debug logs show `io_uring enqueue replication frame`; warnings emit when the queue passes 80% capacity; a full queue errors and naturally backpressures senders.
+- Driver isolation: a dedicated io_uring thread drains the queue so control-plane tasks stay responsive.
+
+### Run the io_uring probe
+
+```bash
+# Linux only; validates zero-copy path and backpressure logging
+./scripts/replication_io_uring_smoke.sh
+
+# Tune load (defaults: 512 frames x 256KiB)
+FRAME_COUNT=1024 FRAME_BYTES=$((512 * 1024)) ./scripts/replication_io_uring_smoke.sh
+```
+
+Expected signals:
+- No TCP fallback warning in logs (confirms Linux path active).
+- Debug-level queue depth messages; warnings if queue exceeds 80% utilization.
+- Optional deeper check (requires strace + root): `sudo strace -f -eio_uring_setup,io_uring_enter cargo run -p scaling --release --example uring_probe`
+
 ## Troubleshooting
 
 ### Common Issues
@@ -399,6 +421,6 @@ export RUST_LOG=scaling::replication=debug,capsule_registry=debug
 
 ---
 
-**Last Updated:** 2025-11-16
+**Last Updated:** 2025-11-30
 **Status:** Production-ready (Step 2 complete)
 **Contributors:** Claude Code implementation team
