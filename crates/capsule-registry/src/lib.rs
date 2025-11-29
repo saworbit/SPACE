@@ -7,6 +7,7 @@ use common::*;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::consensus::{MetadataOp, OpResult, RaftNode};
 use crate::store::{MetadataStore, SledStore};
 
 mod consensus;
@@ -214,6 +215,7 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
 
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
+    raft: RaftNode,
     #[cfg(feature = "advanced-security")]
     bloom_filter: Option<Arc<BloomFilterWrapper>>,
 }
@@ -225,13 +227,15 @@ impl CapsuleRegistry {
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
-        let store = Arc::new(SledStore::open(&path_str)?);
+        let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
+        let raft = RaftNode::new(Arc::clone(&store));
 
         #[cfg(feature = "advanced-security")]
         let bloom_filter = Self::configure_bloom(&*store)?;
 
         Ok(Self {
             store,
+            raft,
             #[cfg(feature = "advanced-security")]
             bloom_filter,
         })
@@ -241,7 +245,10 @@ impl CapsuleRegistry {
         if self.store.get_capsule(&capsule.id)?.is_some() {
             anyhow::bail!("Capsule collision (extremely unlikely)");
         }
-        self.store.put_capsule(&capsule)
+        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+            OpResult::Ok => Ok(()),
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
+        }
     }
 
     pub fn create_capsule_with_segments(
@@ -285,7 +292,10 @@ impl CapsuleRegistry {
     pub fn add_segment(&self, capsule_id: CapsuleId, seg_id: SegmentId) -> Result<()> {
         let mut capsule = self.lookup(capsule_id)?;
         capsule.segments.push(seg_id);
-        self.store.put_capsule(&capsule)
+        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+            OpResult::Ok => Ok(()),
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
+        }
     }
 
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
@@ -299,30 +309,45 @@ impl CapsuleRegistry {
     }
 
     pub fn register_content(&self, hash: ContentHash, seg_id: SegmentId) -> Result<()> {
-        self.store.put_content(&hash, seg_id)?;
-        #[cfg(feature = "advanced-security")]
-        if let Some(filter) = &self.bloom_filter {
-            filter.record_insertion(&hash);
+        match self.raft.propose(MetadataOp::RegisterContent {
+            hash: hash.clone(),
+            segment: seg_id,
+        })? {
+            OpResult::Ok => {
+                #[cfg(feature = "advanced-security")]
+                if let Some(filter) = &self.bloom_filter {
+                    filter.record_insertion(&hash);
+                }
+                Ok(())
+            }
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
         }
-        Ok(())
     }
 
     pub fn deregister_content(&self, hash: &ContentHash, seg_id: SegmentId) -> Result<bool> {
-        if let Some(current) = self.store.get_content(hash)? {
-            if current == seg_id {
-                self.store.delete_content(hash)?;
+        match self.raft.propose(MetadataOp::DeregisterContent {
+            hash: hash.clone(),
+            segment: seg_id,
+        })? {
+            OpResult::Ok => {
                 #[cfg(feature = "advanced-security")]
                 if let Some(filter) = &self.bloom_filter {
                     filter.record_removal(hash);
                 }
-                return Ok(true);
+                Ok(true)
             }
+            OpResult::NotFound => Ok(false),
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
         }
-        Ok(false)
     }
 
     pub fn add_deduped_bytes(&self, capsule_id: CapsuleId, bytes: u64) -> Result<()> {
-        self.store.add_deduped_bytes(&capsule_id, bytes)
+        let mut capsule = self.lookup(capsule_id)?;
+        capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
+        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+            OpResult::Ok => Ok(()),
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
+        }
     }
 
     pub fn list_capsules(&self) -> Vec<CapsuleId> {
@@ -333,9 +358,11 @@ impl CapsuleRegistry {
     }
 
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        self.store
-            .delete_capsule(&id)?
-            .ok_or_else(|| anyhow!("Capsule not found"))
+        match self.raft.propose(MetadataOp::DeleteCapsule(id))? {
+            OpResult::CapsuleFound(capsule) => Ok(capsule),
+            OpResult::NotFound => Err(anyhow!("Capsule not found")),
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
+        }
     }
 
     pub fn get_dedup_stats(&self) -> (usize, usize) {
@@ -394,6 +421,7 @@ impl Clone for CapsuleRegistry {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
+            raft: self.raft.clone(),
             #[cfg(feature = "advanced-security")]
             bloom_filter: self.bloom_filter.clone(),
         }
