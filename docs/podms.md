@@ -468,6 +468,7 @@ let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 Capsules self-transform during migrations via the `SwarmBehavior` trait ([`common/src/lib.rs`](../crates/common/src/lib.rs)). The circular dependency with crypto/compression is resolved through injected `TransformOps` (implemented by the runtime). See the deep-dive at [`docs/specs/PODMS_SWARM_BEHAVIOR.md`](specs/PODMS_SWARM_BEHAVIOR.md).
 
 `TransformOps` now carries `capsule_id` into encrypt/decrypt so runtimes can derive per-capsule keys (see `docs/specs/PODMS_TRANSFORM_OPS.md` for the SwarmOps adapter).
+`ScalingAgent::migrate_capsule_task` uses `SwarmOps` to execute decrypt -> decompress -> recompress -> re-encrypt before streaming replication frames, rotating keys to the current version when unset.
 
 ```rust
 pub trait TransformOps {

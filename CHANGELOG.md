@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to the SPACE project will be documented in this file.
 
@@ -116,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Implementation status tracking document
 
 ### Changed
+- Scaling migration/evacuation now invokes `SwarmOps` for decrypt -> decompress -> recompress -> re-encrypt, deriving per-capsule keys and emitting fresh metadata/MACs before streaming replication frames.
 - `TransformOps::encrypt/decrypt` now take `capsule_id` so crypto paths can derive per-capsule keys; `Capsule::apply_transform` forwards the capsule id to the runtime ops.
 - `MeshNode::new()` now requires `ContentStore`, `NvramLog`, and `KeyManager` dependencies
 - `ScalingAgent` now generic over `ContentStore` implementation

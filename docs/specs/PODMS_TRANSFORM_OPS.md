@@ -109,6 +109,9 @@ let ops = SwarmOps::new(key_manager);
 let migrated = capsule.apply_transform(segment_id, &payload, &target_policy, &ops)?;
 ```
 
+### Runtime wiring
+- `ScalingAgent::migrate_capsule_task` constructs `SwarmOps` from the shared `KeyManager` and uses it to decrypt -> decompress -> recompress -> re-encrypt segments before emitting replication frames, ensuring per-capsule keys and fresh MACs on every outbound migration/evacuation.
+
 ## 9. Tests
 - `encrypt_decrypt_round_trip`: validates SwarmOps round-trips through XTS with tweaks.
 - `per_capsule_keys_produce_unique_ciphertext`: verifies ciphertext differs across capsules.
