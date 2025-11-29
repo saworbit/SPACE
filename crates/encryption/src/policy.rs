@@ -97,6 +97,13 @@ pub struct EncryptionMetadata {
     /// Old segments remain readable with old keys until re-encrypted.
     pub key_version: Option<u32>,
 
+    /// Wrapped segment key for envelope encryption (Key-Wrapping).
+    ///
+    /// The segment payload is encrypted with a dedicated segment key; that key
+    /// is then encrypted (wrapped) using the capsule-specific key. This allows
+    /// per-capsule isolation while preserving deduplication of the ciphertext.
+    pub wrapped_segment_key: Option<Vec<u8>>,
+
     /// Tweak/nonce for XTS mode (16 bytes)
     ///
     /// Derived deterministically from content hash:
@@ -125,6 +132,7 @@ impl EncryptionMetadata {
         Self {
             encryption_version: Some(1), // Version 1 = XTS-AES-256
             key_version: Some(key_version),
+            wrapped_segment_key: None,
             tweak_nonce: Some(tweak),
             integrity_tag: None, // Set after MAC computation
             ciphertext_len: Some(ciphertext_len),

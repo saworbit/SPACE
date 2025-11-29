@@ -123,6 +123,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
   - BLAKE3 MAC validation
   - Dependency-inverted `TransformOps` pipeline (see `docs/specs/PODMS_SWARM_BEHAVIOR.md` and the runtime adapter in `docs/specs/PODMS_TRANSFORM_OPS.md`)
   - Scaling migrations now invoke `SwarmOps` to decrypt -> decompress -> recompress -> re-encrypt with per-capsule XTS keys and fresh MACs before streaming frames
+  - Envelope encryption: segment keys are convergent (content-derived) and wrapped per capsule, enabling Zero Trust isolation without sacrificing dedup
   - Cross-node deduplication
 
 - **🐳 Docker Compose Simulation**

@@ -28,12 +28,13 @@ impl SwarmOps {
         }
     }
 
-    fn derive_capsule_key(
-        &self,
+    /// Derive capsule-specific XTS key material from the shared KeyManager.
+    pub fn derive_capsule_key(
+        key_manager: &RwLock<KeyManager>,
         capsule_id: CapsuleId,
         key_version: Option<u32>,
     ) -> Result<(XtsKeyPair, u32)> {
-        let mut manager = self.key_manager.blocking_write();
+        let mut manager = key_manager.blocking_write();
         let version = key_version.unwrap_or_else(|| manager.current_version());
         let base = manager
             .get_key(version)
@@ -51,6 +52,54 @@ impl SwarmOps {
         let mut derived = [0u8; XTS_KEY_SIZE];
         hasher.finalize_xof().fill(&mut derived);
         Ok((XtsKeyPair::from_bytes(derived), version))
+    }
+
+    /// Derive a deterministic segment key from content hash (convergent path for dedup).
+    pub fn derive_segment_key(content_hash: &[u8]) -> XtsKeyPair {
+        let mut hasher = Hasher::new();
+        hasher.update(b"SPACE::SEGMENT_KEY_V1");
+        hasher.update(content_hash);
+        let mut derived = [0u8; XTS_KEY_SIZE];
+        hasher.finalize_xof().fill(&mut derived);
+        XtsKeyPair::from_bytes(derived)
+    }
+
+    /// Wrap a segment key using the capsule-specific key (envelope encryption).
+    pub fn wrap_segment_key(capsule_key: &XtsKeyPair, segment_key: &XtsKeyPair) -> Vec<u8> {
+        let mut keystream = [0u8; XTS_KEY_SIZE];
+        let mut hasher = Hasher::new_keyed(capsule_key.key1());
+        hasher.update(capsule_key.key2());
+        hasher.update(b"SPACE::SEGMENT_KEY_WRAP_V1");
+        hasher.finalize_xof().fill(&mut keystream);
+
+        let segment_bytes = segment_key.to_bytes();
+        let mut wrapped = [0u8; XTS_KEY_SIZE];
+        for (i, byte) in segment_bytes.iter().enumerate() {
+            wrapped[i] = *byte ^ keystream[i];
+        }
+        wrapped.to_vec()
+    }
+
+    /// Unwrap a segment key using the capsule-specific key.
+    pub fn unwrap_segment_key(capsule_key: &XtsKeyPair, wrapped: &[u8]) -> Result<XtsKeyPair> {
+        if wrapped.len() != XTS_KEY_SIZE {
+            return Err(anyhow!(
+                "wrapped segment key length {} invalid (expected {})",
+                wrapped.len(),
+                XTS_KEY_SIZE
+            ));
+        }
+        let mut keystream = [0u8; XTS_KEY_SIZE];
+        let mut hasher = Hasher::new_keyed(capsule_key.key1());
+        hasher.update(capsule_key.key2());
+        hasher.update(b"SPACE::SEGMENT_KEY_WRAP_V1");
+        hasher.finalize_xof().fill(&mut keystream);
+
+        let mut unwrapped = [0u8; XTS_KEY_SIZE];
+        for (i, byte) in wrapped.iter().enumerate() {
+            unwrapped[i] = *byte ^ keystream[i];
+        }
+        Ok(XtsKeyPair::from_bytes(unwrapped))
     }
 
     pub fn derive_xts_tweak(segment_id: SegmentId) -> [u8; 16] {
@@ -95,7 +144,8 @@ impl TransformOps for SwarmOps {
         match policy {
             EncryptionPolicy::Disabled => Ok(data.to_vec()),
             EncryptionPolicy::XtsAes256 { key_version } => {
-                let (key, _) = self.derive_capsule_key(capsule_id, *key_version)?;
+                let (key, _) =
+                    Self::derive_capsule_key(&self.key_manager, capsule_id, *key_version)?;
                 let tweak = Self::derive_xts_tweak(ctx);
                 xts::decrypt(data, &key, &tweak).context("xts decrypt failed")
             }
@@ -112,7 +162,8 @@ impl TransformOps for SwarmOps {
         match policy {
             EncryptionPolicy::Disabled => Ok(data.to_vec()),
             EncryptionPolicy::XtsAes256 { key_version } => {
-                let (key, _) = self.derive_capsule_key(capsule_id, *key_version)?;
+                let (key, _) =
+                    Self::derive_capsule_key(&self.key_manager, capsule_id, *key_version)?;
                 let tweak = Self::derive_xts_tweak(ctx);
                 xts::encrypt(data, &key, &tweak).context("xts encrypt failed")
             }
@@ -142,12 +193,25 @@ impl SwarmOps {
                 Ok((data.to_vec(), EncryptionMetadata::new_unencrypted()))
             }
             EncryptionPolicy::XtsAes256 { key_version } => {
-                let (key, version) = self.derive_capsule_key(capsule_id, *key_version)?;
+                let content_hash = blake3::hash(data);
+                let segment_key = Self::derive_segment_key(content_hash.as_bytes());
                 let tweak = Self::derive_xts_tweak(ctx);
-                let ciphertext = xts::encrypt(data, &key, &tweak).context("xts encrypt failed")?;
+                let ciphertext =
+                    xts::encrypt(data, &segment_key, &tweak).context("xts encrypt failed")?;
+
+                let (capsule_key, version) =
+                    Self::derive_capsule_key(&self.key_manager, capsule_id, *key_version)?;
+                let wrapped_key = Self::wrap_segment_key(&capsule_key, &segment_key);
+
                 let mut metadata =
                     EncryptionMetadata::new_xts(version, tweak, ciphertext.len() as u32);
-                let mac = compute_mac(&ciphertext, &metadata, key.key1(), key.key2())?;
+                metadata.wrapped_segment_key = Some(wrapped_key);
+                let mac = compute_mac(
+                    &ciphertext,
+                    &metadata,
+                    capsule_key.key1(),
+                    capsule_key.key2(),
+                )?;
                 metadata.set_integrity_tag(mac);
                 Ok((ciphertext, metadata))
             }

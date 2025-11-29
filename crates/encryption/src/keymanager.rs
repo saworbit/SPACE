@@ -79,8 +79,7 @@ impl XtsKeyPair {
         &self.key2
     }
 
-    /// Convert to 64-byte array (for testing)
-    #[cfg(test)]
+    /// Convert to 64-byte array.
     pub fn to_bytes(&self) -> [u8; XTS_KEY_SIZE] {
         let mut bytes = [0u8; XTS_KEY_SIZE];
         bytes[0..32].copy_from_slice(&self.key1);

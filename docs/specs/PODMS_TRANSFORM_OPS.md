@@ -57,12 +57,14 @@ classDiagram
     SwarmOps --> XtsEngine : AES-XTS encrypt/decrypt
 ```
 
-## 4. Crypto path
+## 4. Crypto path (Envelope Encryption)
 - **Per-capsule key**: `KeyManager::get_key(version)` (defaults to current) -> BLAKE3 XOF keyed by `[key1 || key2 || capsule_id || version]` -> `XtsKeyPair`. This guarantees unique keys per capsule even when versions match.
+- **Segment key (convergent)**: `segment_key = BLAKE3_XOF("SPACE::SEGMENT_KEY_V1" || content_hash)`; payload is encrypted with this key to preserve deduplication.
+- **Wrapped key**: the segment key is wrapped with the capsule key using a BLAKE3-keyed stream and stored in `EncryptionMetadata::wrapped_segment_key`.
 - **Tweak**: `SegmentId` is encoded little-endian into 16 bytes and used as the XTS tweak so identical blocks in different segments encrypt differently.
-- **Encryption**: `xts::encrypt(plaintext, capsule_key, tweak)` with policy `XtsAes256 { key_version }`; `Disabled` short-circuits.
-- **Decryption**: same derivation in reverse; errors bubble with context if the key version is missing or derivation fails.
-- **Rotation**: callers set `key_version` in policy; `None` uses the KeyManager's current version so migrations re-wrap with the latest key by default.
+- **Encryption**: `xts::encrypt(plaintext, segment_key, tweak)`; metadata captures `key_version`, `tweak`, `ciphertext_len`, `wrapped_segment_key`, and MAC.
+- **Decryption**: unwrap segment key with the capsule key; decrypt ciphertext with the unwrapped segment key. If metadata lacks the wrapped key (legacy), fallback decrypt uses the capsule key directly.
+- **Rotation**: callers set `key_version` in policy; `None` uses the KeyManager's current version so migrations re-wrap keys without re-encrypting data.
 
 ## 5. Compression path
 - Stateless `Lz4ZstdCompressor` handles `CompressionPolicy::{LZ4, Zstd, None}`.
@@ -110,7 +112,7 @@ let migrated = capsule.apply_transform(segment_id, &payload, &target_policy, &op
 ```
 
 ### Runtime wiring
-- `ScalingAgent::migrate_capsule_task` constructs `SwarmOps` from the shared `KeyManager` and uses it to decrypt -> decompress -> recompress -> re-encrypt segments before emitting replication frames, ensuring per-capsule keys and fresh MACs on every outbound migration/evacuation.
+- `ScalingAgent::migrate_capsule_task` constructs `SwarmOps` from the shared `KeyManager` and uses it to decrypt -> decompress -> recompress -> re-encrypt segments before emitting replication frames, ensuring per-capsule keys and fresh MACs on every outbound migration/evacuation. Segment keys are convergent and wrapped per capsule; frames now include the capsule id and wrapped key so receivers unwrap safely.
 
 ## 9. Tests
 - `encrypt_decrypt_round_trip`: validates SwarmOps round-trips through XTS with tweaks.

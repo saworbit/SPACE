@@ -1526,6 +1526,7 @@ impl WritePipeline {
                 let enc_meta = EncryptionMetadata {
                     encryption_version: segment.encryption_version,
                     key_version: segment.key_version,
+                    wrapped_segment_key: None,
                     tweak_nonce: segment.tweak_nonce,
                     integrity_tag: segment.integrity_tag,
                     ciphertext_len: Some(raw_data.len() as u32),

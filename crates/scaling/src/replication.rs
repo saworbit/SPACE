@@ -9,13 +9,14 @@
 //! 6. Persist to NvramLog if new
 //! 7. Update metadata and emit telemetry
 
+use crate::SwarmOps;
 use anyhow::{anyhow, Result};
 use blake3;
-use common::{ContentHash, SegmentId};
+use common::{CapsuleId, ContentHash, SegmentId};
 use encryption::keymanager::KeyManager;
 use encryption::mac::verify_mac;
 use encryption::policy::EncryptionMetadata;
-use encryption::xts::decrypt_segment;
+use encryption::xts::{decrypt, decrypt_segment};
 use nvram_sim::NvramLog;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -40,6 +41,8 @@ pub trait ContentStore: Send + Sync + 'static {
 /// - N bytes: bincode-serialized ReplicationFrame
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicationFrame {
+    /// Capsule identifier to derive per-capsule keys (key wrapping)
+    pub capsule_id: Option<CapsuleId>,
     /// Segment ID being replicated
     pub segment_id: SegmentId,
     /// Encryption metadata (includes key version, tweak, MAC tag)
@@ -56,6 +59,7 @@ impl ReplicationFrame {
         encrypted_data: Vec<u8>,
     ) -> Self {
         Self {
+            capsule_id: None,
             segment_id,
             metadata,
             encrypted_data,
@@ -188,6 +192,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
     /// 6. Update metadata
     async fn process_segment(&self, frame: ReplicationFrame) -> Result<()> {
         let segment_id = frame.segment_id;
+        let capsule_id = frame.capsule_id;
         let metadata = frame.metadata;
         let ciphertext = frame.encrypted_data;
         let ciphertext_len = ciphertext.len();
@@ -200,13 +205,18 @@ impl<C: ContentStore> ReplicationHandler<C> {
                 .ok_or_else(|| anyhow!("missing key version in metadata"))?;
 
             let mut key_manager = self.key_manager.write().await;
-            let key_pair = key_manager
+            let capsule_key_pair = key_manager
                 .get_key(key_version)
-                .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?;
+                .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?
+                .clone();
 
             if metadata.has_integrity_tag() {
-                if let Err(e) = verify_mac(&ciphertext, &metadata, key_pair.key1(), key_pair.key2())
-                {
+                if let Err(e) = verify_mac(
+                    &ciphertext,
+                    &metadata,
+                    capsule_key_pair.key1(),
+                    capsule_key_pair.key2(),
+                ) {
                     warn!(
                         segment_id = segment_id.0,
                         error = %e,
@@ -223,10 +233,24 @@ impl<C: ContentStore> ReplicationHandler<C> {
 
             debug!(segment_id = segment_id.0, "MAC validation successful");
 
-            // Step 2: Decrypt segment
+            // Step 2: Decrypt segment using wrapped segment key if present.
             debug!(segment_id = segment_id.0, "decrypting segment");
-            let plaintext = decrypt_segment(&ciphertext, key_pair, &metadata)
-                .map_err(|e| anyhow!("decryption failed: {}", e))?;
+            let plaintext = if let (Some(capsule_id), Some(wrapped)) =
+                (capsule_id, metadata.wrapped_segment_key.as_ref())
+            {
+                let (capsule_key, _) =
+                    SwarmOps::derive_capsule_key(&self.key_manager, capsule_id, Some(key_version))?;
+                let segment_key = SwarmOps::unwrap_segment_key(&capsule_key, wrapped)?;
+                let tweak = metadata
+                    .require_tweak()
+                    .map_err(|e| anyhow!("missing tweak: {e}"))?;
+                decrypt(&ciphertext, &segment_key, &tweak)
+                    .map_err(|e| anyhow!("decryption failed: {}", e))?
+            } else {
+                // Legacy path: decrypt directly with capsule key
+                decrypt_segment(&ciphertext, &capsule_key_pair, &metadata)
+                    .map_err(|e| anyhow!("decryption failed: {}", e))?
+            };
 
             debug!(
                 segment_id = segment_id.0,
@@ -330,6 +354,7 @@ mod tests {
     #[test]
     fn test_replication_frame_serialization() {
         let frame = ReplicationFrame {
+            capsule_id: Some(CapsuleId::new()),
             segment_id: SegmentId(42),
             metadata: EncryptionMetadata::new_xts(1, [5u8; 16], 1024),
             encrypted_data: vec![1, 2, 3, 4, 5],
@@ -350,6 +375,7 @@ mod tests {
     #[test]
     fn test_replication_frame_roundtrip() {
         let original = ReplicationFrame {
+            capsule_id: None,
             segment_id: SegmentId(12345),
             metadata: EncryptionMetadata::new_xts(2, [9u8; 16], 4096),
             encrypted_data: vec![0xDE, 0xAD, 0xBE, 0xEF],

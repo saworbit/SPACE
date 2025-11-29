@@ -528,6 +528,7 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         EncryptionMetadata {
             encryption_version: segment.encryption_version,
             key_version: segment.key_version,
+            wrapped_segment_key: None,
             tweak_nonce: segment.tweak_nonce,
             integrity_tag: segment.integrity_tag,
             ciphertext_len: Some(len as u32),
@@ -724,8 +725,9 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
                 }
             }
 
-            let frame =
+            let mut frame =
                 crate::replication::ReplicationFrame::new(segment_id, encryption_meta, payload);
+            frame.capsule_id = Some(capsule_id);
             ctx.mesh_node
                 .send_replication_frame(&frame, ctx.destination)
                 .await
