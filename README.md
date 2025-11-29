@@ -306,7 +306,7 @@ spacectl queue-stats  # Check batch queue depth
 - ✅ Persistent NVRAM Log with automatic fsync
 - ✅ Intelligent 4MB Segmentation
 - ✅ CLI Tool for create/read operations
-- ✅ Sled-backed Metadata Registry (Raft-ready)
+- ✅ Sled-backed Metadata Registry (Raft-ready, streaming snapshots)
 
 </details>
 

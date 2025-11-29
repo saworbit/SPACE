@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Raft-ready Sled metadata store** - Capsule registry now persists to `space.db` via sled with snapshot hooks for the upcoming Raft state machine, eliminating the JSON SPOF and enabling crash-safe recovery.
+- **Raft-ready sled metadata store** - Capsule registry now persists to `space.db` via sled with streaming snapshot/restore and Raft-facing apply hooks, eliminating the JSON SPOF and enabling crash-safe recovery.
 - **SwarmBehavior Transformer Pattern** - Dependency-inverted `TransformOps` trait in `common` enables decrypt -> decompress -> re-compress -> re-encrypt during migration with sovereignty enforcement; documented in `docs/specs/PODMS_SWARM_BEHAVIOR.md`.
 - **SwarmOps runtime adapter** - `crates/scaling/src/swarm_ops.rs` implements `TransformOps` with per-capsule XTS key derivation and LZ4/Zstd bridging; detailed in `docs/specs/PODMS_TRANSFORM_OPS.md`.
 - **🌐 Multi-Node Capabilities (PODMS Orchestrator)** - Comprehensive distributed mesh networking
