@@ -456,9 +456,11 @@ pub mod podms {
 
         #[test]
         fn test_transformation_pipeline() {
-            let mut policy = Policy::default();
-            policy.encryption = EncryptionPolicy::XtsAes256 {
-                key_version: Some(1),
+            let policy = Policy {
+                encryption: EncryptionPolicy::XtsAes256 {
+                    key_version: Some(1),
+                },
+                ..Policy::default()
             };
 
             let capsule = Capsule {
@@ -482,8 +484,10 @@ pub mod podms {
 
         #[test]
         fn test_sovereignty_block() {
-            let mut policy = Policy::default();
-            policy.sovereignty = SovereigntyLevel::Local;
+            let policy = Policy {
+                sovereignty: SovereigntyLevel::Local,
+                ..Policy::default()
+            };
 
             let capsule = Capsule {
                 id: CapsuleId::new(),
