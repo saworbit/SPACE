@@ -306,7 +306,7 @@ spacectl queue-stats  # Check batch queue depth
 - ✅ Persistent NVRAM Log with automatic fsync
 - ✅ Intelligent 4MB Segmentation
 - ✅ CLI Tool for create/read operations
-- ✅ JSON Metadata Registry
+- ✅ Sled-backed Metadata Registry (Raft-ready)
 
 </details>
 
@@ -711,7 +711,7 @@ space/
 
 ### ⚙️ Runtime Files (Auto-Generated)
 ```
-space.metadata         -> Capsule registry + content store (JSON)
+space.db               -> Capsule registry + content store (sled)
 space.nvram            -> Raw segment data (encrypted if enabled)
 space.nvram.segments   -> Segment metadata with encryption info (JSON)
 ```

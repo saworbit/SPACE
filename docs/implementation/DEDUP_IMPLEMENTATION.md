@@ -36,7 +36,7 @@ Input Data
 
 3. **Content Store Design**
    - Simple HashMap: `ContentHash → SegmentId`
-   - Stored in `space.metadata` alongside capsule registry
+   - Stored in `space.db` alongside capsule registry
    - No bloom filter yet (Phase 3 optimization)
 
 4. **Reference Counting**
@@ -156,7 +156,7 @@ chmod +x scripts/test_dedup.sh
 
 ## Metadata Format
 
-### Content Store (in `space.metadata`)
+### Content Store (in `space.db`)
 
 {
   "content_store": {
@@ -249,11 +249,8 @@ From `../patentable_concepts.md` § 3:
 
 **Debug:**
 
-# Check content store
-cat space.metadata | jq '.content_store | length'
-
-# Enable verbose logging
-RUST_LOG=debug cargo run -- create --file test.txt
+- Use `cargo test -p capsule-registry dedup_test -- --nocapture` to print dedup stats (sled data files are binary and not human-readable).
+- Enable verbose logging: `RUST_LOG=debug cargo run -- create --file test.txt`
 
 ### High Memory Usage
 

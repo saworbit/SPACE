@@ -21,12 +21,12 @@ pub struct RuntimeHandles {
 impl RuntimeHandles {
     /// Build runtime handles from environment variables.
     ///
-    /// - `SPACE_METADATA_PATH` (optional, default: "space.metadata")
+    /// - `SPACE_METADATA_PATH` (optional, default: "space.db")
     /// - `SPACE_NVRAM_PATH` (optional, default: "space.nvram")
     /// - `SPACE_MASTER_KEY` (required, hex-encoded)
     pub fn from_env() -> Result<Self> {
         let metadata_path =
-            std::env::var("SPACE_METADATA_PATH").unwrap_or_else(|_| "space.metadata".to_string());
+            std::env::var("SPACE_METADATA_PATH").unwrap_or_else(|_| "space.db".to_string());
         let nvram_path =
             std::env::var("SPACE_NVRAM_PATH").unwrap_or_else(|_| "space.nvram".to_string());
 

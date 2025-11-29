@@ -29,6 +29,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = { workspace = true }
 tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 num_cpus = { workspace = true, optional = true }
@@ -39,6 +40,7 @@ zstd = { workspace = true }
 blake3 = { workspace = true }
 subtle = { workspace = true }
 bytes = "1.7"
+sled = "0.34"
 pipeline = { path = "../pipeline", optional = true }
 scaling = { path = "../scaling", optional = true }
 sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation mode support

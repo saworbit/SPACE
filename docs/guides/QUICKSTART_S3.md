@@ -154,7 +154,7 @@ lsof -i :8080
 ls -la space.nvram*
 
 # Clean slate (deletes all data!)
-rm space.nvram* space.metadata
+rm space.nvram* space.db
 ```
 
 ## Performance Notes

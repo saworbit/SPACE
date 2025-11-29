@@ -1,15 +1,16 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 #[cfg(feature = "advanced-security")]
 use common::security::bloom_dedup::BloomFilterWrapper;
 #[cfg(feature = "advanced-security")]
 use common::security::DedupOptimizer;
-use common::Policy;
 use common::*;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use crate::store::{MetadataStore, SledStore};
+
+mod consensus;
+mod store;
 
 pub mod dedup; // NEW
 pub mod error;
@@ -164,11 +165,11 @@ pub mod modular_pipeline {
 
 impl common::traits::CapsuleCatalog for CapsuleRegistry {
     fn allocate_segment(&self) -> Result<SegmentId> {
-        Ok(CapsuleRegistry::alloc_segment(self))
+        self.alloc_segment()
     }
 
     fn lookup_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        CapsuleRegistry::lookup(self, id)
+        self.lookup(id)
     }
 
     fn create_capsule(
@@ -179,106 +180,68 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
         segments: Vec<SegmentId>,
         stats: &common::traits::DedupStats,
     ) -> Result<()> {
-        CapsuleRegistry::create_capsule_with_segments(self, id, size, segments, policy.clone())?;
-        let mut capsules = self.capsules.write().unwrap();
-        if let Some(capsule) = capsules.get_mut(&id) {
-            capsule.policy = policy.clone();
-            capsule.deduped_bytes = stats.bytes_saved;
+        self.create_capsule_with_segments(id, size, segments, policy.clone())?;
+        if stats.bytes_saved > 0 {
+            self.add_deduped_bytes(id, stats.bytes_saved)?;
         }
-        drop(capsules);
-        CapsuleRegistry::save(self)?;
         Ok(())
     }
 
     fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        CapsuleRegistry::delete_capsule(self, id)
+        self.delete_capsule(id)
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        CapsuleRegistry::lookup_content(self, hash)
+        self.lookup_content(hash)
     }
 
     fn register_content(&self, hash: ContentHash, segment: SegmentId) -> Result<()> {
-        CapsuleRegistry::register_content(self, hash, segment)
+        self.register_content(hash, segment)
     }
 
     fn deregister_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
-        CapsuleRegistry::deregister_content(self, hash, segment)
+        self.deregister_content(hash, segment)
     }
 
     fn capsules(&self) -> Vec<Capsule> {
-        self.capsules.read().unwrap().values().cloned().collect()
+        self.capsules()
     }
 
     fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
-        self.content_store
-            .read()
-            .unwrap()
-            .iter()
-            .map(|(hash, seg)| (hash.clone(), *seg))
-            .collect()
+        self.content_entries()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RegistryState {
-    capsules: HashMap<CapsuleId, Capsule>,
-    next_segment_id: u64,
-    // Phase 2.2: Content-addressed storage for deduplication
-    #[serde(default)]
-    content_store: HashMap<ContentHash, SegmentId>,
-}
-
 pub struct CapsuleRegistry {
-    capsules: Arc<RwLock<HashMap<CapsuleId, Capsule>>>,
-    next_segment_id: Arc<RwLock<u64>>,
-    metadata_path: String,
-    // Phase 2.2: Content store for deduplication
-    content_store: Arc<RwLock<HashMap<ContentHash, SegmentId>>>,
+    store: Arc<dyn MetadataStore>,
     #[cfg(feature = "advanced-security")]
     bloom_filter: Option<Arc<BloomFilterWrapper>>,
 }
 
 impl CapsuleRegistry {
     pub fn new() -> Self {
-        Self::open("space.metadata").expect("Failed to open registry")
+        Self::open("space.db").expect("Failed to open registry DB")
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let metadata_path = path.as_ref().to_string_lossy().to_string();
-
-        // Try to load existing state
-        let (capsules, next_segment_id, content_store) = if Path::new(&metadata_path).exists() {
-            let data = fs::read_to_string(&metadata_path)?;
-            let state: RegistryState = serde_json::from_str(&data)?;
-            (state.capsules, state.next_segment_id, state.content_store)
-        } else {
-            (HashMap::new(), 0, HashMap::new())
-        };
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        let store = Arc::new(SledStore::open(&path_str)?);
 
         #[cfg(feature = "advanced-security")]
-        let bloom_filter = Self::configure_bloom(Some(&content_store));
+        let bloom_filter = Self::configure_bloom(&*store)?;
 
         Ok(Self {
-            capsules: Arc::new(RwLock::new(capsules)),
-            next_segment_id: Arc::new(RwLock::new(next_segment_id)),
-            metadata_path,
-            content_store: Arc::new(RwLock::new(content_store)),
+            store,
             #[cfg(feature = "advanced-security")]
             bloom_filter,
         })
     }
 
-    pub fn save(&self) -> Result<()> {
-        let state = RegistryState {
-            capsules: self.capsules.read().unwrap().clone(),
-            next_segment_id: *self.next_segment_id.read().unwrap(),
-            content_store: self.content_store.read().unwrap().clone(),
-        };
-
-        let json = serde_json::to_string_pretty(&state)?;
-        fs::write(&self.metadata_path, json)?;
-        Ok(())
+    fn insert_capsule(&self, capsule: Capsule) -> Result<()> {
+        if self.store.get_capsule(&capsule.id)?.is_some() {
+            anyhow::bail!("Capsule collision (extremely unlikely)");
+        }
+        self.store.put_capsule(&capsule)
     }
 
     pub fn create_capsule_with_segments(
@@ -288,12 +251,6 @@ impl CapsuleRegistry {
         segments: Vec<SegmentId>,
         policy: Policy,
     ) -> Result<()> {
-        let mut capsules = self.capsules.write().unwrap();
-
-        if capsules.contains_key(&id) {
-            anyhow::bail!("Capsule collision (extremely unlikely)");
-        }
-
         let capsule = Capsule {
             id,
             size,
@@ -302,52 +259,35 @@ impl CapsuleRegistry {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
             policy,
-            deduped_bytes: 0, // Will be updated during write
+            deduped_bytes: 0,
         };
 
-        capsules.insert(id, capsule);
-        drop(capsules);
-        self.save()?;
-        Ok(())
+        self.insert_capsule(capsule)
     }
 
     pub fn lookup(&self, id: CapsuleId) -> Result<Capsule> {
-        self.capsules
-            .read()
-            .unwrap()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Capsule not found"))
+        self.store
+            .get_capsule(&id)?
+            .ok_or_else(|| anyhow!("Capsule not found"))
     }
 
-    /// Serialize capsule metadata for federation sharding.
     pub fn serialize_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
         let capsule = self.lookup(id)?;
-        let payload = serde_json::to_vec(&capsule)?;
-        Ok(payload)
+        Ok(serde_json::to_vec(&capsule)?)
     }
 
-    pub fn alloc_segment(&self) -> SegmentId {
-        let mut next = self.next_segment_id.write().unwrap();
-        let id = *next;
-        *next += 1;
-        SegmentId(id)
+    pub fn alloc_segment(&self) -> Result<SegmentId> {
+        self.store
+            .allocate_segment_id()
+            .map_err(|err| anyhow!("failed to allocate segment id: {err}"))
     }
 
     pub fn add_segment(&self, capsule_id: CapsuleId, seg_id: SegmentId) -> Result<()> {
-        let mut capsules = self.capsules.write().unwrap();
-        let capsule = capsules
-            .get_mut(&capsule_id)
-            .ok_or_else(|| anyhow::anyhow!("Capsule not found"))?;
+        let mut capsule = self.lookup(capsule_id)?;
         capsule.segments.push(seg_id);
-        drop(capsules);
-        self.save()?;
-        Ok(())
+        self.store.put_capsule(&capsule)
     }
 
-    // NEW: Phase 2.2 - Deduplication methods
-
-    /// Check if content hash already exists in store
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
         #[cfg(feature = "advanced-security")]
         if let Some(filter) = &self.bloom_filter {
@@ -355,80 +295,69 @@ impl CapsuleRegistry {
                 return None;
             }
         }
-        self.content_store.read().unwrap().get(hash).copied()
+        self.store.get_content(hash).ok().flatten()
     }
 
-    /// Register new content hash → segment mapping
     pub fn register_content(&self, hash: ContentHash, seg_id: SegmentId) -> Result<()> {
-        self.content_store
-            .write()
-            .unwrap()
-            .insert(hash.clone(), seg_id);
+        self.store.put_content(&hash, seg_id)?;
         #[cfg(feature = "advanced-security")]
         if let Some(filter) = &self.bloom_filter {
             filter.record_insertion(&hash);
         }
-        self.save()?;
         Ok(())
     }
 
     pub fn deregister_content(&self, hash: &ContentHash, seg_id: SegmentId) -> Result<bool> {
-        let mut store = self.content_store.write().unwrap();
-        if let Some(current) = store.get(hash) {
-            if *current == seg_id {
-                store.remove(hash);
+        if let Some(current) = self.store.get_content(hash)? {
+            if current == seg_id {
+                self.store.delete_content(hash)?;
                 #[cfg(feature = "advanced-security")]
                 if let Some(filter) = &self.bloom_filter {
                     filter.record_removal(hash);
                 }
-                drop(store);
-                self.save()?;
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    /// Increment dedup bytes counter for a capsule
     pub fn add_deduped_bytes(&self, capsule_id: CapsuleId, bytes: u64) -> Result<()> {
-        let mut capsules = self.capsules.write().unwrap();
-        if let Some(capsule) = capsules.get_mut(&capsule_id) {
-            capsule.deduped_bytes += bytes;
-        }
-        Ok(())
+        self.store.add_deduped_bytes(&capsule_id, bytes)
     }
 
     pub fn list_capsules(&self) -> Vec<CapsuleId> {
-        self.capsules.read().unwrap().keys().copied().collect()
+        self.store
+            .list_capsules()
+            .map(|capsules| capsules.into_iter().map(|c| c.id).collect())
+            .unwrap_or_default()
     }
 
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        let capsule = self
-            .capsules
-            .write()
-            .unwrap()
-            .remove(&id)
-            .ok_or_else(|| anyhow::anyhow!("Capsule not found"))?;
-        self.save()?;
-        Ok(capsule)
+        self.store
+            .delete_capsule(&id)?
+            .ok_or_else(|| anyhow!("Capsule not found"))
     }
 
-    /// Get dedup statistics (for debugging/monitoring)
     pub fn get_dedup_stats(&self) -> (usize, usize) {
-        let content_store = self.content_store.read().unwrap();
-        let capsules = self.capsules.read().unwrap();
+        let content_store = self.store.list_content().unwrap_or_default();
+        let capsules = self.store.list_capsules().unwrap_or_default();
 
-        let total_segments: usize = capsules.values().map(|c| c.segments.len()).sum();
-
+        let total_segments: usize = capsules.iter().map(|c| c.segments.len()).sum();
         let unique_segments = content_store.len();
 
         (total_segments, unique_segments)
     }
 
+    pub fn capsules(&self) -> Vec<Capsule> {
+        self.store.list_capsules().unwrap_or_default()
+    }
+
+    pub fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
+        self.store.list_content().unwrap_or_default()
+    }
+
     #[cfg(feature = "advanced-security")]
-    fn configure_bloom(
-        existing: Option<&HashMap<ContentHash, SegmentId>>,
-    ) -> Option<Arc<BloomFilterWrapper>> {
+    fn configure_bloom(store: &dyn MetadataStore) -> Result<Option<Arc<BloomFilterWrapper>>> {
         let capacity = std::env::var("SPACE_BLOOM_CAPACITY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -438,14 +367,20 @@ impl CapsuleRegistry {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.001);
 
-        let filter = if let Some(store) = existing {
-            let hashes = store.keys().cloned().collect::<Vec<_>>();
-            BloomFilterWrapper::with_existing(capacity, fp_rate, hashes)
-        } else {
+        let hashes = store
+            .list_content()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(hash, _)| hash)
+            .collect::<Vec<_>>();
+
+        let filter = if hashes.is_empty() {
             BloomFilterWrapper::new(capacity, fp_rate)
+        } else {
+            BloomFilterWrapper::with_existing(capacity, fp_rate, hashes)
         };
 
-        Some(Arc::new(filter))
+        Ok(Some(Arc::new(filter)))
     }
 }
 
@@ -458,10 +393,7 @@ impl Default for CapsuleRegistry {
 impl Clone for CapsuleRegistry {
     fn clone(&self) -> Self {
         Self {
-            capsules: Arc::clone(&self.capsules),
-            next_segment_id: Arc::clone(&self.next_segment_id),
-            metadata_path: self.metadata_path.clone(),
-            content_store: Arc::clone(&self.content_store),
+            store: Arc::clone(&self.store),
             #[cfg(feature = "advanced-security")]
             bloom_filter: self.bloom_filter.clone(),
         }
@@ -472,12 +404,10 @@ impl Clone for CapsuleRegistry {
 #[cfg(feature = "podms")]
 impl scaling::ContentStore for CapsuleRegistry {
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        self.content_store.read().ok()?.get(hash).copied()
+        self.lookup_content(hash)
     }
 
     fn register_content(&self, hash: &ContentHash, segment_id: SegmentId) {
-        if let Ok(mut store) = self.content_store.write() {
-            store.insert(hash.clone(), segment_id);
-        }
+        let _ = self.register_content(hash.clone(), segment_id);
     }
 }

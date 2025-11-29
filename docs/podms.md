@@ -299,7 +299,7 @@ async fn test_metro_sync_example() {
 ```
 
 **Important:**
-- Always use `CapsuleRegistry::open(&unique_path)` in tests, not `CapsuleRegistry::new()` (which uses a shared "space.metadata" file)
+- Always use `CapsuleRegistry::open(&unique_path)` in tests, not `CapsuleRegistry::new()` (which uses a shared "space.db" file)
 - Always use `NvramLog::open(&path)` with a unique path per test
 - Use `write_capsule_with_policy_async().await` in async contexts (e.g., `#[tokio::test]`)
 
@@ -410,7 +410,7 @@ MeshNode {
    - Or build without `podms` feature for single-node mode
 
 4. **"Segment not found: SegmentId(X)" in tests**
-   - Tests are sharing CapsuleRegistry state (using default "space.metadata" file)
+   - Tests are sharing CapsuleRegistry state (using default "space.db" file)
    - Solution: Use unique paths per test (see "Testing Best Practices" above)
    - Use `CapsuleRegistry::open(&unique_path)` instead of `CapsuleRegistry::new()`
 

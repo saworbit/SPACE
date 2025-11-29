@@ -196,7 +196,7 @@ S3_BIND_ADDR=0.0.0.0:8080  # S3 listen address
 **Registry Configuration**:
 ```bash
 RAFT_BIND_ADDR=0.0.0.0:5000  # Raft consensus address
-SPACE_METADATA_PATH=/capsules/space.metadata
+SPACE_METADATA_PATH=/capsules/space.db
 SPACE_NVRAM_PATH=/capsules/space.nvram
 ```
 

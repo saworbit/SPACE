@@ -660,7 +660,10 @@ impl WritePipeline {
                     (existing_seg_id, true)
                 } else {
                     // New content - allocate and write
-                    let new_seg_id = self.registry.alloc_segment();
+                    let new_seg_id = self
+                        .registry
+                        .alloc_segment()
+                        .map_err(|err| map_registry_error("alloc_segment", err))?;
 
                     // Write to NVRAM
                     let mut segment = self
@@ -705,7 +708,10 @@ impl WritePipeline {
                 }
             } else {
                 // Dedup disabled - always write new segment
-                let new_seg_id = self.registry.alloc_segment();
+                let new_seg_id = self
+                    .registry
+                    .alloc_segment()
+                    .map_err(|err| map_registry_error("alloc_segment", err))?;
 
                 let mut segment = self
                     .nvram
@@ -1401,7 +1407,10 @@ impl WritePipeline {
             }
         }
 
-        let seg_id = self.registry.alloc_segment();
+        let seg_id = self
+            .registry
+            .alloc_segment()
+            .map_err(|err| map_registry_error("alloc_segment", err))?;
         let data_len = final_data.len() as u64;
         let mut segment = transaction.append_segment(seg_id, final_data.as_ref())?;
 

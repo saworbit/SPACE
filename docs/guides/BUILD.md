@@ -84,7 +84,7 @@ cargo metadata --no-deps --format-version 1 | grep protocol-s3
 
 **Solution:** Tests create temporary files. Clean up:
 ```bash
-rm -f test*.nvram* test*.metadata space.nvram* space.metadata
+rm -f test*.nvram* test*.metadata space.nvram* space.db
 cargo test --workspace
 ```
 
@@ -138,7 +138,7 @@ If you encounter weird errors, try:
 ```bash
 # Nuclear option - rebuild everything
 cargo clean
-rm -f space.nvram* space.metadata test*.nvram* test*.metadata
+rm -f space.nvram* space.db test*.nvram* test*.metadata
 cargo build --release
 ```
 
