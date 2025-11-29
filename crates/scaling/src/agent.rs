@@ -10,9 +10,9 @@
 //! telemetry events into concrete ScalingActions based on declarative policies.
 
 use anyhow::{anyhow, Context, Result};
-use common::podms::{NodeId, SwarmBehavior, Telemetry};
+use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps};
 use common::traits::CapsuleCatalog;
-use common::{CapsuleId, Policy, Segment};
+use common::{CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, Segment};
 use encryption::keymanager::KeyManager;
 use encryption::mac::{compute_mac, verify_mac};
 use encryption::policy::EncryptionMetadata;
@@ -25,7 +25,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::compiler::{MeshState, NodeInfo, PolicyCompiler, ScalingAction};
-use crate::{ContentStore, MeshNode};
+use crate::{ContentStore, MeshNode, SwarmOps};
 
 type AgentRuntimeParts = (
     Arc<dyn CapsuleCatalog + Send + Sync>,
@@ -551,6 +551,7 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             .with_context(|| format!("sovereignty validation for {}", capsule_id.as_uuid()))?;
 
         let mut migrated = 0usize;
+        let swarm_ops = ctx.key_manager.as_ref().map(|km| SwarmOps::new(km.clone()));
 
         for segment_id in capsule.segments.iter().copied() {
             let (segment_meta, mut payload) = {
@@ -566,43 +567,33 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
 
             let mut encryption_meta = Self::build_encryption_metadata(&segment_meta, payload.len());
 
-            if encryption_meta.key_version.is_none() && ctx.key_manager.is_none() {
-                warn!(
-                    segment = segment_id.0,
-                    capsule = %capsule_id.as_uuid(),
-                    "missing key metadata and no key manager available; skipping segment"
-                );
-                continue;
-            }
+            if transform {
+                let (ops, km) = match (&swarm_ops, &ctx.key_manager) {
+                    (Some(ops), Some(km)) => (ops, km),
+                    _ => {
+                        warn!(
+                            segment = segment_id.0,
+                            capsule = %capsule_id.as_uuid(),
+                            "transform requested but key manager unavailable"
+                        );
+                        continue;
+                    }
+                };
 
-            // If metadata is incomplete, try to harden it with the key manager
-            if encryption_meta.key_version.is_none() {
-                if let Some(km) = ctx.key_manager.as_ref() {
-                    let mut guard = km.write().await;
-                    let target_version = guard.current_version();
-                    let target_pair = guard.get_key(target_version)?;
-                    let tweak = derive_tweak_from_hash(blake3::hash(&payload).as_bytes());
-                    let (ciphertext, mut new_meta) =
-                        encrypt_segment(&payload, target_pair, target_version, tweak)?;
-                    let mac = compute_mac(
-                        &ciphertext,
-                        &new_meta,
-                        target_pair.key1(),
-                        target_pair.key2(),
-                    )?;
-                    new_meta.set_integrity_tag(mac);
-                    new_meta.ciphertext_len = Some(ciphertext.len() as u32);
-                    payload = ciphertext;
-                    encryption_meta = new_meta;
+                if encryption_meta.is_encrypted() && encryption_meta.key_version.is_none() {
+                    warn!(
+                        segment = segment_id.0,
+                        capsule = %capsule_id.as_uuid(),
+                        "transform requested but key metadata missing"
+                    );
+                    continue;
                 }
-            }
 
-            if let Some(km) = ctx.key_manager.as_ref() {
-                let mut guard = km.write().await;
-                if let Some(key_version) = encryption_meta.key_version {
+                let plaintext = if encryption_meta.is_encrypted() {
+                    let key_version = encryption_meta.key_version.unwrap();
+                    let mut guard = km.write().await;
                     let key_pair = guard.get_key(key_version)?;
 
-                    // Validate MAC if present
                     if encryption_meta.has_integrity_tag() {
                         if let Err(err) =
                             verify_mac(&payload, &encryption_meta, key_pair.key1(), key_pair.key2())
@@ -616,7 +607,6 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
                             continue;
                         }
                     } else {
-                        // Populate MAC so the receiver enforces integrity
                         let mac = compute_mac(
                             &payload,
                             &encryption_meta,
@@ -626,16 +616,66 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
                         encryption_meta.set_integrity_tag(mac);
                     }
 
-                    if transform && encryption_meta.is_encrypted() {
-                        let plaintext = decrypt_segment(&payload, key_pair, &encryption_meta)
-                            .with_context(|| format!("decrypt segment {}", segment_id.0))?;
+                    let decrypted = decrypt_segment(&payload, key_pair, &encryption_meta)
+                        .with_context(|| format!("decrypt segment {}", segment_id.0))?;
+                    drop(guard);
+                    decrypted
+                } else {
+                    payload.clone()
+                };
+
+                let src_comp =
+                    compression_policy_from_segment(&segment_meta).unwrap_or_else(|| {
+                        warn!(
+                            segment = segment_id.0,
+                            capsule = %capsule_id.as_uuid(),
+                            algo = %segment_meta.compression_algo,
+                            "unknown compression algorithm, treating as None"
+                        );
+                        CompressionPolicy::None
+                    });
+
+                let target_policy = target_policy_with_rotation(&capsule.policy, km.as_ref());
+                let dst_comp = target_policy.compression.clone();
+                let dst_enc = target_policy.encryption.clone();
+
+                let mut transformed = plaintext;
+                if src_comp != dst_comp {
+                    if !matches!(src_comp, CompressionPolicy::None) {
+                        transformed = ops
+                            .decompress(&transformed, &src_comp)
+                            .with_context(|| format!("decompress segment {}", segment_id.0))?;
+                    }
+                    if !matches!(dst_comp, CompressionPolicy::None) {
+                        transformed = ops
+                            .compress(&transformed, &dst_comp)
+                            .with_context(|| format!("compress segment {}", segment_id.0))?;
+                    }
+                }
+
+                let (ciphertext, new_meta) = ops
+                    .encrypt_with_metadata(capsule_id, &transformed, &dst_enc, segment_id)
+                    .with_context(|| format!("encrypt segment {}", segment_id.0))?;
+                payload = ciphertext;
+                encryption_meta = new_meta;
+            } else {
+                if encryption_meta.key_version.is_none() && ctx.key_manager.is_none() {
+                    warn!(
+                        segment = segment_id.0,
+                        capsule = %capsule_id.as_uuid(),
+                        "missing key metadata and no key manager available; skipping segment"
+                    );
+                    continue;
+                }
+
+                if encryption_meta.key_version.is_none() {
+                    if let Some(km) = ctx.key_manager.as_ref() {
+                        let mut guard = km.write().await;
                         let target_version = guard.current_version();
                         let target_pair = guard.get_key(target_version)?;
-                        let tweak = encryption_meta.tweak_nonce.unwrap_or_else(|| {
-                            derive_tweak_from_hash(blake3::hash(&plaintext).as_bytes())
-                        });
+                        let tweak = derive_tweak_from_hash(blake3::hash(&payload).as_bytes());
                         let (ciphertext, mut new_meta) =
-                            encrypt_segment(&plaintext, target_pair, target_version, tweak)?;
+                            encrypt_segment(&payload, target_pair, target_version, tweak)?;
                         let mac = compute_mac(
                             &ciphertext,
                             &new_meta,
@@ -647,19 +687,41 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
                         payload = ciphertext;
                         encryption_meta = new_meta;
                     }
-                } else if transform {
-                    warn!(
-                        segment = segment_id.0,
-                        capsule = %capsule_id.as_uuid(),
-                        "transform requested but key metadata missing"
-                    );
                 }
-            } else if transform {
-                warn!(
-                    segment = segment_id.0,
-                    capsule = %capsule_id.as_uuid(),
-                    "transform requested but key manager unavailable"
-                );
+
+                if let Some(km) = ctx.key_manager.as_ref() {
+                    let mut guard = km.write().await;
+                    if let Some(key_version) = encryption_meta.key_version {
+                        let key_pair = guard.get_key(key_version)?;
+
+                        // Validate MAC if present
+                        if encryption_meta.has_integrity_tag() {
+                            if let Err(err) = verify_mac(
+                                &payload,
+                                &encryption_meta,
+                                key_pair.key1(),
+                                key_pair.key2(),
+                            ) {
+                                warn!(
+                                    segment = segment_id.0,
+                                    capsule = %capsule_id.as_uuid(),
+                                    error = %err,
+                                    "integrity validation failed, skipping segment"
+                                );
+                                continue;
+                            }
+                        } else {
+                            // Populate MAC so the receiver enforces integrity
+                            let mac = compute_mac(
+                                &payload,
+                                &encryption_meta,
+                                key_pair.key1(),
+                                key_pair.key2(),
+                            )?;
+                            encryption_meta.set_integrity_tag(mac);
+                        }
+                    }
+                }
             }
 
             let frame =
@@ -683,6 +745,49 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
 
         Ok(migrated)
     }
+}
+
+fn compression_policy_from_segment(segment: &Segment) -> Option<CompressionPolicy> {
+    if !segment.compressed {
+        return Some(CompressionPolicy::None);
+    }
+
+    let algo = segment.compression_algo.to_lowercase();
+    if let Some(level) = algo.strip_prefix("lz4:") {
+        return level
+            .parse::<i32>()
+            .ok()
+            .map(|lvl| CompressionPolicy::LZ4 { level: lvl });
+    }
+    if algo == "lz4" {
+        return Some(CompressionPolicy::LZ4 { level: 1 });
+    }
+    if let Some(level) = algo.strip_prefix("zstd:") {
+        return level
+            .parse::<i32>()
+            .ok()
+            .map(|lvl| CompressionPolicy::Zstd { level: lvl });
+    }
+    if algo == "zstd" {
+        return Some(CompressionPolicy::Zstd { level: 0 });
+    }
+
+    None
+}
+
+fn target_policy_with_rotation(
+    policy: &Policy,
+    key_manager: &tokio::sync::RwLock<KeyManager>,
+) -> Policy {
+    let mut target = policy.clone();
+    if let EncryptionPolicy::XtsAes256 { key_version } = &mut target.encryption {
+        if key_version.is_none() {
+            let guard = key_manager.blocking_read();
+            *key_version = Some(guard.current_version());
+            drop(guard);
+        }
+    }
+    target
 }
 
 // Note: Tests removed because they need concrete ContentStore implementation

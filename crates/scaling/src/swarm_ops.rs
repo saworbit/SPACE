@@ -7,6 +7,8 @@ use common::traits::Compressor;
 use common::{CapsuleId, CompressionPolicy, EncryptionPolicy, SegmentId};
 use compression::Lz4ZstdCompressor;
 use encryption::keymanager::XTS_KEY_SIZE;
+use encryption::mac::compute_mac;
+use encryption::policy::EncryptionMetadata;
 use encryption::{xts, KeyManager, XtsKeyPair};
 use tokio::sync::RwLock;
 
@@ -30,7 +32,7 @@ impl SwarmOps {
         &self,
         capsule_id: CapsuleId,
         key_version: Option<u32>,
-    ) -> Result<XtsKeyPair> {
+    ) -> Result<(XtsKeyPair, u32)> {
         let mut manager = self.key_manager.blocking_write();
         let version = key_version.unwrap_or_else(|| manager.current_version());
         let base = manager
@@ -48,10 +50,10 @@ impl SwarmOps {
 
         let mut derived = [0u8; XTS_KEY_SIZE];
         hasher.finalize_xof().fill(&mut derived);
-        Ok(XtsKeyPair::from_bytes(derived))
+        Ok((XtsKeyPair::from_bytes(derived), version))
     }
 
-    fn derive_xts_tweak(segment_id: SegmentId) -> [u8; 16] {
+    pub fn derive_xts_tweak(segment_id: SegmentId) -> [u8; 16] {
         let mut tweak = [0u8; 16];
         tweak[..8].copy_from_slice(&segment_id.0.to_le_bytes());
         tweak
@@ -93,7 +95,7 @@ impl TransformOps for SwarmOps {
         match policy {
             EncryptionPolicy::Disabled => Ok(data.to_vec()),
             EncryptionPolicy::XtsAes256 { key_version } => {
-                let key = self.derive_capsule_key(capsule_id, *key_version)?;
+                let (key, _) = self.derive_capsule_key(capsule_id, *key_version)?;
                 let tweak = Self::derive_xts_tweak(ctx);
                 xts::decrypt(data, &key, &tweak).context("xts decrypt failed")
             }
@@ -110,7 +112,7 @@ impl TransformOps for SwarmOps {
         match policy {
             EncryptionPolicy::Disabled => Ok(data.to_vec()),
             EncryptionPolicy::XtsAes256 { key_version } => {
-                let key = self.derive_capsule_key(capsule_id, *key_version)?;
+                let (key, _) = self.derive_capsule_key(capsule_id, *key_version)?;
                 let tweak = Self::derive_xts_tweak(ctx);
                 xts::encrypt(data, &key, &tweak).context("xts encrypt failed")
             }
@@ -123,6 +125,33 @@ impl TransformOps for SwarmOps {
 
     fn compress(&self, data: &[u8], policy: &CompressionPolicy) -> Result<Vec<u8>> {
         self.compress_with_policy(data, policy)
+    }
+}
+
+impl SwarmOps {
+    /// Encrypt data and produce encryption metadata (including MAC) for replication frames.
+    pub fn encrypt_with_metadata(
+        &self,
+        capsule_id: CapsuleId,
+        data: &[u8],
+        policy: &EncryptionPolicy,
+        ctx: SegmentId,
+    ) -> Result<(Vec<u8>, EncryptionMetadata)> {
+        match policy {
+            EncryptionPolicy::Disabled => {
+                Ok((data.to_vec(), EncryptionMetadata::new_unencrypted()))
+            }
+            EncryptionPolicy::XtsAes256 { key_version } => {
+                let (key, version) = self.derive_capsule_key(capsule_id, *key_version)?;
+                let tweak = Self::derive_xts_tweak(ctx);
+                let ciphertext = xts::encrypt(data, &key, &tweak).context("xts encrypt failed")?;
+                let mut metadata =
+                    EncryptionMetadata::new_xts(version, tweak, ciphertext.len() as u32);
+                let mac = compute_mac(&ciphertext, &metadata, key.key1(), key.key2())?;
+                metadata.set_integrity_tag(mac);
+                Ok((ciphertext, metadata))
+            }
+        }
     }
 }
 
