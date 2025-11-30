@@ -56,6 +56,7 @@ trait DataTransport: Send + Sync {
 }
 
 /// Standard TCP transport used for cross-platform builds.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 struct TcpTransport;
 
 #[async_trait::async_trait]
