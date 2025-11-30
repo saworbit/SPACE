@@ -121,8 +121,18 @@ skip = [
     { crate = "heck@0.4.1", reason = "proc-macro transitive pin" },
     { crate = "linux-raw-sys@0.4.15", reason = "rustix transitive pin" },
     { crate = "rustix@0.38.44", reason = "system interface transitive pin" },
+    { crate = "socket2@0.4.10", reason = "tokio-uring/sled compatibility" },
     { crate = "socket2@0.5.10", reason = "tokio/mio compatibility" },
+    { crate = "socket2@0.6.1", reason = "hyper-util/tokio compatibility" },
     { crate = "syn@1.0.109", reason = "proc-macro v1 compatibility" },
+
+    # parking_lot ecosystem split (sled vs tokio/libp2p stacks)
+    { crate = "parking_lot@0.11.2", reason = "sled pin" },
+    { crate = "parking_lot_core@0.8.6", reason = "sled pin" },
+    { crate = "parking_lot@0.12.5", reason = "tokio/libp2p stack" },
+    { crate = "parking_lot_core@0.9.12", reason = "tokio/libp2p stack" },
+    { crate = "redox_syscall@0.2.16", reason = "parking_lot_core 0.8.x pin" },
+    { crate = "redox_syscall@0.5.18", reason = "parking_lot_core 0.9.x pin" },
 
     # rand ecosystem
     { crate = "rand@0.8.5", reason = "ecosystem compatibility" },
@@ -166,6 +176,5 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
-
 
 
