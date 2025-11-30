@@ -2,7 +2,9 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::Policy;
 use nvram_sim::NvramLog;
 use std::fs;
+use std::path::Path;
 use std::sync::Once;
+use uuid::Uuid;
 
 fn init_native_pipeline() {
     static INIT: Once = Once::new();
@@ -12,12 +14,20 @@ fn init_native_pipeline() {
 }
 
 fn setup_paths(prefix: &str) -> (String, String) {
-    let log_path = format!("{}_gc.log", prefix);
-    let meta_path = format!("{}_gc.metadata", prefix);
-    let _ = fs::remove_file(log_path.as_str());
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path.as_str());
-    (log_path, meta_path)
+    let base = std::env::temp_dir().join("space_registry_tests");
+    let _ = fs::create_dir_all(&base);
+    let unique = format!("{}_{}", prefix, Uuid::new_v4());
+    let log_path = base.join(format!("{unique}.log"));
+    let meta_path = base.join(format!("{unique}.metadata"));
+
+    cleanup_path(log_path.to_string_lossy().as_ref());
+    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
+    cleanup_path(meta_path.to_string_lossy().as_ref());
+
+    (
+        log_path.to_string_lossy().to_string(),
+        meta_path.to_string_lossy().to_string(),
+    )
 }
 
 #[test]
@@ -61,9 +71,9 @@ fn refcounts_increase_and_decrease_with_capsules() {
     assert!(registry_view.lookup_content(&segment_hash).is_none());
 
     drop(pipeline);
-    let _ = fs::remove_file(log_path.as_str());
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path.as_str());
+    cleanup_path(log_path.as_str());
+    cleanup_path(format!("{}.segments", log_path).as_str());
+    cleanup_path(meta_path.as_str());
 }
 
 #[test]
@@ -102,9 +112,24 @@ fn garbage_collect_reclaims_orphan_segments() {
     }
 
     drop(pipeline);
-    let _ = fs::remove_file(log_path.as_str());
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path.as_str());
+    cleanup_path(log_path.as_str());
+    cleanup_path(format!("{}.segments", log_path).as_str());
+    cleanup_path(meta_path.as_str());
+}
+
+fn cleanup_path(path: &str) {
+    let p = Path::new(path);
+    match fs::remove_file(p) {
+        Ok(_) => {}
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return;
+            }
+            if e.kind() == std::io::ErrorKind::IsADirectory {
+                let _ = fs::remove_dir_all(p);
+            }
+        }
+    }
 }
 
 #[cfg(feature = "modular_pipeline")]

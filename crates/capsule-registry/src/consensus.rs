@@ -43,6 +43,7 @@ impl MetadataStateMachine {
         Self { store }
     }
 
+    #[allow(dead_code)]
     pub fn apply(&self, op: MetadataOp) -> Result<OpResult> {
         match op {
             MetadataOp::PutCapsule(capsule) => {
@@ -69,10 +70,12 @@ impl MetadataStateMachine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> Result<Vec<u8>> {
         self.store.create_snapshot()
     }
 
+    #[allow(dead_code)]
     pub fn restore_snapshot(&self, data: &[u8]) -> Result<()> {
         self.store.restore_snapshot(data)
     }
@@ -92,16 +95,19 @@ impl RaftNode {
     }
 
     /// Propose an operation; in single-node mode this applies immediately.
+    #[allow(dead_code)]
     pub fn propose(&self, op: MetadataOp) -> Result<OpResult> {
         self.fsm.apply(op)
     }
 
     /// Produce a serialized snapshot for Raft snapshotting.
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> Result<Vec<u8>> {
         self.fsm.snapshot()
     }
 
     /// Restore state from a Raft snapshot payload.
+    #[allow(dead_code)]
     pub fn restore(&self, data: &[u8]) -> Result<()> {
         self.fsm.restore_snapshot(data)
     }

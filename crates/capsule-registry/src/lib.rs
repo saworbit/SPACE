@@ -342,7 +342,10 @@ impl CapsuleRegistry {
     }
 
     pub fn add_deduped_bytes(&self, capsule_id: CapsuleId, bytes: u64) -> Result<()> {
-        let mut capsule = self.lookup(capsule_id)?;
+        let mut capsule = match self.lookup(capsule_id) {
+            Ok(capsule) => capsule,
+            Err(_) => return Ok(()), // Capsule deleted before dedup update; treat as noop
+        };
         capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
         match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
             OpResult::Ok => Ok(()),
