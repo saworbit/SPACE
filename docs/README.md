@@ -16,6 +16,7 @@
 - [Implementation Summary](implementation/IMPLEMENTATION_SUMMARY.md)
 - [Implementation Complete](implementation/IMPLEMENTATION_COMPLETE.md)
 - [Multi-Node Implementation](MULTI_NODE_IMPLEMENTATION.md)
+- [Performance Fix: Pipeline Runtime](specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md)
 
 ## Status & Progress
 - [Inbound Replication Status](status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md)

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Performance fix spec + benchmark** - Documented the async runtime bridging issue and added a Criterion benchmark (`crates/capsule-registry/benches/runtime_overhead.rs`) to measure per-call runtime creation vs a shared global runtime (`docs/specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md`).
 - **Native NVMe/TCP simulation target** - `crates/sim-nvmeof` now provides a protocol-compliant NVMe/TCP target (no SPDK/hugepages) with helper scripts `scripts/nvmeof_discover.sh` (discover) and `scripts/nvmeof_connect_io.sh` (connect + 4KiB I/O).
 - **SPDK-gated NVMe-oF path** - `sim-nvmeof` now uses a `spdk` Cargo feature with Linux-only runtime preflight (hugepages, memlock, root) and automatic fallback to the native TCP target to avoid CI/container hangs.
 - **Linux zero-copy replication path** - Outbound replication now uses `tokio-uring` on Linux with a bounded queue, queue-depth logging, and backpressure when saturated; includes `scripts/replication_io_uring_smoke.sh` + `uring_probe` example to validate the io_uring data plane.
@@ -61,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Global async runtime for sync pipeline** - `capsule-registry` uses a single `tokio` runtime (via `OnceLock`) for synchronous bridge calls instead of constructing a runtime per operation, eliminating millisecond-scale latency spikes and adding a warning when called from an async context.
 - **WritePipeline runtime strategy** - `capsule-registry` now uses a Strategy-pattern facade: when built with `modular_pipeline`, it prefers the modular orchestrator unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set, can be forced with `SPACE_USE_MODULAR=1`, and falls back to the legacy path on initialization errors. Legacy telemetry/config methods remain available via downcasting.
     - Compile-time enforcement via compiler checks
 

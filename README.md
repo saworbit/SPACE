@@ -993,6 +993,11 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 </div>
 
+### Async Pipeline Runtime Overhead
+
+- **Global Tokio runtime for sync bridge:** `WritePipeline` now reuses a single background runtime (OnceLock) instead of creating a new `Runtime` per call, removing millisecond-scale latency spikes in hot paths. See `docs/specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md`.
+- **Benchmark proof:** `cargo bench --bench runtime_overhead` compares "New Runtime per Call" vs "Global Runtime" (expect ~100x faster sync calls).
+
 ### �YO? Zero-Copy Replication (Linux)
 
 - **tokio-uring data plane**: Linux builds enqueue replication frames directly to io_uring SQEs for kernel-side DMA without user/kernel copies; non-Linux keeps the Tokio TCP fallback.
@@ -1200,3 +1205,6 @@ Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
+
+
+

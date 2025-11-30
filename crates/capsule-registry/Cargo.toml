@@ -50,7 +50,12 @@ async-trait = "0.1"
 tracing-test = { workspace = true }
 futures = { workspace = true }
 criterion = "0.5"
+tokio = { workspace = true, features = ["full"] }
 
 [[bench]]
 name = "pipeline"
+harness = false
+
+[[bench]]
+name = "runtime_overhead"
 harness = false

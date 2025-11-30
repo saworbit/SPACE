@@ -6,9 +6,27 @@ use crate::CapsuleRegistry;
 
 #[cfg(feature = "pipeline_async")]
 fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
-    tokio::runtime::Runtime::new()
-        .expect("failed to build tokio runtime")
-        .block_on(fut)
+    // Reuse a single background runtime to avoid per-call thread pool creation.
+    fn global_runtime() -> &'static tokio::runtime::Runtime {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("space-sync-bridge")
+                .worker_threads(4)
+                .build()
+                .expect("Failed to create global async runtime")
+        })
+    }
+
+    // Tokio panics if block_on is called from an async executor thread; warn early.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tracing::warn!(
+            "Calling synchronous Pipeline API from an async context; prefer *_async methods."
+        );
+    }
+
+    global_runtime().block_on(fut)
 }
 
 #[cfg(not(feature = "pipeline_async"))]
