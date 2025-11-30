@@ -77,6 +77,10 @@ fn async_pipeline_processes_segments_in_order() {
     let roundtrip = pipeline.read_capsule(capsule_id).expect("read capsule");
     assert_eq!(data, roundtrip, "round-trip data mismatch");
 
+    drop(pipeline);
+    drop(nvram);
+    drop(registry);
+
     let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let capsule = reopened.lookup(capsule_id).expect("capsule lookup");
 
@@ -130,6 +134,10 @@ fn async_pipeline_deduplicates_repeated_payloads() {
         first.segments, second.segments,
         "deduplication should reuse the same segments"
     );
+
+    drop(pipeline);
+    drop(nvram);
+    drop(registry);
 
     cleanup(&log_path);
     cleanup(&meta_path);
