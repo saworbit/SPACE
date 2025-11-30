@@ -583,7 +583,7 @@ cargo build --features modular_pipeline
 SPACE_DISABLE_MODULAR_PIPELINE=1 ./target/release/spacectl create --file demo.txt
 ```
 
-The modular path instantiates `compression`, `dedup`, `encryption`, and `storage` crates through shared traits, while `WritePipeline` automatically delegates reads/writes/GC to the new orchestrator whenever the feature is compiled in. Protocol crates (e.g., S3) and the CLI share a common helper (`registry_pipeline_from_env`) so they all exercise the same code paths. Disable the feature entirely for leaner binaries via `--no-default-features` or by omitting `--features modular_pipeline`.
+The modular path instantiates `compression`, `dedup`, `encryption`, and `storage` crates through shared traits, while `WritePipeline` now selects the orchestrator at runtime (Strategy pattern): when the `modular_pipeline` feature is compiled in, it prefers the modular backend unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set; you can force delegation with `SPACE_USE_MODULAR=1`, and it falls back to the legacy path if initialization fails. Protocol crates (e.g., S3) and the CLI share a common helper (`registry_pipeline_from_env`) so they all exercise the same code paths. Disable the feature entirely for leaner binaries via `--no-default-features` or by omitting `--features modular_pipeline`.
 
 ### 🌐 Start S3 Server
 ```bash

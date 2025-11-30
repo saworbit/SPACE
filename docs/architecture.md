@@ -97,7 +97,7 @@ Modern workloads are scattered across VMs, containers, GPUs, DPUs and edge devic
 | File (NFS-style)| `protocol-nfs` | Persists namespace in `space.nfs.json`, rewrites capsules on overwrite |
 | Block           | `protocol-block` | Presents logical LUNs with copy-on-write updates stored in `space.block.json` |
 
-Each facade delegates I/O to the shared `WritePipeline`, ensuring compression, dedupe, encryption, and reference management remain consistent regardless of protocol.  The lightweight adapters allow CLI tooling (`spacectl`) to expose object, file, and block semantics without duplicating storage logic.
+Each facade delegates I/O to the shared `WritePipeline`, ensuring compression, dedupe, encryption, and reference management remain consistent regardless of protocol.  The lightweight adapters allow CLI tooling (`spacectl`) to expose object, file, and block semantics without duplicating storage logic.  The facade now selects its backend at runtime via a Strategy pattern: when built with `modular_pipeline`, the modular orchestrator is used unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set (or when explicitly forced with `SPACE_USE_MODULAR=1`), otherwise it falls back to the legacy path.
 
 ## 4  Data flows
 
@@ -182,6 +182,7 @@ copies and cutting large transfer latency by ~10–20% in internal benchmarks.
 - `pipeline::Pipeline` orchestrates the flow using generics for zero-cost abstraction. It stages writes through `StorageBackend::Transaction`, records dedupe statistics, surfaces `EncryptionSummary` metadata (algorithm, key version, tweak, MAC) for downstream registry updates, and now handles `read_capsule`, `delete_capsule`, and `garbage_collect` paths by consulting the shared catalog.
 - `storage::NvramBackend` wraps the existing simulator behind the transactional trait. Tests can also swap in the in-memory backend for fast CI.
 - Enabling `capsule-registry`'s `modular_pipeline` feature re-exports helper types (`PipelineBuilder`, `InMemoryPipeline`, `XtsEncryptor`, `KeyManagerKeyring`) and a `registry_nvram_pipeline_with_encryption` constructor so application code can stand up pipelines backed by the real `CapsuleRegistry` without manual wiring, while legacy callers continue using `pipeline::WritePipeline`.
+- WritePipeline now selects its backend at runtime (Strategy pattern): when built with `modular_pipeline`, it prefers the modular orchestrator unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set; operators can force delegation with `SPACE_USE_MODULAR=1`, and it falls back to legacy on init errors.
 - Additional integration tests (`integration_test.rs`, `gc_test.rs`) now exercise the trait-based pipeline behind the feature flag, validating dedupe stats, encryption metadata, key rotation behaviour, and the new GC lifecycle with registry-backed state.
 - `spacectl` and `protocol-s3` can drive either implementation at runtime: building with `--features modular_pipeline` enables a `--modular` CLI flag for `create`, `read`, and `serve-s3`, and the legacy `WritePipeline` transparently delegates to the modular orchestrator unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set. This lets operators dogfood the new stack (including deletes/GC) without dropping compatibility.
 

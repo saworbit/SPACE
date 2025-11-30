@@ -8,7 +8,7 @@ publish = false
 
 [features]
 default = []
-pipeline_async = ["dep:tokio", "dep:futures", "dep:num_cpus"]
+pipeline_async = ["dep:tokio", "dep:num_cpus"]
 modular_pipeline = ["dep:pipeline", "dep:tokio"]
 advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
 podms = ["dep:tokio", "pipeline_async", "common/podms", "dep:scaling"]
@@ -31,7 +31,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = { workspace = true }
 tokio = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
+futures = { workspace = true }
 num_cpus = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -44,6 +44,7 @@ sled = "0.34"
 pipeline = { path = "../pipeline", optional = true }
 scaling = { path = "../scaling", optional = true }
 sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation mode support
+async-trait = "0.1"
 
 [dev-dependencies]
 tracing-test = { workspace = true }
