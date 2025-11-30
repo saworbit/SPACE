@@ -162,7 +162,7 @@ fn cleanup_paths(path: &str) {
 fn cleanup_path(path: &str) {
     let p = Path::new(path);
     match fs::remove_file(p) {
-        Ok(_) => return,
+        Ok(_) => (),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::NotFound {
                 return;
