@@ -461,7 +461,7 @@ docker compose down
 
 **What you get**:
 - ✅ **NVRAM simulation**: File-backed log for testing pipeline
-- ✅ **NVMe-oF simulation**: Native NVMe/TCP target (no hugepages) with `nvme-cli` helper scripts
+- ✅ **NVMe-oF simulation**: Native NVMe/TCP target with optional SPDK feature gating and automatic fallback; ships `nvme-cli` helper scripts
 - ✅ **Multi-node setup**: Simulate distributed capsule mesh
 
 **For more details**:
@@ -920,7 +920,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 - ✅ Security module + docs aligning Bloom/Audit/PQ/eBPF
 
 ### 🔮 Phase 4: Advanced Protocol Views
-- 📋 NVMe-oF block target (SPDK)
+- 📋 NVMe-oF block target (SPDK feature-gated, TCP fallback)
 - 📋 NFS v4.2 file export
 - 📋 FUSE filesystem mount
 - 📋 CSI driver for Kubernetes

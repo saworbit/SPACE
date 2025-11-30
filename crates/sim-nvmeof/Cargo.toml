@@ -14,9 +14,12 @@ anyhow.workspace = true
 byteorder = "1.4"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+spdk-rs = { path = "../../vendor/spdk-rs", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tracing-test.workspace = true
 
 [features]
 default = []
+spdk = ["dep:spdk-rs", "dep:libc"]

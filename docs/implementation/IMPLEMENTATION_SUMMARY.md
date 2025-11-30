@@ -24,7 +24,8 @@ This document summarizes the comprehensive implementation of container integrati
 - **Purpose**: Native Rust NVMe/TCP simulation target
 - **Features**:
   - Implements ICReq/ICResp, Fabrics Connect, discovery log (0x70), identify, and basic read/write
-  - No SPDK/hugepages requirement; CI/Docker friendly
+  - Default path has no SPDK/hugepages requirement; CI/Docker friendly
+  - Optional `spdk` feature with Linux-only preflight (hugepages + memlock + root) and automatic fallback to native TCP
   - Backing file auto-created (100MB default)
   - Helper scripts for `nvme discover` and `nvme connect` + I/O validation
 - **Files**:

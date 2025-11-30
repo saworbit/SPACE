@@ -89,19 +89,26 @@ let log = start_nvram_sim_with_config(config)?;
 
 **Crate**: `crates/sim-nvmeof`  
 **Purpose**: Native Rust NVMe-over-TCP target for discovery/connect testing  
-**Dependencies**: `anyhow`, `byteorder`, `tracing` (no SPDK or hugepages required)
+**Dependencies**: `anyhow`, `byteorder`, `tracing`; optional `spdk-rs` + `libc` behind the `spdk` feature
 
 #### Features
 
 - **Native NVMe/TCP stack**: Implements ICReq/ICResp, Fabrics Connect, discovery log (0x70), identify, and basic read/write
-- **CI-friendly**: Works in Docker/CI without hugepages or privileged containers
+- **CI-friendly default**: Works in Docker/CI without hugepages or privileged containers
 - **File-backed**: Automatically creates a 100MB backing file if missing
 - **nvme-cli validated**: Compatible with `nvme discover`, `nvme connect`, and `nvme read/write`
+- **SPDK-opt-in**: `--features spdk` builds the SPDK path; runtime preflight (hugepages + memlock + root) is enforced and falls back to native TCP on failure
 
 #### Requirements
 
 - `nvme` CLI installed (`nvme-cli` package)
 - Root privileges for `nvme connect` and I/O device creation
+
+**SPDK mode (optional)**:
+- Build with `cargo build -p sim-nvmeof --features spdk` (Linux only)
+- Hugepages: at least 512MB free (e.g., 256x2MB) visible in `/proc/meminfo`
+- memlock ulimit: unlimited or >=512MB
+- Root / `CAP_SYS_RESOURCE` for hugepage mapping
 
 #### Usage
 
@@ -150,6 +157,7 @@ sudo nvme connect -t tcp -n nqn.2024-01.io.space:sim -a 127.0.0.1 -s 4420
 - **`nvme` CLI missing**: Install `nvme-cli` (`apt install nvme-cli`, `dnf install nvme-cli`, etc.)
 - **Permission denied**: `nvme connect` requires root; rerun with sudo
 - **Port already in use**: Change `LISTEN_PORT` or stop conflicting service
+- **SPDK not used**: Check that the binary was built with `--features spdk` and the host has hugepages + memlock; otherwise the sim logs a warning and continues with the native TCP path
 
 ### Other Simulations
 

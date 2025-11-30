@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Native NVMe/TCP simulation target** - `crates/sim-nvmeof` now provides a protocol-compliant NVMe/TCP target (no SPDK/hugepages) with helper scripts `scripts/nvmeof_discover.sh` (discover) and `scripts/nvmeof_connect_io.sh` (connect + 4KiB I/O).
+- **SPDK-gated NVMe-oF path** - `sim-nvmeof` now uses a `spdk` Cargo feature with Linux-only runtime preflight (hugepages, memlock, root) and automatic fallback to the native TCP target to avoid CI/container hangs.
 - **Linux zero-copy replication path** - Outbound replication now uses `tokio-uring` on Linux with a bounded queue, queue-depth logging, and backpressure when saturated; includes `scripts/replication_io_uring_smoke.sh` + `uring_probe` example to validate the io_uring data plane.
 - **Raft-ready sled metadata store** - Capsule registry now persists to `space.db` via sled with streaming snapshot/restore and Raft-facing apply hooks, eliminating the JSON SPOF and enabling crash-safe recovery.
 - **SwarmBehavior Transformer Pattern** - Dependency-inverted `TransformOps` trait in `common` enables decrypt -> decompress -> re-compress -> re-encrypt during migration with sovereignty enforcement; documented in `docs/specs/PODMS_SWARM_BEHAVIOR.md`.
