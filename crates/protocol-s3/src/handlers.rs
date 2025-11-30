@@ -1,12 +1,15 @@
+use anyhow::Error;
 use axum::{
-    body::Bytes,
+    body::Body,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
+use futures::TryStreamExt;
 use serde::Serialize;
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 use tracing::{error, info};
 
 use crate::S3View;
@@ -35,14 +38,17 @@ pub struct ListResponse {
 pub async fn put_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
-    body: Bytes,
+    body: Body,
 ) -> Response {
-    info!("PUT /{}/{} ({} bytes)", bucket, key, body.len());
+    info!("PUT (streaming) /{}/{}", bucket, key);
 
-    match s3.put_object(&bucket, &key, body.to_vec()).await {
+    // Convert Axum Body into a standard futures::Stream
+    let stream = body.into_data_stream().map_err(Error::from).into_stream();
+
+    match s3.put_object(&bucket, &key, stream).await {
         Ok(capsule_id) => {
             info!(
-                "✅ Created capsule {} for {}/{}",
+                "Created capsule {} for {}/{}",
                 capsule_id.as_uuid(),
                 bucket,
                 key
@@ -54,7 +60,7 @@ pub async fn put_object(
                 .into_response()
         }
         Err(e) => {
-            error!("❌ PUT failed: {}", e);
+            error!("PUT failed: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -68,8 +74,8 @@ pub async fn get_object(
     info!("GET /{}/{}", bucket, key);
 
     match s3.get_object(&bucket, &key).await {
-        Ok(data) => {
-            info!("✅ Retrieved {} bytes from {}/{}", data.len(), bucket, key);
+        Ok(stream) => {
+            info!("Streaming response for {}/{}", bucket, key);
 
             // Get metadata for Content-Type
             let content_type = s3
@@ -77,10 +83,12 @@ pub async fn get_object(
                 .map(|m| m.content_type)
                 .unwrap_or_else(|_| "application/octet-stream".to_string());
 
-            (StatusCode::OK, [("Content-Type", content_type)], data).into_response()
+            let body = Body::from_stream(stream);
+
+            (StatusCode::OK, [("Content-Type", content_type)], body).into_response()
         }
         Err(e) => {
-            error!("❌ GET failed: {}", e);
+            error!("GET failed: {}", e);
             (StatusCode::NOT_FOUND, e.to_string()).into_response()
         }
     }
@@ -95,20 +103,22 @@ pub async fn head_object(
 
     match s3.head_object(&bucket, &key) {
         Ok(mapping) => {
-            info!("✅ HEAD {}/{} - {} bytes", bucket, key, mapping.size);
+            info!("HEAD {}/{} - {} bytes", bucket, key, mapping.size);
+            let last_modified =
+                httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs(mapping.created_at));
             (
                 StatusCode::OK,
                 [
                     ("Content-Length", mapping.size.to_string()),
                     ("Content-Type", mapping.content_type.clone()),
                     ("ETag", format!("\"{}\"", mapping.capsule_id.as_uuid())),
-                    ("Last-Modified", format_http_date(mapping.created_at)),
+                    ("Last-Modified", last_modified),
                 ],
             )
                 .into_response()
         }
         Err(e) => {
-            error!("❌ HEAD failed: {}", e);
+            error!("HEAD failed: {}", e);
             (StatusCode::NOT_FOUND, e.to_string()).into_response()
         }
     }
@@ -131,7 +141,7 @@ pub async fn list_objects(State(s3): State<AppState>, Path(bucket): Path<String>
                 })
                 .collect();
 
-            info!("✅ Listed {} objects in {}", contents.len(), bucket);
+            info!("Listed {} objects in {}", contents.len(), bucket);
 
             Json(ListResponse {
                 name: bucket,
@@ -141,7 +151,7 @@ pub async fn list_objects(State(s3): State<AppState>, Path(bucket): Path<String>
             .into_response()
         }
         Err(e) => {
-            error!("❌ LIST failed: {}", e);
+            error!("LIST failed: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -156,11 +166,11 @@ pub async fn delete_object(
 
     match s3.delete_object(&bucket, &key) {
         Ok(_) => {
-            info!("✅ Deleted {}/{}", bucket, key);
+            info!("Deleted {}/{}", bucket, key);
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
-            error!("❌ DELETE failed: {}", e);
+            error!("DELETE failed: {}", e);
             (StatusCode::NOT_FOUND, e.to_string()).into_response()
         }
     }
@@ -173,22 +183,4 @@ pub async fn health_check() -> Response {
         "service": "SPACE S3 Protocol View"
     }))
     .into_response()
-}
-
-/// Format Unix timestamp as HTTP date
-fn format_http_date(timestamp: u64) -> String {
-    use std::time::{Duration, UNIX_EPOCH};
-
-    let system_time = UNIX_EPOCH + Duration::from_secs(timestamp);
-    httpdate::fmt_http_date(system_time)
-}
-
-// Helper crate for HTTP date formatting
-mod httpdate {
-    use std::time::SystemTime;
-
-    pub fn fmt_http_date(time: SystemTime) -> String {
-        // Simplified - in production use httpdate crate
-        format!("{:?}", time)
-    }
 }

@@ -1,9 +1,9 @@
+use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
+use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::S3View;
-use std::fs;
-use std::path::Path;
-use std::sync::Once;
+use std::{fs, path::Path, sync::Once};
 use uuid::Uuid;
 
 fn init_native_pipeline() {
@@ -30,40 +30,45 @@ async fn test_s3_put_and_get() {
 
     // PUT object
     let capsule_id = s3
-        .put_object("test-bucket", "hello.txt", test_data.clone())
+        .put_object(
+            "test-bucket",
+            "hello.txt",
+            stream_from_vec(test_data.clone()),
+        )
         .await
         .unwrap();
-    println!("�o. PUT: Created capsule {:?}", capsule_id);
+    println!("PUT: Created capsule {:?}", capsule_id);
 
     // GET object
-    let retrieved = s3.get_object("test-bucket", "hello.txt").await.unwrap();
+    let retrieved_stream = s3.get_object("test-bucket", "hello.txt").await.unwrap();
+    let retrieved = collect_stream(retrieved_stream).await;
     assert_eq!(retrieved, test_data);
-    println!("�o. GET: Retrieved {} bytes", retrieved.len());
+    println!("GET: Retrieved {} bytes", retrieved.len());
 
     // HEAD object
     let metadata = s3.head_object("test-bucket", "hello.txt").unwrap();
     assert_eq!(metadata.size(), test_data.len() as u64);
     assert_eq!(metadata.content_type(), "text/plain");
     assert_eq!(metadata.capsule_id(), capsule_id);
-    println!("�o. HEAD: Verified metadata");
+    println!("HEAD: Verified metadata");
 
     // LIST objects
     let objects = s3.list_objects("test-bucket").unwrap();
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].key(), "test-bucket/hello.txt");
-    println!("�o. LIST: Found {} objects", objects.len());
+    println!("LIST: Found {} objects", objects.len());
 
     // DELETE object
     s3.delete_object("test-bucket", "hello.txt").unwrap();
     let result = s3.get_object("test-bucket", "hello.txt").await;
     assert!(result.is_err());
-    println!("�o. DELETE: Object removed from key map");
+    println!("DELETE: Object removed from key map");
 
     // Cleanup
     cleanup_paths(&log_path);
     cleanup_paths(&meta_path);
 
-    println!("\n�YZ% All S3 view tests passed!");
+    println!("\nAll S3 view tests passed!");
 }
 
 #[tokio::test]
@@ -78,35 +83,48 @@ async fn test_s3_multiple_objects() {
     let s3 = S3View::new(registry, nvram);
 
     // Create multiple objects
-    s3.put_object("bucket1", "file1.txt", b"Content 1".to_vec())
-        .await
-        .unwrap();
-    s3.put_object("bucket1", "file2.txt", b"Content 2".to_vec())
-        .await
-        .unwrap();
-    s3.put_object("bucket2", "file3.txt", b"Content 3".to_vec())
-        .await
-        .unwrap();
+    s3.put_object(
+        "bucket1",
+        "file1.txt",
+        stream_from_vec(b"Content 1".to_vec()),
+    )
+    .await
+    .unwrap();
+    s3.put_object(
+        "bucket1",
+        "file2.txt",
+        stream_from_vec(b"Content 2".to_vec()),
+    )
+    .await
+    .unwrap();
+    s3.put_object(
+        "bucket2",
+        "file3.txt",
+        stream_from_vec(b"Content 3".to_vec()),
+    )
+    .await
+    .unwrap();
 
     // List bucket1
     let bucket1_objects = s3.list_objects("bucket1").unwrap();
     assert_eq!(bucket1_objects.len(), 2);
-    println!("�o. Bucket1 has {} objects", bucket1_objects.len());
+    println!("Bucket1 has {} objects", bucket1_objects.len());
 
     // List bucket2
     let bucket2_objects = s3.list_objects("bucket2").unwrap();
     assert_eq!(bucket2_objects.len(), 1);
-    println!("�o. Bucket2 has {} objects", bucket2_objects.len());
+    println!("Bucket2 has {} objects", bucket2_objects.len());
 
     // Verify content
-    let data = s3.get_object("bucket1", "file2.txt").await.unwrap();
+    let data_stream = s3.get_object("bucket1", "file2.txt").await.unwrap();
+    let data = collect_stream(data_stream).await;
     assert_eq!(data, b"Content 2");
 
     // Cleanup
     cleanup_paths(&log_path);
     cleanup_paths(&meta_path);
 
-    println!("�YZ% Multi-object test passed!");
+    println!("Multi-object test passed!");
 }
 
 #[tokio::test]
@@ -125,21 +143,42 @@ async fn test_s3_large_object() {
 
     println!("Creating large object: {} bytes", large_data.len());
 
-    s3.put_object("test", "large.bin", large_data.clone())
+    s3.put_object("test", "large.bin", stream_from_vec(large_data.clone()))
         .await
         .unwrap();
-    println!("�o. PUT: Stored large object");
+    println!("PUT: Stored large object");
 
-    let retrieved = s3.get_object("test", "large.bin").await.unwrap();
+    let retrieved_stream = s3.get_object("test", "large.bin").await.unwrap();
+    let retrieved = collect_stream(retrieved_stream).await;
     assert_eq!(retrieved.len(), large_data.len());
     assert_eq!(retrieved, large_data);
-    println!("�o. GET: Retrieved and verified {} bytes", retrieved.len());
+    println!("GET: Retrieved and verified {} bytes", retrieved.len());
 
     // Cleanup
     cleanup_paths(&log_path);
     cleanup_paths(&meta_path);
 
-    println!("�YZ% Large object test passed!");
+    println!("Large object test passed!");
+}
+
+fn stream_from_vec(
+    data: Vec<u8>,
+) -> impl futures::Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    stream::once(async move { Ok(Bytes::from(data)) })
+}
+
+async fn collect_stream<S, E>(stream: S) -> Vec<u8>
+where
+    S: futures::Stream<Item = Result<Bytes, E>>,
+    E: std::fmt::Display + std::fmt::Debug,
+{
+    stream
+        .try_fold(Vec::new(), |mut acc, chunk| async move {
+            acc.extend_from_slice(&chunk);
+            Ok(acc)
+        })
+        .await
+        .expect("streaming read failed")
 }
 
 fn temp_paths(prefix: &str) -> (String, String) {

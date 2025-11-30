@@ -82,6 +82,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 - 🔮 Universal capsule storage with persistent metadata
 - 💻 CLI create/read operations
 - 🌐 S3-compatible REST API (protocol view proof-of-concept)
+- Streaming S3 uploads/downloads to avoid buffering full objects in memory
 - 📂 NFS + block protocol views (namespace + volume facades)
 - 🗜️ Adaptive compression (LZ4/Zstd with entropy detection)
 - ⚡ Zero-copy compression/dedup pipeline using `Cow<[u8]>` + `bytes::Bytes` shared buffers

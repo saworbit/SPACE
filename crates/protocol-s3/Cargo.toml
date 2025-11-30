@@ -21,10 +21,11 @@ capsule-registry = { path = "../capsule-registry" }
 nvram-sim = { path = "../nvram-sim" }
 
 # HTTP server
-axum = { version = "^0.7.9" } # 2025-11-03 sw: Tier1 HTTP surface per docs/dependency-security.md
+axum = { version = "^0.7.9", features = ["http2", "multipart"] } # 2025-11-03 sw: Tier1 HTTP surface per docs/dependency-security.md
 tokio = { workspace = true }
-tower = { version = "^0.4.13" } # 2025-11-03 sw: aligns with axum 0.7 require
+tower = { version = "^0.4.13", features = ["util"] } # 2025-11-03 sw: aligns with axum 0.7 require
 tower-http = { version = "^0.5.2", features = ["cors", "trace"] } # 2025-11-03 sw: HTTP middleware review logged
+tokio-util = { version = "^0.7.11", features = ["io"] }
 
 # Serialization
 serde = { workspace = true }
@@ -41,7 +42,11 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Utilities
 bytes = { version = "^1.10.1" } # 2025-11-03 sw: pinned to release used in audit
+httpdate = "1.0"
+futures = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
+reqwest = { workspace = true, default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
+http-body-util = "0.1"
