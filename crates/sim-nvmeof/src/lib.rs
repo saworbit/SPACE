@@ -5,8 +5,6 @@
 
 use anyhow::Result;
 use tracing::info;
-#[cfg(feature = "spdk")]
-use tracing::{error, warn};
 
 pub mod config;
 pub mod native;
@@ -38,11 +36,11 @@ pub fn start_nvmeof_sim_with_config(config: NvmeofSimConfig) -> Result<()> {
             match spdk::start_spdk_target(&config) {
                 Ok(_) => return Ok(()), // SPDK takes over thread, so if it returns Ok, it finished cleanly
                 Err(e) => {
-                    error!(error = %e, "SPDK initialization failed. Falling back to Native TCP.");
+                    tracing::error!(error = %e, "SPDK initialization failed. Falling back to Native TCP.");
                 }
             }
         } else {
-            warn!("SPDK feature enabled but environment not ready (missing hugepages/limits/privileges). Using Native TCP.");
+            tracing::warn!("SPDK feature enabled but environment not ready (missing hugepages/limits/privileges). Using Native TCP.");
         }
     }
 
@@ -60,19 +58,19 @@ pub fn start_nvmeof_sim_with_config(config: NvmeofSimConfig) -> Result<()> {
 fn is_spdk_environment_ready() -> bool {
     // Check 1: Hugepages
     if !check_hugepages() {
-        warn!("Check failed: Hugepages not configured or insufficient free space.");
+        tracing::warn!("Check failed: Hugepages not configured or insufficient free space.");
         return false;
     }
 
     // Check 2: Memory Lock Limits (ulimit -l)
     if !check_memlock_limit() {
-        warn!("Check failed: RLIMIT_MEMLOCK too low for SPDK.");
+        tracing::warn!("Check failed: RLIMIT_MEMLOCK too low for SPDK.");
         return false;
     }
 
     // Check 3: Root privileges (simplified check)
     if unsafe { libc::geteuid() } != 0 {
-        warn!("Check failed: Process not running as root (required for SPDK).");
+        tracing::warn!("Check failed: Process not running as root (required for SPDK).");
         return false;
     }
 
@@ -82,7 +80,9 @@ fn is_spdk_environment_ready() -> bool {
 /// SPDK is not available on non-Linux targets; always fall back.
 #[cfg(all(feature = "spdk", not(target_os = "linux")))]
 fn is_spdk_environment_ready() -> bool {
-    warn!("SPDK feature enabled but only supported on Linux targets; using Native TCP fallback.");
+    tracing::warn!(
+        "SPDK feature enabled but only supported on Linux targets; using Native TCP fallback."
+    );
     false
 }
 
