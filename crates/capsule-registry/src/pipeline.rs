@@ -1,9 +1,22 @@
 use anyhow::Result;
 use common::{CapsuleId, Policy};
-use futures::executor::block_on;
 use nvram_sim::NvramLog;
 
 use crate::CapsuleRegistry;
+
+#[cfg(feature = "pipeline_async")]
+fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime")
+        .block_on(fut)
+}
+
+#[cfg(not(feature = "pipeline_async"))]
+fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
+    futures::executor::block_on(fut)
+}
 
 mod legacy;
 #[cfg(feature = "modular_pipeline")]
@@ -127,7 +140,7 @@ impl WritePipeline {
     }
 
     pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-        block_on(self.strategy().write_capsule(data, policy))
+        block_on_future(self.strategy().write_capsule(data, policy))
     }
 
     #[cfg(feature = "pipeline_async")]
@@ -140,15 +153,15 @@ impl WritePipeline {
     }
 
     pub fn delete_capsule(&self, capsule_id: CapsuleId) -> Result<()> {
-        block_on(self.strategy().delete_capsule(capsule_id))
+        block_on_future(self.strategy().delete_capsule(capsule_id))
     }
 
     pub fn garbage_collect(&self) -> Result<usize> {
-        block_on(self.strategy().garbage_collect())
+        block_on_future(self.strategy().garbage_collect())
     }
 
     pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
-        block_on(self.strategy().read_capsule(id))
+        block_on_future(self.strategy().read_capsule(id))
     }
 
     pub fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
