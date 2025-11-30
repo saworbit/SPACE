@@ -80,6 +80,7 @@ fn async_pipeline_processes_segments_in_order() {
     drop(pipeline);
     drop(nvram);
     drop(registry);
+    drop(rt);
 
     let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let capsule = reopened.lookup(capsule_id).expect("capsule lookup");
@@ -126,6 +127,12 @@ fn async_pipeline_deduplicates_repeated_payloads() {
         .block_on(pipeline.write_capsule_with_policy_async(&payload, &policy))
         .expect("second capsule");
 
+    // Release all handles before reopening the registry to avoid sled file locks.
+    drop(pipeline);
+    drop(nvram);
+    drop(registry);
+    drop(rt);
+
     let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let first = reopened.lookup(first_capsule).expect("first lookup");
     let second = reopened.lookup(second_capsule).expect("second lookup");
@@ -134,10 +141,6 @@ fn async_pipeline_deduplicates_repeated_payloads() {
         first.segments, second.segments,
         "deduplication should reuse the same segments"
     );
-
-    drop(pipeline);
-    drop(nvram);
-    drop(registry);
 
     cleanup(&log_path);
     cleanup(&meta_path);
