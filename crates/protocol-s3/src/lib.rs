@@ -91,7 +91,8 @@ impl S3View {
         S: Stream<Item = Result<Bytes, E>> + Send,
         E: Into<anyhow::Error>,
     {
-        let reader = StreamReader::new(data_stream.map_err(|err| std::io::Error::other(err.into())));
+        let reader =
+            StreamReader::new(data_stream.map_err(|err| std::io::Error::other(err.into())));
         tokio::pin!(reader);
 
         // BUFFERING BRIDGE:
