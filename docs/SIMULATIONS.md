@@ -87,23 +87,21 @@ let log = start_nvram_sim_with_config(config)?;
 
 ### NVMe-oF Simulation
 
-**Crate**: `crates/sim-nvmeof`
-**Purpose**: Heavyweight NVMe-over-Fabrics protocol emulation
-**Dependencies**: `spdk-rs` (SPDK bindings)
+**Crate**: `crates/sim-nvmeof`  
+**Purpose**: Native Rust NVMe-over-TCP target for discovery/connect testing  
+**Dependencies**: `anyhow`, `byteorder`, `tracing` (no SPDK or hugepages required)
 
 #### Features
 
-- **SPDK-Based**: Uses SPDK's nvmf target when available
-- **TCP Fallback**: Simple TCP server when SPDK/hugepages unavailable
-- **Multi-Node**: Simulate federated capsule mesh
+- **Native NVMe/TCP stack**: Implements ICReq/ICResp, Fabrics Connect, discovery log (0x70), identify, and basic read/write
+- **CI-friendly**: Works in Docker/CI without hugepages or privileged containers
+- **File-backed**: Automatically creates a 100MB backing file if missing
+- **nvme-cli validated**: Compatible with `nvme discover`, `nvme connect`, and `nvme read/write`
 
 #### Requirements
 
-**Linux Only** (SPDK limitation):
-- Hugepages enabled: `echo 1024 > /proc/sys/vm/nr_hugepages`
-- Privileged container or capabilities: `--cap-add=SYS_ADMIN`
-
-**Non-Linux**: Falls back to TCP mode (limited functionality)
+- `nvme` CLI installed (`nvme-cli` package)
+- Root privileges for `nvme connect` and I/O device creation
 
 #### Usage
 
@@ -111,10 +109,19 @@ let log = start_nvram_sim_with_config(config)?;
 ```bash
 NODE_ID=node1 \
 BACKING_PATH=/data/backing.img \
-TRANSPORT=tcp \
 LISTEN_ADDR=0.0.0.0 \
 LISTEN_PORT=4420 \
+SUBSYSTEM_NQN=nqn.2024-01.io.space:sim \
   sim-nvmeof
+```
+
+**Helper Scripts** (Linux with `nvme-cli`):
+```bash
+# 1) Discovery-only check (starts sim, runs nvme discover)
+./scripts/nvmeof_discover.sh
+
+# 2) Full connect + 4KiB read/write verification (requires root)
+sudo ./scripts/nvmeof_connect_io.sh
 ```
 
 **In Docker** (see [Containerization](#containerization)):
@@ -135,13 +142,13 @@ services:
 nvme discover -t tcp -a 127.0.0.1 -s 4420
 
 # Connect
-nvme connect -t tcp -n nqn.2024-01.dev.adaptive-storage:space-sim -a 127.0.0.1 -s 4420
+sudo nvme connect -t tcp -n nqn.2024-01.io.space:sim -a 127.0.0.1 -s 4420
 ```
 
 #### Troubleshooting
 
-- **"No hugepages configured"**: Run `echo 1024 > /proc/sys/vm/nr_hugepages` as root
-- **"SPDK not available"**: Falls back to TCP mode; full SPDK requires Linux + hugepages
+- **`nvme` CLI missing**: Install `nvme-cli` (`apt install nvme-cli`, `dnf install nvme-cli`, etc.)
+- **Permission denied**: `nvme connect` requires root; rerun with sudo
 - **Port already in use**: Change `LISTEN_PORT` or stop conflicting service
 
 ### Other Simulations

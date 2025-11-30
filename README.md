@@ -461,13 +461,14 @@ docker compose down
 
 **What you get**:
 - ✅ **NVRAM simulation**: File-backed log for testing pipeline
-- ✅ **NVMe-oF simulation**: TCP-based fabric (SPDK on Linux with hugepages)
+- ✅ **NVMe-oF simulation**: Native NVMe/TCP target (no hugepages) with `nvme-cli` helper scripts
 - ✅ **Multi-node setup**: Simulate distributed capsule mesh
 
 **For more details**:
 - 📘 [SIMULATIONS.md](docs/SIMULATIONS.md): Detailed simulation guide
 - 🐳 [CONTAINERIZATION.md](docs/CONTAINERIZATION.md): Docker architecture
 - 🧪 Run tests: `cargo test -p sim-nvram -p capsule-registry --test pipeline_sim_integration`
+- Validate NVMe/TCP path with nvme-cli: ./scripts/nvmeof_discover.sh (discover) and sudo ./scripts/nvmeof_connect_io.sh (connect + 4KiB I/O)
 
 ### 🔐 Setup Encryption *(Optional)*
 

@@ -30,19 +30,15 @@ fn main() -> Result<()> {
     info!("Starting NVMe-oF simulation binary");
 
     // Read config from environment
-    let config = NvmeofSimConfig {
-        node_id: env::var("NODE_ID").unwrap_or_else(|_| "sim-node1".to_string()),
-        backing_path: env::var("BACKING_PATH")
-            .unwrap_or_else(|_| "/sim/nvmeof/backing.img".to_string()),
-        transport: env::var("TRANSPORT").unwrap_or_else(|_| "tcp".to_string()),
-        listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string()),
-        listen_port: env::var("LISTEN_PORT")
-            .unwrap_or_else(|_| "4420".to_string())
-            .parse()
-            .unwrap_or(4420),
-        subsystem_nqn: env::var("SUBSYSTEM_NQN")
-            .unwrap_or_else(|_| "nqn.2024-01.dev.adaptive-storage:space-sim".to_string()),
-    };
+    let mut config = NvmeofSimConfig::default();
+    config.node_id = env::var("NODE_ID").unwrap_or(config.node_id);
+    config.backing_path = env::var("BACKING_PATH").unwrap_or(config.backing_path);
+    config.listen_addr = env::var("LISTEN_ADDR").unwrap_or(config.listen_addr);
+    config.listen_port = env::var("LISTEN_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(config.listen_port);
+    config.subsystem_nqn = env::var("SUBSYSTEM_NQN").unwrap_or(config.subsystem_nqn);
 
     info!(?config, "Configuration loaded from environment");
 

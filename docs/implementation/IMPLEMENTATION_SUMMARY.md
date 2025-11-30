@@ -20,17 +20,17 @@ This document summarizes the comprehensive implementation of container integrati
   - `src/lib.rs`: Main implementation (183 lines)
   - `Cargo.toml`: Dependencies and features
 
-#### ✅ sim-nvmeof (`crates/sim-nvmeof/`)
-- **Purpose**: Heavyweight NVMe-oF fabric simulation
+#### �o. sim-nvmeof (`crates/sim-nvmeof/`)
+- **Purpose**: Native Rust NVMe/TCP simulation target
 - **Features**:
-  - SPDK-based protocol emulation (with TCP fallback)
-  - Hugepages detection and configuration
-  - Standalone binary for container deployment
-  - Multi-node support
+  - Implements ICReq/ICResp, Fabrics Connect, discovery log (0x70), identify, and basic read/write
+  - No SPDK/hugepages requirement; CI/Docker friendly
+  - Backing file auto-created (100MB default)
+  - Helper scripts for `nvme discover` and `nvme connect` + I/O validation
 - **Files**:
-  - `src/lib.rs`: Core simulation (246 lines)
-  - `src/bin/main.rs`: Standalone binary (58 lines)
-  - `Cargo.toml`: Dependencies including spdk-rs
+  - `src/lib.rs`: Core simulation
+  - `src/bin/main.rs`: Standalone binary
+  - `Cargo.toml`: Native dependency set (no spdk-rs)
 
 #### ✅ sim-other (`crates/sim-other/`)
 - **Purpose**: Placeholder for future simulations (GPU, ZNS, etc.)
@@ -103,7 +103,7 @@ This document summarizes the comprehensive implementation of container integrati
 
 #### ✅ Unit Tests
 - `sim-nvram`: 3 tests passing
-- `sim-nvmeof`: Tests with SPDK fallback
+- `sim-nvmeof`: Native NVMe/TCP target tests
 - `sim-other`: Placeholder tests
 
 ### 5. Documentation

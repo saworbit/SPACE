@@ -10,17 +10,10 @@ name = "sim-nvmeof"
 path = "src/bin/main.rs"
 
 [dependencies]
-# Core dependencies
 anyhow.workspace = true
-tokio.workspace = true
+byteorder = "1.4"
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-# SPDK bindings (from vendor)
-spdk-rs = { workspace = true }
-
-# Common types
-common = { path = "../common", version = "0.1.0" }
 
 [dev-dependencies]
 tracing-test.workspace = true
