@@ -1,17 +1,37 @@
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use nvram_sim::NvramLog;
 use std::fs;
+use std::path::Path;
+use uuid::Uuid;
+
+fn cleanup_path(path: &str) {
+    let p = Path::new(path);
+    match fs::remove_file(p) {
+        Ok(_) => (),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return;
+            }
+            if e.kind() == std::io::ErrorKind::IsADirectory {
+                let _ = fs::remove_dir_all(p);
+            }
+        }
+    }
+}
 
 #[test]
 fn test_write_and_read_capsule() {
-    let log_path = "test_nvram.log";
-    let meta_path = "test_nvram.metadata";
-    let _ = fs::remove_file(log_path);
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path);
+    let base = std::env::temp_dir().join("space_registry_integration");
+    let _ = fs::create_dir_all(&base);
+    let unique = Uuid::new_v4();
+    let log_path = base.join(format!("test_nvram_{unique}.log"));
+    let meta_path = base.join(format!("test_nvram_{unique}.metadata"));
+    cleanup_path(log_path.to_string_lossy().as_ref());
+    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
+    cleanup_path(meta_path.to_string_lossy().as_ref());
 
-    let registry = CapsuleRegistry::open(meta_path).unwrap();
-    let nvram = NvramLog::open(log_path).unwrap();
+    let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).unwrap();
+    let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).unwrap();
     let pipeline = WritePipeline::new(registry, nvram);
 
     let test_data = b"Hello SPACE! This is capsule test data.";
@@ -23,21 +43,24 @@ fn test_write_and_read_capsule() {
     assert_eq!(test_data.as_slice(), read_data.as_slice());
     println!("Write/Read test passed!");
 
-    let _ = fs::remove_file(log_path);
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path);
+    let _ = fs::remove_file(log_path.to_string_lossy().as_ref());
+    let _ = fs::remove_file(format!("{}.segments", log_path.to_string_lossy()));
+    let _ = fs::remove_file(meta_path.to_string_lossy().as_ref());
 }
 
 #[test]
 fn test_compression_integration() {
-    let log_path = "test_compression.log";
-    let meta_path = "test_compression.metadata";
-    let _ = fs::remove_file(log_path);
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path);
+    let base = std::env::temp_dir().join("space_registry_integration");
+    let _ = fs::create_dir_all(&base);
+    let unique = Uuid::new_v4();
+    let log_path = base.join(format!("test_compression_{unique}.log"));
+    let meta_path = base.join(format!("test_compression_{unique}.metadata"));
+    cleanup_path(log_path.to_string_lossy().as_ref());
+    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
+    cleanup_path(meta_path.to_string_lossy().as_ref());
 
-    let registry = CapsuleRegistry::open(meta_path).unwrap();
-    let nvram = NvramLog::open(log_path).unwrap();
+    let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).unwrap();
+    let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).unwrap();
     let pipeline = WritePipeline::new(registry, nvram);
 
     let test_data = b"SPACE ".repeat(10_000);
@@ -47,9 +70,9 @@ fn test_compression_integration() {
     assert_eq!(test_data, read_data);
     println!("Compression integration test passed!");
 
-    let _ = fs::remove_file(log_path);
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path);
+    cleanup_path(log_path.to_string_lossy().as_ref());
+    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
+    cleanup_path(meta_path.to_string_lossy().as_ref());
 }
 
 #[cfg(feature = "modular_pipeline")]

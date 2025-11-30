@@ -4,14 +4,9 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::{Policy, SEGMENT_SIZE};
 use nvram_sim::NvramLog;
 use std::fs;
-
-fn cleanup(log_path: &str, meta_path: &str) {
-    let _ = fs::remove_file(log_path);
-    let _ = fs::remove_file(format!("{}.segments", log_path));
-    let _ = fs::remove_file(meta_path);
-}
-
+use std::path::Path;
 use std::sync::Once;
+use uuid::Uuid;
 
 fn init() {
     static INIT: Once = Once::new();
@@ -22,15 +17,47 @@ fn init() {
     });
 }
 
+fn test_paths(prefix: &str) -> (String, String) {
+    let base = std::env::temp_dir().join("space_async_pipeline_tests");
+    let _ = fs::create_dir_all(&base);
+    let unique = format!("{}_{}", prefix, Uuid::new_v4());
+    let log = base.join(format!("{unique}.log"));
+    let meta = base.join(format!("{unique}.metadata"));
+    (
+        log.to_string_lossy().to_string(),
+        meta.to_string_lossy().to_string(),
+    )
+}
+
+fn cleanup(path: &str) {
+    cleanup_path(path);
+    cleanup_path(&format!("{}.segments", path));
+}
+
+fn cleanup_path(path: &str) {
+    let p = Path::new(path);
+    match fs::remove_file(p) {
+        Ok(_) => (),
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                return;
+            }
+            if err.kind() == std::io::ErrorKind::IsADirectory {
+                let _ = fs::remove_dir_all(p);
+            }
+        }
+    }
+}
+
 #[test]
 fn async_pipeline_processes_segments_in_order() {
     init();
-    let log_path = "async_pipeline.log";
-    let meta_path = "async_pipeline.metadata";
-    cleanup(log_path, meta_path);
+    let (log_path, meta_path) = test_paths("async_pipeline");
+    cleanup(&log_path);
+    cleanup(&meta_path);
 
-    let registry = CapsuleRegistry::open(meta_path).expect("open registry");
-    let nvram = NvramLog::open(log_path).expect("open nvram");
+    let registry = CapsuleRegistry::open(&meta_path).expect("open registry");
+    let nvram = NvramLog::open(&log_path).expect("open nvram");
     let pipeline = WritePipeline::new(registry.clone(), nvram.clone());
 
     // Create data spanning multiple segments to exercise ordering.
@@ -50,7 +77,7 @@ fn async_pipeline_processes_segments_in_order() {
     let roundtrip = pipeline.read_capsule(capsule_id).expect("read capsule");
     assert_eq!(data, roundtrip, "round-trip data mismatch");
 
-    let reopened = CapsuleRegistry::open(meta_path).expect("reopen registry");
+    let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let capsule = reopened.lookup(capsule_id).expect("capsule lookup");
 
     let expected_segments = data.len().div_ceil(SEGMENT_SIZE);
@@ -69,18 +96,19 @@ fn async_pipeline_processes_segments_in_order() {
         "segment identifiers not strictly increasing"
     );
 
-    cleanup(log_path, meta_path);
+    cleanup(&log_path);
+    cleanup(&meta_path);
 }
 
 #[test]
 fn async_pipeline_deduplicates_repeated_payloads() {
     init();
-    let log_path = "async_pipeline_dedup.log";
-    let meta_path = "async_pipeline_dedup.metadata";
-    cleanup(log_path, meta_path);
+    let (log_path, meta_path) = test_paths("async_pipeline_dedup");
+    cleanup(&log_path);
+    cleanup(&meta_path);
 
-    let registry = CapsuleRegistry::open(meta_path).expect("open registry");
-    let nvram = NvramLog::open(log_path).expect("open nvram");
+    let registry = CapsuleRegistry::open(&meta_path).expect("open registry");
+    let nvram = NvramLog::open(&log_path).expect("open nvram");
     let pipeline = WritePipeline::new(registry.clone(), nvram.clone());
 
     let payload = b"SPACE async dedup".repeat(1024);
@@ -94,7 +122,7 @@ fn async_pipeline_deduplicates_repeated_payloads() {
         .block_on(pipeline.write_capsule_with_policy_async(&payload, &policy))
         .expect("second capsule");
 
-    let reopened = CapsuleRegistry::open(meta_path).expect("reopen registry");
+    let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let first = reopened.lookup(first_capsule).expect("first lookup");
     let second = reopened.lookup(second_capsule).expect("second lookup");
 
@@ -103,5 +131,6 @@ fn async_pipeline_deduplicates_repeated_payloads() {
         "deduplication should reuse the same segments"
     );
 
-    cleanup(log_path, meta_path);
+    cleanup(&log_path);
+    cleanup(&meta_path);
 }
