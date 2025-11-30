@@ -6,6 +6,8 @@
 | ------ | --------------------- |
 |        | Apache 2.0 (intended) |
 
+For a crate-level modular monolith map and the web-interface MVC split, see `docs/specs/SPACE_ARCHITECTURE_DESIGN_SPEC.md`.
+
 ---
 
 ## 1  Why SPACE exists – problem statement

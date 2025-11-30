@@ -4,6 +4,8 @@
 
 The SPACE web interface provides a comprehensive, real-time dashboard for managing and monitoring the mesh data system with integrated gossip protocol support. This implementation follows the **Next-Gen Web Interface Specification** with full support for epidemic-style state propagation, peer discovery, and event notification across distributed nodes.
 
+For the modular monolith boundaries and the MVC split between Axum (controllers), shared state (model), and Leptos (views), see `docs/specs/SPACE_ARCHITECTURE_DESIGN_SPEC.md`.
+
 ## Architecture
 
 The web interface consists of three main crates:
