@@ -6,9 +6,7 @@ use crate::CapsuleRegistry;
 
 #[cfg(feature = "pipeline_async")]
 fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    tokio::runtime::Runtime::new()
         .expect("failed to build tokio runtime")
         .block_on(fut)
 }
