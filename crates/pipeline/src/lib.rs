@@ -543,7 +543,7 @@ where
             let seg_len_hint = metadata
                 .plain_len
                 .map(u64::from)
-                .or_else(|| (!metadata.compressed).then(|| metadata.len as u64));
+                .or_else(|| (!metadata.compressed).then_some(metadata.len as u64));
 
             if let Some(seg_len) = seg_len_hint {
                 let seg_end = cursor + seg_len;
