@@ -80,8 +80,8 @@ hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for ke
 sha2 = { version = "=0.10.8" } # 2025-11-04 sw: Hash core for HKDF extractor
 
 # Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
-axum = { version = "^0.7.9", features = ["ws", "macros"] } # 2025-11-16 sw: Web server framework
-tower-http = { version = "^0.5.2", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
+axum = { version = "^0.8.7", features = ["ws", "macros"] } # 2025-11-16 sw: Web server framework
+tower-http = { version = "^0.6.7", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
 libp2p = { version = "=0.53.2", features = ["gossipsub", "kad", "tcp", "dns", "noise", "yamux", "websocket"] } # 2025-11-16 sw: P2P networking
 libp2p-gossipsub = { version = "=0.46.1" } # 2025-11-16 sw: Gossip protocol
 libp2p-swarm = { version = "^0.44.1" } # 2025-11-16 sw: Swarm behavior
@@ -96,7 +96,7 @@ leptos_axum = { version = "=0.6.3" } # 2025-11-16 sw: Leptos integration with Ax
 wasm-bindgen = { version = "^0.2.91" } # 2025-11-16 sw: Wasm interop
 gloo = { version = "=0.11.0" } # 2025-11-16 sw: Browser utilities for Wasm
 web-sys = { version = "^0.3.68", features = ["WebSocket", "MessageEvent", "CloseEvent"] } # 2025-11-16 sw: Web APIs
-tower = { version = "=0.4.13", features = ["util"] } # 2025-11-16 sw: Service abstractions
+tower = { version = "=0.5.2", features = ["util"] } # 2025-11-16 sw: Service abstractions
 
 raft-rs = { path = "vendor/raft-rs", version = "0.7.0" }
 spdk-rs = { path = "vendor/spdk-rs", version = "0.1.0" }
