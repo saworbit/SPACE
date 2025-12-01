@@ -25,3 +25,5 @@ jobs:
       - name: Test
         run: cargo test --workspace
         # Run with the workspace default feature set (CPU-only layout engine).
+      - name: BatchQueue limit tests
+        run: bash scripts/test_batch_queue_limits.sh

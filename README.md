@@ -735,6 +735,7 @@ cargo test --workspace -- --nocapture
 cargo test -p encryption -- --nocapture
 cargo test -p protocol-s3 -- --nocapture
 cargo test --features advanced-security -- --nocapture
+./scripts/test_batch_queue_limits.sh  # BatchQueue byte/count/stat limits
 
 # Automated dedup demo
 ./scripts/test_dedup.sh  # Linux/macOS/Git Bash
@@ -998,6 +999,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 - **Global Tokio runtime for sync bridge:** `WritePipeline` now reuses a single background runtime (OnceLock) instead of creating a new `Runtime` per call, removing millisecond-scale latency spikes in hot paths. See `docs/specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md`.
 - **Benchmark proof:** `cargo bench --bench runtime_overhead` compares "New Runtime per Call" vs "Global Runtime" (expect ~100x faster sync calls).
+- **BatchQueue hybrid flush:** Async replication queue now enforces both count and byte ceilings (default 4MiB helper) to prevent OOM from oversized payloads; verify via `./scripts/test_batch_queue_limits.sh`.
 
 ### �YO? Zero-Copy Replication (Linux)
 

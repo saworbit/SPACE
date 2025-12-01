@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Raft-ready sled metadata store** - Capsule registry now persists to `space.db` via sled with streaming snapshot/restore and Raft-facing apply hooks, eliminating the JSON SPOF and enabling crash-safe recovery.
 - **SwarmBehavior Transformer Pattern** - Dependency-inverted `TransformOps` trait in `common` enables decrypt -> decompress -> re-compress -> re-encrypt during migration with sovereignty enforcement; documented in `docs/specs/PODMS_SWARM_BEHAVIOR.md`.
 - **SwarmOps runtime adapter** - `crates/scaling/src/swarm_ops.rs` implements `TransformOps` with per-capsule XTS key derivation and LZ4/Zstd bridging; detailed in `docs/specs/PODMS_TRANSFORM_OPS.md`.
+- **BatchQueue byte ceiling** - Hybrid flush trigger now enforces `max_batch_bytes` (default 4MiB helper) to stop oversized payloads from bypassing count-based limits; targeted tests live in `scripts/test_batch_queue_limits.sh`.
 - **🌐 Multi-Node Capabilities (PODMS Orchestrator)** - Comprehensive distributed mesh networking
   - **New crate: `podms-orchestrator`** - Unified coordination layer for multi-node operations
     - `Orchestrator` struct wires gossip, mesh, scaling agent, and telemetry channels
@@ -139,6 +140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Critical:** Inbound replication data discard issue - segments now properly validated, decrypted, deduplicated, and persisted
+- **BatchQueue OOM guard:** Async batching now tracks pending bytes and flushes when either count or byte thresholds are reached, preventing memory blowouts from few large items (`docs/specs/PERFORMANCE_FIX_BATCH_QUEUE_OOM.md`).
 - Compilation errors in `ScalingAgent` due to missing generic parameters
 - Lifetime bound issues with async spawning
 - Code quality issues identified by clippy and cargo fmt

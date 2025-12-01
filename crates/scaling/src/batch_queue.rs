@@ -13,12 +13,24 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::interval;
 use tracing::{info, warn};
 
+/// Default byte cap for a batch when callers do not specify a limit (4 MiB)
+pub const DEFAULT_MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
 /// Batch queue item representing a segment to be replicated
 #[derive(Debug, Clone)]
 pub struct BatchItem {
     pub capsule_id: CapsuleId,
     pub segment_id: SegmentId,
     pub segment_data: Vec<u8>,
+}
+
+impl BatchItem {
+    /// Returns approximate memory usage for triggering byte-based flushes
+    pub fn size_bytes(&self) -> usize {
+        self.segment_data.len()
+            + std::mem::size_of::<CapsuleId>()
+            + std::mem::size_of::<SegmentId>()
+    }
 }
 
 /// Async batching queue for geo-replication
@@ -34,11 +46,17 @@ pub struct BatchQueue {
     flush_interval: Duration,
     /// Maximum batch size before forced flush
     max_batch_size: usize,
+    /// Maximum bytes before forced flush
+    max_batch_bytes: usize,
 }
 
 impl BatchQueue {
     /// Create a new batch queue with specified flush interval
-    pub fn new(flush_interval: Duration, max_batch_size: usize) -> (Self, BatchQueueSender) {
+    pub fn new(
+        flush_interval: Duration,
+        max_batch_size: usize,
+        max_batch_bytes: usize,
+    ) -> (Self, BatchQueueSender) {
         let (tx, rx) = mpsc::unbounded_channel();
         let pending = Arc::new(RwLock::new(Vec::new()));
 
@@ -47,11 +65,20 @@ impl BatchQueue {
             rx,
             flush_interval,
             max_batch_size,
+            max_batch_bytes,
         };
 
         let sender = BatchQueueSender { tx, pending };
 
         (queue, sender)
+    }
+
+    /// Convenience constructor using a sane default byte ceiling (4 MiB)
+    pub fn new_with_defaults(
+        flush_interval: Duration,
+        max_batch_size: usize,
+    ) -> (Self, BatchQueueSender) {
+        Self::new(flush_interval, max_batch_size, DEFAULT_MAX_BATCH_BYTES)
     }
 
     /// Run the batch queue, flushing at configured intervals
@@ -65,10 +92,16 @@ impl BatchQueue {
     {
         let mut ticker = interval(self.flush_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Consume the immediate first tick so the next tick respects flush_interval
+        ticker.tick().await;
+
+        // Tracks byte footprint of the pending batch without repeatedly walking the vector
+        let mut current_batch_bytes = 0usize;
 
         info!(
             interval_secs = self.flush_interval.as_secs(),
             max_batch_size = self.max_batch_size,
+            max_batch_bytes = self.max_batch_bytes,
             "batch queue started"
         );
 
@@ -78,17 +111,30 @@ impl BatchQueue {
                 item = self.rx.recv() => {
                     match item {
                         Some(item) => {
+                            let item_size = item.size_bytes();
                             let mut pending = self.pending.write().await;
                             pending.push(item);
 
-                            // Check if we need to flush due to size limit
-                            if pending.len() >= self.max_batch_size {
+                            current_batch_bytes += item_size;
+
+                            // Hybrid triggers: count OR byte ceiling
+                            let count_limit_hit = pending.len() >= self.max_batch_size;
+                            let byte_limit_hit = current_batch_bytes >= self.max_batch_bytes;
+
+                            if count_limit_hit || byte_limit_hit {
                                 let batch = std::mem::take(&mut *pending);
+                                let flushed_len = batch.len();
+                                let flushed_bytes = current_batch_bytes;
                                 drop(pending);
 
+                                // Reset tracker post-flush
+                                current_batch_bytes = 0;
+
                                 info!(
-                                    batch_size = batch.len(),
-                                    "flushing batch (size limit reached)"
+                                    batch_size = flushed_len,
+                                    batch_bytes = flushed_bytes,
+                                    reason = if count_limit_hit { "count_limit" } else { "byte_limit" },
+                                    "flushing batch"
                                 );
 
                                 if let Err(e) = flush_fn(batch).await {
@@ -108,10 +154,16 @@ impl BatchQueue {
                     let mut pending = self.pending.write().await;
                     if !pending.is_empty() {
                         let batch = std::mem::take(&mut *pending);
+                        let flushed_len = batch.len();
+                        let flushed_bytes = current_batch_bytes;
                         drop(pending);
 
+                        // Reset tracker for next interval window
+                        current_batch_bytes = 0;
+
                         info!(
-                            batch_size = batch.len(),
+                            batch_size = flushed_len,
+                            batch_bytes = flushed_bytes,
                             "flushing batch (interval tick)"
                         );
 
@@ -166,7 +218,7 @@ impl BatchQueueSender {
 
         for item in pending.iter() {
             *capsule_counts.entry(item.capsule_id).or_insert(0) += 1;
-            total_bytes += item.segment_data.len();
+            total_bytes += item.size_bytes();
         }
 
         QueueStats {
@@ -191,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_queue_interval_flush() {
-        let (queue, sender) = BatchQueue::new(Duration::from_millis(100), 1000);
+        let (queue, sender) = BatchQueue::new_with_defaults(Duration::from_millis(100), 1000);
 
         // Track flushed batches
         let flushed = Arc::new(RwLock::new(Vec::new()));
@@ -237,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_queue_size_limit() {
-        let (queue, sender) = BatchQueue::new(Duration::from_secs(60), 3);
+        let (queue, sender) = BatchQueue::new_with_defaults(Duration::from_secs(60), 3);
 
         let flushed = Arc::new(RwLock::new(Vec::new()));
         let flushed_clone = flushed.clone();
@@ -279,8 +331,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_batch_queue_byte_limit() {
+        // Limit: 1000 items, but only 200 bytes allowed
+        let (queue, sender) = BatchQueue::new(Duration::from_secs(60), 1000, 200);
+
+        let flushed = Arc::new(RwLock::new(Vec::new()));
+        let flushed_clone = flushed.clone();
+
+        let queue_handle = tokio::spawn(async move {
+            queue
+                .run(|batch| {
+                    let flushed = flushed_clone.clone();
+                    async move {
+                        let mut f = flushed.write().await;
+                        f.push(batch.len());
+                        Ok(())
+                    }
+                })
+                .await
+        });
+
+        // 1. First item (~74 bytes with IDs)
+        sender
+            .enqueue(BatchItem {
+                capsule_id: CapsuleId::new(),
+                segment_id: SegmentId(0),
+                segment_data: vec![0u8; 50],
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        {
+            let f = flushed.read().await;
+            assert_eq!(f.len(), 0, "Should not flush yet (bytes < 200)");
+        }
+
+        // 2. Second item brings total to ~148 bytes
+        sender
+            .enqueue(BatchItem {
+                capsule_id: CapsuleId::new(),
+                segment_id: SegmentId(1),
+                segment_data: vec![0u8; 50],
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        {
+            let f = flushed.read().await;
+            assert_eq!(f.len(), 0, "Should not flush yet (bytes < 200)");
+        }
+
+        // 3. Third large item should cross the byte ceiling
+        sender
+            .enqueue(BatchItem {
+                capsule_id: CapsuleId::new(),
+                segment_id: SegmentId(2),
+                segment_data: vec![0u8; 100],
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let flushed_counts = flushed.read().await;
+        assert_eq!(
+            flushed_counts.len(),
+            1,
+            "Should have flushed due to byte limit"
+        );
+        assert_eq!(
+            flushed_counts[0], 3,
+            "All items should be included in the flush"
+        );
+
+        drop(sender);
+        let _ = queue_handle.await;
+    }
+
+    #[tokio::test]
     async fn test_queue_stats() {
-        let (queue, sender) = BatchQueue::new(Duration::from_secs(60), 1000);
+        let (queue, sender) = BatchQueue::new_with_defaults(Duration::from_secs(60), 1000);
 
         let queue_handle = tokio::spawn(async move { queue.run(|_| async { Ok(()) }).await });
 
@@ -311,7 +440,8 @@ mod tests {
         let stats = sender.stats().await;
         assert_eq!(stats.total_items, 3);
         assert_eq!(stats.unique_capsules, 1);
-        assert_eq!(stats.total_bytes, 300);
+        // Expect at least the payload size; size_of::<CapsuleId> + size_of::<SegmentId> adds overhead.
+        assert!(stats.total_bytes >= 300);
 
         drop(sender);
         let _ = queue_handle.await;
