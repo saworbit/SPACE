@@ -455,6 +455,7 @@ where
                         id: seg_id,
                         offset: 0,
                         len: payload.len() as u32,
+                        plain_len: Some(summary.original_size as u32),
                         compressed: summary.compressed,
                         compression_algo: summary.algorithm.clone(),
                         content_hash: Some(hash.clone()),
@@ -517,6 +518,73 @@ where
                 decrypted
             };
             output.extend_from_slice(&decompressed);
+        }
+
+        Ok(output)
+    }
+
+    pub async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let capsule = self.catalog.lookup_capsule(id)?;
+        if offset >= capsule.size {
+            return Ok(Vec::new());
+        }
+
+        let range_end = std::cmp::min(offset.saturating_add(len as u64), capsule.size);
+        let mut remaining = (range_end - offset) as usize;
+        let mut cursor = 0u64;
+        let mut output = Vec::with_capacity(remaining);
+
+        for seg_id in &capsule.segments {
+            if remaining == 0 {
+                break;
+            }
+
+            let metadata = self.storage.metadata(*seg_id).await?;
+            let seg_len_hint = metadata
+                .plain_len
+                .map(u64::from)
+                .or_else(|| (!metadata.compressed).then(|| metadata.len as u64));
+
+            if let Some(seg_len) = seg_len_hint {
+                let seg_end = cursor + seg_len;
+                if seg_end <= offset {
+                    cursor = seg_end;
+                    continue;
+                }
+            }
+
+            let raw = self.storage.read(*seg_id).await?;
+            let decrypted = if metadata.encrypted {
+                self.encryptor
+                    .decrypt(&raw, &capsule.policy.encryption, *seg_id)?
+            } else {
+                raw
+            };
+            let decompressed = if metadata.compressed {
+                self.compressor
+                    .decompress(&decrypted, metadata.compression_algo.as_str())?
+            } else {
+                decrypted
+            };
+
+            let seg_len = decompressed.len() as u64;
+            let seg_end = cursor + seg_len;
+
+            if seg_end <= offset {
+                cursor = seg_end;
+                continue;
+            }
+
+            let start = if offset > cursor {
+                (offset - cursor) as usize
+            } else {
+                0
+            };
+
+            let take = std::cmp::min(remaining, decompressed.len().saturating_sub(start));
+            output.extend_from_slice(&decompressed[start..start + take]);
+            remaining -= take;
+            cursor = seg_end;
         }
 
         Ok(output)

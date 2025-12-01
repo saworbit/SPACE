@@ -85,6 +85,11 @@ pub struct Segment {
     pub offset: u64,
     pub len: u32,
 
+    /// Logical length of the segment payload after decompression/decryption.
+    /// Used for range-aware reads to skip pre-range segments without decoding.
+    #[serde(default)]
+    pub plain_len: Option<u32>,
+
     // Phase 2.1: Compression metadata
     #[serde(default)]
     pub compressed: bool,

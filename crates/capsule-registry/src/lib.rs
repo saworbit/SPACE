@@ -86,6 +86,13 @@ pub mod modular_pipeline {
             }
         }
 
+        pub async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
+            match self {
+                Self::Encrypted(p) => p.read_range(id, offset, len).await,
+                Self::Plain(p) => p.read_range(id, offset, len).await,
+            }
+        }
+
         pub async fn delete_capsule(&mut self, id: CapsuleId) -> Result<()> {
             match self {
                 Self::Encrypted(p) => p.delete_capsule(id).await,

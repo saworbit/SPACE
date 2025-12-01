@@ -1417,6 +1417,7 @@ impl LegacyPipeline {
         let data_len = final_data.len() as u64;
         let mut segment = transaction.append_segment(seg_id, final_data.as_ref())?;
 
+        segment.plain_len = Some(comp_result.original_size as u32);
         segment.compressed = comp_result.compressed;
         segment.compression_algo = comp_result.algorithm.clone();
         segment.ref_count = 1;
@@ -1573,6 +1574,13 @@ impl LegacyPipeline {
                 }
             };
 
+            // Backfill plain_len when missing to enable range skipping for future reads.
+            if segment.plain_len.is_none() || segment.plain_len != Some(data.len() as u32) {
+                let mut updated = segment.clone();
+                updated.plain_len = Some(data.len() as u32);
+                self.nvram.update_segment_metadata(*seg_id, updated)?;
+            }
+
             result.extend_from_slice(&data);
         }
 
@@ -1588,16 +1596,175 @@ impl LegacyPipeline {
     /// Read a range within a capsule (for block/file semantics)
     #[instrument(skip(self), fields(capsule = %id.as_uuid(), offset, len))]
     pub fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let capsule = self.registry.lookup(id)?;
-
-        if offset + len as u64 > capsule.size {
-            anyhow::bail!("Read beyond capsule boundary");
+        #[cfg(feature = "modular_pipeline")]
+        if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
+            return runtime.block_on(async {
+                let handle = modular.lock().await;
+                handle.read_range(id, offset, len).await
+            });
         }
 
-        // Simple implementation - read full capsule then slice
-        // TODO Phase 2.3: Optimize to only read relevant segments
-        let full_data = self.read_capsule(id)?;
-        Ok(full_data[offset as usize..(offset as usize + len)].to_vec())
+        let capsule = self.registry.lookup(id)?;
+
+        if offset >= capsule.size {
+            return Ok(Vec::new());
+        }
+
+        let range_end = std::cmp::min(offset.saturating_add(len as u64), capsule.size);
+        let mut remaining = (range_end - offset) as usize;
+        let mut result = Vec::with_capacity(remaining);
+        let mut cursor = 0u64;
+
+        #[cfg_attr(
+            not(feature = "advanced-security"),
+            allow(clippy::unused_enumerate_index)
+        )]
+        #[cfg_attr(not(feature = "advanced-security"), allow(unused_variables))]
+        for (seg_index, seg_id) in capsule.segments.iter().enumerate() {
+            if remaining == 0 {
+                break;
+            }
+
+            // Get segment metadata to check if encrypted
+            let mut segment = self.nvram.get_segment_metadata(*seg_id)?;
+
+            if segment.plain_len.is_none() && !segment.compressed {
+                // For uncompressed segments we can infer the plain length directly.
+                segment.plain_len = Some(segment.len);
+                self.nvram
+                    .update_segment_metadata(*seg_id, segment.clone())?;
+            }
+
+            if let Some(seg_len) = segment.plain_len.map(u64::from) {
+                let seg_end = cursor + seg_len;
+                if seg_end <= offset {
+                    cursor = seg_end;
+                    continue;
+                }
+            }
+
+            // Read raw data from NVRAM
+            let raw_data = self.nvram.read(*seg_id)?;
+
+            // Step 1: Decrypt if encrypted
+            let decrypted_data = if segment.encrypted {
+                let km = self.key_manager.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("Cannot decrypt: key manager not initialized")
+                })?;
+
+                let mut km = km.lock().unwrap();
+
+                let key_version = segment
+                    .key_version
+                    .ok_or_else(|| anyhow::anyhow!("Missing key version in encrypted segment"))?;
+
+                let key_pair = km.get_key(key_version)?;
+
+                #[cfg(feature = "advanced-security")]
+                let mut derived_pair: Option<XtsKeyPair> = None;
+                #[cfg(feature = "advanced-security")]
+                if capsule.policy.crypto_profile == CryptoProfile::HybridKyber {
+                    if let (Some(manager), Some(cipher_hex), Some(hash)) = (
+                        self.mlkem_manager.as_ref(),
+                        &segment.pq_ciphertext,
+                        &segment.content_hash,
+                    ) {
+                        match manager.unwrap_xts_key(
+                            capsule.policy.crypto_profile,
+                            &collect_base_material((key_pair.key1(), key_pair.key2())),
+                            &capsule.id,
+                            SegmentId(seg_index as u64),
+                            hash,
+                            cipher_hex,
+                        ) {
+                            Ok(Some(material)) => {
+                                derived_pair = Some(XtsKeyPair::from_bytes(material.wrapped_key));
+                            }
+                            Ok(None) => {}
+                            Err(err) => warn!(error = %err, "mlkem unwrap failed"),
+                        }
+                    }
+                }
+
+                #[cfg(feature = "advanced-security")]
+                let pair_for_use = derived_pair
+                    .as_ref()
+                    .map(|pair| pair as &XtsKeyPair)
+                    .unwrap_or(key_pair);
+                #[cfg(not(feature = "advanced-security"))]
+                let pair_for_use = key_pair;
+
+                let enc_meta = EncryptionMetadata {
+                    encryption_version: segment.encryption_version,
+                    key_version: segment.key_version,
+                    wrapped_segment_key: None,
+                    tweak_nonce: segment.tweak_nonce,
+                    integrity_tag: segment.integrity_tag,
+                    ciphertext_len: Some(raw_data.len() as u32),
+                };
+
+                verify_mac(
+                    &raw_data,
+                    &enc_meta,
+                    pair_for_use.key1(),
+                    pair_for_use.key2(),
+                )?;
+
+                decrypt_segment(&raw_data, pair_for_use, &enc_meta)?
+            } else {
+                raw_data
+            };
+
+            // Step 2: Decompress based on policy
+            let data = match capsule.policy.compression {
+                CompressionPolicy::None => decrypted_data,
+                CompressionPolicy::LZ4 { .. } => {
+                    match decompress_lz4(&decrypted_data) {
+                        Ok(decompressed) => decompressed,
+                        Err(_) => decrypted_data, // Wasn't compressed
+                    }
+                }
+                CompressionPolicy::Zstd { .. } => {
+                    match decompress_zstd(&decrypted_data) {
+                        Ok(decompressed) => decompressed,
+                        Err(_) => decrypted_data, // Wasn't compressed
+                    }
+                }
+            };
+
+            // Backfill plain_len when missing to enable future range skipping.
+            if segment.plain_len.is_none() || segment.plain_len != Some(data.len() as u32) {
+                let mut updated = segment.clone();
+                updated.plain_len = Some(data.len() as u32);
+                self.nvram.update_segment_metadata(*seg_id, updated)?;
+            }
+
+            let seg_len = data.len() as u64;
+            let seg_end = cursor + seg_len;
+            if seg_end <= offset {
+                cursor = seg_end;
+                continue;
+            }
+
+            let start = if offset > cursor {
+                (offset - cursor) as usize
+            } else {
+                0
+            };
+
+            let take = std::cmp::min(remaining, data.len().saturating_sub(start));
+            result.extend_from_slice(&data[start..start + take]);
+            remaining -= take;
+            cursor = seg_end;
+        }
+
+        #[cfg(feature = "advanced-security")]
+        self.audit_event(common::Event::CapsuleRead {
+            capsule_id: id,
+            size: range_end - offset,
+        });
+
+        Ok(result)
     }
 }
 
@@ -1636,6 +1803,10 @@ impl PipelineStrategy for LegacyPipeline {
 
     async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
         self.read_capsule(id)
+    }
+
+    async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
+        LegacyPipeline::read_range(self, id, offset, len)
     }
 
     async fn delete_capsule(&self, id: CapsuleId) -> Result<()> {

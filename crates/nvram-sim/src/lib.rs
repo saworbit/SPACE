@@ -100,6 +100,7 @@ impl NvramLog {
             id: seg_id,
             offset,
             len: data.len() as u32,
+            plain_len: None,
             // Phase 2.1: Compression fields
             compressed: false,
             compression_algo: "none".to_string(),
@@ -293,6 +294,7 @@ impl NvramTransaction {
             id: seg_id,
             offset,
             len,
+            plain_len: None,
             compressed: false,
             compression_algo: "none".to_string(),
             content_hash: None,

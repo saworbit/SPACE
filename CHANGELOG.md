@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Global async runtime for sync pipeline** - `capsule-registry` uses a single `tokio` runtime (via `OnceLock`) for synchronous bridge calls instead of constructing a runtime per operation, eliminating millisecond-scale latency spikes and adding a warning when called from an async context.
 - **WritePipeline runtime strategy** - `capsule-registry` now uses a Strategy-pattern facade: when built with `modular_pipeline`, it prefers the modular orchestrator unless `SPACE_DISABLE_MODULAR_PIPELINE=1` is set, can be forced with `SPACE_USE_MODULAR=1`, and falls back to the legacy path on initialization errors. Legacy telemetry/config methods remain available via downcasting.
     - Compile-time enforcement via compiler checks
+- **Native range reads + backfill** - `PipelineStrategy::read_range` is first-class with modular and legacy implementations doing segment-aware reads; segment metadata now records `plain_len` and backfills on read to skip decrypt/decompress for pre-range segments, reducing I/O amplification for existing capsules.
 
 - **Web Interface File Storage** - Complete file management system
   - In-memory file storage with `HashMap<String, StoredFile>`

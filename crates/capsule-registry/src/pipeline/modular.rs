@@ -46,6 +46,12 @@ impl PipelineStrategy for ModularPipeline {
             .block_on(async move { handle.lock().await.read_capsule(id).await })
     }
 
+    async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let handle = Arc::clone(&self.handle);
+        self.runtime
+            .block_on(async move { handle.lock().await.read_range(id, offset, len).await })
+    }
+
     async fn delete_capsule(&self, id: CapsuleId) -> Result<()> {
         let handle = Arc::clone(&self.handle);
         self.runtime

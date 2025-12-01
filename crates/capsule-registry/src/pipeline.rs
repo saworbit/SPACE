@@ -140,6 +140,7 @@ impl WritePipeline {
         }
     }
 
+    #[allow(dead_code)]
     fn as_legacy(&self) -> Option<&LegacyPipeline> {
         self.strategy().as_any().downcast_ref::<LegacyPipeline>()
     }
@@ -181,15 +182,7 @@ impl WritePipeline {
     }
 
     pub fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
-        if let Some(legacy) = self.as_legacy() {
-            return legacy.read_range(id, offset, len);
-        }
-
-        let full = self.read_capsule(id)?;
-        if offset + len as u64 > full.len() as u64 {
-            anyhow::bail!("Read beyond capsule boundary");
-        }
-        Ok(full[offset as usize..offset as usize + len].to_vec())
+        block_on_future(self.strategy().read_range(id, offset, len))
     }
 
     #[cfg(feature = "pipeline_async")]
