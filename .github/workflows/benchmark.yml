@@ -22,5 +22,6 @@ jobs:
         uses: boa-dev/criterion-compare-action@v3
         with:
           cwd: "crates/layout-engine"
+          benchName: "layout_bench"
           branchName: ${{ github.base_ref || 'main' }}
           token: ${{ secrets.GITHUB_TOKEN }}
