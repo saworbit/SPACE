@@ -115,8 +115,8 @@ Each facade delegates I/O to the shared `WritePipeline`, ensuring compression, d
   ▼
 [IO Engine]
   │ compress + dedupe + encrypt
-  ├─► mirror to peer NVRAM (RDMA, <50 µs)
-  └─► append to local NVRAM        (<50 µs)
+  ├─► mirror to peer NVRAM (RDMA, <50 us)
+  └─► append to local NVRAM        (<50 us)
       │ background flush trigger
       ▼
 [Flusher] —► Erasure‑coded Flash/Disk Tier
@@ -172,7 +172,7 @@ copies and cutting large transfer latency by ~10–20% in internal benchmarks.
 - The optional `pipeline_async` feature swaps the single-threaded loop for a Tokio-based fan-out/fan-in pipeline. A bounded `Semaphore` (`max_concurrency`, default `num_cpus / 2`) caps in-flight segment work while a channel feeds the ordered commit loop.
 - CPU-heavy steps (entropy check, compression, encryption) execute via `spawn_blocking`, returning `SegmentPrepared` records that carry preparation latency and the time they reached the coordinator.
 - The coordinator uses `NvramTransaction` to stage all new segment writes. Durability happens once every segment succeeds; on error the transaction rolls back without touching disk and persistent dedupe increments are undone.
-- `tracing` instrumentation records per-segment prep time, coordination delay, commit duration, and aggregated totals. `info!` summaries emit averages/maxima so CI can assert the <50 µs coordination target, while `trace!`/`debug!` provide per-segment detail when needed.
+- `tracing` instrumentation records per-segment prep time, coordination delay, commit duration, and aggregated totals. `info!` summaries emit averages/maxima so CI can assert the <50 us coordination target, while `trace!`/`debug!` provide per-segment detail when needed.
 - Content registration is deferred until after the NVRAM transaction commits; staging dedupe hits rely on an in-memory map and adjust staged segment refcounts so intra-capsule dedupe remains deterministic.
 - `PipelineConfig` exposes tuning knobs (`max_concurrency`, per-task memory limits, future transactional toggles) and is plumbed through `spacectl` so synchronous callers can opt in by enabling the Cargo feature.
 
@@ -276,7 +276,7 @@ async fn health_agent_loop() {
 
 | Feature            | Method                              | Runtime cost     |
 | ------------------ | ----------------------------------- | ---------------- |
-| Compression        | Entropy sample ⇒ LZ4 / Zstd / none  | < 1 µs/seg (DPU) |
+| Compression        | Entropy sample ⇒ LZ4 / Zstd / none  | < 1 us/seg (DPU) |
 | Deduplication      | 8 KB fingerprints, GPU bloom filter | negligible       |
 | Snapshots & clones | Metadata redirect‑on‑write          | < 1 ms           |
 | Tiering            | Heat counter, metadata move         | none             |
@@ -289,7 +289,7 @@ Phase 4 is the bridge between the capsule control plane and the external protoco
 - Mesh-aware exports (`scaling::MeshNode` exposes `resolve_federated`, `federate_capsule`, and `shard_metadata` plus the `MetadataShard` descriptor)
 - Protocol adapters (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) that project the capsule namespace across NVMe, NFS/FUSE, and CSI
 - Policy steering (`Policy::latency_target`, `Policy::sovereignty`) that triggers federation and QoS enforcement before a view is presented
-- A federated metadata mesh that sharded capsule records and gossips peer ownership, keeping the capsule-to-node map under 100�s query latency
+- A federated metadata mesh that sharded capsule records and gossips peer ownership, keeping the capsule-to-node map under 100us query latency
 
 ```
 [CapsuleRegistry] --> (write pipeline) --> [MeshNode (phase4)]
