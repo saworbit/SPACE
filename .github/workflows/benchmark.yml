@@ -22,5 +22,5 @@ jobs:
         uses: boa-dev/criterion-compare-action@v3
         with:
           cwd: "crates/layout-engine"
-          branchName: ${{ github.base_ref }}
+          branchName: ${{ github.base_ref || 'main' }}
           token: ${{ secrets.GITHUB_TOKEN }}
