@@ -1,16 +1,20 @@
 {
-    "toolchain":  {
-                      "cargo-audit":  "0.21.2",
-                      "cargo-bloat":  "0.12.1",
-                      "cargo-deny":  "0.18.5",
-                      "rustc":  "stable"
-                  },
-    "last_passed":  "2025-11-05T11:40:20Z",
-    "xtask_audit_sha":  "737d2e14999bd0930a676bbcedc8a0e45a26ee48",
-    "reports":  {
-                    "cargo_bloat":  "target/release/spacectl.exe",
-                    "cargo_deny":  "pass",
-                    "cargo_audit":  "pass"
-                },
-    "notes":  "Generated via cargo xtask audit --no-tests on 2025-11-05T11:40:20Z."
+  "last_audit": "2025-12-11",
+  "auditor": "SPACE_Phase4_Pipeline",
+  "status": "conditional_pass",
+  "waivers": [
+    {
+      "crate": "sled",
+      "advisory_id": "RUSTSEC-2025-0057",
+      "risk_level": "low",
+      "mitigation": "Input sanitization: Keys are effectively random (UUID/BLAKE3). No user input."
+    },
+    {
+      "crate": "reqwest",
+      "advisory_id": "RUSTSEC-2025-0134",
+      "risk_level": "medium",
+      "mitigation": "Operational constraint: Only trusted local PEM files are parsed."
+    }
+  ],
+  "dependency_review": "Passed"
 }

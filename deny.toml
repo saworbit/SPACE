@@ -74,6 +74,15 @@ ignore = [
     # These are not actual security vulnerabilities, just maintenance status warnings
     { id = "RUSTSEC-2024-0384", reason = "instant - unmaintained (from libp2p)" },
     { id = "RUSTSEC-2024-0436", reason = "paste - unmaintained (from leptos/netlink)" },
+
+    # --- Phase 4 Waivers (2025-12) ---
+    # RUSTSEC-2025-0057: fxhash (via sled)
+    # Constraint-based mitigation: sled keys are high-entropy UUID/BLAKE3 values only.
+    { id = "RUSTSEC-2025-0057", reason = "Mitigated: sled keys are crypto-hashes/UUIDs only" },
+
+    # RUSTSEC-2025-0134: rustls-pemfile (via reqwest)
+    # Trusted control plane: only admin-provisioned PEMs are parsed locally.
+    { id = "RUSTSEC-2025-0134", reason = "Mitigated: Trusted control plane / local PEM inputs only" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -176,5 +185,4 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
-
 

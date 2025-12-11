@@ -73,3 +73,15 @@ Record tier assignments inside PR descriptions and keep the table up to date whe
 - `CONTRIBUTING.md` – contributor-facing checklist and policy summary.
 
 Questions or proposals for new dependencies should be raised via GitHub Discussions under **Security & Dependencies** with a link to this policy.
+
+## Ecosystem Strategy: `sled` Maintenance
+
+**Status:** Critical / Frozen  
+**Risk:** High (Unmaintained)
+
+As of Phase 4, SPACE continues to rely on `sled` (v0.34) for the `CapsuleRegistry`. While the crate is effectively unmaintained, replacing it is a Phase 5 roadmap item (candidate replacements include `redb` or a custom log-structured engine aligned with our NVRAM pipeline).
+
+**Policy:**
+1. **No New Usage:** Do not introduce `sled` into new crates (protocols, orchestrator, etc.).
+2. **Input Strictness:** All keys written to existing `sled` instances MUST be derived from cryptographic primitives (UUIDs, BLAKE3 hashes). No user-provided strings.
+3. **Waivers:** Security advisories related to `sled` internals (e.g., `fxhash` collision DoS) may be waived only if exploitation requires attacker-controlled keys. Document waivers in `deny.toml` and `docs/security/audit-status.json`.
