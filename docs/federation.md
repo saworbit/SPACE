@@ -2,7 +2,7 @@
 
 ## Metadata Mesh Today
 
-Phase 4 splits `space.metadata` into multiple Paxos-style shards so capsules can be resolved in <100µs even after migrating across metros and geos. Each `MeshNode` owns an `Arc<RwLock<HashMap<NodeId, SocketAddr>>>` registry plus a Raft handler that stores serialized capsule records per zone.
+Phase 4 splits `space.metadata` into multiple Paxos-style shards so capsules can be resolved in <100us even after migrating across metros and geos. Each `MeshNode` owns an `Arc<RwLock<HashMap<NodeId, SocketAddr>>>` registry plus a Raft handler that stores serialized capsule records per zone.
 
 When a view projects, `MeshNode::shard_metadata`:
 
