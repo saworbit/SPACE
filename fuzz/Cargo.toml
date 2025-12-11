@@ -11,6 +11,10 @@ cargo-fuzz = true
 anyhow = "1"
 libfuzzer-sys = "0.4"
 
+[dependencies.common]
+path = "../crates/common"
+default-features = true
+
 [dependencies.encryption]
 path = "../crates/encryption"
 default-features = true

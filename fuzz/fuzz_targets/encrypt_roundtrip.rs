@@ -13,10 +13,7 @@ fuzz_target!(|data: &[u8]| {
 
     let mut master_key = [0u8; MASTER_KEY_SIZE];
     master_key.copy_from_slice(&data[..MASTER_KEY_SIZE]);
-    let mut manager = match KeyManager::new(master_key) {
-        Ok(manager) => manager,
-        Err(_) => return,
-    };
+    let mut manager = KeyManager::new(master_key);
 
     let key_pair = match manager.get_key(1) {
         Ok(pair) => pair.clone(),
