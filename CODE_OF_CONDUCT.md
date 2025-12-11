@@ -117,6 +117,8 @@ community.
 This Code of Conduct is adapted from the [Contributor Covenant][homepage],
 version 2.1, available at
 <https://www.contributor-covenant.org/version/2/1/code_of_conduct.html>.
+If the canonical site is temporarily unavailable, a mirror of version 2.1 is available at
+<https://web.archive.org/web/20231215000000/https://www.contributor-covenant.org/version/2/1/code_of_conduct.html>.
 
 Community Impact Guidelines were inspired by [Mozilla's code of conduct
 enforcement ladder](https://github.com/mozilla/diversity).
