@@ -22,3 +22,7 @@ common = { path = "../common" }
 
 [dev-dependencies]
 criterion = "0.5"
+
+[[bench]]
+name = "layout_bench"
+harness = false
