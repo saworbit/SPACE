@@ -7,9 +7,16 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+default = []
+fuzzing = []
+
 [dependencies]
 anyhow = "1"
 libfuzzer-sys = "0.4"
+
+[package.metadata.cargo-fuzz]
+features = ["fuzzing"]
 
 [dependencies.common]
 path = "../crates/common"
@@ -28,9 +35,11 @@ name = "encrypt_roundtrip"
 path = "fuzz_targets/encrypt_roundtrip.rs"
 test = false
 doc = false
+required-features = ["fuzzing"]
 
 [[bin]]
 name = "policy_fuzz"
 path = "fuzz_targets/policy_fuzz.rs"
 test = false
 doc = false
+required-features = ["fuzzing"]
