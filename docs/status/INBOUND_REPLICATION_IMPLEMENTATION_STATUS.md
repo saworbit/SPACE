@@ -31,7 +31,7 @@ This renders replication a no-op, undermining data durability and PODMS policy-d
    - Implemented length-prefixed framing (4-byte length + bincode payload)
    - Added serialization/deserialization methods
 
-3. **Replication Handler Implemented** ([crates/scaling/src/replication.rs](crates/scaling/src/replication.rs))
+3. **Replication Handler Implemented** ([crates/scaling/src/replication.rs](../../crates/scaling/src/replication.rs))
    - Created `ReplicationHandler<C: CapsuleCatalog>` generic over content catalog
    - Implemented full inbound flow:
      - Frame length/data reading with bounds checking (16MB max)
@@ -65,7 +65,7 @@ This renders replication a no-op, undermining data durability and PODMS policy-d
    - Update all usages in agent.rs (lines 27, 33, 41, 338, 349)
    - Update test code to provide concrete type
 
-3. **Unused Variables** ([crates/scaling/src/replication.rs](crates/scaling/src/replication.rs))
+3. **Unused Variables** ([crates/scaling/src/replication.rs](../../crates/scaling/src/replication.rs))
    - Line 254: unused `mut` on `nvram_log`
    - Line 272: unused `mut` on `nvram_log`
    - Minor warnings that don't affect functionality
