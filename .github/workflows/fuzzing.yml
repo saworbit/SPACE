@@ -1,0 +1,44 @@
+name: Continuous Fuzzing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/encryption/**'
+      - 'crates/layout-engine/**'
+      - 'fuzz/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/encryption/**'
+      - 'crates/layout-engine/**'
+      - 'fuzz/**'
+  schedule:
+    - cron: '0 2 * * *' # Daily deep scan
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Fuzz Policy Engine
+        run: |
+          cd fuzz
+          cargo fuzz run policy_fuzz -- -max_total_time=300
+
+      - name: Fuzz Encryption Roundtrip
+        run: |
+          cd fuzz
+          cargo fuzz run encrypt_roundtrip -- -max_total_time=300
+
+      - name: Archive Crash Artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-artifacts
+          path: fuzz/artifacts/

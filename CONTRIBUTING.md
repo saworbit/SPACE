@@ -9,6 +9,24 @@ Thank you for helping harden SPACE. This document highlights day-to-day expectat
 - Install `cargo fuzz` (`cargo install cargo-fuzz`) to exercise the fuzz harnesses when touching encryption or compression code.
 - Follow the coding standards in `docs/architecture.md` and module-specific guides such as `docs/implementation/ENCRYPTION_IMPLEMENTATION.md`.
 
+## 🤖 Automated Quality Gates
+
+To maintain the high reliability standards of SPACE, the following automated checks must pass before merging:
+
+| Check | Description | Command to Run Locally |
+|-------|-------------|------------------------|
+| **Fuzzing** | Checks for edge-case crashes | `cargo fuzz run <target>` |
+| **Typos** | Validates spelling | `typos` (Install via `cargo install typos-cli`) |
+| **Links** | Checks for broken URLs | `lychee .` (Install via `cargo install lychee`) |
+| **Docs** | Ensures documentation compiles | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` |
+| **Conventional Commits** | Enforces semantic PR titles | Use `feat:`, `fix:`, etc. in PR titles |
+| **Benchmarks** | Checks for performance regressions | `cargo bench` |
+
+### 🔍 Conventional Commits
+All Pull Requests must follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
+* **Good:** `feat(storage): implement zero-copy read path`
+* **Bad:** `added read path`
+
 ## Dependency Changes
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.
 

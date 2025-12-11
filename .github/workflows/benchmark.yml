@@ -1,0 +1,26 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/layout-engine/**'
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Benchmarks
+        uses: boa-dev/criterion-compare-action@v3
+        with:
+          cwd: "crates/layout-engine"
+          branchName: ${{ github.base_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,7 @@
+[default.extend-words]
+nvmeof = "nvmeof"
+dedup = "dedup"
+podms = "podms"
+kyber = "kyber"
+rdma = "rdma"
+spdk = "spdk"
