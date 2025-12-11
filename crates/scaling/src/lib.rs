@@ -8,9 +8,9 @@
 
 use anyhow::{anyhow, Result};
 use common::podms::{NodeId, ZoneId};
-#[cfg(feature = "phase4")]
-use common::CapsuleId;
 use common::SegmentId;
+#[cfg(feature = "phase4")]
+use common::{podms::Telemetry, CapsuleId, Policy};
 use encryption::keymanager::KeyManager;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
@@ -49,6 +49,62 @@ pub use batch_queue::{BatchItem, BatchQueue, BatchQueueSender, QueueStats};
 
 // Re-export SwarmOps for PODMS migrations
 pub use swarm_ops::SwarmOps;
+
+/// Enforce view-scope scaling actions (federation/sharding) before projection.
+#[cfg(feature = "phase4")]
+pub async fn enforce_view_policy<C, F>(
+    mesh: &MeshNode<C>,
+    capsule_id: CapsuleId,
+    policy: &Policy,
+    view_name: &str,
+    shard_serializer: F,
+) -> Result<()>
+where
+    C: ContentStore + 'static,
+    F: Fn(CapsuleId) -> Result<Vec<u8>>,
+{
+    let telemetry = Telemetry::ViewProjection {
+        id: capsule_id,
+        view: view_name.into(),
+    };
+
+    let mesh_state = MeshState::empty(mesh.zone().clone());
+    let actions = compiler::compile_scaling(policy, &telemetry, &mesh_state);
+
+    for action in actions {
+        match action {
+            ScalingAction::Federate { capsule_id, zone } => {
+                mesh.federate_capsule(capsule_id, zone).await?;
+            }
+            ScalingAction::ShardEC {
+                capsule_id, zones, ..
+            } => {
+                if zones.is_empty() {
+                    continue;
+                }
+
+                let payload = shard_serializer(capsule_id)?;
+                let shard_keys = capsule_id.shard_keys(zones.len());
+                let shards: Vec<MetadataShard> = zones
+                    .into_iter()
+                    .zip(shard_keys.into_iter())
+                    .map(|(zone, shard_id)| MetadataShard {
+                        shard_id,
+                        owner: mesh.id(),
+                        zone,
+                    })
+                    .collect();
+
+                mesh.shard_metadata(capsule_id, shards, &payload).await?;
+            }
+            _ => {
+                // Background agents handle other actions (replication/migration).
+            }
+        }
+    }
+
+    Ok(())
+}
 
 #[async_trait::async_trait]
 trait DataTransport: Send + Sync {

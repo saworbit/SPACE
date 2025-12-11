@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Encryption-transparent protocol views** - `RegistryTransformOps` now decrypts/encrypts on-the-fly for Phase 4 view projection, with `scaling::enforce_view_policy` centralizing federation/sharding before NVMe/FUSE/CSI expose plaintext handles; includes a new NVMe integration test that round-trips encrypted storage through the view pipeline.
 - **Performance fix spec + benchmark** - Documented the async runtime bridging issue and added a Criterion benchmark (`crates/capsule-registry/benches/runtime_overhead.rs`) to measure per-call runtime creation vs a shared global runtime (`docs/specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md`).
 - **Native NVMe/TCP simulation target** - `crates/sim-nvmeof` now provides a protocol-compliant NVMe/TCP target (no SPDK/hugepages) with helper scripts `scripts/nvmeof_discover.sh` (discover) and `scripts/nvmeof_connect_io.sh` (connect + 4KiB I/O).
 - **SPDK-gated NVMe-oF path** - `sim-nvmeof` now uses a `spdk` Cargo feature with Linux-only runtime preflight (hugepages, memlock, root) and automatic fallback to the native TCP target to avoid CI/container hangs.

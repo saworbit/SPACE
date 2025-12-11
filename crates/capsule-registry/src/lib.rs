@@ -4,14 +4,18 @@ use common::security::bloom_dedup::BloomFilterWrapper;
 #[cfg(feature = "advanced-security")]
 use common::security::DedupOptimizer;
 use common::*;
+use encryption::keymanager::MASTER_KEY_SIZE;
+use encryption::KeyManager;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::consensus::{MetadataOp, OpResult, RaftNode};
 use crate::store::{MetadataStore, SledStore};
 
 mod consensus;
 mod store;
+#[cfg(feature = "podms")]
+mod transform;
 
 pub mod dedup; // NEW
 pub mod error;
@@ -23,6 +27,8 @@ pub mod runtime;
 pub use error::{CompressionError, DedupError, PipelineError};
 #[cfg(feature = "podms")]
 pub use runtime::RuntimeHandles;
+#[cfg(feature = "podms")]
+pub use transform::RegistryTransformOps;
 
 #[cfg(feature = "modular_pipeline")]
 pub mod modular_pipeline {
@@ -225,6 +231,7 @@ pub struct CapsuleRegistry {
     raft: RaftNode,
     #[cfg(feature = "advanced-security")]
     bloom_filter: Option<Arc<BloomFilterWrapper>>,
+    key_manager: Arc<Mutex<KeyManager>>,
 }
 
 impl CapsuleRegistry {
@@ -237,6 +244,10 @@ impl CapsuleRegistry {
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
         let raft = RaftNode::new(Arc::clone(&store));
 
+        let key_manager =
+            KeyManager::from_env().unwrap_or_else(|_| KeyManager::new([0u8; MASTER_KEY_SIZE]));
+        let key_manager = Arc::new(Mutex::new(key_manager));
+
         #[cfg(feature = "advanced-security")]
         let bloom_filter = Self::configure_bloom(&*store)?;
 
@@ -245,6 +256,7 @@ impl CapsuleRegistry {
             raft,
             #[cfg(feature = "advanced-security")]
             bloom_filter,
+            key_manager,
         })
     }
 
@@ -393,6 +405,10 @@ impl CapsuleRegistry {
         self.store.list_content().unwrap_or_default()
     }
 
+    pub fn key_manager(&self) -> &Arc<Mutex<KeyManager>> {
+        &self.key_manager
+    }
+
     #[cfg(feature = "advanced-security")]
     fn configure_bloom(store: &dyn MetadataStore) -> Result<Option<Arc<BloomFilterWrapper>>> {
         let capacity = std::env::var("SPACE_BLOOM_CAPACITY")
@@ -434,6 +450,7 @@ impl Clone for CapsuleRegistry {
             raft: self.raft.clone(),
             #[cfg(feature = "advanced-security")]
             bloom_filter: self.bloom_filter.clone(),
+            key_manager: Arc::clone(&self.key_manager),
         }
     }
 }

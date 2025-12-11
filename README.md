@@ -926,6 +926,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 - 📋 NFS v4.2 file export
 - 📋 FUSE filesystem mount
 - 📋 CSI driver for Kubernetes
+- Encryption-transparent views via RegistryTransformOps + centralized enforce_view_policy so protocols serve plaintext while capsules stay XTS-encrypted
 
 ### 🚀 Phase 5: Enterprise Features
 - 📋 Metro-sync replication
@@ -1208,6 +1209,4 @@ Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
-
-
 

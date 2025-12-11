@@ -12,7 +12,7 @@ phase4 = ["common/podms", "scaling/phase4"]
 
 [dependencies]
 anyhow = { workspace = true }
-capsule-registry = { path = "../capsule-registry" }
+capsule-registry = { path = "../capsule-registry", features = ["phase4"] }
 common = { path = "../common" }
 scaling = { path = "../scaling", features = ["phase4"] }
 tracing = { workspace = true }
@@ -20,3 +20,5 @@ fuse-rs = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+encryption = { path = "../encryption" }
+nvram-sim = { path = "../nvram-sim" }

@@ -6,45 +6,13 @@
 #![cfg(feature = "phase4")]
 
 use anyhow::Result;
-use capsule_registry::CapsuleRegistry;
-use common::podms::{SwarmBehavior, Telemetry, TransformOps};
-use common::{CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, SegmentId};
-use scaling::compiler::{compile_scaling, MeshState, ScalingAction};
-use scaling::{MeshNode, MetadataShard};
+use capsule_registry::{CapsuleRegistry, RegistryTransformOps};
+use common::podms::SwarmBehavior;
+use common::{CapsuleId, EncryptionPolicy, Policy, SegmentId};
+use scaling::enforce_view_policy;
+use scaling::MeshNode;
 use spdk_rs::{Namespace, NvmeTargetBuilder};
 use tracing::{info, info_span};
-
-struct IdentityTransformOps;
-
-impl TransformOps for IdentityTransformOps {
-    fn decrypt(
-        &self,
-        _capsule_id: CapsuleId,
-        data: &[u8],
-        _policy: &EncryptionPolicy,
-        _ctx: SegmentId,
-    ) -> anyhow::Result<Vec<u8>> {
-        Ok(data.to_vec())
-    }
-
-    fn encrypt(
-        &self,
-        _capsule_id: CapsuleId,
-        data: &[u8],
-        _policy: &EncryptionPolicy,
-        _ctx: SegmentId,
-    ) -> anyhow::Result<Vec<u8>> {
-        Ok(data.to_vec())
-    }
-
-    fn decompress(&self, data: &[u8], _policy: &CompressionPolicy) -> anyhow::Result<Vec<u8>> {
-        Ok(data.to_vec())
-    }
-
-    fn compress(&self, data: &[u8], _policy: &CompressionPolicy) -> anyhow::Result<Vec<u8>> {
-        Ok(data.to_vec())
-    }
-}
 
 /// Handle representing an exported NVMe view.
 #[derive(Debug)]
@@ -66,53 +34,26 @@ impl NvmeView {
 }
 
 /// Project a capsule into an NVMe-oF target with PODMS federation.
-pub async fn project_nvme_view(
+pub async fn project_nvme_view<C: scaling::ContentStore + 'static>(
     id: CapsuleId,
     policy: &Policy,
-    mesh: &MeshNode,
+    mesh: &MeshNode<C>,
     registry: &CapsuleRegistry,
 ) -> Result<NvmeView> {
     let span = info_span!("nvme_project", capsule = %id.as_uuid());
     let _enter = span.enter();
 
+    enforce_view_policy(mesh, id, policy, "nvme", |cid| {
+        registry.serialize_capsule(cid)
+    })
+    .await?;
+
+    let transform_ops = RegistryTransformOps::new(registry.key_manager().clone());
+
     let capsule = registry.lookup(id)?;
-    let transformed = capsule.apply_transform(SegmentId(0), &[], policy, &IdentityTransformOps)?;
-
-    let telemetry = Telemetry::ViewProjection {
-        id,
-        view: "nvme".into(),
-    };
-
-    let mesh_state = MeshState::empty(mesh.zone().clone());
-    let actions = compile_scaling(policy, &telemetry, &mesh_state);
-
-    for action in actions {
-        match action {
-            ScalingAction::Federate { capsule_id, zone } => {
-                mesh.federate_capsule(capsule_id, zone).await?;
-            }
-            ScalingAction::ShardEC {
-                capsule_id, zones, ..
-            } => {
-                if zones.is_empty() {
-                    continue;
-                }
-                let payload = registry.serialize_capsule(capsule_id)?;
-                let shard_keys = capsule_id.shard_keys(zones.len());
-                let shards: Vec<MetadataShard> = zones
-                    .into_iter()
-                    .zip(shard_keys.into_iter())
-                    .map(|(zone, shard_id)| MetadataShard {
-                        shard_id,
-                        owner: mesh.id(),
-                        zone,
-                    })
-                    .collect();
-                mesh.shard_metadata(capsule_id, shards, &payload).await?;
-            }
-            _ => {}
-        }
-    }
+    let mut view_policy = policy.clone();
+    view_policy.encryption = EncryptionPolicy::Disabled;
+    let transformed = capsule.apply_transform(SegmentId(0), &[], &view_policy, &transform_ops)?;
 
     let mut builder = NvmeTargetBuilder::new();
     builder.add_namespace(Namespace::new(transformed));

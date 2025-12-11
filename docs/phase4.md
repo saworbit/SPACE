@@ -1,8 +1,8 @@
-# Phase 4: Advanced Protocol Views & Full Mesh Federation
+ï»¿# Phase 4: Advanced Protocol Views & Full Mesh Federation
 
 ## Purpose & Goals
 
-*Phase 4 realizes the patentable* “one capsule, infinite views” *thesis by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
+*Phase 4 realizes the patentable* ï¿½one capsule, infinite viewsï¿½ *thesis by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
 
 Goals:
 
@@ -35,7 +35,16 @@ Each protocol forwards actions to `MeshNode::federate_capsule` and `MeshNode::sh
 - Capsules derive deterministic shard IDs via `CapsuleId::shard_keys(count)`.
 - The CLI triggers these flows through the `spacectl project --view <nvme|nfs|fuse|csi>` command (see below).
 
+
+### Security & Transformation
+
+- Unlike Phase 3 direct access, Phase 4 views employ Encryption Transparency. The RegistryTransformOps adapter is injected into the view pipeline. It holds a handle to the KeyManager and performs on-the-fly XTS-AES-256 decryption for reads and encryption for writes.
+- NVMe/FUSE consumers see plaintext (or file-system level encryption if configured externally) while storage remains encrypted and deduplicated.
+- Policy enforcement is centralized: all views invoke scaling::enforce_view_policy before initialization so ScalingAction::Federate and ScalingAction::ShardEC execute (backed by Raft) prior to exposing the view.
+- This closes the ciphertext leakage gap and removes duplicated scaling loops across protocol crates.
+
 ### CLI Command
+
 
 ```bash
 cargo run -p spacectl -- project \
@@ -59,7 +68,7 @@ cargo run -p spacectl -- project \
 3. **Security / Chaos**
    - `scripts/test_federation_resilience.sh` injects partitions (Chaos Mesh) to ensure Raft shards maintain consistency.
 4. **Benchmarks (future)**
-   - Use Criterion for `project_nvme_view` latency (<50ms) and `MeshNode::federate_capsule` (<100µs) by mocking RDMA loops.
+   - Use Criterion for `project_nvme_view` latency (<50ms) and `MeshNode::federate_capsule` (<100ï¿½s) by mocking RDMA loops.
 
 ## Scripts & Deployments
 
@@ -89,7 +98,7 @@ cargo run -p spacectl -- project \
 ## FAQ
 
 - **Why now?** Phase 3 proved the universal capsule and PODMS scaling. This phase completes the fabric by adding cross-protocol views and federated metadata.
-- **Hardware required?** Linux only today. RDMA/Mellanox optional — the scripts and vendor crates mock transport with TCP ports.
+- **Hardware required?** Linux only today. RDMA/Mellanox optional ï¿½ the scripts and vendor crates mock transport with TCP ports.
 - **Does single-node mode break?** No. `phase4` is opt-in. Without `--features phase4`, the new crates and CLI path remain unused.
 - **Can we add SMB or iSCSI later?** Yes. The new phases expose `project_nvme_view` hooks where future protocols can plug right in.
 - **How do we prove compliance?** Logs include tracing spans (`nvme_project`, `nfs_export`, `fuse_mount`, `csi_provision`). `MeshNode` emits `info!` events when shards are stored, making audit chains easy to follow.
