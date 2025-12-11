@@ -225,8 +225,7 @@ This removes:
 ## Getting Help
 
 - **Documentation**: [docs/](.)
-- **Issues**: https://github.com/your-org/space/issues
-- **Discussions**: https://github.com/your-org/space/discussions
+- **Issues**: https://github.com/saworbit/SPACE/issues
 
 ---
 

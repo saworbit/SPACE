@@ -113,7 +113,7 @@ The fastest way to get a multi-node SPACE cluster running:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/space.git
+git clone https://github.com/saworbit/SPACE.git
 cd space
 
 # Start 3-node mesh with monitoring
@@ -547,11 +547,11 @@ This enables:
 - [SPACE Architecture](./architecture.md)
 - [PODMS Design](./podms.md)
 - [Security Model](./security.md)
-- [API Reference](./api.md)
+- [API Reference](./API.md)
 - [Performance Tuning](./performance.md)
 
 ## Support
 
-- GitHub Issues: https://github.com/your-org/space/issues
+- GitHub Issues: https://github.com/saworbit/SPACE/issues
 - Slack: https://space-project.slack.com
 - Email: support@adaptive-storage.dev

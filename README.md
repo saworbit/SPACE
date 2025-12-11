@@ -6,7 +6,6 @@
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
-[![Discussions](https://img.shields.io/github/discussions/saworbit/SPACE)](https://github.com/saworbit/SPACE/discussions)
 
 ### *One capsule. Infinite views.*
 **The future of storage starts with a single primitive that breaks down protocol silos.**
@@ -1193,7 +1192,7 @@ spacectl block delete vol1
 
 **⭐ Star us on GitHub if you find this project interesting! ⭐**
 
-[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Request Feature](https://github.com/saworbit/SPACE/issues) • [💬 Discussions](https://github.com/saworbit/SPACE/discussions)
+[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Request Feature](https://github.com/saworbit/SPACE/issues) • [💬 Community](https://github.com/saworbit/SPACE/issues)
 
 ---
 
@@ -1209,4 +1208,3 @@ Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
 
 </div>
-

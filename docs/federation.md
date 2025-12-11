@@ -46,4 +46,4 @@ Each federation operation logs via `tracing::info` and can be verified by record
 
 `MeshNode::federate_capsule` wraps `RaftCluster::replicate` to guarantee cross-zone invariants even during Chaos Mesh partitions (`scripts/test_federation_resilience.sh`). If Raft quorums shrink, the trace still shows the last healthy owner so reads can fall back to the local copy.
 
-See [docs/phase4.md](docs/phase4.md) for CLI flows, scripts, and timelines.
+See [phase4.md](./phase4.md) for CLI flows, scripts, and timelines.

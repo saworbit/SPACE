@@ -103,4 +103,4 @@ cargo run -p spacectl -- project \
 - **Can we add SMB or iSCSI later?** Yes. The new phases expose `project_nvme_view` hooks where future protocols can plug right in.
 - **How do we prove compliance?** Logs include tracing spans (`nvme_project`, `nfs_export`, `fuse_mount`, `csi_provision`). `MeshNode` emits `info!` events when shards are stored, making audit chains easy to follow.
 
-Refer to [docs/federation.md](docs/federation.md) for zonal routing + Raft shard details and [README](README.md) for quick-start commands.
+Refer to [federation.md](./federation.md) for zonal routing + Raft shard details and [README](README.md) for quick-start commands.

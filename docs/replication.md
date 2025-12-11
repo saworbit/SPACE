@@ -414,9 +414,9 @@ export RUST_LOG=scaling::replication=debug,capsule_registry=debug
 
 ## References
 
-- [PODMS Design](../PODMS_DESIGN.md) - Policy-driven scaling overview
-- [Encryption Design](../ENCRYPTION_DESIGN.md) - XTS-AES-256 details
-- [Phase 4 Roadmap](../ROADMAP.md#phase-4) - Federation plans
+- [PODMS Design](./podms.md) - Policy-driven scaling overview
+- [Encryption Design](./implementation/ENCRYPTION_IMPLEMENTATION.md) - XTS-AES-256 details
+- [Phase 4 Roadmap](./phase4.md) - Federation plans
 - [Wire Protocol Spec](./wire_protocol.md) - Detailed framing format
 
 ---

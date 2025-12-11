@@ -663,7 +663,7 @@ The system is **architecturally sound** and ready for production hardening once 
 
 - [Multi-Node Deployment Guide](./multi-node-deployment.md)
 - [PODMS Design](./podms.md)
-- [API Reference](./api.md)
+- [API Reference](./API.md)
 - [Performance Tuning](./performance.md)
 
 **Implemented by:** Claude (Anthropic)

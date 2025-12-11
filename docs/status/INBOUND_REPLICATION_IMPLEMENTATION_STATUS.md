@@ -16,14 +16,14 @@ This renders replication a no-op, undermining data durability and PODMS policy-d
 
 ### ✅ Completed Tasks
 
-1. **Dependencies Added** ([crates/scaling/Cargo.toml](crates/scaling/Cargo.toml))
+1. **Dependencies Added** ([crates/scaling/Cargo.toml](../crates/scaling/Cargo.toml))
    - Added `bytes` crate for efficient buffer management
    - Added `blake3` for content hashing
    - Added `bincode` for wire protocol serialization
    - Added `encryption` crate for crypto operations
    - Added `nvram-sim` for NVRAM log access
 
-2. **Wire Protocol Defined** ([crates/scaling/src/replication.rs](crates/scaling/src/replication.rs))
+2. **Wire Protocol Defined** ([crates/scaling/src/replication.rs](../crates/scaling/src/replication.rs))
    - Created `ReplicationFrame` struct with:
      - Segment ID
      - Encryption metadata (key version, tweak, MAC tag)
@@ -44,7 +44,7 @@ This renders replication a no-op, undermining data durability and PODMS policy-d
      - Content registration via `CapsuleCatalog::register_content()`
    - Added comprehensive logging (debug, info, warn, error)
 
-4. **Integration with MeshNode** ([crates/scaling/src/lib.rs](crates/scaling/src/lib.rs))
+4. **Integration with MeshNode** ([crates/scaling/src/lib.rs](../crates/scaling/src/lib.rs))
    - Made `MeshNode` generic over `CapsuleCatalog` implementation
    - Updated `MeshNode::new()` to accept:
      - `Arc<C>` (CapsuleCatalog implementation)
@@ -59,7 +59,7 @@ This renders replication a no-op, undermining data durability and PODMS policy-d
 
 1. **Cyclic Dependency Removed**: Successfully avoided circular dependency between `scaling` and `capsule-registry` by using the `CapsuleCatalog` trait from `common::traits`
 
-2. **Generic Parameter Propagation** ([crates/scaling/src/agent.rs](crates/scaling/src/agent.rs))
+2. **Generic Parameter Propagation** ([crates/scaling/src/agent.rs](../crates/scaling/src/agent.rs))
    - `ScalingAgent` references `MeshNode` without generic parameter
    - Need to make `ScalingAgent` generic: `ScalingAgent<C: CapsuleCatalog>`
    - Update all usages in agent.rs (lines 27, 33, 41, 338, 349)
@@ -98,9 +98,9 @@ This renders replication a no-op, undermining data durability and PODMS policy-d
    - Decryption failure test
 
 5. **Update Documentation**
-   - [README.md](README.md): Add "Inbound Replication" section with flow diagram
-   - [CHANGELOG.md](CHANGELOG.md): Add entry for fix
-   - Create [docs/replication.md](docs/replication.md) with:
+   - [README.md](../../README.md): Add "Inbound Replication" section with flow diagram
+   - [CHANGELOG.md](../../CHANGELOG.md): Add entry for fix
+   - Create [docs/replication.md](../replication.md) with:
      - Mermaid flow diagram
      - Security guarantees
      - Protocol specification
