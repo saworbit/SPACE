@@ -28,8 +28,8 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    if let Ok((ciphertext, metadata)) = encrypt_segment(payload, key_pair.clone(), 1, tweak) {
-        if let Ok(plaintext) = decrypt_segment(&ciphertext, key_pair, &metadata) {
+    if let Ok((ciphertext, metadata)) = encrypt_segment(payload, &key_pair, 1, tweak) {
+        if let Ok(plaintext) = decrypt_segment(&ciphertext, &key_pair, &metadata) {
             assert_eq!(payload, plaintext.as_slice());
         }
     }
