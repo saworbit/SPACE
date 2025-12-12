@@ -125,6 +125,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
   - Scaling migrations now invoke `SwarmOps` to decrypt -> decompress -> recompress -> re-encrypt with per-capsule XTS keys and fresh MACs before streaming frames
   - Envelope encryption: segment keys are convergent (content-derived) and wrapped per capsule, enabling Zero Trust isolation without sacrificing dedup
   - Cross-node deduplication
+  - Persistent replication streams with pooled TCP connections and in-flight dedup reservations to ensure at-most-once NvramLog appends per payload
 
 - **🐳 Docker Compose Simulation**
   - 3-node mesh environment

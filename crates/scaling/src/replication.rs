@@ -10,19 +10,23 @@
 //! 7. Update metadata and emit telemetry
 
 use crate::SwarmOps;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use blake3;
 use common::{CapsuleId, ContentHash, SegmentId};
+use dashmap::DashMap;
 use encryption::keymanager::KeyManager;
 use encryption::mac::verify_mac;
 use encryption::policy::EncryptionMetadata;
 use encryption::xts::{decrypt, decrypt_segment};
 use nvram_sim::NvramLog;
 use serde::{Deserialize, Serialize};
+use std::io::ErrorKind;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
+use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 /// Trait for content lookup and registration (to avoid circular dependency with capsule-registry)
@@ -85,11 +89,78 @@ impl ReplicationFrame {
     }
 }
 
+#[derive(Clone)]
+pub struct InFlightRegistry {
+    active_writes: Arc<DashMap<ContentHash, Arc<Notify>>>,
+}
+
+impl InFlightRegistry {
+    pub fn new() -> Self {
+        Self {
+            active_writes: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub async fn reserve<C: ContentStore>(
+        &self,
+        hash: &ContentHash,
+        store: &Arc<RwLock<C>>,
+    ) -> Result<ReservationPermit, ()> {
+        loop {
+            // Fast path: already present in store
+            if store.read().await.lookup_content(hash).is_some() {
+                return Err(());
+            }
+
+            match self.active_writes.entry(hash.clone()) {
+                dashmap::mapref::entry::Entry::Occupied(entry) => {
+                    let notify = entry.get().clone();
+                    drop(entry);
+                    notify.notified().await;
+                }
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    let notify = Arc::new(Notify::new());
+                    entry.insert(notify.clone());
+                    return Ok(ReservationPermit {
+                        registry: self.clone(),
+                        hash: hash.clone(),
+                        notify,
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Default for InFlightRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct ReservationPermit {
+    registry: InFlightRegistry,
+    hash: ContentHash,
+    notify: Arc<Notify>,
+}
+
+impl Drop for ReservationPermit {
+    fn drop(&mut self) {
+        if self.registry.active_writes.remove(&self.hash).is_some() {
+            self.notify.notify_waiters();
+        }
+    }
+}
+
+const FRAME_LENGTH_TIMEOUT: Duration = Duration::from_secs(10);
+const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Replication handler for incoming mirror connections
 pub struct ReplicationHandler<C: ContentStore> {
     content_store: Arc<RwLock<C>>,
     nvram_log: Arc<RwLock<NvramLog>>,
     key_manager: Arc<RwLock<KeyManager>>,
+    in_flight: InFlightRegistry,
 }
 
 impl<C: ContentStore> ReplicationHandler<C> {
@@ -103,6 +174,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
             content_store,
             nvram_log,
             key_manager,
+            in_flight: InFlightRegistry::new(),
         }
     }
 
@@ -110,75 +182,132 @@ impl<C: ContentStore> ReplicationHandler<C> {
     ///
     /// This is the main entry point for inbound replication. It reads frames from the
     /// TCP stream, validates integrity, decrypts, deduplicates, and persists segments.
-    pub async fn handle_connection(&self, mut stream: TcpStream) {
+    pub async fn handle_connection(&self, stream: TcpStream) {
         debug!("handling inbound replication connection");
 
-        // Read frame length (4 bytes)
-        let frame_len = match self.read_frame_length(&mut stream).await {
-            Ok(len) => len,
-            Err(e) => {
-                error!(error = %e, "failed to read frame length");
-                return;
+        let (mut reader, _) = stream.into_split();
+
+        loop {
+            let frame_len = match self.read_frame_length(&mut reader).await {
+                Ok(len) => len,
+                Err(e) => {
+                    if Self::is_disconnect_error(&e) {
+                        debug!("replication client closed connection");
+                    } else {
+                        error!(error = %e, "failed to read frame length");
+                    }
+                    break;
+                }
+            };
+
+            debug!(frame_len, "read frame length");
+
+            let frame_data = match self.read_frame_data(&mut reader, frame_len).await {
+                Ok(data) => data,
+                Err(e) => {
+                    error!(error = %e, "failed to read frame data");
+                    break;
+                }
+            };
+
+            let frame = match ReplicationFrame::from_bytes(&frame_data) {
+                Ok(f) => f,
+                Err(e) => {
+                    error!(error = %e, "failed to deserialize frame");
+                    break;
+                }
+            };
+
+            debug!(
+                segment_id = frame.segment_id.0,
+                data_len = frame.encrypted_data.len(),
+                "deserialized replication frame"
+            );
+
+            if let Err(e) = self.process_segment(frame).await {
+                error!(error = %e, "failed to process replicated segment");
+                break;
             }
-        };
-
-        debug!(frame_len, "read frame length");
-
-        // Read frame data
-        let frame_data = match self.read_frame_data(&mut stream, frame_len).await {
-            Ok(data) => data,
-            Err(e) => {
-                error!(error = %e, "failed to read frame data");
-                return;
-            }
-        };
-
-        // Deserialize frame
-        let frame = match ReplicationFrame::from_bytes(&frame_data) {
-            Ok(f) => f,
-            Err(e) => {
-                error!(error = %e, "failed to deserialize frame");
-                return;
-            }
-        };
-
-        debug!(
-            segment_id = frame.segment_id.0,
-            data_len = frame.encrypted_data.len(),
-            "deserialized replication frame"
-        );
-
-        // Process the replicated segment
-        if let Err(e) = self.process_segment(frame).await {
-            error!(error = %e, "failed to process replicated segment");
         }
     }
 
+    fn is_disconnect_error(error: &anyhow::Error) -> bool {
+        error.chain().any(|cause| {
+            if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+                matches!(
+                    io_err.kind(),
+                    ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
+                )
+            } else {
+                false
+            }
+        })
+    }
+
     /// Read frame length from stream
-    async fn read_frame_length(&self, stream: &mut TcpStream) -> Result<u32> {
+    async fn read_frame_length<R>(&self, stream: &mut R) -> Result<u32>
+    where
+        R: AsyncRead + Unpin,
+    {
         let mut len_bytes = [0u8; 4];
-        stream
-            .read_exact(&mut len_bytes)
+        let read_result = timeout(FRAME_LENGTH_TIMEOUT, stream.read_exact(&mut len_bytes))
             .await
-            .map_err(|e| anyhow!("failed to read frame length: {}", e))?;
+            .context("timeout while reading frame length")?;
+        read_result.context("failed to read frame length")?;
 
         Ok(u32::from_le_bytes(len_bytes))
     }
 
     /// Read frame data from stream
-    async fn read_frame_data(&self, stream: &mut TcpStream, len: u32) -> Result<Vec<u8>> {
+    async fn read_frame_data<R>(&self, stream: &mut R, len: u32) -> Result<Vec<u8>>
+    where
+        R: AsyncRead + Unpin,
+    {
         // Sanity check: reject frames larger than 16MB (4MB segment + overhead)
         if len > 16 * 1024 * 1024 {
             return Err(anyhow!("frame length {} exceeds maximum (16MB)", len));
         }
 
         let mut buf = vec![0u8; len as usize];
-        stream
-            .read_exact(&mut buf)
+        let read_result = timeout(FRAME_BODY_TIMEOUT, stream.read_exact(&mut buf))
             .await
-            .map_err(|e| anyhow!("failed to read frame data: {}", e))?;
+            .context("timeout while reading frame body")?;
+        read_result.context("failed to read frame data")?;
 
         Ok(buf)
+    }
+
+    async fn handle_dedup_hit(
+        &self,
+        segment_id: SegmentId,
+        content_hash: &ContentHash,
+    ) -> Result<()> {
+        let store = self.content_store.read().await;
+        let existing_id = store
+            .lookup_content(content_hash)
+            .ok_or_else(|| anyhow!("dedup reservation completed but content missing"))?;
+        drop(store);
+
+        info!(
+            segment_id = segment_id.0,
+            existing_id = existing_id.0,
+            content_hash = %content_hash.as_str(),
+            "segment already exists (dedup hit)"
+        );
+
+        let nvram_log = self.nvram_log.write().await;
+        nvram_log.increment_refcount(existing_id).map_err(|e| {
+            anyhow!(
+                "failed to increment refcount for deduplicated segment: {}",
+                e
+            )
+        })?;
+        debug!(
+            existing_id = existing_id.0,
+            "incremented refcount for deduplicated segment"
+        );
+
+        Ok(())
     }
 
     /// Process a replicated segment
@@ -190,7 +319,7 @@ impl<C: ContentStore> ReplicationHandler<C> {
     /// 4. Check for deduplication
     /// 5. Persist if new
     /// 6. Update metadata
-    async fn process_segment(&self, frame: ReplicationFrame) -> Result<()> {
+    pub(crate) async fn process_segment(&self, frame: ReplicationFrame) -> Result<()> {
         let segment_id = frame.segment_id;
         let capsule_id = frame.capsule_id;
         let metadata = frame.metadata;
@@ -277,28 +406,18 @@ impl<C: ContentStore> ReplicationHandler<C> {
             "computed content hash"
         );
 
-        // Step 4: Check for deduplication
-        let content_store = self.content_store.read().await;
-        if let Some(existing_id) = content_store.lookup_content(&content_hash) {
-            info!(
-                segment_id = segment_id.0,
-                existing_id = existing_id.0,
-                content_hash = %content_hash.as_str(),
-                "segment already exists (dedup hit)"
-            );
-
-            // Update reference count
-            drop(content_store); // Release read lock
-            let nvram_log = self.nvram_log.write().await;
-            nvram_log.increment_refcount(existing_id)?;
-            debug!(
-                existing_id = existing_id.0,
-                "incremented refcount for deduplicated segment"
-            );
-
-            return Ok(());
-        }
-        drop(content_store); // Release read lock before persistence
+        // Step 4: Reservation-based deduplication
+        let _permit = match self
+            .in_flight
+            .reserve(&content_hash, &self.content_store)
+            .await
+        {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.handle_dedup_hit(segment_id, &content_hash).await?;
+                return Ok(());
+            }
+        };
 
         // Step 5: Persist to NvramLog (segment is new)
         debug!(

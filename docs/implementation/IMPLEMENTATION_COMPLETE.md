@@ -4,6 +4,8 @@
 
 The inbound replication data discard issue has been successfully fixed. The SPACE project now has a production-ready, secure, and efficient inbound replication system that properly validates, decrypts, deduplicates, and persists incoming segment data.
 
+**2025-12 Hardening:** Persistent TCP connection pooling now streams multiple replication frames per session (eliminating per-frame handshakes) and inbound handlers use an in-flight reservation registry to enforce at-most-once NvramLog writes for identical payloads, with read timeouts to prevent slowloris stalls.
+
 ## What Was Implemented
 
 ### 1. Core Replication Handler ✅

@@ -19,11 +19,13 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 #[cfg(target_os = "linux")]
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+use crate::transport::ConnectionManager;
 
 #[cfg(feature = "phase4")]
 use raft_rs::{RaftCluster, RaftClusterConfig, ShardKey};
@@ -35,6 +37,7 @@ pub mod replication;
 pub mod swarm_ops;
 #[cfg(test)]
 mod tests;
+mod transport;
 
 // Re-export key compiler types for external use
 pub use compiler::{
@@ -108,31 +111,55 @@ where
 
 #[async_trait::async_trait]
 trait DataTransport: Send + Sync {
-    async fn send_frame(&self, target: SocketAddr, frame: Vec<u8>) -> Result<()>;
+    async fn send_frame(
+        &self,
+        target: NodeId,
+        target_addr: SocketAddr,
+        frame: Vec<u8>,
+    ) -> Result<()>;
 }
 
-/// Standard TCP transport used for cross-platform builds.
+/// Standard TCP transport used for cross-platform builds with persistent streams.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-struct TcpTransport;
+struct TcpTransport {
+    connections: ConnectionManager,
+}
+
+impl TcpTransport {
+    fn new() -> Self {
+        Self {
+            connections: ConnectionManager::new(),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl DataTransport for TcpTransport {
-    async fn send_frame(&self, target: SocketAddr, frame: Vec<u8>) -> Result<()> {
-        let mut stream = TcpStream::connect(target)
-            .await
-            .map_err(|e| anyhow!("failed to connect to target {}: {}", target, e))?;
+    async fn send_frame(
+        &self,
+        target: NodeId,
+        target_addr: SocketAddr,
+        frame: Vec<u8>,
+    ) -> Result<()> {
+        let mut attempts = 0;
 
-        stream
-            .write_all(&frame)
-            .await
-            .map_err(|e| anyhow!("failed to write frame: {}", e))?;
+        loop {
+            let writer_guard = self.connections.get_writer(target, target_addr).await?;
+            let mut writer = writer_guard.lock().await;
 
-        stream
-            .shutdown()
-            .await
-            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+            match writer.write_all(&frame).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    attempts += 1;
+                    if attempts > 1 {
+                        return Err(anyhow!("failed to send frame after retry: {}", e));
+                    }
 
-        Ok(())
+                    drop(writer);
+                    self.connections.invalidate(target).await;
+                }
+            }
+        }
     }
 }
 
@@ -201,7 +228,12 @@ impl IoUringTransport {
 #[cfg(target_os = "linux")]
 #[async_trait::async_trait]
 impl DataTransport for IoUringTransport {
-    async fn send_frame(&self, target: SocketAddr, frame: Vec<u8>) -> Result<()> {
+    async fn send_frame(
+        &self,
+        _target: NodeId,
+        target_addr: SocketAddr,
+        frame: Vec<u8>,
+    ) -> Result<()> {
         let depth = self.queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
         let warn_threshold = (self.max_queue as f32 * 0.8) as usize;
 
@@ -226,7 +258,7 @@ impl DataTransport for IoUringTransport {
         }
 
         self.tx
-            .send((target, frame, self.queue_depth.clone()))
+            .send((target_addr, frame, self.queue_depth.clone()))
             .await
             .map_err(|_| {
                 self.queue_depth.fetch_sub(1, Ordering::AcqRel);
@@ -326,7 +358,7 @@ impl<C: ContentStore + 'static> MeshNode<C> {
         #[cfg(not(target_os = "linux"))]
         let transport: Arc<dyn DataTransport> = {
             info!("initializing TCP transport (standard copy path)");
-            Arc::new(TcpTransport)
+            Arc::new(TcpTransport::new())
         };
 
         Ok(Self {
@@ -434,7 +466,9 @@ impl<C: ContentStore + 'static> MeshNode<C> {
         let frame_bytes = frame.to_bytes()?;
         let frame_len = frame_bytes.len();
 
-        self.transport.send_frame(target_addr, frame_bytes).await?;
+        self.transport
+            .send_frame(target, target_addr, frame_bytes)
+            .await?;
 
         info!(
             target_id = %target,

@@ -25,6 +25,7 @@ blake3 = { workspace = true }
 bincode = "1"
 hex = "0.4"
 socket2 = { version = "0.5", features = ["all"] }
+dashmap = "5"
 
 # Note: Gossip discovery (memberlist) will be added in Step 3
 # For Step 2 POC, we use manual peer registration

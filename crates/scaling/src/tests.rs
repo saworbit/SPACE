@@ -1,12 +1,12 @@
 //! Comprehensive tests for PODMS scaling module
 
-use crate::ContentStore;
+use crate::{ContentStore, ReplicationFrame, ReplicationHandler};
 use common::{ContentHash, SegmentId};
 use encryption::keymanager::KeyManager;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Barrier, Mutex, RwLock};
 
 // Mock ContentStore for testing
 #[derive(Clone, Default)]
@@ -274,5 +274,131 @@ mod agent_tests {
         sleep(Duration::from_millis(50)).await;
         drop(tx);
         agent_handle.await.unwrap().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::{DataTransport, TcpTransport};
+    use common::podms::NodeId;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn tcp_transport_reconnects_after_disconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv_clone = received.clone();
+        let (first_done_tx, first_done_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let payloads = [vec![1u8, 2, 3], vec![4u8, 5, 6, 7]];
+            let mut first_done_tx = Some(first_done_tx);
+
+            for (idx, payload) in payloads.into_iter().enumerate() {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; payload.len()];
+                socket.read_exact(&mut buf).await.unwrap();
+                recv_clone.lock().await.push(buf);
+
+                if idx == 0 {
+                    if let Some(tx) = first_done_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+
+                let _ = socket.shutdown().await;
+                // Drop socket to force the client to reconnect on the next send.
+            }
+        });
+
+        let transport = TcpTransport::new();
+        let node = NodeId::new();
+
+        transport
+            .send_frame(node, addr, vec![1u8, 2, 3])
+            .await
+            .unwrap();
+
+        // Wait for the server to close the first connection.
+        first_done_rx.await.unwrap();
+
+        // Simulate a broken write side before attempting the next send.
+        transport.connections.shutdown_writer(node).await;
+
+        transport
+            .send_frame(node, addr, vec![4u8, 5, 6, 7])
+            .await
+            .unwrap();
+
+        // Allow the server to read the second frame.
+        sleep(Duration::from_millis(50)).await;
+
+        let received = received.lock().await;
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0], vec![1u8, 2, 3]);
+        assert_eq!(received[1], vec![4u8, 5, 6, 7]);
+    }
+}
+
+#[cfg(test)]
+mod replication_tests {
+    use super::*;
+    use encryption::policy::EncryptionMetadata;
+
+    #[tokio::test]
+    async fn inflight_registry_deduplicates_concurrent_segments() {
+        let content_store = Arc::new(RwLock::new(MockContentStore::default()));
+        let log_path = format!("test_nvram_dedup_{}.log", uuid::Uuid::new_v4());
+        let nvram_log = Arc::new(RwLock::new(NvramLog::open(&log_path).unwrap()));
+        let master_key = [0u8; 32];
+        let key_manager = Arc::new(RwLock::new(KeyManager::new(master_key)));
+        let handler = Arc::new(ReplicationHandler::new(
+            content_store.clone(),
+            nvram_log.clone(),
+            key_manager,
+        ));
+
+        let payload = b"concurrent payload".to_vec();
+        let mut metadata = EncryptionMetadata::new_unencrypted();
+        metadata.ciphertext_len = Some(payload.len() as u32);
+        let frame = ReplicationFrame::new(SegmentId(7), metadata, payload.clone());
+
+        let concurrency = 10;
+        let barrier = Arc::new(Barrier::new(concurrency));
+        let mut tasks = Vec::new();
+
+        for _ in 0..concurrency {
+            let handler = handler.clone();
+            let frame = frame.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                handler.process_segment(frame).await
+            }));
+        }
+
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+
+        let content_hash = ContentHash::from_bytes(blake3::hash(&payload).as_bytes());
+        let existing = content_store
+            .read()
+            .await
+            .lookup_content(&content_hash)
+            .expect("content should be registered");
+
+        let segments = nvram_log.read().await.list_segments().unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].id, existing);
+        assert_eq!(segments[0].ref_count, concurrency as u32);
+
+        let _ = std::fs::remove_file(&log_path);
+        let _ = std::fs::remove_file(format!("{}.segments", log_path));
     }
 }
