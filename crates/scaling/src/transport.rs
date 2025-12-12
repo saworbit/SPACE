@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "linux", allow(dead_code))]
+
 use anyhow::{Context, Result};
 use common::podms::NodeId;
 use std::collections::HashMap;
