@@ -126,6 +126,7 @@ struct TcpTransport {
 }
 
 impl TcpTransport {
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     fn new() -> Self {
         Self {
             connections: ConnectionManager::new(),
