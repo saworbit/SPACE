@@ -105,6 +105,10 @@ allow = [
 ]
 confidence-threshold = 0.85
 
+[licenses.exceptions]
+name = "libfuzzer-sys"
+allow = ["NCSA"]
+
 [licenses.private]
 ignore = true
 
@@ -185,4 +189,3 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
-

@@ -4,3 +4,4 @@ http://localhost:*
 # Known occasionally flaky external links
 https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/README.md
 https://www.contributor-covenant.org/translations
+https://www.conventionalcommits.org/
