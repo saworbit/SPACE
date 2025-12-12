@@ -734,6 +734,7 @@ cargo test --workspace -- --nocapture
 # Run specific test suites
 cargo test -p encryption -- --nocapture
 cargo test -p protocol-s3 -- --nocapture
+cargo test -p scaling --test replication_integration -- --nocapture  # Inbound replication persistence/dedup/MAC coverage
 cargo test --features advanced-security -- --nocapture
 ./scripts/test_batch_queue_limits.sh  # BatchQueue byte/count/stat limits
 

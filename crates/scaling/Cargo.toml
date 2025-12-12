@@ -44,3 +44,5 @@ libc = "0.2"
 tracing-test = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+rand = { workspace = true }
+tempfile = "3"

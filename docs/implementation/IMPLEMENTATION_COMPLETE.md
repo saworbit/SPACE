@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The inbound replication data discard issue has been successfully fixed. The SPACE project now has a production-ready, secure, and efficient inbound replication system that properly validates, decrypts, deduplicates, and persists incoming segment data.
+The inbound replication data discard issue has been successfully fixed. The SPACE project now has a production-ready, secure, and efficient inbound replication system that properly validates, decrypts, deduplicates, and persists incoming segment data. A dedicated ReplicationTestHarness now verifies receiver-side persistence, dedup refcounts, MAC rejection, and junk-frame handling end to end.
 
 **2025-12 Hardening:** Persistent TCP connection pooling now streams multiple replication frames per session (eliminating per-frame handshakes) and inbound handlers use an in-flight reservation registry to enforce at-most-once NvramLog writes for identical payloads, with read timeouts to prevent slowloris stalls.
 
@@ -97,6 +97,14 @@ nvram-sim = { path = "../nvram-sim" }
 - Architecture diagrams
 - Testing strategy
 
+### 6. Replication Test Harness & Integration Tests バ.
+
+**File:** `crates/scaling/tests/replication_integration.rs` (NEW)
+
+- `ReplicationTestHarness` spins up a receiver mesh node with exposed `NvramLog`, `KeyManager`, and `ContentStore` handles for post-receive assertions.
+- End-to-end tests cover persistence, deduplication refcounting, MAC tamper rejection, and garbage-frame robustness over real TCP sockets.
+- Temporary NVRAM logs isolate each test run while exercising the full inbound path.
+
 ## Compilation Status
 
 ✅ **SUCCESS**: `cargo check --package scaling` completes with zero errors
@@ -113,6 +121,7 @@ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.84s
 2. `../replication.md` - Comprehensive documentation
 3. `status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md` - Progress tracking
 4. `implementation/IMPLEMENTATION_COMPLETE.md` - This file
+5. `crates/scaling/tests/replication_integration.rs` - Replication harness + integration tests
 
 ### Modified (UPDATED)
 1. `crates/scaling/Cargo.toml` - Added dependencies
@@ -120,10 +129,8 @@ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.84s
 3. `crates/scaling/src/agent.rs` - Generic ScalingAgent
 
 ### Pending (TODO)
-1. `README.md` - Add replication section (optional)
-2. `CHANGELOG.md` - Add entry (optional)
-3. Integration tests - Mock TCP tests (optional)
-4. `CapsuleRegistry` - Implement `ContentStore` trait
+1. `CapsuleRegistry` - Implement `ContentStore` trait
+2. Additional soak/perf tests for replication hot path
 
 ## How to Use
 
@@ -211,34 +218,14 @@ fn test_replication_frame_roundtrip() { /* ... */ }
 
 **Status:** ✅ 2 tests pass
 
-### Integration Tests (Recommended)
+### Integration Tests (Implemented)
 
-Create `crates/scaling/tests/replication_integration.rs`:
+`crates/scaling/tests/replication_integration.rs` boots a full receiver node with `ReplicationTestHarness` and drives real TCP traffic from a transient sender node:
 
-```rust
-#[tokio::test]
-async fn test_inbound_replication_with_mock_tcp() {
-    // 1. Setup mock ContentStore
-    // 2. Create ReplicationHandler
-    // 3. Send mock frame via TCP
-    // 4. Verify segment persisted
-    // 5. Verify content registered
-}
-
-#[tokio::test]
-async fn test_deduplication_flow() {
-    // 1. Send same segment twice
-    // 2. Verify second is dedup hit
-    // 3. Verify refcount incremented
-}
-
-#[tokio::test]
-async fn test_mac_validation_failure() {
-    // 1. Send frame with invalid MAC
-    // 2. Verify rejection
-    // 3. Verify no persistence
-}
-```
+- `test_e2e_replication_persistence`: payload mirrored over TCP is persisted and readable from `NvramLog`.
+- `test_deduplication_refcounting`: repeated payloads hit dedup, keep a single log entry, and increment refcounts.
+- `test_reject_tampered_mac`: tampered ciphertext fails MAC validation and is not persisted.
+- `test_ignore_garbage_frames`: random bytes are dropped without panics or side effects.
 
 ### Multi-Node E2E (Docker Compose)
 

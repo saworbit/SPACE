@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inbound replication test harness** - New `replication_integration` suite spins up real mesh nodes to validate receiver-side persistence, dedup refcounts, MAC tamper rejection, and garbage-frame handling over TCP.
 - **Inbound replication hardening** - Mesh replication now pools persistent TCP connections for streaming frames and uses an in-flight reservation registry to guarantee at-most-once NvramLog writes for identical payloads; timeouts guard slowloris cases.
 - **Encryption-transparent protocol views** - `RegistryTransformOps` now decrypts/encrypts on-the-fly for Phase 4 view projection, with `scaling::enforce_view_policy` centralizing federation/sharding before NVMe/FUSE/CSI expose plaintext handles; includes a new NVMe integration test that round-trips encrypted storage through the view pipeline.
 - **Performance fix spec + benchmark** - Documented the async runtime bridging issue and added a Criterion benchmark (`crates/capsule-registry/benches/runtime_overhead.rs`) to measure per-call runtime creation vs a shared global runtime (`docs/specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md`).
