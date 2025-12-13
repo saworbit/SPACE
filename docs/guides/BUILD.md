@@ -154,6 +154,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo audit
 ```
 
+### Linux RDMA Zero-Copy (Phase C)
+
+```bash
+# Enable RDMA transport on Linux hosts (requires libibverbs)
+cargo build -p scaling --features "rdma"
+
+# Optional: bring up SoftRoCE for CI/dev without hardware
+sudo scripts/setup_softroce.sh eth0
+```
+
 ## Build Optimization
 
 ### Release Build Flags (already in workspace Cargo.toml)

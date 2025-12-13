@@ -206,6 +206,12 @@ cargo test --features podms
 
 # Run metro-sync specific tests
 cargo test --features podms podms_metro_sync
+
+# (Linux optional) Enable Phase C RDMA zero-copy transport
+cargo build -p scaling --features "podms,rdma"
+
+# (Linux optional) Spin up SoftRoCE for CI/local validation
+sudo scripts/setup_softroce.sh eth0
 ```
 Production wiring: set `SPACE_METADATA_PATH`, `SPACE_NVRAM_PATH`, and `SPACE_MASTER_KEY`, then build agents via `capsule_registry::runtime::RuntimeHandles::from_env()` so `ScalingAgent::with_runtime` uses real registry/log/key-manager handles.
 
@@ -219,7 +225,7 @@ Production wiring: set `SPACE_METADATA_PATH`, `SPACE_NVRAM_PATH`, and `SPACE_MAS
 - **🔒 Sovereignty Enforcement**: Policies block actions that violate zone constraints
 - **🎭 On-the-Fly Transformation**: Re-encrypt/recompress during migrations
 - **📡 Telemetry Events**: Real-time capsule lifecycle events for autonomous agents
-- **🔗 Mesh Networking**: Gossip-based peer discovery with RDMA-ready transport
+- **🔗 Mesh Networking**: Gossip-based peer discovery with RDMA-ready zero-copy transport (Phase C)
 - **🛡️ Zero-Disruption**: Single-node mode has zero overhead (feature-gated)
 
 ### 🗺️ Scaling Policies

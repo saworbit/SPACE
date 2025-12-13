@@ -26,6 +26,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::transport::ConnectionManager;
+#[cfg(all(target_os = "linux", feature = "rdma"))]
+use crate::transport::RdmaTransport;
 
 #[cfg(feature = "phase4")]
 use raft_rs::{RaftCluster, RaftClusterConfig, ShardKey};
@@ -52,6 +54,9 @@ pub use batch_queue::{BatchItem, BatchQueue, BatchQueueSender, QueueStats};
 
 // Re-export SwarmOps for PODMS migrations
 pub use swarm_ops::SwarmOps;
+
+// Re-export zero-copy transport primitives for Phase C integration
+pub use transport::{RegisteredBuffer, ZeroCopyTransport};
 
 /// Enforce view-scope scaling actions (federation/sharding) before projection.
 #[cfg(feature = "phase4")]
@@ -437,6 +442,8 @@ pub struct MeshNode<C: ContentStore> {
     replication_handler: Arc<ReplicationHandler<C>>,
     /// Transport abstraction (io_uring on Linux, TCP elsewhere)
     transport: Arc<dyn DataTransport>,
+    /// Optional zero-copy transport handle (RDMA Phase C)
+    zero_copy_transport: Option<Arc<dyn ZeroCopyTransport>>,
 }
 
 impl<C: ContentStore + 'static> MeshNode<C> {
@@ -465,26 +472,52 @@ impl<C: ContentStore + 'static> MeshNode<C> {
             key_manager,
         ));
 
-        #[cfg(target_os = "linux")]
-        let transport: Arc<dyn DataTransport> = {
+        let peers = Arc::new(RwLock::new(HashMap::new()));
+
+        #[cfg(all(target_os = "linux", feature = "rdma"))]
+        let (transport, zero_copy_transport): (
+            Arc<dyn DataTransport>,
+            Option<Arc<dyn ZeroCopyTransport>>,
+        ) = match RdmaTransport::new(peers.clone()) {
+            Ok(rdma) => {
+                info!("initializing RDMA transport with registered memory pool");
+                let rdma_arc: Arc<RdmaTransport> = Arc::new(rdma);
+                (rdma_arc.clone(), Some(rdma_arc))
+            }
+            Err(err) => {
+                warn!(error = %err, "RDMA unavailable; falling back to io_uring transport");
+                let io = Arc::new(IoUringTransport::new());
+                (io, None)
+            }
+        };
+
+        #[cfg(all(target_os = "linux", not(feature = "rdma")))]
+        let (transport, zero_copy_transport): (
+            Arc<dyn DataTransport>,
+            Option<Arc<dyn ZeroCopyTransport>>,
+        ) = {
             info!("initializing io_uring actor transport with persistent connections");
-            Arc::new(IoUringTransport::new())
+            (Arc::new(IoUringTransport::new()), None)
         };
 
         #[cfg(not(target_os = "linux"))]
-        let transport: Arc<dyn DataTransport> = {
+        let (transport, zero_copy_transport): (
+            Arc<dyn DataTransport>,
+            Option<Arc<dyn ZeroCopyTransport>>,
+        ) = {
             info!("initializing TCP transport (standard copy path)");
-            Arc::new(TcpTransport::new())
+            (Arc::new(TcpTransport::new()), None)
         };
 
         Ok(Self {
             id,
             zone,
             capabilities,
-            peers: Arc::new(RwLock::new(HashMap::new())),
+            peers,
             listen_addr,
             replication_handler,
             transport,
+            zero_copy_transport,
         })
     }
 
@@ -617,6 +650,11 @@ impl<C: ContentStore + 'static> MeshNode<C> {
     /// Get this node's capabilities.
     pub fn capabilities(&self) -> &NodeCapabilities {
         &self.capabilities
+    }
+
+    /// Access the zero-copy transport handle if RDMA is available.
+    pub fn zero_copy_transport(&self) -> Option<Arc<dyn ZeroCopyTransport>> {
+        self.zero_copy_transport.as_ref().map(Arc::clone)
     }
 
     #[cfg(feature = "phase4")]
