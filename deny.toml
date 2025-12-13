@@ -83,6 +83,13 @@ ignore = [
     # RUSTSEC-2025-0134: rustls-pemfile (via reqwest)
     # Trusted control plane: only admin-provisioned PEMs are parsed locally.
     { id = "RUSTSEC-2025-0134", reason = "Mitigated: Trusted control plane / local PEM inputs only" },
+
+    # --- Phase C RDMA toolchain (bindgen) warnings ---
+    # ansi_term (RUSTSEC-2021-0139) and atty (RUSTSEC-2021-0145, RUSTSEC-2024-0375)
+    # are pulled in by bindgen 0.59 (rdma-sys build-time) and do not ship in runtime artifacts.
+    { id = "RUSTSEC-2021-0139", reason = "bindgen build-time dep via rdma-sys; no runtime exposure" },
+    { id = "RUSTSEC-2021-0145", reason = "bindgen build-time dep via rdma-sys; no runtime exposure" },
+    { id = "RUSTSEC-2024-0375", reason = "bindgen build-time dep via rdma-sys; no runtime exposure" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
