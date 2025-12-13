@@ -54,6 +54,8 @@ fn audit(no_tests: bool) -> Result<()> {
     println!("Running cargo fmt --check");
     run("cargo", ["fmt", "--all", "--", "--check"])?;
 
+    check_libtorch()?;
+
     println!("Running cargo check --all-targets (excluding capsule-registry with outdated tests)");
     run(
         "cargo",
@@ -99,6 +101,22 @@ fn audit(no_tests: bool) -> Result<()> {
         "cargo",
         ["bloat", "-p", "spacectl", "--crates", "--release"],
     )?;
+
+    Ok(())
+}
+
+fn check_libtorch() -> Result<()> {
+    let libtorch_present = std::env::var("LIBTORCH").is_ok();
+    let libtorch_pytorch = std::env::var("LIBTORCH_USE_PYTORCH").is_ok();
+
+    if libtorch_present || libtorch_pytorch {
+        return Ok(());
+    }
+
+    println!("cargo:warning=LIBTORCH not detected. layout-engine lints/builds may be skipped or incomplete.");
+    if std::env::var("CI").is_ok() {
+        bail!("CI must have LIBTORCH configured (set LIBTORCH or LIBTORCH_USE_PYTORCH=1)");
+    }
 
     Ok(())
 }

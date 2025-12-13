@@ -13,6 +13,14 @@ FROM rust:1.78 as builder
 
 WORKDIR /usr/src/space
 
+# LibTorch (CPU) for layout-engine lint/build in CI
+RUN apt-get update && apt-get install -y unzip curl && rm -rf /var/lib/apt/lists/*
+RUN curl -L https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.4.0%2Bcpu.zip -o /tmp/libtorch.zip \
+    && unzip /tmp/libtorch.zip -d /usr/local \
+    && rm /tmp/libtorch.zip
+ENV LIBTORCH=/usr/local/libtorch
+ENV LD_LIBRARY_PATH=$LIBTORCH/lib:$LD_LIBRARY_PATH
+
 # Copy workspace manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/

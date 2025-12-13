@@ -17,6 +17,10 @@ use tokio::sync::{Mutex, RwLock};
 use std::path::Path;
 #[cfg(all(target_os = "linux", feature = "rdma"))]
 use tracing::warn;
+#[cfg(all(target_os = "linux", feature = "rdma"))]
+mod rdma;
+#[cfg(all(target_os = "linux", feature = "rdma"))]
+pub use rdma::RdmaHandshake;
 
 #[cfg(all(target_os = "linux", feature = "rdma"))]
 type MrHandle = *mut rdma_sys::ibv_mr;
