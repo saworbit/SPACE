@@ -56,8 +56,7 @@ Full-stack web application:
 
 ### File Operations
 - Interactive file upload via web dashboard
-- Chunked file uploads with gossip notifications
-- Base64-encoded content transfer
+- Streaming multipart uploads (no base64 bloat) with gossip notifications
 - Blake3 hash verification
 - File listing with metadata (size, hash, upload time)
 - File download with binary content delivery
@@ -70,15 +69,23 @@ Full-stack web application:
 - Migration intent broadcasting
 
 ### Security
-- Message authentication (HMAC-SHA256)
-- Role-based access control (RBAC)
-- Security alert broadcasting
-- Zero-trust architecture ready
-
-### WebSocket Real-Time Updates
-- Subscribe to gossip topics
-- Live peer updates
-- Event streaming
+ - Message authentication (HMAC-SHA256)
+ - Role-based access control (RBAC)
+ - Security alert broadcasting
+ - Zero-trust architecture ready
+ 
+### Control Plane API (RFC-001)
+ - Versioned REST surface under `/api/v1` with domains: `system`, `mesh`, `data`, `gossip`.
+ - Standard response envelope (`success`, `data`, `error`, `meta`) and pagination helpers.
+ - JWT middleware injects claims + `RequestContext`; `system/health` stays public for probes.
+ - Streaming multipart uploads for `POST /api/v1/data/objects`; downloads via `GET|HEAD`.
+ - OpenAPI generated at `/api-docs/openapi.json` with Swagger UI at `/swagger-ui`.
+ - See `docs/SPACE_CONTROL_PLANE_API.md` for endpoint taxonomy and usage notes.
+ 
+ ### WebSocket Real-Time Updates
+ - Subscribe to gossip topics
+ - Live peer updates
+ - Event streaming
 - Heartbeat notifications
 
 ## Getting Started

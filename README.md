@@ -49,6 +49,7 @@
 - [🏗️ Architecture](#️-architecture)
 - [📁 Project Structure](#-project-structure)
 - [🧪 Testing](#-testing)
+- [🚀 Control Plane API](#-control-plane-api)
 - [💡 Why This Matters](#-why-this-matters)
 - [🔐 Security & Encryption](#-security--encryption)
 - [🗺️ Roadmap](#️-roadmap)
@@ -987,6 +988,24 @@ cargo test --features advanced-security -- --nocapture
 | Deterministic encryption | ✅ |
 
 </div>
+
+---
+
+## ?? Control Plane API
+
+- Versioned REST surface lives under `/api/v1` across `system`, `mesh`, `data`, and `gossip` domains.
+- Standard response envelope (`success`, `data`, `error`, `meta`) with pagination metadata; Swagger UI at `/swagger-ui`, spec at `/api-docs/openapi.json`.
+- JWT guard with RBAC (`admin`, `editor`, `viewer`); `system/health` stays public for probes; set `JWT_SECRET` or `GOSSIP_SIGNING_KEY`.
+- Streaming multipart uploads replace base64 for `POST /api/v1/data/objects`; downloads support `GET|HEAD`.
+- See `docs/SPACE_CONTROL_PLANE_API.md` and `docs/WEB_INTERFACE.md` for usage examples.
+
+### ?? Full-feature linting (LibTorch)
+
+- The `layout-engine` `ml` feature needs LibTorch 2.2.0. To run `cargo clippy --all-features` locally:
+  1. Download `libtorch-win-shared-with-deps-2.2.0+cpu.zip` from https://download.pytorch.org/libtorch/cpu/.
+  2. Extract and set `LIBTORCH=C\path\to\libtorch`.
+  3. Run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- `cargo xtask audit` will warn if LibTorch is missing; set `XTASK_STRICT_LIBTORCH=1` in CI to enforce.
 
 ---
 
