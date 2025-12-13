@@ -316,6 +316,12 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 
 SPACE includes an early-stage web interface for visualizing mesh topology and basic file operations. This is a development tool, not a production admin interface.
 
+#### Control Plane API (RFC-001)
+- Versioned, typed routes under `/api/v1` with Swagger UI at `/swagger-ui` and OpenAPI JSON at `/api-docs/openapi.json`.
+- JWT guard with RBAC roles (`admin`, `editor`, `viewer`); `system/health` remains public for probes.
+- Standard envelope (`success/data/error/meta`) plus pagination helpers (`page`, `limit`, `sort`, `after_id`) on list endpoints.
+- Streaming multipart uploads (`POST /api/v1/data/objects`) replace legacy base64 JSON bodies.
+
 ### ✨ Features (Experimental)
 
 - 📊 **Peer discovery visualization** - basic gossip protocol display

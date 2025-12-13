@@ -81,7 +81,7 @@ hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for ke
 sha2 = { version = "=0.10.8" } # 2025-11-04 sw: Hash core for HKDF extractor
 
 # Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
-axum = { version = "^0.7.9", features = ["ws", "macros"] } # 2025-11-16 sw: Web server framework
+axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
 tower-http = { version = "^0.5.2", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
 libp2p = { version = "=0.53.2", features = ["gossipsub", "kad", "tcp", "dns", "noise", "yamux", "websocket"] } # 2025-11-16 sw: P2P networking
 libp2p-gossipsub = { version = "=0.46.1" } # 2025-11-16 sw: Gossip protocol

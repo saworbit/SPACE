@@ -33,6 +33,11 @@ async-trait = "0.1"
 thiserror.workspace = true
 anyhow.workspace = true
 
+# API documentation & validation
+utoipa = { version = "4.2", features = ["axum_extras", "uuid"] }
+utoipa-swagger-ui = { version = "7.1", features = ["axum"] }
+validator = { version = "0.18", features = ["derive"] }
+
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true

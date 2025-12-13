@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info};
+use uuid::Uuid;
 
 /// Stored file metadata and content
 #[derive(Debug, Clone)]
@@ -59,6 +60,12 @@ pub struct AppState {
 
     /// Stored files (path -> file data)
     pub files: Arc<RwLock<HashMap<String, StoredFile>>>,
+
+    /// Unique node identifier exposed via the API
+    pub node_id: String,
+
+    /// Process start time for uptime reporting
+    pub start_time: std::time::Instant,
 }
 
 impl AppState {
@@ -73,6 +80,8 @@ impl AppState {
         let metrics = Arc::new(Registry::new());
         let ws_connections = Arc::new(RwLock::new(HashMap::new()));
         let files = Arc::new(RwLock::new(HashMap::new()));
+        let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
+        let start_time = std::time::Instant::now();
 
         // Spawn mesh command handler
         let peers_clone = peers.clone();
@@ -89,6 +98,8 @@ impl AppState {
             metrics,
             ws_connections,
             files,
+            node_id,
+            start_time,
         }
     }
 

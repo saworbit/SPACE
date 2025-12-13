@@ -43,8 +43,9 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root_handler))
         .route("/health", get(health_check))
-        .nest("/api", api::routes())
+        .nest("/api", api::router())
         .nest("/ws", ws::routes())
+        .merge(api::docs::swagger_routes())
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         // Increase body size limit to 100MB for file uploads
