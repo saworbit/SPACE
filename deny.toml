@@ -116,6 +116,12 @@ confidence-threshold = 0.85
 name = "libfuzzer-sys"
 allow = ["NCSA"]
 
+# rdma-sys is a build-time dependency (bindgen) without a declared SPDX expression.
+# We scope an explicit exception to avoid blocking on the missing metadata.
+[[licenses.exceptions]]
+name = "rdma-sys"
+allow = ["Apache-2.0", "MIT", "BSD-3-Clause"]
+
 [licenses.private]
 ignore = true
 
@@ -189,6 +195,11 @@ skip = [
     # Tower/Axum compatibility
     { crate = "tower@0.4.13", reason = "protocol-s3 compatibility" },
     { crate = "tower@0.5.2", reason = "axum 0.7 stack" },
+
+    # Build-time duplicate stacks pulled by bindgen (rdma-sys)
+    { crate = "clap@2.34.0", reason = "bindgen build-time dependency (rdma-sys); coexists with clap 4 runtime" },
+    { crate = "hermit-abi@0.1.19", reason = "bindgen/atty build-time dependency (rdma-sys); coexists with hermit-abi 0.5" },
+    { crate = "strsim@0.8.0", reason = "bindgen/clap2 build-time dependency (rdma-sys); coexists with strsim 0.11" },
 ]
 
 [sources]
