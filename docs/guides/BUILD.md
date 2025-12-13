@@ -164,7 +164,8 @@ cargo build -p scaling --features "rdma"
 sudo scripts/setup_softroce.sh eth0
 
 # If running clippy/check in containers, ensure LibTorch is available for layout-engine
-# (Dockerfile installs CPU libtorch by default)
+# (Dockerfile installs CPU libtorch by default). To bypass the check in ad-hoc runs:
+# XTASK_ALLOW_MISSING_LIBTORCH=1 cargo xtask audit
 ```
 
 ## Build Optimization
