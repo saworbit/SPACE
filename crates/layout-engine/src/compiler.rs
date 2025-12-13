@@ -16,7 +16,7 @@ pub fn compile(policy: &Policy) -> Box<dyn LayoutOffload + Send + Sync> {
         } => {
             #[cfg(feature = "zns")]
             {
-                return Box::new(zns::ZnsGraphLayout::new(*zone_size_mib, *graph_radius));
+                Box::new(zns::ZnsGraphLayout::new(*zone_size_mib, *graph_radius))
             }
             #[cfg(not(feature = "zns"))]
             {
@@ -27,9 +27,9 @@ pub fn compile(policy: &Policy) -> Box<dyn LayoutOffload + Send + Sync> {
         LayoutStrategy::Learned { model_path } => {
             #[cfg(feature = "ml")]
             {
-                return Box::new(
+                Box::new(
                     ml::LearnedLayout::load(model_path).expect("failed to load ML layout model"),
-                );
+                )
             }
             #[cfg(not(feature = "ml"))]
             {

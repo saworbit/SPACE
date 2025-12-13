@@ -34,6 +34,9 @@ members = [
     "fuzz",
 ]
 
+[patch.crates-io]
+rdma-sys = { path = "vendor/rdma-sys" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

@@ -7,16 +7,16 @@ use common::{CapsuleId, Policy};
 
 #[cfg(feature = "zns")]
 pub struct ZnsGraphLayout {
-    zone_size: u64,
-    graph_radius: u32,
+    _zone_size: u64,
+    _graph_radius: u32,
 }
 
 #[cfg(feature = "zns")]
 impl ZnsGraphLayout {
     pub fn new(zone_size_mib: u32, graph_radius: u32) -> Self {
         Self {
-            zone_size: zone_size_mib as u64 * 1024 * 1024,
-            graph_radius,
+            _zone_size: zone_size_mib as u64 * 1024 * 1024,
+            _graph_radius: graph_radius,
         }
     }
 }
@@ -25,9 +25,9 @@ impl ZnsGraphLayout {
 impl LayoutOffload for ZnsGraphLayout {
     fn synthesize(
         &self,
-        capsules: &[CapsuleId],
-        data_slices: &[&[u8]],
-        policy: &Policy,
+        _capsules: &[CapsuleId],
+        _data_slices: &[&[u8]],
+        _policy: &Policy,
     ) -> Result<ZonePlan> {
         todo!("ZNS implementation")
     }

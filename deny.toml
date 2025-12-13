@@ -116,6 +116,11 @@ confidence-threshold = 0.85
 name = "libfuzzer-sys"
 allow = ["NCSA"]
 
+[[licenses.clarify]]
+name = "rdma-sys"
+expression = "MIT"
+license-files = [{ path = "LICENSE", hash = 0x57d00757 }]
+
 # rdma-sys is a build-time dependency (bindgen) without a declared SPDX expression.
 # We scope an explicit exception to avoid blocking on the missing metadata.
 [[licenses.exceptions]]

@@ -10,14 +10,14 @@ use crate::{offload, LayoutOffload, ZonePlan};
 
 #[cfg(feature = "ml")]
 pub struct LearnedLayout {
-    model: tch::CModule,
+    _model: tch::CModule,
 }
 
 #[cfg(feature = "ml")]
 impl LearnedLayout {
     pub fn load(path: &str) -> Result<Self> {
         let model = tch::CModule::load(path)?;
-        Ok(Self { model })
+        Ok(Self { _model: model })
     }
 }
 

@@ -141,7 +141,8 @@ impl CpuQuantumReady {
                     for slice in data_slices {
                         hasher.update(slice);
                     }
-                    ContentHash::from_bytes(hasher.finalize().as_slice())
+                    let digest = hasher.finalize();
+                    ContentHash::from_bytes(digest.as_ref())
                 }
                 #[cfg(not(feature = "pq"))]
                 {
