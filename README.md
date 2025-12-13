@@ -225,7 +225,7 @@ Production wiring: set `SPACE_METADATA_PATH`, `SPACE_NVRAM_PATH`, and `SPACE_MAS
 - **🔒 Sovereignty Enforcement**: Policies block actions that violate zone constraints
 - **🎭 On-the-Fly Transformation**: Re-encrypt/recompress during migrations
 - **📡 Telemetry Events**: Real-time capsule lifecycle events for autonomous agents
-- **🔗 Mesh Networking**: Gossip-based peer discovery with RDMA-ready zero-copy transport (Phase C) — see `docs/specs/PHASE_C_RDMA_TRANSPORT.md` and `docs/specs/EXECUTION_PLAN_PHASE_C_RDMA_SYSTEM_HARDENING.md`
+- **🔗 Mesh Networking**: Gossip-based peer discovery with RDMA-ready zero-copy transport (Phase C) — see `docs/specs/PHASE_C_RDMA_TRANSPORT.md`, `docs/specs/EXECUTION_PLAN_PHASE_C_RDMA_SYSTEM_HARDENING.md`, and `docs/specs/PHASE_C_IMPLEMENTATION_DETAILS.md`
 - **🛡️ Zero-Disruption**: Single-node mode has zero overhead (feature-gated)
 
 ### 🗺️ Scaling Policies

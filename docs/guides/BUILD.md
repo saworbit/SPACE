@@ -166,6 +166,9 @@ sudo scripts/setup_softroce.sh eth0
 # If running clippy/check in containers, ensure LibTorch is available for layout-engine
 # (Dockerfile installs CPU libtorch by default). To bypass the check in ad-hoc runs:
 # XTASK_ALLOW_MISSING_LIBTORCH=1 cargo xtask audit
+
+# RDMA implementation details and hardening steps:
+# See docs/specs/PHASE_C_IMPLEMENTATION_DETAILS.md and docs/specs/EXECUTION_PLAN_PHASE_C_RDMA_SYSTEM_HARDENING.md
 ```
 
 ## Build Optimization
