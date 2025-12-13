@@ -12,17 +12,27 @@
 
 ---
 
-**🎉 Phase 3.3 Complete:** Encryption ✅ • Bloom Filters ✅ • Audit Log ✅ • SPIFFE/mTLS ✅ • PODMS Scaling ✅
+> ## ⚠️ PRE-ALPHA SOFTWARE
+>
+> **SPACE is in active early development and NOT production-ready.**
+>
+> - **Status:** Research prototype & proof-of-concept
+> - **Stability:** APIs will change without notice
+> - **Use Case:** Educational, research, and experimentation only
+> - **Data Safety:** Do not use for production data - expect bugs and breaking changes
+> - **Testing:** Single-developer project - limited real-world validation
+>
+> See the [Feature Status Table](#-feature--capability-status) below for detailed maturity levels.
 
-**🌐 Multi-Node Ready:** Orchestrator ✅ • Gossip Protocol ✅ • Autonomous Scaling ✅ • Transformation in Transit ✅
+---
 
-**🚀 Phase 4 Active:** Multi-Protocol Views (NVMe-oF, NFS, FUSE, CSI) + Full Mesh Federation
-**Phase D: Protocol Views & Federation (new)**
-- Build with `cargo build --release --features phase4`
-- Project capsules via `spacectl project --view nvme|nfs|fuse|csi --id <UUID> --policy-file examples/phase4-policy.yaml` (keeps serving until Ctrl+C)
-- Federation/sharding now flows through Raft stubs; validate end-to-end with `scripts/test_phase4.sh`
+**🔬 Current Focus:** Core storage primitives + early distributed features
 
-[🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [💡 Why SPACE](#-why-this-matters)
+**✅ Working (Beta/Alpha):** Basic capsule storage • Compression • Deduplication • Encryption • S3 API
+
+**🧪 Experimental:** Multi-node mesh • Replication • Protocol views • Federation
+
+[🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [📊 Feature Status](#-feature--capability-status)
 
 </div>
 
@@ -30,6 +40,7 @@
 
 ## 📖 Table of Contents
 
+- [📊 Feature & Capability Status](#-feature--capability-status) **← Start Here**
 - [💡 The Big Idea](#-the-big-idea)
 - [📊 What Works Today](#-what-works-today)
 - [🌐 PODMS Scaling](#-podms-scaling)
@@ -47,6 +58,135 @@
 - [📜 License](#-license)
 - [📊 Project Status](#-project-status)
 - [🎬 Quick Demo](#-quick-demo)
+
+---
+
+## 📊 Feature & Capability Status
+
+> **Important:** This table reflects the *actual* implementation status vs. documented capabilities. SPACE is a pre-alpha research project with many features in experimental or proof-of-concept stages.
+
+### Status Definitions
+
+| Status | Meaning | Use In Production? |
+|:------:|:--------|:------------------:|
+| **🟢 Beta** | Core functionality works, tested, some bugs expected | ⚠️ Not yet |
+| **🟡 Alpha** | Basic implementation, limited testing, expect issues | ❌ No |
+| **🟠 Experimental** | Proof-of-concept, incomplete, unstable | ❌ No |
+| **🔴 Planned** | Design/docs exist, minimal or no implementation | ❌ No |
+| **⚪ Stub** | Placeholder code only, not functional | ❌ No |
+
+### Core Storage Features
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **Capsule Storage** | 🟢 Beta | Basic create/read operations work | - |
+| **Metadata Registry** | 🟢 Beta | Sled-backed persistence, tested | - |
+| **NVRAM Log Simulator** | 🟢 Beta | File-backed append-only log | - |
+| **4MB Segmentation** | 🟢 Beta | Automatic chunking works | - |
+| **CLI Tools (spacectl)** | 🟡 Alpha | Basic commands work, UX rough | - |
+| **Write Pipeline** | 🟢 Beta | Sync pipeline solid, async experimental | `pipeline_async` |
+| **Read Pipeline** | 🟢 Beta | Decompression/decryption works | - |
+| **Error Handling** | 🟡 Alpha | Basic errors, needs polish | - |
+
+### Compression & Deduplication
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **LZ4 Compression** | 🟢 Beta | Fast compression works well | - |
+| **Zstd Compression** | 🟢 Beta | High-ratio compression works | - |
+| **Entropy Detection** | 🟡 Alpha | Skips incompressible data | - |
+| **Policy-Driven Compression** | 🟡 Alpha | Per-capsule policies work | - |
+| **Content Deduplication** | 🟢 Beta | BLAKE3 hashing, post-compression | - |
+| **Dedup Statistics** | 🟡 Alpha | Basic tracking implemented | - |
+| **Reference Counting** | 🟡 Alpha | Tracks segment usage | - |
+| **Garbage Collection** | 🟡 Alpha | Manual GC only, no auto-reclaim | - |
+
+### Encryption & Security
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **XTS-AES-256 Encryption** | 🟢 Beta | Per-segment encryption works | - |
+| **BLAKE3-MAC Integrity** | 🟢 Beta | Tamper detection implemented | - |
+| **Deterministic Encryption** | 🟡 Alpha | Preserves dedup, needs more testing | - |
+| **Key Management** | 🟡 Alpha | Basic derivation/rotation works | - |
+| **Key Rotation** | 🟡 Alpha | Version tracking, limited testing | - |
+| **Counting Bloom Filters** | 🟡 Alpha | Registry screening works | `advanced-security` |
+| **Audit Log** | 🟡 Alpha | BLAKE3 chaining, TSA hooks stubbed | `advanced-security` |
+| **SPIFFE/mTLS Gateway** | 🟠 Experimental | Basic eBPF hooks, needs validation | `advanced-security` |
+| **Post-Quantum Crypto** | 🟠 Experimental | Kyber hybrid toggle, untested | `advanced-security` |
+
+### Protocol Views
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **S3 API** | 🟡 Alpha | Basic PUT/GET/DELETE work, incomplete | - |
+| **S3 Streaming** | 🟡 Alpha | Upload/download without full buffering | - |
+| **S3 Multipart** | 🔴 Planned | Not implemented | - |
+| **NFS Export** | 🟠 Experimental | Basic namespace, minimal testing | - |
+| **Block Volumes** | 🟠 Experimental | LUN facade with COW, prototype only | - |
+| **NVMe-oF Target** | 🔴 Planned | Vendor stub exists, not functional | `phase4` |
+| **FUSE Filesystem** | 🔴 Planned | Vendor stub exists, not functional | `phase4` |
+| **CSI Driver (K8s)** | 🔴 Planned | Vendor stub exists, not functional | `phase4` |
+
+### Multi-Node & Distributed Features
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **PODMS Scaling** | 🟠 Experimental | Types/telemetry exist, limited integration | `podms` |
+| **Mesh Networking** | 🟠 Experimental | Basic peer discovery works | `podms` |
+| **Gossip Protocol** | 🟠 Experimental | libp2p-based, early stage | `podms` |
+| **Metro-Sync Replication** | 🟠 Experimental | TCP-based POC, RDMA mocked | `podms` |
+| **Async Replication** | 🟠 Experimental | Batch queue exists, needs testing | `podms` |
+| **Policy Compiler** | 🟡 Alpha | Telemetry → actions works | `podms` |
+| **Scaling Agents** | 🟠 Experimental | Basic agent loop, minimal coverage | `podms` |
+| **Cross-Node Dedup** | 🟠 Experimental | Hash-based preservation attempted | `podms` |
+| **Transformation in Transit** | 🟠 Experimental | Re-encrypt/compress design exists | `podms` |
+| **Raft Consensus** | ⚪ Stub | Vendor stub only, not wired | `phase4` |
+| **Full Mesh Federation** | 🔴 Planned | Design docs exist, not implemented | `phase4` |
+
+### Monitoring & Operations
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **Web Interface** | 🟠 Experimental | Basic dashboard, limited features | - |
+| **Prometheus Metrics** | 🟡 Alpha | Basic metrics exposed | - |
+| **WebSocket Updates** | 🟠 Experimental | Live topology updates prototype | - |
+| **Tracing/Logging** | 🟡 Alpha | Basic tracing implemented | - |
+| **Health Checks** | 🟡 Alpha | Basic health endpoints | - |
+
+### Simulation & Testing
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **NVRAM Simulation** | 🟢 Beta | File-backed testing works | - |
+| **NVMe-oF Simulation** | 🟡 Alpha | Native NVMe/TCP with fallback | - |
+| **Docker Compose Setup** | 🟡 Alpha | 3-node mesh environment | - |
+| **Integration Tests** | 🟡 Alpha | Basic coverage, needs expansion | - |
+| **Unit Tests** | 🟡 Alpha | ~70-80% coverage, gaps exist | - |
+| **Benchmarks** | 🟠 Experimental | Limited performance tests | - |
+
+### Key Gaps & Limitations
+
+**❌ Missing or Incomplete:**
+- Production-grade error recovery
+- Comprehensive logging and observability
+- Performance optimization and benchmarking
+- Security hardening and penetration testing
+- Multi-node stability and failover
+- Data migration tools
+- Backup and restore
+- Monitoring and alerting
+- Documentation completeness
+- Real-world validation
+
+**⚠️ Known Issues:**
+- Single-developer project with limited testing
+- Many features are proofs-of-concept
+- APIs will change without notice
+- Performance not optimized
+- Security features need auditing
+- Multi-node features are experimental
+- Vendor stubs are placeholders
 
 ---
 
@@ -77,91 +217,120 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 
 <div align="center">
 
-**🎯 Phase 3.3 Complete — Advanced Security Hardened**
+**🧪 Pre-Alpha Status — Core Storage Beta, Distributed Features Experimental**
+
+**📊 [See Detailed Feature Status Table Above](#-feature--capability-status) for maturity levels**
 
 </div>
 
-### ✅ Core Features
-- 🔮 Universal capsule storage with persistent metadata
-- 💻 CLI create/read operations
-- 🌐 S3-compatible REST API (protocol view proof-of-concept)
-- Streaming S3 uploads/downloads to avoid buffering full objects in memory
-- 📂 NFS + block protocol views (namespace + volume facades)
-- 🗜️ Adaptive compression (LZ4/Zstd with entropy detection)
-- ⚡ Zero-copy compression/dedup pipeline using `Cow<[u8]>` + `bytes::Bytes` shared buffers
-- 🔗 Content-addressed deduplication (post-compression)
-- 🔐 **XTS-AES-256 encryption with BLAKE3-MAC integrity**
-- 🎯 **Deterministic encryption preserving deduplication**
-- 🔑 **Key management with rotation support**
-- 🗑️ **Reference-counted garbage collection with metadata reclamation**
-- 🧩 **Modular trait-based pipeline for read/delete/GC (feature `modular_pipeline`)**
-- ⚙️ **Tokio-powered async write pipeline** (Cargo feature `pipeline_async`) with staged NVRAM transactions, bounded concurrency, and `tracing` metrics
-- 🌸 **Counting Bloom filters** in the registry to prescreen dedup candidates at multi-million scale
-- 📝 **Immutable audit log** with BLAKE3 hash chaining + optional TSA anchoring (`security::audit_log`)
-- 🛡️ **SPIFFE + mTLS eBPF gateway** when the `advanced-security` feature is enabled (`protocol-s3`)
-- 🔮 **Post-quantum crypto toggle** (Kyber + AES hybrid) selectable via `Policy::crypto_profile`
-- 🏗️ **Dedicated `security` module** so Bloom/audit/PQ/eBPF logic stays feature gated
-- Automation handlers for migration/evacuation/rebalancing using mesh streaming + MAC validation
+### ✅ Core Features (Beta Quality - Relatively Stable)
+- 🔮 **Universal capsule storage** with persistent metadata (Sled-backed registry)
+- 💻 **CLI create/read operations** via spacectl (basic functionality works)
+- 🗜️ **Adaptive compression** (LZ4/Zstd with entropy detection) - working well
+- 🔗 **Content-addressed deduplication** (post-compression, BLAKE3 hashing) - functional
+- 🔐 **XTS-AES-256 encryption** with BLAKE3-MAC integrity - basic implementation works
+- 🎯 **Deterministic encryption** preserving deduplication - needs more testing
+- 💾 **NVRAM log simulator** for persistent segment storage
 
-### 🌐 Multi-Node Capabilities
+### 🟡 Alpha Features (Working But Rough)
+- 🌐 **S3-compatible REST API** - Basic PUT/GET/DELETE work, incomplete feature set
+- **Streaming S3 uploads/downloads** - Reduces memory buffering
+- 🔑 **Key management** with rotation support - basic implementation, limited testing
+- 🗑️ **Reference-counted GC** with metadata reclamation - manual GC only
+- ⚙️ **Async write pipeline** (feature `pipeline_async`) - experimental
+- 🧩 **Modular pipeline** (feature `modular_pipeline`) - trait-based design, early stage
+- **Policy-driven compression** - per-capsule configuration works
 
-**NEW: PODMS Orchestrator** - Transform SPACE into a distributed mesh network:
+### 🟠 Experimental Features (Proof-of-Concept, Unstable)
+- 📂 **NFS + block protocol views** - namespace + volume facades, minimal testing
+- 🌸 **Counting Bloom filters** - dedup candidate screening, needs validation
+- 📝 **Immutable audit log** - BLAKE3 hash chaining implemented, TSA hooks stubbed
+- 🛡️ **SPIFFE + mTLS eBPF gateway** (feature `advanced-security`) - basic hooks only
+- 🔮 **Post-quantum crypto toggle** - Kyber hybrid selectable, untested
+- 🤝 **PODMS mesh/replication** - types and telemetry exist, integration incomplete
+- **Automation handlers** for migration/evacuation - design exists, limited implementation
 
-- **🎯 Autonomous Operations**
-  - Metro-sync replication (zero-RPO, <2ms latency)
-  - Async-batch replication (5min RPO, optimized bandwidth)
-  - Heat-based migration for hot data
-  - Capacity-driven rebalancing
-  - Node evacuation (immediate or gradual)
-  - Operator-forced snapshots via `spacectl snapshot trigger --id <CAPSULE_UUID> [--rpo-secs N]`
+### ⚠️ Important Caveats
+- Most "complete" features are **beta quality at best** - expect bugs
+- **Multi-node and distributed features are experimental** - not production-ready
+- **Security features need professional audit** before any serious use
+- **Performance not optimized** - no comprehensive benchmarks
+- **Error handling is basic** - edge cases may not be covered
+- **Documentation often describes aspirational goals** rather than current state
 
-- **🔐 Secure Gossip Protocol**
-  - HMAC-SHA256 message signing
-  - TTL-based flood control
-  - Message deduplication
-  - Configurable fanout (8-16 peers)
+### 🧪 Multi-Node Capabilities (EXPERIMENTAL - NOT PRODUCTION READY)
 
-- **⚡ Transformation in Transit**
-  - Re-encryption during migration
-  - Re-compression optimization
-  - Key rotation support
-  - BLAKE3 MAC validation
-  - Dependency-inverted `TransformOps` pipeline (see `docs/specs/PODMS_SWARM_BEHAVIOR.md` and the runtime adapter in `docs/specs/PODMS_TRANSFORM_OPS.md`)
-  - Scaling migrations now invoke `SwarmOps` to decrypt -> decompress -> recompress -> re-encrypt with per-capsule XTS keys and fresh MACs before streaming frames
-  - Envelope encryption: segment keys are convergent (content-derived) and wrapped per capsule, enabling Zero Trust isolation without sacrificing dedup
-  - Cross-node deduplication
-  - Persistent replication streams with pooled TCP connections and in-flight dedup reservations to ensure at-most-once NvramLog appends per payload
+> **⚠️ WARNING:** These features are early-stage proofs-of-concept. Do not use in production.
 
-- **🐳 Docker Compose Simulation**
-  - 3-node mesh environment
-  - Prometheus + Grafana monitoring
-  - Isolated network testing
-  - Quick start: `docker-compose -f docker-compose.multi-node.yml up`
+**PODMS Orchestrator** - Experimental distributed mesh networking (feature flag: `podms`):
 
-📘 **[Multi-Node Deployment Guide →](docs/multi-node-deployment.md)**
+- **🟠 Experimental Autonomous Operations** (Proof-of-Concept)
+  - Metro-sync replication - TCP-based POC, RDMA mocked
+  - Async-batch replication - basic batch queue exists
+  - Heat-based migration - design exists, minimal testing
+  - Capacity-driven rebalancing - types defined, limited implementation
+  - Node evacuation - framework in place, needs validation
+  - Policy compiler - telemetry → actions works, needs real-world testing
 
-### 🔜 Coming Next
-- **Full mesh federation** & cross-zone routing (Step 4)
-- **ML-driven heatmaps** & adaptive placement
+- **🟠 Experimental Gossip Protocol** (Early Stage)
+  - libp2p-based peer discovery - basic implementation
+  - Message signing/deduplication - implemented but not battle-tested
+  - Flood control - basic TTL mechanism
+  - Configurable fanout - parameter exists, tuning needed
+
+- **🟠 Experimental Transformation in Transit** (Design Exists)
+  - Re-encryption during migration - `TransformOps` trait defined
+  - Re-compression optimization - framework in place
+  - Key rotation support - basic version tracking
+  - BLAKE3 MAC validation - implemented in pipeline
+  - Cross-node deduplication - hash-based preservation attempted
+  - SwarmOps adapter - dependency injection working, needs extensive testing
+
+- **🟡 Docker Compose Simulation** (Alpha Quality)
+  - 3-node mesh environment - basic setup works
+  - Prometheus + Grafana - metrics exposed, dashboards basic
+  - Isolated network testing - functional for development
+
+**Reality Check:**
+- Multi-node features are **research prototypes**
+- **Not tested at scale** - single developer, limited validation
+- **Many edge cases unhandled** - error recovery incomplete
+- **Performance unoptimized** - no production benchmarks
+- **Failover/resilience not validated** - chaos testing minimal
+
+📘 **[Multi-Node Deployment Guide →](docs/multi-node-deployment.md)** *(describes experimental setup)*
+
+### 🔜 Planned (Not Implemented)
+- **Full mesh federation** - design docs exist, Raft stubs only
+- **Cross-zone routing** - architecture planned, not built
+- **ML-driven heatmaps** - aspirational feature
+- **Adaptive placement** - concept stage
 
 ---
 
-## 🌐 Next-Gen Web Interface
+## 🌐 Web Interface (EXPERIMENTAL)
 
-**NEW: Real-time mesh monitoring and management dashboard**
+> **⚠️ Experimental Feature:** Basic dashboard for development/testing only
 
-SPACE now includes a comprehensive web interface for visualizing and managing the distributed mesh network with integrated gossip protocol support.
+**Status:** 🟠 Experimental proof-of-concept for mesh visualization
 
-### ✨ Features
+SPACE includes an early-stage web interface for visualizing mesh topology and basic file operations. This is a development tool, not a production admin interface.
 
-- 📊 **Real-time peer discovery** with gossip protocol visualization
-- 🔄 **Live WebSocket updates** for mesh topology changes
-- 📈 **Prometheus metrics** for gossip convergence and bandwidth
-- 🗂️ **File operations** - Upload, browse, and download files with Blake3 verification
-- 💾 **File storage dashboard** - View all stored files with metadata and one-click downloads
-- 🔐 **Security alerts** broadcast via gossip
-- 🎯 **RBAC support** (Admin, Editor, Viewer, StorageNode, Gateway roles)
-- ⚡ **Reactive frontend** built with Leptos (optional, feature-gated)
+### ✨ Features (Experimental)
+
+- 📊 **Peer discovery visualization** - basic gossip protocol display
+- 🔄 **WebSocket updates** - live topology changes (early implementation)
+- 📈 **Prometheus metrics** - basic metric export
+- 🗂️ **File operations** - simple upload/download with Blake3 verification
+- 💾 **Storage dashboard** - basic file listing and metadata display
+- 🎯 **RBAC framework** - types defined, enforcement incomplete
+- ⚡ **Leptos frontend** - reactive UI framework (optional, feature-gated)
+
+**Limitations:**
+- Security not hardened - development use only
+- Limited error handling and validation
+- UX rough and incomplete
+- Not tested with real traffic loads
 
 ### 🚀 Quick Start
 
@@ -192,12 +361,23 @@ For complete documentation, see [docs/WEB_INTERFACE.md](docs/WEB_INTERFACE.md).
 
 ---
 
-## 🌐 PODMS Scaling
-### Policy Compiler Intelligence — Step 3 Complete
+## 🌐 PODMS Scaling (EXPERIMENTAL)
 
-**Policy-Orchestrated Disaggregated Mesh Scaling** is SPACE's distributed scaling model.
+> **⚠️ WARNING:** PODMS features are experimental proofs-of-concept. Not production ready.
 
-Step 3 brings the **policy compiler** — the "brain" that translates declarative policies into autonomous scaling actions. Capsules now exhibit **swarm intelligence**: self-replicating, migrating, and transforming based on policy rules and real-time telemetry.
+### Policy Compiler Intelligence — Experimental Implementation
+
+**Policy-Orchestrated Disaggregated Mesh Scaling (PODMS)** is SPACE's experimental distributed scaling model.
+
+**Current Status:** 🟠 Experimental / 🟡 Alpha
+- Basic types and telemetry infrastructure implemented
+- Policy compiler can translate events to actions
+- Metro-sync replication is a TCP-based proof-of-concept
+- Limited real-world testing and validation
+
+The vision: Capsules with **swarm intelligence** that self-replicate, migrate, and transform based on policy rules and real-time telemetry.
+
+**Reality:** Core concepts are implemented but need extensive testing, performance optimization, and production hardening.
 
 ### ⚡ Quick Enable
 
@@ -311,19 +491,27 @@ spacectl queue-stats  # Check batch queue depth
 
 ## ✨ Development Phases
 
+> **Reality Check:** Phase labels reflect initial goals, not current maturity. See [Feature Status Table](#-feature--capability-status) for actual implementation state.
+
 <details open>
-<summary><b>📦 Phase 1: Core Storage</b> ✅</summary>
+<summary><b>📦 Phase 1: Core Storage</b> 🟢 Beta</summary>
+
+**Status:** Core functionality implemented and relatively stable
 
 - ✅ Universal Capsule IDs (128-bit UUIDs)
 - ✅ Persistent NVRAM Log with automatic fsync
 - ✅ Intelligent 4MB Segmentation
 - ✅ CLI Tool for create/read operations
-- ✅ Sled-backed Metadata Registry (Raft-ready, streaming snapshots)
+- ✅ Sled-backed Metadata Registry
+
+**Reality:** This is the most stable part of SPACE. Basic storage operations work well for single-node use.
 
 </details>
 
 <details open>
-<summary><b>🗜️ Phase 2.1: Compression</b> ✅</summary>
+<summary><b>🗜️ Phase 2.1: Compression</b> 🟢 Beta</summary>
+
+**Status:** Working well, tested
 
 - ✅ **LZ4** — Sub-millisecond compression for hot data
 - ✅ **Zstd** — High compression ratios for cold data
@@ -331,10 +519,14 @@ spacectl queue-stats  # Check batch queue depth
 - ✅ **Policy-Driven** — Configure per capsule
 - ✅ **Zero-Copy Fast-Path** — Borrow slices to avoid allocations
 
+**Reality:** Compression is functional and delivers good results. Performance not fully optimized.
+
 </details>
 
 <details open>
-<summary><b>🔗 Phase 2.2: Deduplication</b> ✅</summary>
+<summary><b>🔗 Phase 2.2: Deduplication</b> 🟢 Beta</summary>
+
+**Status:** Core functionality works
 
 - ✅ **BLAKE3 Content Hashing** — Content-addressed storage
 - ✅ **Automatic Dedup** — Reuse identical segments
@@ -342,50 +534,67 @@ spacectl queue-stats  # Check batch queue depth
 - ✅ **Post-Compression Dedup** — Foundation for encrypted dedup
 - ✅ **Zero-Copy Buffers** — Flow through hashing without cloning
 
-</details>
-
-<details open>
-<summary><b>🌐 Phase 2.3: Protocol Views</b> ✅</summary>
-
-- ✅ **S3 REST API** — PUT/GET/HEAD/LIST/DELETE
-- ✅ **NFS Namespace** — Hierarchical directories
-- ✅ **Block Volumes** — Logical LUN facade with COW
-- ✅ **Protocol Abstraction** — Same capsule, multiple APIs
+**Reality:** Dedup works for single-node scenarios. Cross-node dedup is experimental.
 
 </details>
 
 <details open>
-<summary><b>🔐 Phase 3.1: Encryption & Integrity</b> ✅</summary>
+<summary><b>🌐 Phase 2.3: Protocol Views</b> 🟡 Alpha / 🟠 Experimental</summary>
 
-- ✅ **XTS-AES-256** — Per-segment encryption with hardware acceleration
+**Status:** S3 is alpha, NFS/Block are experimental
+
+- 🟡 **S3 REST API** — Basic PUT/GET/HEAD/LIST/DELETE (incomplete, no multipart)
+- 🟠 **NFS Namespace** — Experimental namespace implementation
+- 🟠 **Block Volumes** — Prototype LUN facade with COW
+- 🟡 **Protocol Abstraction** — Basic framework exists
+
+**Reality:** S3 API has basic functionality but missing features. NFS/Block are early prototypes with minimal testing.
+
+</details>
+
+<details open>
+<summary><b>🔐 Phase 3.1: Encryption & Integrity</b> 🟢 Beta / 🟡 Alpha</summary>
+
+**Status:** Basic encryption works, advanced features need testing
+
+- ✅ **XTS-AES-256** — Per-segment encryption implemented
 - ✅ **BLAKE3-MAC** — Tamper detection with keyed MAC
-- ✅ **Deterministic Encryption** — Preserves deduplication
-- ✅ **Key Management** — Version-tracked derivation with rotation
+- 🟡 **Deterministic Encryption** — Preserves dedup, needs more testing
+- 🟡 **Key Management** — Basic derivation/rotation, limited validation
 - ✅ **Zero-Trust Design** — Keys from environment, zeroized on drop
 
-</details>
-
-<details open>
-<summary><b>🛡️ Phase 3.3: Advanced Security</b> ✅</summary>
-
-- 🌸 **Counting Bloom Filters** — Guard registry from multi-million entry explosions (~0.1% false positives)
-- 📝 **Immutable Audit Log** — BLAKE3 hash chaining + optional TSA webhooks
-- 🔒 **Zero-Trust Ingress** — SPIFFE + mTLS gateway with eBPF policy filter
-- 🔮 **Post-Quantum Crypto** — Kyber ML-KEM hybrid for forward secrecy
-- 🏗️ **Modular Security** — Feature-gated Bloom/Audit/PQ/eBPF code
+**Reality:** Core encryption works but needs security audit. Key rotation and deterministic encryption need more real-world testing.
 
 </details>
 
 <details open>
-<summary><b>✨ Phase 4: Protocol Views + Full Mesh Federation</b> 🚀</summary>
+<summary><b>🛡️ Phase 3.3: Advanced Security</b> 🟡 Alpha / 🟠 Experimental</summary>
 
-- 🧱 **NVMe-oF block targets** – Phase 4 exports capsules through the NVMe surface without materializing copies
-- 📁 **NFS + FUSE + CSI** – Runtime projection modules for file, mount, and Kubernetes consumer experiences
-- 🌐 **Federated metadata mesh** – Mesh nodes gossip metadata, resolve capsule locations, shard registry state, and surface Paxos-style consistency
-- 🧭 **Policy-orchestrated mobility** – `Policy::latency_target` and `Policy::sovereignty` drive federation, QoS, and transformation decisions
-- ⚙️ Build with `cargo build --features phase4` and project via `spacectl --view nvme|nfs|fuse|csi`
-- 📄 Reference [docs/phase4.md](docs/phase4.md) for crate details, policy examples (`examples/phase4-policy.yaml`), and test scripts (`scripts/test_phase4.sh`, `scripts/test_federation_failover.sh`)
-- ☸️ Kubernetes users can drop in `deployment/csi-deployment.yaml` after enabling the CSI view feature
+**Status:** Features implemented but need thorough security review
+
+- 🟡 **Counting Bloom Filters** — Basic implementation works
+- 🟡 **Immutable Audit Log** — BLAKE3 chaining works, TSA hooks stubbed
+- 🟠 **Zero-Trust Ingress** — SPIFFE + mTLS eBPF hooks experimental
+- 🟠 **Post-Quantum Crypto** — Kyber toggle exists, untested
+- 🟡 **Modular Security** — Feature-gated code organization
+
+**Reality:** Security features need professional audit and extensive testing before any production consideration.
+
+</details>
+
+<details open>
+<summary><b>✨ Phase 4: Protocol Views + Full Mesh Federation</b> 🔴 Planned / ⚪ Stub</summary>
+
+**Status:** Mostly planned/documented, minimal implementation
+
+- 🔴 **NVMe-oF block targets** – Vendor stub exists, not functional
+- 🔴 **NFS + FUSE + CSI** – Vendor stubs, not wired up
+- 🔴 **Federated metadata mesh** – Design exists, Raft stub only
+- 🟠 **Policy-orchestrated mobility** – Types/telemetry exist, limited integration
+- ⚪ **Full federation** - Documented architecture, not implemented
+- 📄 See [docs/phase4.md](docs/phase4.md) for **planned** architecture
+
+**Reality:** Phase 4 is mostly design documents and vendor stubs. The `phase4` feature flag exists but most functionality is not implemented. This represents the future vision, not current capabilities.
 
 </details>
 
@@ -1026,23 +1235,42 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 <div align="center">
 
-**We're exploring radical new storage architectures — join us!**
+**⚠️ Pre-Alpha Research Project — Contributions Welcome with Realistic Expectations**
 
 </div>
 
-**We Welcome:**
-- 🐛 Bug reports and fixes
-- 💡 Architecture suggestions
-- 📚 Documentation improvements
-- 🧪 New test cases
-- ⚡ Performance optimizations
-- 🔒 Security reviews
+### Understanding SPACE's Current State
 
-**Before Submitting PRs:**
+SPACE is a **single-developer research project** exploring novel storage architectures. Many features are proofs-of-concept or aspirational designs. If you're interested in contributing, please understand:
+
+- **Not production software** - This is experimental research
+- **APIs will change** - No stability guarantees
+- **Documentation aspirational** - Many docs describe goals, not current reality
+- **Limited resources** - Single developer means slow review/merge cycles
+- **Learning opportunity** - Great for exploring storage systems architecture
+
+### How to Contribute
+
+**We Welcome (with realistic expectations):**
+- 🐛 **Bug reports** - Help identify issues in existing features
+- 💡 **Architecture discussions** - Join the exploration of new ideas
+- 📚 **Documentation clarifications** - Help align docs with reality
+- 🧪 **Test improvements** - Expand coverage of existing features
+- ⚡ **Performance analysis** - Profile and identify bottlenecks
+- 🔒 **Security reviews** - Expert review of crypto/security implementations
+
+**Contribution Guidelines:**
 1. ✨ Run `cargo fmt` and `cargo clippy`
 2. ✅ Ensure `cargo test --workspace` passes
-3. 📖 Update documentation
+3. 📖 Update documentation to match reality
 4. 🧪 Add tests for new functionality
+5. ⏰ **Be patient** - single developer means slower response times
+
+**Good First Issues:**
+- Improving test coverage on core storage features
+- Clarifying documentation (especially "planned" vs "implemented")
+- Adding error handling to existing code paths
+- Performance benchmarking and profiling
 
 📄 See [CONTRIBUTING.md](CONTRIBUTING.md) • [Code of Conduct](CODE_OF_CONDUCT.md) • [Security](SECURITY.md)
 
@@ -1090,37 +1318,60 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 <div align="center">
 
+> ### ⚠️ PRE-ALPHA RESEARCH PROJECT
+>
+> **NOT PRODUCTION READY - FOR RESEARCH AND EXPERIMENTATION ONLY**
+
 | Aspect | Status |
 |:-------|:-------|
-| **🎯 Current Phase** | Phase 4: Views & Federation |
-| **🔬 Stability** | Experimental — API subject to change |
-| **🚀 Production** | Not yet (educational/research) |
+| **🎯 Maturity Level** | **Pre-Alpha** (v0.1.0) |
+| **🔬 Stability** | **Unstable** — Breaking changes without notice |
+| **🚀 Production Use** | **❌ NOT RECOMMENDED** — Educational/research only |
+| **👤 Development** | Single developer, limited real-world testing |
+| **🧪 Test Coverage** | ~70-80%, many gaps remain |
+| **📚 Documentation** | Describes vision more than current reality |
 
 </div>
 
-### 🔄 Replication Status
+### Reality Check: What Actually Works vs. What's Documented
 
-| Capability | Status |
-|:-----------|:------:|
-| Inbound Replication | ✅ Implemented via unified DataMotion engine |
-| Outbound Replication (Metro-Sync) | ✅ Implemented via unified DataMotion engine |
+This project has **extensive documentation describing future vision and design goals**, but many documented features are experimental, incomplete, or proof-of-concept only.
 
-### ✅ What's Working
+**📊 See the [Feature & Capability Status Table](#-feature--capability-status) above for detailed maturity levels.**
 
-- ✅ Capsule storage with compression and deduplication
-- ✅ XTS-AES-256 encryption preserving dedup
-- ✅ Counting Bloom filters + immutable audit log
-- ✅ SPIFFE/mTLS gateway + eBPF policy enforcement
-- ✅ Post-quantum Kyber hybrid mode
-- ✅ S3-compatible REST API
-- ✅ NFS, FUSE, and CSI protocol views (Phase 4)
-- ✅ CLI tools and persistent metadata
+### ✅ What's Actually Solid (Beta Quality)
 
-### ⚠️ Known Limitations
+- **Core capsule storage:** Create/read operations with persistent metadata
+- **Compression:** LZ4/Zstd with entropy detection works well
+- **Deduplication:** BLAKE3 content-addressed storage functional
+- **Basic encryption:** XTS-AES-256 per-segment encryption implemented
+- **CLI basics:** spacectl create/read commands work
+- **NVRAM simulation:** File-backed testing environment
 
-- 📋 Log-space reclamation (in progress)
-- 📋 Single-node only (clustering = Phase 5)
-- 📋 Authentication/authorization (Phase 4/5)
+### 🟡 What's Alpha/Experimental (Use With Caution)
+
+- **S3 API:** Basic operations work but incomplete (no multipart, limited error handling)
+- **Multi-node features:** PODMS mesh/replication are proofs-of-concept, not production-ready
+- **Advanced security:** Bloom filters, audit logs, SPIFFE/mTLS need thorough testing
+- **Web interface:** Basic dashboard exists but limited functionality
+- **NFS/Block views:** Experimental prototypes with minimal testing
+
+### 🔴 What's Planned But Not Implemented
+
+- **Phase 4 protocol views:** NVMe-oF, FUSE, CSI are vendor stubs only
+- **Full mesh federation:** Design documents exist, implementation incomplete
+- **Raft consensus:** Stub code only, not functional
+- **Production features:** Robust error recovery, monitoring, backup/restore, etc.
+
+### ⚠️ Critical Limitations
+
+- **No production validation:** Single-developer project, limited real-world use
+- **API instability:** Breaking changes expected as design evolves
+- **Performance:** Not optimized, benchmarks incomplete
+- **Security:** Features need professional audit before any production consideration
+- **Multi-node:** Experimental distributed features not battle-tested
+- **Data safety:** Do not trust with important data
+- **Documentation gaps:** Some docs describe aspirational architecture, not current implementation
 
 ---
 
@@ -1210,21 +1461,28 @@ spacectl block delete vol1
 
 ## 🌟 Support SPACE
 
-**⭐ Star us on GitHub if you find this project interesting! ⭐**
+**⭐ Star us on GitHub if you find this research project interesting! ⭐**
 
-[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Request Feature](https://github.com/saworbit/SPACE/issues) • [💬 Community](https://github.com/saworbit/SPACE/issues)
+> **Note:** This is a pre-alpha research project. Star it to follow development, but please read the [Feature Status Table](#-feature--capability-status) to understand current capabilities vs. documented vision.
+
+[🐛 Report Bug](https://github.com/saworbit/SPACE/issues) • [💡 Discuss Ideas](https://github.com/saworbit/SPACE/issues) • [📚 Improve Docs](https://github.com/saworbit/SPACE/issues)
 
 ---
 
-**Built with 🦀 Rust**
+**Built with 🦀 Rust** • **Pre-Alpha Research Project** • **Not Production Ready**
 
-*Breaking storage silos, one encrypted capsule at a time.*
+*Exploring novel storage architectures — one capsule at a time.*
 
-**🎉 Phase 3.3 Complete**
-Compression ✅ • Dedup ✅ • Protocol Views ✅ • Advanced Security ✅
+**Current Status (see [Feature Status](#-feature--capability-status) for details):**
+- 🟢 Core Storage: Beta quality
+- 🟡 Protocol Views: Alpha/Experimental
+- 🟠 Multi-Node: Experimental proof-of-concept
+- 🔴 Federation: Planned/Stub
 
 ---
 
 **© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
+
+**⚠️ Use at your own risk** • Educational and research purposes only • Not production ready
 
 </div>

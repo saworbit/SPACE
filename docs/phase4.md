@@ -1,15 +1,31 @@
 # Phase 4: Advanced Protocol Views & Full Mesh Federation
 
-## Purpose & Goals
+> ## ⚠️ PLANNED FEATURES - MOSTLY NOT IMPLEMENTED
+>
+> **Status:** Design documentation with vendor stubs - minimal functional code
+>
+> **Reality Check:**
+> - NVMe-oF, FUSE, CSI: ⚪ **Vendor stubs only** - not functional
+> - Raft consensus: ⚪ **Stub code** - not wired up
+> - Full mesh federation: 🔴 **Planned** - design docs exist, not implemented
+> - Metadata sharding: 🔴 **Planned** - architecture described, not built
+>
+> **This document describes aspirational architecture**, not current implementation. The `phase4` feature flag exists but most functionality is not implemented. This represents future vision for the project.
+>
+> **For actual feature status, see the main [README Feature Status Table](../README.md#-feature--capability-status).**
 
-*Phase 4 realizes the patentable* ?one capsule, infinite views? *thesis by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
+## Purpose & Goals (ASPIRATIONAL)
 
-Goals:
+*Phase 4 aims to realize the* "one capsule, infinite views" *vision by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
+
+**Planned** Goals:
 
 1. Project capsules into multiple view pipelines with zero-copy re-encryption/recompression hooks.
 2. Extend PODMS scaling with Raft-powered metadata shards, zone-aware routing, and telemetry-driven federation.
 3. Gate new functionality behind `phase4` so single-node users have no regressions.
 4. Provide CLI, docs, and scripts that prove the mesh works end-to-end (NVMe discovery, CSI provisioning, geo federation).
+
+**Current Reality:** Vendor stubs exist in the codebase, but functional implementation is minimal. This phase is largely in the design/planning stage.
 
 ## Scope & Assumptions
 

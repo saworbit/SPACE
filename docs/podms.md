@@ -1,10 +1,27 @@
 # PODMS: Policy-Orchestrated Disaggregated Mesh Scaling
 
-**Status:** Step 1 Complete (Bedrock Preparation) - 2025-11-08
+> ## ⚠️ EXPERIMENTAL FEATURE - NOT PRODUCTION READY
+>
+> **Status:** Experimental proof-of-concept implementation
+>
+> This document describes both the **vision** for PODMS and the **current experimental implementation**. Many described features are proofs-of-concept or partially implemented. This is research-grade software, not production-ready infrastructure.
+>
+> **Maturity Level:**
+> - Core types/telemetry: 🟡 Alpha
+> - Policy compiler: 🟡 Alpha
+> - Metro-sync replication: 🟠 Experimental (TCP POC, RDMA mocked)
+> - Gossip protocol: 🟠 Experimental
+> - Full mesh federation: 🔴 Planned (minimal implementation)
+>
+> **For actual feature status, see the main [README Feature Status Table](../README.md#-feature--capability-status).**
+
+**Documentation Status:** Mix of implemented features and aspirational architecture - 2025-11-08
 
 ## Overview
 
-PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) is SPACE's distributed scaling architecture that enables autonomous, policy-driven replication and migration across disaggregated storage nodes. Unlike traditional cluster architectures or monolithic scale-out systems, PODMS treats each capsule as an independent, swarm-ready unit with embedded policy intelligence.
+PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) is SPACE's **experimental** distributed scaling architecture exploring autonomous, policy-driven replication and migration across disaggregated storage nodes. Unlike traditional cluster architectures or monolithic scale-out systems, PODMS aims to treat each capsule as an independent, swarm-ready unit with embedded policy intelligence.
+
+**Current Reality:** Basic infrastructure exists (types, telemetry, policy compiler), but distributed features are early-stage proofs-of-concept requiring extensive development and testing before production use.
 
 ## Vision: Breaking Traditional Scaling Models
 
