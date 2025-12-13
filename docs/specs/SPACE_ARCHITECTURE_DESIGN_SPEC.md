@@ -36,6 +36,11 @@ graph TD
 | `web-interface` | Operator UI plus REST API. | MVC with feature-gated Leptos frontend. |
 | `podms-orchestrator` | Policy enforcement, scaling, and telemetry reactions. | Observer/sidecar reacting to mesh events. |
 
+### 2.3 Transport Evolution
+- Present: Tokio TCP transport with persistent connection pooling for replication.
+- Phase B (Linux): io_uring transport runs as a dedicated actor with per-peer mailboxes and pooled TCP streams to remove connect/write/close churn; see `docs/specs/PHASE_B_IO_URING_TRANSPORT.md`.
+- Fallback: Non-Linux builds retain the Tokio TCP path while sharing the same replication protocol.
+
 ## 3. Core Abstractions & Interface Patterns
 SPACE uses traits as ports and adapters to decouple orchestration from implementation. Storage engines, compressors, and cryptography providers can be swapped or mocked without touching pipeline logic.
 

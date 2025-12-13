@@ -345,6 +345,71 @@ mod transport_tests {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod io_uring_transport_tests {
+    use super::*;
+    use crate::IoUringTransport;
+    use common::podms::NodeId;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn io_uring_transport_reuses_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let recv_clone = received.clone();
+        let accept_clone = accept_count.clone();
+
+        tokio::spawn(async move {
+            let expected_lengths = [3usize, 4usize];
+            let mut total = 0usize;
+
+            while total < expected_lengths.len() {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                accept_clone.fetch_add(1, Ordering::SeqCst);
+
+                for expected_len in expected_lengths[total..].iter().copied() {
+                    let mut buf = vec![0u8; expected_len];
+                    match socket.read_exact(&mut buf).await {
+                        Ok(_) => {
+                            recv_clone.lock().await.push(buf);
+                            total += 1;
+                            if total >= expected_lengths.len() {
+                                return;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+
+        let transport = IoUringTransport::new();
+        let node = NodeId::new();
+
+        transport
+            .send_frame(node, addr, vec![1u8, 2, 3])
+            .await
+            .unwrap();
+        transport
+            .send_frame(node, addr, vec![4u8, 5, 6, 7])
+            .await
+            .unwrap();
+
+        sleep(Duration::from_millis(50)).await;
+
+        let received = received.lock().await;
+        assert_eq!(accept_count.load(Ordering::SeqCst), 1);
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0], vec![1u8, 2, 3]);
+        assert_eq!(received[1], vec![4u8, 5, 6, 7]);
+    }
+}
+
 #[cfg(test)]
 mod replication_tests {
     use super::*;

@@ -15,14 +15,14 @@ use encryption::keymanager::KeyManager;
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-#[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex as ThreadHandleMutex;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-#[cfg(target_os = "linux")]
-use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+#[cfg(target_os = "linux")]
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::transport::ConnectionManager;
@@ -164,65 +164,194 @@ impl DataTransport for TcpTransport {
     }
 }
 
-/// Linux-native io_uring transport for zero-copy replication.
+/// Linux-native io_uring transport using a dedicated actor thread with persistent connections.
 #[cfg(target_os = "linux")]
 struct IoUringTransport {
-    _ring_thread: std::thread::JoinHandle<()>,
-    tx: mpsc::Sender<(SocketAddr, Vec<u8>, Arc<AtomicUsize>)>,
-    queue_depth: Arc<AtomicUsize>,
-    max_queue: usize,
+    command_tx: mpsc::UnboundedSender<TransportCommand>,
+    ring_thread: ThreadHandleMutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum TransportCommand {
+    SendFrame {
+        target: NodeId,
+        addr: SocketAddr,
+        data: Vec<u8>,
+        resp: Option<oneshot::Sender<Result<()>>>,
+    },
+    Disconnect {
+        target: NodeId,
+    },
+    Shutdown,
+}
+
+#[cfg(target_os = "linux")]
+struct SendWork {
+    data: Vec<u8>,
+    resp: Option<oneshot::Sender<Result<()>>>,
+}
+
+#[cfg(target_os = "linux")]
+struct ConnectionEntry {
+    tx: mpsc::Sender<SendWork>,
+    addr: SocketAddr,
+}
+
+#[cfg(target_os = "linux")]
+struct ActorState {
+    connections: HashMap<NodeId, ConnectionEntry>,
+}
+
+#[cfg(target_os = "linux")]
+impl ActorState {
+    fn new() -> Self {
+        Self {
+            connections: HashMap::new(),
+        }
+    }
+
+    async fn ensure_connection(
+        &mut self,
+        target: NodeId,
+        addr: SocketAddr,
+    ) -> Result<mpsc::Sender<SendWork>> {
+        if let Some(entry) = self.connections.get(&target) {
+            if entry.addr == addr {
+                return Ok(entry.tx.clone());
+            }
+
+            self.connections.remove(&target);
+        }
+
+        let (tx, mut rx) = mpsc::channel::<SendWork>(128);
+        let stream = tokio_uring::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| anyhow!("io_uring connect to {} failed: {}", addr, e))?;
+
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::warn!(error = %e, target = %target, "failed to disable Nagle on io_uring stream");
+        }
+
+        tokio_uring::spawn(async move {
+            let mut stream = stream;
+            while let Some(work) = rx.recv().await {
+                let (res, _buf) = stream.write_all(work.data).await;
+                if let Some(resp) = work.resp {
+                    let _ = resp.send(
+                        res.map(|_| ())
+                            .map_err(|e| anyhow!("io_uring write failed: {}", e)),
+                    );
+                }
+
+                if res.is_err() {
+                    break;
+                }
+            }
+        });
+
+        self.connections.insert(
+            target,
+            ConnectionEntry {
+                tx: tx.clone(),
+                addr,
+            },
+        );
+
+        Ok(tx)
+    }
+
+    fn drop_connection(&mut self, target: &NodeId) {
+        self.connections.remove(target);
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl IoUringTransport {
     fn new() -> Self {
-        const RING_QUEUE: usize = 1024;
-        let queue_depth = Arc::new(AtomicUsize::new(0));
-        let (tx, mut rx) = mpsc::channel::<(SocketAddr, Vec<u8>, Arc<AtomicUsize>)>(RING_QUEUE);
-
+        let (tx, rx) = mpsc::unbounded_channel();
         let handle = std::thread::spawn(move || {
             tokio_uring::start(async move {
-                while let Some((addr, data, depth)) = rx.recv().await {
-                    tokio_uring::spawn(async move {
-                        if let Err(error) = Self::send_uring(addr, data, depth).await {
-                            tracing::error!(error = %error, "io_uring send failed");
-                        }
-                    });
-                }
+                run_uring_actor(rx).await;
             });
         });
 
         Self {
-            _ring_thread: handle,
-            tx,
-            queue_depth,
-            max_queue: RING_QUEUE,
+            command_tx: tx,
+            ring_thread: ThreadHandleMutex::new(Some(handle)),
         }
     }
+}
 
-    async fn send_uring(
-        addr: SocketAddr,
-        data: Vec<u8>,
-        queue_depth: Arc<AtomicUsize>,
-    ) -> Result<()> {
-        let stream = tokio_uring::net::TcpStream::connect(addr)
-            .await
-            .map_err(|e| {
-                queue_depth.fetch_sub(1, Ordering::AcqRel);
-                anyhow!("io_uring connect failed: {}", e)
-            })?;
+#[cfg(target_os = "linux")]
+impl Drop for IoUringTransport {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(TransportCommand::Shutdown);
+        if let Ok(mut handle_opt) = self.ring_thread.lock() {
+            if let Some(handle) = handle_opt.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
 
-        let (result, _buf) = stream.write_all(data).await;
-        let write_result = result.map_err(|e| anyhow!("io_uring write failed: {}", e));
+#[cfg(target_os = "linux")]
+async fn run_uring_actor(mut rx: mpsc::UnboundedReceiver<TransportCommand>) {
+    let mut state = ActorState::new();
 
-        // Decrement queue depth once the write completes (success or failure).
-        queue_depth.fetch_sub(1, Ordering::AcqRel);
-        write_result?;
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            TransportCommand::SendFrame {
+                target,
+                addr,
+                data,
+                resp,
+            } => {
+                if let Err(e) = handle_send(&mut state, target, addr, data, resp).await {
+                    tracing::error!(target = %target, addr = %addr, error = %e, "io_uring send failed");
+                }
+            }
+            TransportCommand::Disconnect { target } => {
+                state.drop_connection(&target);
+            }
+            TransportCommand::Shutdown => break,
+        }
+    }
+}
 
-        stream
-            .shutdown(std::net::Shutdown::Write)
-            .map_err(|e| anyhow!("io_uring shutdown failed: {}", e))?;
-        Ok(())
+#[cfg(target_os = "linux")]
+async fn handle_send(
+    state: &mut ActorState,
+    target: NodeId,
+    addr: SocketAddr,
+    data: Vec<u8>,
+    resp: Option<oneshot::Sender<Result<()>>>,
+) -> Result<()> {
+    let sender = match state.ensure_connection(target, addr).await {
+        Ok(sender) => sender,
+        Err(err) => {
+            if let Some(resp) = resp {
+                let _ = resp.send(Err(anyhow!(err.to_string())));
+            }
+            return Err(err);
+        }
+    };
+
+    match sender.send(SendWork { data, resp }).await {
+        Ok(_) => Ok(()),
+        Err(mpsc::error::SendError(work)) => {
+            state.drop_connection(&target);
+            if let Some(resp) = work.resp {
+                let _ = resp.send(Err(anyhow!(
+                    "io_uring connection task closed for target {}",
+                    target
+                )));
+            }
+            Err(anyhow!(
+                "io_uring connection task closed for target {}",
+                target
+            ))
+        }
     }
 }
 
@@ -231,41 +360,28 @@ impl IoUringTransport {
 impl DataTransport for IoUringTransport {
     async fn send_frame(
         &self,
-        _target: NodeId,
+        target: NodeId,
         target_addr: SocketAddr,
         frame: Vec<u8>,
     ) -> Result<()> {
-        let depth = self.queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
-        let warn_threshold = (self.max_queue as f32 * 0.8) as usize;
+        let (resp_tx, resp_rx) = oneshot::channel();
 
-        if depth >= self.max_queue {
-            tracing::error!(
-                current_queue = depth,
-                capacity = self.max_queue,
-                "io_uring send queue is full; replication will backpressure"
-            );
-        } else if depth >= warn_threshold {
-            tracing::warn!(
-                current_queue = depth,
-                capacity = self.max_queue,
-                "io_uring send queue above 80% capacity"
-            );
-        } else {
-            tracing::debug!(
-                current_queue = depth,
-                capacity = self.max_queue,
-                "io_uring enqueue replication frame"
-            );
+        self.command_tx
+            .send(TransportCommand::SendFrame {
+                target,
+                addr: target_addr,
+                data: frame,
+                resp: Some(resp_tx),
+            })
+            .map_err(|_| anyhow!("io_uring runtime closed"))?;
+
+        match resp_rx.await {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!(
+                "io_uring actor shut down before send completion for target {}",
+                target
+            )),
         }
-
-        self.tx
-            .send((target_addr, frame, self.queue_depth.clone()))
-            .await
-            .map_err(|_| {
-                self.queue_depth.fetch_sub(1, Ordering::AcqRel);
-                anyhow!("io_uring runtime closed")
-            })?;
-        Ok(())
     }
 }
 
@@ -352,7 +468,7 @@ impl<C: ContentStore + 'static> MeshNode<C> {
 
         #[cfg(target_os = "linux")]
         let transport: Arc<dyn DataTransport> = {
-            info!("initializing io_uring zero-copy transport");
+            info!("initializing io_uring actor transport with persistent connections");
             Arc::new(IoUringTransport::new())
         };
 
