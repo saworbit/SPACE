@@ -348,7 +348,7 @@ mod transport_tests {
 #[cfg(all(test, target_os = "linux"))]
 mod io_uring_transport_tests {
     use super::*;
-    use crate::IoUringTransport;
+    use crate::{DataTransport, IoUringTransport};
     use common::podms::NodeId;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncReadExt;

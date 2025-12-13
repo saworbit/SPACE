@@ -229,10 +229,6 @@ impl ActorState {
             .await
             .map_err(|e| anyhow!("io_uring connect to {} failed: {}", addr, e))?;
 
-        if let Err(e) = stream.set_nodelay(true) {
-            tracing::warn!(error = %e, target = %target, "failed to disable Nagle on io_uring stream");
-        }
-
         tokio_uring::spawn(async move {
             let mut stream = stream;
             while let Some(work) = rx.recv().await {
