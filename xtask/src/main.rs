@@ -120,6 +120,7 @@ fn check_libtorch() -> Result<()> {
     }
 
     println!("cargo:warning=LIBTORCH not detected. layout-engine lints/builds may be skipped or incomplete.");
+    println!("cargo:warning=Install LibTorch (CPU) or set LIBTORCH_USE_PYTORCH=1; see Dockerfile or scripts/setup_dev_env.sh.");
     if std::env::var("CI").is_ok() && !allow_missing && strict {
         bail!("CI must have LIBTORCH configured (set LIBTORCH or LIBTORCH_USE_PYTORCH=1, or XTASK_ALLOW_MISSING_LIBTORCH=1 to skip)");
     }
