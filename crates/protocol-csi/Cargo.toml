@@ -18,8 +18,11 @@ scaling = { path = "../scaling", features = ["phase4"] }
 tracing = { workspace = true }
 csi-driver-rs = { workspace = true }
 uuid = { workspace = true }
+protocol-fuse = { path = "../protocol-fuse", features = ["phase4"] }
+fuse-rs = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 encryption = { path = "../encryption" }
 nvram-sim = { path = "../nvram-sim" }
+tempfile = "3"

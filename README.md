@@ -17,6 +17,10 @@
 **🌐 Multi-Node Ready:** Orchestrator ✅ • Gossip Protocol ✅ • Autonomous Scaling ✅ • Transformation in Transit ✅
 
 **🚀 Phase 4 Active:** Multi-Protocol Views (NVMe-oF, NFS, FUSE, CSI) + Full Mesh Federation
+**Phase D: Protocol Views & Federation (new)**
+- Build with `cargo build --release --features phase4`
+- Project capsules via `spacectl project --view nvme|nfs|fuse|csi --id <UUID> --policy-file examples/phase4-policy.yaml` (keeps serving until Ctrl+C)
+- Federation/sharding now flows through Raft stubs; validate end-to-end with `scripts/test_phase4.sh`
 
 [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [💡 Why SPACE](#-why-this-matters)
 

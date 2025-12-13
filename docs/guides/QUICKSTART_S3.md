@@ -127,6 +127,22 @@ This demo proves:
 ✅ **No Data Duplication** - PUT creates one capsule, GET reads that same capsule
 ✅ **Metadata Mapping** - S3 keys are resolved to capsules at runtime
 
+
+## Project a Phase 4 NVMe View
+
+```bash
+cargo build --release --features phase4
+
+# Keep this process running to serve NVMe-oF traffic
+./target/release/spacectl project \
+  --view nvme \
+  --id <CAPSULE_UUID> \
+  --policy-file examples/phase4-policy.yaml
+```
+
+This projects the same capsule you wrote via S3 into an NVMe target and triggers Raft-backed federation/sharding logic (`scripts/test_phase4.sh` exercises the flow end-to-end).
+
+
 ## What's Next?
 
 Now that protocol views work, you can:

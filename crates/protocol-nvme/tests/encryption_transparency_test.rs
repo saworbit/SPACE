@@ -76,7 +76,8 @@ async fn view_decrypts_stored_data() {
 
     let policy = Policy::encrypted();
     let capsule_id = pipeline
-        .write_capsule_with_policy(b"Space, the final frontier...", &policy)
+        .write_capsule_with_policy_async(b"Space, the final frontier...", &policy)
+        .await
         .unwrap();
 
     let capsule = registry.lookup(capsule_id).unwrap();

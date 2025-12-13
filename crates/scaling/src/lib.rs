@@ -674,7 +674,7 @@ impl<C: ContentStore + 'static> MeshNode<C> {
         let cluster = RaftCluster::new(RaftClusterConfig::default());
         let zone_ref = zone.to_string();
         cluster
-            .replicate(&id.as_uuid().to_string(), &zone_ref)
+            .replicate(&id.as_uuid().to_string(), zone_ref.as_bytes())
             .await?;
         info!(
             capsule = %id.as_uuid(),

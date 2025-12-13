@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase D: Protocol Views & Federation** - NVMe/NFS/FUSE/CSI projection helpers now drive Raft-backed federation/sharding, `spacectl project --view` keeps protocol targets online, and `scripts/test_phase4.sh` validates NVMe projection + discovery end-to-end; Phase D spec added under `docs/specs/PHASE_D_VIEWS_AND_FEDERATION.md`.
 - **Resilience & Force Snapshot controls** - New `Telemetry::ForcePolicyExecution` enables on-demand RPO execution; ScalingAgent/PolicyCompiler honor forced RPOs; `spacectl snapshot trigger --id <CAPSULE_UUID> [--rpo-secs N] --wait` emits operator commands for deterministic DR testing; resilience harness in `crates/scaling/tests/resilience_test.rs` exercises metro-sync failover and forced snapshot compilation. 
 - **Inbound replication test harness** - New `replication_integration` suite spins up real mesh nodes to validate receiver-side persistence, dedup refcounts, MAC tamper rejection, and garbage-frame handling over TCP.
 - **Inbound replication hardening** - Mesh replication now pools persistent TCP connections for streaming frames and uses an in-flight reservation registry to guarantee at-most-once NvramLog writes for identical payloads; timeouts guard slowloris cases.

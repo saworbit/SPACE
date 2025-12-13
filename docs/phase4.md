@@ -1,8 +1,8 @@
-﻿# Phase 4: Advanced Protocol Views & Full Mesh Federation
+# Phase 4: Advanced Protocol Views & Full Mesh Federation
 
 ## Purpose & Goals
 
-*Phase 4 realizes the patentable* �one capsule, infinite views� *thesis by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
+*Phase 4 realizes the patentable* ?one capsule, infinite views? *thesis by projecting capsules as NVMe-oF, NFS v4.2, FUSE, and CSI surfaces without materializing extra copies, while sharding metadata with Paxos for sovereign, low-latency federation.*
 
 Goals:
 
@@ -68,7 +68,9 @@ cargo run -p spacectl -- project \
 3. **Security / Chaos**
    - `scripts/test_federation_resilience.sh` injects partitions (Chaos Mesh) to ensure Raft shards maintain consistency.
 4. **Benchmarks (future)**
-   - Use Criterion for `project_nvme_view` latency (<50ms) and `MeshNode::federate_capsule` (<100�s) by mocking RDMA loops.
+   - Use Criterion for `project_nvme_view` latency (<50ms) and `MeshNode::federate_capsule` (<100?s) by mocking RDMA loops.
+5. **Smoke scripts**
+   - `scripts/test_phase4.sh` runs `spacectl project --view nvme` and validates NVMe discovery output end-to-end.
 
 ## Scripts & Deployments
 
@@ -98,7 +100,7 @@ cargo run -p spacectl -- project \
 ## FAQ
 
 - **Why now?** Phase 3 proved the universal capsule and PODMS scaling. This phase completes the fabric by adding cross-protocol views and federated metadata.
-- **Hardware required?** Linux only today. RDMA/Mellanox optional � the scripts and vendor crates mock transport with TCP ports.
+- **Hardware required?** Linux only today. RDMA/Mellanox optional ? the scripts and vendor crates mock transport with TCP ports.
 - **Does single-node mode break?** No. `phase4` is opt-in. Without `--features phase4`, the new crates and CLI path remain unused.
 - **Can we add SMB or iSCSI later?** Yes. The new phases expose `project_nvme_view` hooks where future protocols can plug right in.
 - **How do we prove compliance?** Logs include tracing spans (`nvme_project`, `nfs_export`, `fuse_mount`, `csi_provision`). `MeshNode` emits `info!` events when shards are stored, making audit chains easy to follow.

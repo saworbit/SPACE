@@ -17,6 +17,8 @@ common = { path = "../common" }
 scaling = { path = "../scaling", features = ["phase4"] }
 spdk-rs = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

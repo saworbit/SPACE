@@ -1,12 +1,12 @@
 //! Phase 4 CSI provisioning with federated metadata and mesh sharding.
 #![cfg(feature = "phase4")]
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use capsule_registry::CapsuleRegistry;
 use common::{CapsuleId, Policy};
 use csi_driver_rs::{CsiServer, ProvisionRequest};
-use scaling::enforce_view_policy;
-use scaling::MeshNode;
+use protocol_fuse::mount_fuse_view;
+use scaling::{enforce_view_policy, MeshNode};
 use tracing::info_span;
 use uuid::Uuid;
 
@@ -31,6 +31,25 @@ pub async fn csi_provision_capsule<C: scaling::ContentStore + 'static>(
     CsiServer::provision(&id.as_uuid().to_string())
 }
 
+/// CSI Node helper that mounts capsules via the FUSE protocol view.
+pub async fn publish_capsule_volume<C: scaling::ContentStore + 'static>(
+    volume_id: &str,
+    target_path: &str,
+    policy: &Policy,
+    mesh: &MeshNode<C>,
+    registry: &CapsuleRegistry,
+) -> Result<fuse_rs::MountHandle> {
+    let capsule_id = CapsuleId::from_uuid(
+        Uuid::parse_str(volume_id).with_context(|| format!("invalid capsule UUID: {volume_id}"))?,
+    );
+    enforce_view_policy(mesh, capsule_id, policy, "csi", |cid| {
+        registry.serialize_capsule(cid)
+    })
+    .await?;
+
+    mount_fuse_view(capsule_id, policy, mesh, target_path, registry).await
+}
+
 #[cfg(all(test, feature = "phase4"))]
 mod tests {
     use super::*;
@@ -42,6 +61,7 @@ mod tests {
     use scaling::{ContentStore, MeshNode};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
+    use tempfile::TempDir;
     use tokio::sync::RwLock;
 
     #[derive(Default)]
@@ -74,9 +94,16 @@ mod tests {
         .unwrap()
     }
 
+    fn registry_with_tempdir() -> (CapsuleRegistry, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.db");
+        let registry = CapsuleRegistry::open(db_path.to_string_lossy().as_ref()).unwrap();
+        (registry, dir)
+    }
+
     #[tokio::test]
     async fn provisions_csi_volume() {
-        let registry = CapsuleRegistry::new();
+        let (registry, _tmp) = registry_with_tempdir();
         let capsule_id = CapsuleId::new();
         let policy = Policy::metro_sync();
         registry
@@ -93,5 +120,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(server.capsule_id(), capsule_id.as_uuid().to_string());
+    }
+
+    #[tokio::test]
+    async fn publishes_volume_via_fuse_mount() {
+        let (registry, _tmp) = registry_with_tempdir();
+        let capsule_id = CapsuleId::new();
+        let policy = Policy::metro_sync();
+        registry
+            .create_capsule_with_segments(capsule_id, 0, Vec::new(), policy.clone())
+            .unwrap();
+
+        let mesh = build_mesh(ZoneId::Metro {
+            name: "csi-publish".into(),
+        })
+        .await;
+
+        let target_path = format!("/tmp/space-csi-{}", capsule_id.as_uuid());
+        let handle = publish_capsule_volume(
+            &capsule_id.as_uuid().to_string(),
+            &target_path,
+            &policy,
+            &mesh,
+            &registry,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(handle.mountpoint(), target_path);
     }
 }

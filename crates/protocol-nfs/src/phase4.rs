@@ -2,11 +2,9 @@
 
 use anyhow::Result;
 use capsule_registry::CapsuleRegistry;
-use common::podms::Telemetry;
 use common::{CapsuleId, Policy};
 use nfs_rs::{ExportOptions, NfsServer};
-use scaling::compiler::{compile_scaling, MeshState, ScalingAction};
-use scaling::{ContentStore, MeshNode, MetadataShard};
+use scaling::{enforce_view_policy, ContentStore, MeshNode};
 use tracing::{info, info_span};
 
 /// Export a capsule via a Phase 4 NFS view.
@@ -21,41 +19,10 @@ pub async fn export_nfs_view<C: ContentStore>(
 
     registry.lookup(id)?;
 
-    let telemetry = Telemetry::ViewProjection {
-        id,
-        view: "nfs".into(),
-    };
-
-    let mesh_state = MeshState::empty(mesh.zone().clone());
-    let actions = compile_scaling(policy, &telemetry, &mesh_state);
-
-    for action in actions {
-        match action {
-            ScalingAction::Federate { capsule_id, zone } => {
-                mesh.federate_capsule(capsule_id, zone).await?;
-            }
-            ScalingAction::ShardEC {
-                capsule_id, zones, ..
-            } => {
-                if zones.is_empty() {
-                    continue;
-                }
-                let payload = registry.serialize_capsule(capsule_id)?;
-                let shard_keys = capsule_id.shard_keys(zones.len());
-                let shards: Vec<MetadataShard> = zones
-                    .into_iter()
-                    .zip(shard_keys.into_iter())
-                    .map(|(zone, shard_id)| MetadataShard {
-                        shard_id,
-                        owner: mesh.id(),
-                        zone,
-                    })
-                    .collect();
-                mesh.shard_metadata(capsule_id, shards, &payload).await?;
-            }
-            _ => {}
-        }
-    }
+    enforce_view_policy(mesh, id, policy, "nfs", |cid| {
+        registry.serialize_capsule(cid)
+    })
+    .await?;
 
     let export_path = format!("/capsules/{}", id.as_uuid());
     let mut server = NfsServer::new();

@@ -57,9 +57,14 @@ impl RaftCluster {
         }
     }
 
-    /// Replicate a capsule identifier to another zone.
-    pub async fn replicate(&self, capsule: &str, zone: &str) -> Result<()> {
-        info!(capsule = %capsule, zone = %zone, "raft: replicating capsule metadata");
+    /// Replicate capsule metadata to the cluster for this zone.
+    pub async fn replicate(&self, capsule: &str, payload: &[u8]) -> Result<()> {
+        info!(
+            capsule = %capsule,
+            bytes = payload.len(),
+            zone = %self.zone_hint.as_deref().unwrap_or(&self.config.name),
+            "raft: replicating capsule metadata"
+        );
         Ok(())
     }
 

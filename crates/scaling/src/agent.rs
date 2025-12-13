@@ -10,7 +10,7 @@
 //! telemetry events into concrete ScalingActions based on declarative policies.
 
 use anyhow::{anyhow, Context, Result};
-use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps};
+use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps, ZoneId};
 use common::traits::CapsuleCatalog;
 use common::{Capsule, CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, Segment};
 use encryption::keymanager::KeyManager;
@@ -26,6 +26,10 @@ use tracing::{debug, info, warn};
 
 use crate::compiler::{MeshState, NodeInfo, PolicyCompiler, ScalingAction};
 use crate::{ContentStore, MeshNode, SwarmOps};
+#[cfg(feature = "phase4")]
+use raft_rs::{RaftCluster, ShardKey};
+#[cfg(feature = "phase4")]
+use serde_json;
 
 type AgentRuntimeParts = (
     Arc<dyn CapsuleCatalog + Send + Sync>,
@@ -274,20 +278,37 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
                     .await?;
             }
             ScalingAction::Federate { capsule_id, zone } => {
-                info!(
-                    capsule = %capsule_id.as_uuid(),
-                    zone = %zone,
-                    "phase4 federate action (agent noop)"
-                );
+                #[cfg(feature = "phase4")]
+                {
+                    self.execute_federation(capsule_id, zone).await?;
+                }
+                #[cfg(not(feature = "phase4"))]
+                {
+                    info!(
+                        capsule = %capsule_id.as_uuid(),
+                        zone = %zone,
+                        "federation skipped (phase4 feature disabled)"
+                    );
+                }
             }
             ScalingAction::ShardEC {
-                capsule_id, zones, ..
+                capsule_id,
+                parity,
+                zones,
             } => {
-                info!(
-                    capsule = %capsule_id.as_uuid(),
-                    shard_targets = zones.len(),
-                    "phase4 shard action (agent noop)"
-                );
+                #[cfg(feature = "phase4")]
+                {
+                    self.execute_sharding(capsule_id, parity, zones).await?;
+                }
+                #[cfg(not(feature = "phase4"))]
+                {
+                    info!(
+                        capsule = %capsule_id.as_uuid(),
+                        shard_targets = zones.len(),
+                        parity,
+                        "sharding skipped (phase4 feature disabled)"
+                    );
+                }
             }
             ScalingAction::Evacuate {
                 source_node,
@@ -863,6 +884,59 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         );
 
         Ok(migrated)
+    }
+
+    #[cfg(feature = "phase4")]
+    async fn execute_federation(&self, capsule_id: CapsuleId, zone: ZoneId) -> Result<()> {
+        info!(
+            capsule = %capsule_id.as_uuid(),
+            zone = %zone,
+            "federating capsule metadata"
+        );
+
+        let capsule = self.lookup_capsule(capsule_id)?;
+        let payload = serde_json::to_vec(&capsule)?;
+        let cluster = RaftCluster::for_zone(&zone.to_string());
+
+        cluster
+            .replicate(&capsule_id.as_uuid().to_string(), &payload)
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "phase4")]
+    async fn execute_sharding(
+        &self,
+        capsule_id: CapsuleId,
+        parity: usize,
+        zones: Vec<ZoneId>,
+    ) -> Result<()> {
+        if zones.is_empty() {
+            info!(
+                capsule = %capsule_id.as_uuid(),
+                "shard action received with no zones; skipping"
+            );
+            return Ok(());
+        }
+
+        let capsule = self.lookup_capsule(capsule_id)?;
+        let payload = serde_json::to_vec(&capsule)?;
+        let shard_keys = capsule_id.shard_keys(zones.len().max(1));
+
+        for (idx, zone) in zones.iter().enumerate() {
+            let shard_key = ShardKey::new(*shard_keys.get(idx).unwrap_or(&shard_keys[0]));
+            let cluster = RaftCluster::for_zone(&zone.to_string());
+            cluster.store_shard(&shard_key, &payload).await?;
+            info!(
+                capsule = %capsule_id.as_uuid(),
+                shard = shard_key.0,
+                zone = %zone,
+                parity,
+                "stored metadata shard in raft"
+            );
+        }
+
+        Ok(())
     }
 
     async fn finalize_move_cleanup(

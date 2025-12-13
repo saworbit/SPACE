@@ -10,6 +10,23 @@ cargo build --release
 # This will take 2-5 minutes on first build
 ```
 
+
+### Phase D: Protocol Views + Federation
+
+```bash
+# Build with multi-protocol projections enabled
+cargo build --release --features phase4
+
+# Project a capsule into an NVMe view (serves until Ctrl+C)
+./target/release/spacectl project \
+  --view nvme \
+  --id <CAPSULE_UUID> \
+  --policy-file examples/phase4-policy.yaml
+
+# End-to-end smoke for NVMe projection + Raft sharding
+./scripts/test_phase4.sh
+```
+
 ## What Gets Built
 
 ```
@@ -39,6 +56,9 @@ cargo test --workspace -- --nocapture
 
 # Metro-sync / DataMotion copy + move paths
 cargo test -p scaling --test data_motion_test
+
+# Phase D view projection smoke (NVMe + Raft sharding)
+./scripts/test_phase4.sh
 ```
 
 ### S3 View Tests
@@ -151,7 +171,9 @@ Run these before opening a PR:
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo audit
+
+# Security + formatting + lint bundle
+cargo xtask audit
 ```
 
 ### Linux RDMA Zero-Copy (Phase C)
