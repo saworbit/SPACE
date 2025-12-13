@@ -218,9 +218,8 @@ Most policy engines emit static scripts or orchestration trees. CapsuleFlow’s 
 *Shane Wall* (concept synthesis)\
 *ChatGPT (OpenAI o3)* (drafting assistance)
 
-For legal assessment email **ip\@adaptive‑storage.dev**.
+For legal assessment email [ip@adaptive-storage.dev](mailto:ip@adaptive-storage.dev).
 
 ---
 
 © 2025  Shane Wall & contributors.  Licensed under Apache 2.0 (no patent licence implied).
-
