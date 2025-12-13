@@ -36,6 +36,9 @@ cargo test --workspace
 
 # Run with output
 cargo test --workspace -- --nocapture
+
+# Metro-sync / DataMotion copy + move paths
+cargo test -p scaling --test data_motion_test
 ```
 
 ### S3 View Tests
@@ -140,6 +143,15 @@ If you encounter weird errors, try:
 cargo clean
 rm -f space.nvram* space.db test*.nvram* test*.metadata
 cargo build --release
+```
+
+## Quality Gates
+
+Run these before opening a PR:
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo audit
 ```
 
 ## Build Optimization

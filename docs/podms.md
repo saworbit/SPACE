@@ -207,7 +207,7 @@ tokio::spawn(async move {
 
 **Deliverables:**
 - ✅ `scaling` crate with mesh networking (gossip discovery via memberlist)
-- ✅ RDMA mock transport for zero-copy segment mirroring (TCP fallback for POC)
+- ✅ RDMA mock transport for zero-copy segment mirroring (TCP path now runs through the unified DataMotion engine for the full replication flow)
 - ✅ `MeshNode` with peer discovery and segment mirroring
 - ✅ `ScalingAgent` consuming telemetry and triggering autonomous actions
 - ✅ `WritePipeline` extension for metro-sync replication on RPO=0 policies

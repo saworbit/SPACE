@@ -1088,6 +1088,13 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 </div>
 
+### 🔄 Replication Status
+
+| Capability | Status |
+|:-----------|:------:|
+| Inbound Replication | ✅ Implemented via unified DataMotion engine |
+| Outbound Replication (Metro-Sync) | ✅ Implemented via unified DataMotion engine |
+
 ### ✅ What's Working
 
 - ✅ Capsule storage with compression and deduplication

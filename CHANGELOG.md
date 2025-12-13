@@ -166,6 +166,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added frame size limits to prevent DoS attacks
 - Documented security guarantees in replication.md
 
+## [0.2.0] - Phase A DataMotion
+
+### Added
+- `DataMotion` unified transport engine in `ScalingAgent`.
+- Support for real payload transmission in `execute_metro_sync_replication`.
+
+### Changed
+- Refactored `migrate_capsule_task` to be generic over `MotionMode` (Copy vs Move).
+- Unified security transformation logic for all data movement types.
+
 ## [0.1.0] - 2024-11-15
 
 ### Added

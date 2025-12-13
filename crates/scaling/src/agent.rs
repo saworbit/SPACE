@@ -33,12 +33,30 @@ type AgentRuntimeParts = (
     Option<Arc<RwLock<KeyManager>>>,
 );
 
-struct MigrationTaskCtx<C: ContentStore> {
+#[derive(Debug, Clone, Copy)]
+pub enum MotionMode {
+    /// Copy data to target (Replication / Backup)
+    Copy,
+    /// Move data to target, then delete local (Migration / Tiering)
+    Move,
+}
+
+struct DataMotionContext<C: ContentStore> {
     mesh_node: Arc<MeshNode<C>>,
     catalog: Arc<dyn CapsuleCatalog + Send + Sync>,
     nvram_log: Arc<RwLock<NvramLog>>,
     key_manager: Option<Arc<RwLock<KeyManager>>>,
-    destination: NodeId,
+}
+
+impl<C: ContentStore> Clone for DataMotionContext<C> {
+    fn clone(&self) -> Self {
+        Self {
+            mesh_node: Arc::clone(&self.mesh_node),
+            catalog: Arc::clone(&self.catalog),
+            nvram_log: Arc::clone(&self.nvram_log),
+            key_manager: self.key_manager.clone(),
+        }
+    }
 }
 
 /// Scaling agent that consumes telemetry and performs autonomous actions.
@@ -291,6 +309,26 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         Ok(())
     }
 
+    /// Unified engine entry point for data motion (replication/migration).
+    pub async fn execute_data_motion(
+        &self,
+        capsule_id: CapsuleId,
+        targets: Vec<NodeId>,
+        mode: MotionMode,
+        transform: bool,
+        reason: &str,
+    ) -> Result<usize> {
+        let (catalog, nvram_log, key_manager) = self.runtime_handles()?;
+        let ctx = DataMotionContext {
+            mesh_node: Arc::clone(&self.mesh_node),
+            catalog,
+            nvram_log,
+            key_manager,
+        };
+
+        Self::data_motion_task(ctx, capsule_id, targets, mode, transform, reason).await
+    }
+
     // ========================================================================
     // Action Executors - Step 3 Implementation
     // ========================================================================
@@ -347,34 +385,36 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         debug!(
             capsule_id = %capsule_id.as_uuid(),
             replica_count = replica_count,
+            target_overrides = targets.len(),
             "performing metro-sync replication"
         );
 
-        // Note: In a real implementation, we would need access to:
-        // 1. CapsuleCatalog to lookup capsule and get segment IDs
-        // 2. NvramLog to read segment data
-        //
-        // For now, this is a placeholder that demonstrates the flow.
-        // The actual implementation would require the agent to have
-        // these dependencies injected.
+        let selected_targets: Vec<NodeId> = if targets.is_empty() {
+            let peers = self.mesh_node.discover_peers().await?;
+            peers
+                .into_iter()
+                .filter(|peer| peer != &self.mesh_node.id())
+                .take(replica_count)
+                .collect()
+        } else {
+            targets.iter().copied().take(replica_count).collect()
+        };
 
-        info!(
-            capsule_id = %capsule_id.as_uuid(),
-            target_count = targets.len().min(replica_count),
-            "metro-sync replication: would load and mirror segments to targets"
-        );
+        if selected_targets.is_empty() {
+            warn!("metro-sync failed: no peers available");
+            return Err(anyhow!("no peers for metro-sync"));
+        }
 
-        // Placeholder for actual implementation:
-        // let capsule = self.catalog.lookup_capsule(capsule_id)?;
-        // for segment_id in capsule.segments {
-        //     let segment_data = self.nvram_log.read(segment_id).await?;
-        //     for target in targets.iter().take(replica_count) {
-        //         self.mesh_node
-        //             .mirror_segment(segment_id, &segment_data, *target)
-        //             .await?;
-        //     }
-        // }
+        self.execute_data_motion(
+            capsule_id,
+            selected_targets,
+            MotionMode::Copy,
+            false,
+            "metro-sync",
+        )
+        .await?;
 
+        info!(capsule = %capsule_id.as_uuid(), "metro-sync replication complete");
         Ok(())
     }
 
@@ -386,7 +426,6 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         destination: NodeId,
         transform: bool,
     ) -> Result<()> {
-        let (catalog, nvram_log, key_manager) = self.runtime_handles()?;
         info!(
             capsule_id = %capsule_id.as_uuid(),
             destination = %destination,
@@ -395,15 +434,15 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             "starting migration"
         );
 
-        let ctx = MigrationTaskCtx {
-            mesh_node: Arc::clone(&self.mesh_node),
-            catalog,
-            nvram_log,
-            key_manager,
-            destination,
-        };
-
-        let migrated = Self::migrate_capsule_task(ctx, capsule_id, transform, &reason).await?;
+        let migrated = self
+            .execute_data_motion(
+                capsule_id,
+                vec![destination],
+                MotionMode::Move,
+                transform,
+                &reason,
+            )
+            .await?;
 
         info!(
             capsule_id = %capsule_id.as_uuid(),
@@ -460,22 +499,31 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             "evacuation starting"
         );
 
+        let motion_ctx = DataMotionContext {
+            mesh_node: Arc::clone(&self.mesh_node),
+            catalog: Arc::clone(&catalog),
+            nvram_log: Arc::clone(&nvram_log),
+            key_manager: key_manager.clone(),
+        };
+
         use crate::compiler::EvacuationUrgency;
         match urgency {
             EvacuationUrgency::Immediate => {
                 let mut set: JoinSet<Result<usize>> = JoinSet::new();
                 for (idx, capsule) in capsules.into_iter().enumerate() {
                     let target = targets[idx % targets.len()];
-                    let ctx = MigrationTaskCtx {
-                        mesh_node: Arc::clone(&self.mesh_node),
-                        catalog: Arc::clone(&catalog),
-                        nvram_log: Arc::clone(&nvram_log),
-                        key_manager: key_manager.clone(),
-                        destination: target,
-                    };
                     let reason_clone = format!("{reason} (evacuation)");
+                    let ctx = motion_ctx.clone();
                     set.spawn(async move {
-                        Self::migrate_capsule_task(ctx, capsule.id, true, &reason_clone).await
+                        Self::data_motion_task(
+                            ctx,
+                            capsule.id,
+                            vec![target],
+                            MotionMode::Move,
+                            true,
+                            &reason_clone,
+                        )
+                        .await
                     });
                 }
 
@@ -486,16 +534,11 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             EvacuationUrgency::Gradual => {
                 for (idx, capsule) in capsules.into_iter().enumerate() {
                     let target = targets[idx % targets.len()];
-                    let ctx = MigrationTaskCtx {
-                        mesh_node: Arc::clone(&self.mesh_node),
-                        catalog: Arc::clone(&catalog),
-                        nvram_log: Arc::clone(&nvram_log),
-                        key_manager: key_manager.clone(),
-                        destination: target,
-                    };
-                    Self::migrate_capsule_task(
-                        ctx,
+                    Self::data_motion_task(
+                        motion_ctx.clone(),
                         capsule.id,
+                        vec![target],
+                        MotionMode::Move,
                         false,
                         &format!("{reason} (gradual)"),
                     )
@@ -542,17 +585,24 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         }
 
         let total_capsules = capsules.len();
+        let motion_ctx = DataMotionContext {
+            mesh_node: Arc::clone(&self.mesh_node),
+            catalog: Arc::clone(&catalog),
+            nvram_log: Arc::clone(&nvram_log),
+            key_manager: key_manager.clone(),
+        };
 
         for (idx, capsule) in capsules.into_iter().enumerate() {
             let target = underutilized_nodes[idx % underutilized_nodes.len()];
-            let ctx = MigrationTaskCtx {
-                mesh_node: Arc::clone(&self.mesh_node),
-                catalog: Arc::clone(&catalog),
-                nvram_log: Arc::clone(&nvram_log),
-                key_manager: key_manager.clone(),
-                destination: target,
-            };
-            Self::migrate_capsule_task(ctx, capsule.id, false, "rebalance").await?;
+            Self::data_motion_task(
+                motion_ctx.clone(),
+                capsule.id,
+                vec![target],
+                MotionMode::Move,
+                false,
+                "rebalance",
+            )
+            .await?;
         }
 
         info!(
@@ -574,21 +624,39 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         }
     }
 
-    async fn migrate_capsule_task(
-        ctx: MigrationTaskCtx<C>,
+    async fn data_motion_task(
+        ctx: DataMotionContext<C>,
         capsule_id: CapsuleId,
+        targets: Vec<NodeId>,
+        mode: MotionMode,
         transform: bool,
         reason: &str,
     ) -> Result<usize> {
+        if targets.is_empty() {
+            warn!(
+                capsule = %capsule_id.as_uuid(),
+                "data motion requested with no targets"
+            );
+            return Err(anyhow!("no targets provided for data motion"));
+        }
+
         let capsule = ctx
             .catalog
             .lookup_capsule(capsule_id)
             .with_context(|| format!("lookup capsule {}", capsule_id.as_uuid()))?;
 
-        // Validate sovereignty and placement constraints
-        capsule
-            .on_migrate(ctx.destination, ctx.mesh_node.zone())
-            .with_context(|| format!("sovereignty validation for {}", capsule_id.as_uuid()))?;
+        // Validate sovereignty and placement constraints for all targets.
+        for target in &targets {
+            capsule
+                .on_migrate(*target, ctx.mesh_node.zone())
+                .with_context(|| {
+                    format!(
+                        "sovereignty validation for {} to {}",
+                        capsule_id.as_uuid(),
+                        target
+                    )
+                })?;
+        }
 
         let mut migrated = 0usize;
         let swarm_ops = ctx.key_manager.as_ref().map(|km| SwarmOps::new(km.clone()));
@@ -767,24 +835,66 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             let mut frame =
                 crate::replication::ReplicationFrame::new(segment_id, encryption_meta, payload);
             frame.capsule_id = Some(capsule_id);
-            ctx.mesh_node
-                .send_replication_frame(&frame, ctx.destination)
-                .await
-                .with_context(|| {
-                    format!("stream segment {} to {}", segment_id.0, ctx.destination)
-                })?;
+
+            let mut set: JoinSet<Result<()>> = JoinSet::new();
+            for target in targets.iter().copied() {
+                let node = ctx.mesh_node.clone();
+                let frame_clone = frame.clone();
+                set.spawn(async move { node.send_replication_frame(&frame_clone, target).await });
+            }
+
+            while let Some(result) = set.join_next().await {
+                result??;
+            }
             migrated += 1;
+        }
+
+        if matches!(mode, MotionMode::Move) {
+            Self::finalize_move_cleanup(&ctx, &capsule, capsule_id).await?;
         }
 
         info!(
             capsule = %capsule_id.as_uuid(),
-            destination = %ctx.destination,
+            targets = targets.len(),
             segments = migrated,
             reason = reason,
-            "migration task finished"
+            mode = ?mode,
+            "data motion task finished"
         );
 
         Ok(migrated)
+    }
+
+    async fn finalize_move_cleanup(
+        ctx: &DataMotionContext<C>,
+        capsule: &Capsule,
+        capsule_id: CapsuleId,
+    ) -> Result<()> {
+        {
+            let log = ctx.nvram_log.read().await;
+            for segment_id in capsule.segments.iter().copied() {
+                match log.remove_segment(segment_id) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        warn!(
+                            segment = segment_id.0,
+                            capsule = %capsule_id.as_uuid(),
+                            "segment missing during move cleanup"
+                        );
+                    }
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!("remove segment {} during move cleanup", segment_id.0)
+                        });
+                    }
+                }
+            }
+        }
+
+        ctx.catalog
+            .delete_capsule(capsule_id)
+            .with_context(|| format!("delete capsule {}", capsule_id.as_uuid()))?;
+        Ok(())
     }
 }
 
