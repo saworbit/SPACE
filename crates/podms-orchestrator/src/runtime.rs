@@ -5,6 +5,7 @@ use common::podms::Telemetry;
 use mesh_core::GossipHandler;
 use scaling::ContentStore;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -98,6 +99,20 @@ impl<C: ContentStore + 'static> OrchestratorRuntime<C> {
         let event = Telemetry::NodeDegraded {
             node_id: self.orchestrator.node_id(),
             reason,
+        };
+
+        self.emit_telemetry(event)
+    }
+
+    /// Force execution of a capsule's policy (e.g., trigger snapshot now).
+    pub fn force_snapshot(
+        &self,
+        capsule_id: common::CapsuleId,
+        forced_rpo: Option<Duration>,
+    ) -> Result<()> {
+        let event = Telemetry::ForcePolicyExecution {
+            capsule_id,
+            forced_rpo,
         };
 
         self.emit_telemetry(event)

@@ -488,6 +488,7 @@ async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<Capsul
 - `spacectl replicate <capsule-id> --to <node>`
 - `spacectl evacuate <node> --urgency <immediate|gradual>`
 - `spacectl policy set <capsule-id> <policy-yaml>`
+- `spacectl snapshot trigger --id <capsule-id> [--rpo-secs N] [--wait]` to force async RPO execution for tests/DR drills
 
 ---
 

@@ -245,3 +245,12 @@ impl WritePipeline {
 - Separation of concerns: legacy and modular logic live in distinct files/structs.
 - Simplified testing: instantiate concrete strategies directly without juggling Cargo features.
 - Runtime configurability: switch implementations without rebuilding.
+
+## 9. Resilience & Snapshot Testing Strategy (Draft)
+- Goal: deterministic chaos/resilience coverage for `crates/scaling` and `crates/podms-orchestrator` beyond happy-path replication.
+- ForceSnapshot control: new telemetry variant `ForcePolicyExecution { capsule_id, forced_rpo }` lets the scaling agent bypass schedulers and run RPO actions immediately. Exposed via `spacectl snapshot trigger` for operator-driven runs.
+- Failover harness: lightweight two-node `MeshNode` setup to mirror segments, drop the primary, and verify the secondary serves clean data (metro-sync zero RPO).
+- Recovery playbooks:
+  - **Snap-and-Recover**: async RPO policies are forced via telemetry, local corruption is injected, and read-repair fetches from the remote replica.
+  - **Move-and-Recover**: snapshots can be repointed to a new node/zone and hydrated on first access.
+- Test assets: `crates/scaling/tests/resilience_test.rs` encodes the metro-sync failover check and forced snapshot compilation flow; future work adds corruption+repair once the read-repair pipeline is wired end-to-end.

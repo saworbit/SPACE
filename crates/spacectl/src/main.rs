@@ -8,7 +8,7 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use clap::{Args, ValueEnum};
 use clap::{Parser, Subcommand};
 #[cfg(feature = "phase4")]
-use common::podms::ZoneId;
+use common::podms::{Telemetry, ZoneId};
 use common::CapsuleId;
 #[cfg(any(
     feature = "pipeline_async",
@@ -18,6 +18,8 @@ use common::CapsuleId;
 use common::Policy;
 #[cfg(feature = "phase4")]
 use csi_driver_rs::ProvisionRequest;
+#[cfg(feature = "phase4")]
+use encryption::keymanager::KeyManager;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
 #[cfg(feature = "phase4")]
@@ -30,6 +32,8 @@ use protocol_nfs::NfsView;
 #[cfg(feature = "phase4")]
 use protocol_nvme::project_nvme_view;
 #[cfg(feature = "phase4")]
+use scaling::ContentStore;
+#[cfg(feature = "phase4")]
 use scaling::MeshNode;
 use std::fs;
 use std::io::{self, Write};
@@ -38,10 +42,13 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(feature = "phase4")]
 use std::sync::Arc;
 use std::sync::Once;
+use std::time::Duration;
 #[cfg(feature = "modular_pipeline")]
 use tokio::runtime::Runtime as TokioRuntime;
 #[cfg(feature = "phase4")]
 use tokio::runtime::Runtime;
+#[cfg(feature = "phase4")]
+use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "phase4")]
 use uuid::Uuid;
@@ -103,6 +110,19 @@ struct ProjectArgs {
     /// YAML policy file driving the projection.
     #[arg(long)]
     policy_file: String,
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Clone, Default)]
+struct DummyContentStore;
+
+#[cfg(feature = "phase4")]
+impl ContentStore for DummyContentStore {
+    fn lookup_content(&self, _hash: &common::ContentHash) -> Option<common::SegmentId> {
+        None
+    }
+
+    fn register_content(&self, _hash: &common::ContentHash, _segment_id: common::SegmentId) {}
 }
 
 #[derive(Subcommand)]
@@ -171,6 +191,26 @@ enum BlockCommands {
         offset: u64,
         #[arg(short, long)]
         file: String,
+    },
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Subcommand)]
+enum SnapshotCommands {
+    /// Force immediate execution of a capsule's replication policy.
+    Trigger {
+        /// Capsule UUID to snapshot/replicate now.
+        #[arg(long, value_name = "UUID")]
+        id: String,
+        /// Optional override for the RPO interval (seconds).
+        #[arg(long, value_name = "SECONDS")]
+        rpo_secs: Option<u64>,
+        /// Wait briefly after emitting the telemetry event.
+        #[arg(long)]
+        wait: bool,
+        /// Where to append the serialized telemetry event.
+        #[arg(long, default_value = "space.telemetry.jsonl")]
+        out: String,
     },
 }
 
@@ -381,6 +421,11 @@ enum Commands {
     },
     #[cfg(feature = "phase4")]
     Project(ProjectArgs),
+    #[cfg(feature = "phase4")]
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommands,
+    },
     /// Interact with the NFS namespace view
     Nfs {
         #[command(subcommand)]
@@ -410,6 +455,9 @@ fn handle_project_command(args: ProjectArgs) -> Result<()> {
     let capsule_id = CapsuleId::from_uuid(uuid);
     let policy = load_policy_file(&policy_file)?;
     let registry = Arc::new(CapsuleRegistry::new());
+    let content_store = Arc::new(RwLock::new(DummyContentStore));
+    let nvram_log = Arc::new(RwLock::new(NvramLog::open(NVRAM_PATH)?));
+    let key_manager = Arc::new(RwLock::new(KeyManager::new([0u8; 32])));
 
     let rt = Runtime::new()?;
     let mesh = rt.block_on(async {
@@ -418,6 +466,9 @@ fn handle_project_command(args: ProjectArgs) -> Result<()> {
                 name: "local".into(),
             },
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            content_store,
+            nvram_log,
+            key_manager,
         )
         .await
     })?;
@@ -455,6 +506,48 @@ fn handle_project_command(args: ProjectArgs) -> Result<()> {
             Ok::<(), anyhow::Error>(())
         }
     })?;
+
+    Ok(())
+}
+
+#[cfg(feature = "phase4")]
+fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
+    match command {
+        SnapshotCommands::Trigger {
+            id,
+            rpo_secs,
+            wait,
+            out,
+        } => {
+            let uuid = Uuid::parse_str(&id).map_err(|err| anyhow!(err))?;
+            let capsule_id = CapsuleId::from_uuid(uuid);
+            let forced_rpo = rpo_secs.map(Duration::from_secs);
+            let telemetry = Telemetry::ForcePolicyExecution {
+                capsule_id,
+                forced_rpo,
+            };
+
+            let serialized = serde_json::to_string(&telemetry)?;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&out)?;
+            writeln!(file, "{}", serialized)?;
+
+            println!(
+                "Queued forced snapshot for capsule {} (forced_rpo={}) -> {}",
+                capsule_id.as_uuid(),
+                forced_rpo
+                    .map(|d| format!("{:?}", d))
+                    .unwrap_or_else(|| "policy".to_string()),
+                out
+            );
+
+            if wait {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -571,6 +664,10 @@ fn main() -> Result<()> {
         #[cfg(feature = "phase4")]
         Commands::Project(args) => {
             handle_project_command(args)?;
+        }
+        #[cfg(feature = "phase4")]
+        Commands::Snapshot { command } => {
+            handle_snapshot_command(command)?;
         }
         Commands::Nfs { command } => {
             run_nfs_command(command)?;

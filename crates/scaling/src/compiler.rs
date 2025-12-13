@@ -12,7 +12,7 @@
 //! - Security invariants (encryption, dedup) are preserved during transformations
 
 use common::podms::{NodeId, SovereigntyLevel, Telemetry, ZoneId};
-use common::{CapsuleId, Policy};
+use common::{Capsule, CapsuleId, Policy};
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
@@ -191,10 +191,36 @@ impl PolicyCompiler {
             Telemetry::NodeDegraded { node_id, reason } => {
                 actions.extend(self.compile_evacuation(*node_id, reason, mesh_state));
             }
+            Telemetry::ForcePolicyExecution {
+                capsule_id,
+                forced_rpo,
+            } => {
+                actions.extend(self.compile_forced_replication(
+                    *capsule_id,
+                    policy,
+                    *forced_rpo,
+                    mesh_state,
+                ));
+            }
         }
 
         // Validate all actions against sovereignty constraints
         self.validate_sovereignty(&actions, policy)
+    }
+
+    /// Compile an immediate replication action regardless of the policy schedule.
+    ///
+    /// This is used by operator-triggered snapshot/replication requests to bypass
+    /// timers and execute the policy now.
+    pub fn compile_immediate_replication(
+        &self,
+        capsule: &Capsule,
+        forced_rpo: Option<Duration>,
+        mesh_state: &MeshState,
+    ) -> Option<ScalingAction> {
+        self.compile_forced_replication(capsule.id, &capsule.policy, forced_rpo, mesh_state)
+            .into_iter()
+            .next()
     }
 
     /// Compile replication strategy based on policy RPO.
@@ -235,6 +261,49 @@ impl PolicyCompiler {
             strategy = ?strategy,
             target_count = targets.len(),
             "compiled replication strategy"
+        );
+
+        vec![ScalingAction::Replicate {
+            capsule_id,
+            strategy,
+            targets,
+        }]
+    }
+
+    /// Compile a replication action that should run immediately, even for large RPOs.
+    fn compile_forced_replication(
+        &self,
+        capsule_id: CapsuleId,
+        policy: &Policy,
+        forced_rpo: Option<Duration>,
+        mesh_state: &MeshState,
+    ) -> Vec<ScalingAction> {
+        let effective_rpo = forced_rpo.unwrap_or(policy.rpo);
+        let mut policy_override = policy.clone();
+        policy_override.rpo = effective_rpo;
+
+        let strategy = if effective_rpo == Duration::ZERO {
+            ReplicationStrategy::MetroSync { replica_count: 2 }
+        } else {
+            ReplicationStrategy::AsyncWithBatching { rpo: effective_rpo }
+        };
+
+        let targets = self.select_replication_targets(&policy_override, mesh_state);
+
+        if targets.is_empty() {
+            warn!(
+                capsule_id = ?capsule_id,
+                "no suitable replication targets found"
+            );
+            return vec![];
+        }
+
+        debug!(
+            capsule_id = ?capsule_id,
+            strategy = ?strategy,
+            target_count = targets.len(),
+            forced_rpo = ?forced_rpo,
+            "compiled forced replication action"
         );
 
         vec![ScalingAction::Replicate {
@@ -819,5 +888,104 @@ mod tests {
 
         let actions2 = compiler.compile_scaling_actions(&event2, &policy, &mesh_state);
         assert_eq!(actions2.len(), 0); // No underutilized nodes available
+    }
+
+    #[test]
+    fn test_force_policy_execution_uses_policy_rpo() {
+        let mut policy = Policy::metro_sync();
+        policy.rpo = Duration::from_secs(3600);
+        let compiler = PolicyCompiler::new(policy.clone());
+
+        let capsule_id = CapsuleId::new();
+        let event = Telemetry::ForcePolicyExecution {
+            capsule_id,
+            forced_rpo: None,
+        };
+
+        let node = NodeId::new();
+        let mesh_state = MeshState::new(
+            vec![(
+                node,
+                NodeInfo {
+                    zone: ZoneId::Metro {
+                        name: "us-west".to_string(),
+                    },
+                    available_bytes: 2_000_000_000,
+                    used_bytes: 0,
+                    network_tier: super::super::NetworkTier::Standard,
+                },
+            )],
+            ZoneId::Metro {
+                name: "us-west".to_string(),
+            },
+        );
+
+        let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            ScalingAction::Replicate {
+                strategy, targets, ..
+            } => {
+                assert_eq!(targets.len(), 1);
+                match strategy {
+                    ReplicationStrategy::AsyncWithBatching { rpo } => {
+                        assert_eq!(*rpo, Duration::from_secs(3600));
+                    }
+                    _ => panic!("expected async batching strategy"),
+                }
+            }
+            _ => panic!("expected replication action"),
+        }
+    }
+
+    #[test]
+    fn test_force_policy_execution_override_to_zero_rpo() {
+        let mut policy = Policy::metro_sync();
+        policy.rpo = Duration::from_secs(5);
+        let compiler = PolicyCompiler::new(policy.clone());
+
+        let capsule = Capsule {
+            id: CapsuleId::new(),
+            size: 0,
+            segments: vec![],
+            created_at: 0,
+            policy: policy.clone(),
+            deduped_bytes: 0,
+        };
+
+        let node = NodeId::new();
+        let mesh_state = MeshState::new(
+            vec![(
+                node,
+                NodeInfo {
+                    zone: ZoneId::Metro {
+                        name: "us-west".to_string(),
+                    },
+                    available_bytes: 2_000_000_000,
+                    used_bytes: 0,
+                    network_tier: super::super::NetworkTier::Standard,
+                },
+            )],
+            ZoneId::Metro {
+                name: "us-west".to_string(),
+            },
+        );
+
+        let action = compiler
+            .compile_immediate_replication(&capsule, Some(Duration::ZERO), &mesh_state)
+            .expect("expected forced replication action");
+
+        match action {
+            ScalingAction::Replicate {
+                strategy, targets, ..
+            } => {
+                assert_eq!(targets.len(), 1);
+                assert!(matches!(
+                    strategy,
+                    ReplicationStrategy::MetroSync { replica_count: 2 }
+                ));
+            }
+            _ => panic!("expected replication action"),
+        }
     }
 }

@@ -79,6 +79,10 @@ pub enum Telemetry {
     HeatSpike { id, accesses_per_min },      // Triggers migration
     CapacityThreshold { node_id, used_pct }, // Triggers rebalancing
     NodeDegraded { node_id, reason },        // Triggers evacuation
+    ForcePolicyExecution {                   // Forces async RPO to run now
+        capsule_id: CapsuleId,
+        forced_rpo: Option<Duration>,        // Override per-call RPO
+    },
 }
 ```
 

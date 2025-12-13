@@ -12,7 +12,7 @@
 use anyhow::{anyhow, Context, Result};
 use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps};
 use common::traits::CapsuleCatalog;
-use common::{CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, Segment};
+use common::{Capsule, CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, Segment};
 use encryption::keymanager::KeyManager;
 use encryption::mac::{compute_mac, verify_mac};
 use encryption::policy::EncryptionMetadata;
@@ -123,6 +123,34 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
     /// Step 3: This method now uses the PolicyCompiler to translate events
     /// into ScalingActions, then executes each action autonomously.
     async fn handle_telemetry_event(&self, event: Telemetry) -> Result<()> {
+        if let Telemetry::ForcePolicyExecution {
+            capsule_id,
+            forced_rpo,
+        } = event.clone()
+        {
+            info!(
+                capsule = %capsule_id.as_uuid(),
+                forced_rpo = ?forced_rpo,
+                "operator forced policy execution"
+            );
+
+            let capsule = self.lookup_capsule(capsule_id)?;
+            let mesh_state = self.build_mesh_state().await?;
+            if let Some(action) =
+                self.compiler
+                    .compile_immediate_replication(&capsule, forced_rpo, &mesh_state)
+            {
+                self.execute_action(action).await?;
+            } else {
+                debug!(
+                    capsule = %capsule_id.as_uuid(),
+                    "no forced replication action compiled"
+                );
+            }
+
+            return Ok(());
+        }
+
         // Extract policy from event (use default if not specified)
         let policy = match &event {
             Telemetry::NewCapsule { policy, .. } => policy.clone(),
@@ -191,6 +219,17 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             .ok_or_else(|| anyhow!("NVRAM log not configured for scaling agent"))?;
 
         Ok((catalog.clone(), nvram.clone(), self.key_manager.clone()))
+    }
+
+    fn lookup_capsule(&self, capsule_id: CapsuleId) -> Result<Capsule> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| anyhow!("capsule catalog not configured for scaling agent"))?;
+
+        catalog
+            .lookup_capsule(capsule_id)
+            .with_context(|| format!("lookup capsule {}", capsule_id.as_uuid()))
     }
 
     /// Execute a compiled scaling action.

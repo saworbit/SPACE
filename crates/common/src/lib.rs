@@ -171,6 +171,7 @@ pub enum Event {
 #[cfg(feature = "podms")]
 pub mod podms {
     use super::*;
+    use std::time::Duration;
 
     /// Unique identifier for a node in the SPACE mesh.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -267,6 +268,12 @@ pub mod podms {
         NodeDegraded { node_id: NodeId, reason: String },
         /// Request to project a capsule into a protocol-specific view.
         ViewProjection { id: CapsuleId, view: String },
+        /// Operator-driven trigger to force RPO policy execution immediately.
+        ForcePolicyExecution {
+            capsule_id: CapsuleId,
+            /// Override policy RPO for this invocation (None = use capsule policy)
+            forced_rpo: Option<Duration>,
+        },
     }
 
     /// Interface for crypto/compression operations provided by the runtime.

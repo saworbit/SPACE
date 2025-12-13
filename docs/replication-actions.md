@@ -200,6 +200,12 @@ let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 //      strategy: ReplicationStrategy::MetroSync { replica_count: 2 },
 //      targets: [node1, node2]
 //    }]
+
+// Force async RPO policies (e.g., hourly snapshots) to run immediately
+let force = Telemetry::ForcePolicyExecution {
+    capsule_id,
+    forced_rpo: Some(Duration::ZERO), // or None to honor the capsule policy
+};
 ```
 
 ### Agent Execution

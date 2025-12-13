@@ -109,6 +109,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
   - Heat-based migration for hot data
   - Capacity-driven rebalancing
   - Node evacuation (immediate or gradual)
+  - Operator-forced snapshots via `spacectl snapshot trigger --id <CAPSULE_UUID> [--rpo-secs N]`
 
 - **🔐 Secure Gossip Protocol**
   - HMAC-SHA256 message signing
