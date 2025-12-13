@@ -168,7 +168,7 @@ sudo scripts/setup_softroce.sh eth0
 # XTASK_ALLOW_MISSING_LIBTORCH=1 cargo xtask audit
 
 # RDMA implementation details and hardening steps:
-# See docs/specs/PHASE_C_IMPLEMENTATION_DETAILS.md and docs/specs/EXECUTION_PLAN_PHASE_C_RDMA_SYSTEM_HARDENING.md
+# See docs/specs/PHASE_C_IMPLEMENTATION_DETAILS.md and docs/specs/EXECUTION_PLAN_PHASE_C_RDMA_SYSTEM_HARDENING.md for handshake/QP state machine specifics.
 ```
 
 ## Build Optimization

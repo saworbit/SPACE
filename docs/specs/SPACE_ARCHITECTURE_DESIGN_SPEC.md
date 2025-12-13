@@ -39,7 +39,7 @@ graph TD
 ### 2.3 Transport Evolution
 - Present: Tokio TCP transport with persistent connection pooling for replication.
 - Phase B (Linux): io_uring transport runs as a dedicated actor with per-peer mailboxes and pooled TCP streams to remove connect/write/close churn; see `docs/specs/PHASE_B_IO_URING_TRANSPORT.md`.
-- Phase C (Linux optional): RDMA verbs backend with registered buffer pool and completion-queue actor for zero-copy replication; see `docs/specs/PHASE_C_RDMA_TRANSPORT.md`.
+- Phase C (Linux optional): RDMA verbs backend with registered buffer pool and completion-queue actor for zero-copy replication; see `docs/specs/PHASE_C_RDMA_TRANSPORT.md` and `docs/specs/PHASE_C_IMPLEMENTATION_DETAILS.md` for handshake/QP state machine specifics.
 - Fallback: Non-Linux builds retain the Tokio TCP path while sharing the same replication protocol.
 
 ## 3. Core Abstractions & Interface Patterns
