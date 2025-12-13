@@ -19,8 +19,8 @@ use crate::api::{
     errors::{ApiError, ApiResult},
     handlers::with_trace,
     models::{
-        ApiResponse, Claims, FileListItem, FileUploadResponse, FilesListResponse, Meta,
-        PaginationQuery, RequestContext, UserRole,
+        ApiResponse, ApiResponseFileUploadSchema, ApiResponseFilesListSchema, Claims, FileListItem,
+        FileUploadResponse, FilesListResponse, Meta, PaginationQuery, RequestContext, UserRole,
     },
 };
 use crate::state::{AppState, MeshCommand, StoredFile};
@@ -39,7 +39,7 @@ pub fn routes() -> Router<AppState> {
     tag = "Data",
     security(("jwt" = [])),
     params(PaginationQuery),
-    responses((status = 200, body = ApiResponse<FilesListResponse>))
+    responses((status = 200, body = ApiResponseFilesListSchema))
 )]
 pub async fn list_objects(
     State(state): State<AppState>,
@@ -100,7 +100,7 @@ pub async fn list_objects(
     request_body(content = crate::api::models::UploadRequest, description = "Multipart with fields 'file' and optional 'path'", content_type = "multipart/form-data"),
     security(("jwt" = [])),
     responses(
-        (status = 200, description = "Upload success", body = ApiResponse<FileUploadResponse>),
+        (status = 200, description = "Upload success", body = ApiResponseFileUploadSchema),
         (status = 401, description = "Unauthorized"),
         (status = 413, description = "Payload too large")
     )

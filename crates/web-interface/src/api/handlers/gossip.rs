@@ -10,8 +10,9 @@ use crate::api::{
     errors::{ApiError, ApiResult},
     handlers::with_trace,
     models::{
-        ApiResponse, Claims, Meta, PublishRequest, PublishResponse, RequestContext, StatsResponse,
-        SubscriptionsResponse, UserRole,
+        ApiResponse, ApiResponsePublishSchema, ApiResponseStatsSchema,
+        ApiResponseSubscriptionsSchema, Claims, Meta, PublishRequest, PublishResponse,
+        RequestContext, StatsResponse, SubscriptionsResponse, UserRole,
     },
 };
 use crate::state::{AppState, MeshCommand};
@@ -31,7 +32,7 @@ pub fn routes() -> Router<AppState> {
     tag = "Gossip",
     security(("jwt" = [])),
     request_body = PublishRequest,
-    responses((status = 200, body = ApiResponse<PublishResponse>), (status = 401, description = "Unauthorized"))
+    responses((status = 200, body = ApiResponsePublishSchema), (status = 401, description = "Unauthorized"))
 )]
 pub async fn publish(
     State(state): State<AppState>,
@@ -69,7 +70,7 @@ pub async fn publish(
     path = "/api/v1/gossip/subscriptions",
     tag = "Gossip",
     security(("jwt" = [])),
-    responses((status = 200, body = ApiResponse<SubscriptionsResponse>))
+    responses((status = 200, body = ApiResponseSubscriptionsSchema))
 )]
 pub async fn subscriptions(
     State(state): State<AppState>,
@@ -106,7 +107,7 @@ pub async fn subscriptions(
     path = "/api/v1/gossip/stats",
     tag = "Gossip",
     security(("jwt" = [])),
-    responses((status = 200, body = ApiResponse<StatsResponse>))
+    responses((status = 200, body = ApiResponseStatsSchema))
 )]
 pub async fn stats(
     State(state): State<AppState>,

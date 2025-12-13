@@ -19,6 +19,7 @@ pub struct NvmeView {
     pub subsystem_nqn: String,
     capsule_id: CapsuleId,
     bdev: Bdev,
+    #[allow(dead_code)] // keep subsystem handle alive for lifetime of the view
     subsystem: NvmfSubsystem,
     target: NvmeTarget,
 }

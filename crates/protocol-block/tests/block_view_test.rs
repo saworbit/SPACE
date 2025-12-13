@@ -1,7 +1,18 @@
 use capsule_registry::CapsuleRegistry;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
-use std::fs;
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+fn unique_prefix(base: &str) -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}_{}", base, nonce)
+}
 
 fn teardown(prefix: &str) {
     let _ = fs::remove_file(format!("{}.nvram", prefix));
@@ -22,8 +33,8 @@ fn setup(prefix: &str) -> BlockView {
 
 #[test]
 fn block_volume_lifecycle() {
-    let prefix = "test_block_lifecycle";
-    let block = setup(prefix);
+    let prefix = unique_prefix("test_block_lifecycle");
+    let block = setup(&prefix);
 
     let volume = block.create_volume("vol0", 16 * 1024).unwrap();
     assert_eq!(volume.name(), "vol0");
@@ -53,28 +64,28 @@ fn block_volume_lifecycle() {
     assert!(block.read("vol0", 0, 4).is_err());
 
     drop(block);
-    teardown(prefix);
+    teardown(&prefix);
 }
 
 #[test]
 fn block_rejects_invalid_names() {
-    let prefix = "test_block_invalid";
-    let block = setup(prefix);
+    let prefix = unique_prefix("test_block_invalid");
+    let block = setup(&prefix);
 
     assert!(block.create_volume("", 4096).is_err());
     assert!(block.create_volume("bad/name", 4096).is_err());
 
     drop(block);
-    teardown(prefix);
+    teardown(&prefix);
 }
 
 #[test]
 fn block_persists_volumes_across_reopen() {
-    let prefix = "test_block_persist";
-    teardown(prefix);
-    let log_path = format!("{}.nvram", prefix);
-    let meta_path = format!("{}.metadata", prefix);
-    let block_meta_path = format!("{}.block.json", prefix);
+    let prefix = unique_prefix("test_block_persist");
+    teardown(&prefix);
+    let log_path = format!("{}.nvram", &prefix);
+    let meta_path = format!("{}.metadata", &prefix);
+    let block_meta_path = format!("{}.block.json", &prefix);
 
     {
         let registry = CapsuleRegistry::open(&meta_path).unwrap();
@@ -95,5 +106,5 @@ fn block_persists_volumes_across_reopen() {
         assert_eq!(data, vec![1, 2, 3, 4]);
     }
 
-    teardown(prefix);
+    teardown(&prefix);
 }

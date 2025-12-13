@@ -13,9 +13,10 @@ use crate::api::{
     errors::{ApiError, ApiResult},
     handlers::with_trace,
     models::{
-        ApiResponse, Claims, ConnectPeerRequest, MeshActionResponse, Meta, PaginationQuery,
-        PeerView, PeersResponse, RequestContext, TopologyEdge, TopologyNode, TopologyResponse,
-        UserRole,
+        ApiResponse, ApiResponseMeshActionSchema, ApiResponsePeerViewSchema,
+        ApiResponsePeersResponseSchema, ApiResponseTopologySchema, Claims, ConnectPeerRequest,
+        MeshActionResponse, Meta, PaginationQuery, PeerView, PeersResponse, RequestContext,
+        TopologyEdge, TopologyNode, TopologyResponse, UserRole,
     },
 };
 use crate::state::{AppState, MeshCommand};
@@ -36,7 +37,7 @@ pub fn routes() -> Router<AppState> {
     tag = "Mesh",
     security(("jwt" = [])),
     params(PaginationQuery),
-    responses((status = 200, body = ApiResponse<PeersResponse>), (status = 401, description = "Unauthorized"))
+    responses((status = 200, body = ApiResponsePeersResponseSchema), (status = 401, description = "Unauthorized"))
 )]
 pub async fn list_peers(
     State(state): State<AppState>,
@@ -105,7 +106,7 @@ pub async fn list_peers(
     tag = "Mesh",
     security(("jwt" = [])),
     params(("peer_id" = String, Path, description = "Peer identifier")),
-    responses((status = 200, body = ApiResponse<PeerView>), (status = 404, description = "Peer not found"))
+    responses((status = 200, body = ApiResponsePeerViewSchema), (status = 404, description = "Peer not found"))
 )]
 pub async fn get_peer(
     State(state): State<AppState>,
@@ -137,7 +138,7 @@ pub async fn get_peer(
     path = "/api/v1/mesh/topology",
     tag = "Mesh",
     security(("jwt" = [])),
-    responses((status = 200, body = ApiResponse<TopologyResponse>))
+    responses((status = 200, body = ApiResponseTopologySchema))
 )]
 pub async fn topology(
     State(state): State<AppState>,
@@ -177,7 +178,7 @@ pub async fn topology(
     tag = "Mesh",
     security(("jwt" = [])),
     request_body = ConnectPeerRequest,
-    responses((status = 200, body = ApiResponse<MeshActionResponse>), (status = 401, description = "Unauthorized"))
+    responses((status = 200, body = ApiResponseMeshActionSchema), (status = 401, description = "Unauthorized"))
 )]
 pub async fn connect_peer(
     State(state): State<AppState>,
@@ -226,7 +227,7 @@ pub async fn connect_peer(
     tag = "Mesh",
     security(("jwt" = [])),
     params(("peer_id" = String, Path, description = "Peer identifier")),
-    responses((status = 200, body = ApiResponse<MeshActionResponse>), (status = 404, description = "Peer not found"))
+    responses((status = 200, body = ApiResponseMeshActionSchema), (status = 404, description = "Peer not found"))
 )]
 pub async fn remove_peer(
     State(state): State<AppState>,

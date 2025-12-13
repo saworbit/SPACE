@@ -639,28 +639,76 @@ impl LegacyPipeline {
             // Step 4: Check if this content already exists (if dedup enabled)
             let (seg_id, was_deduped) = if policy.dedupe {
                 if let Some(existing_seg_id) = self.registry.lookup_content(&content_hash) {
-                    // Content exists! Reuse the segment
-                    let updated_segment = self
+                    let reuse = self
                         .nvram
                         .increment_refcount(existing_seg_id)
-                        .map_err(|err| map_nvram_error("increment_refcount", err))?;
-                    let saved_bytes = updated_segment.len as u64;
+                        .map_err(|err| map_nvram_error("increment_refcount", err));
+                    match reuse {
+                        Ok(updated_segment) => {
+                            let saved_bytes = updated_segment.len as u64;
 
-                    dedup_stats.add_segment(saved_bytes, true);
+                            dedup_stats.add_segment(saved_bytes, true);
 
-                    info!(
-                        segment = existing_seg_id.0,
-                        saved_bytes,
-                        ref_count = updated_segment.ref_count,
-                        "dedup hit: reusing segment"
-                    );
-                    #[cfg(feature = "advanced-security")]
-                    self.audit_event(common::Event::DedupHit {
-                        segment_id: existing_seg_id,
-                        capsule_id,
-                        content_hash: content_hash.clone(),
-                    });
-                    (existing_seg_id, true)
+                            info!(
+                                segment = existing_seg_id.0,
+                                saved_bytes,
+                                ref_count = updated_segment.ref_count,
+                                "dedup hit: reusing segment"
+                            );
+                            #[cfg(feature = "advanced-security")]
+                            self.audit_event(common::Event::DedupHit {
+                                segment_id: existing_seg_id,
+                                capsule_id,
+                                content_hash: content_hash.clone(),
+                            });
+                            (existing_seg_id, true)
+                        }
+                        Err(err) => {
+                            warn!(
+                                segment = existing_seg_id.0,
+                                error = %err,
+                                "dedupe reference missing in nvram map; rewriting segment"
+                            );
+                            // Fall through to allocation path below.
+                            let new_seg_id = self
+                                .registry
+                                .alloc_segment()
+                                .map_err(|err| map_registry_error("alloc_segment", err))?;
+
+                            let mut segment = self
+                                .nvram
+                                .append(new_seg_id, final_data.as_ref())
+                                .map_err(|err| map_nvram_error("append", err))?;
+
+                            segment.compressed = comp_result.compressed;
+                            segment.compression_algo = comp_result.algorithm.clone();
+                            segment.content_hash = Some(content_hash.clone());
+                            segment.ref_count = 1;
+                            segment.deduplicated = false;
+
+                            if let Some(ref enc_meta) = encryption_meta {
+                                segment.encrypted = true;
+                                segment.encryption_version = enc_meta.encryption_version;
+                                segment.key_version = enc_meta.key_version;
+                                segment.tweak_nonce = enc_meta.tweak_nonce;
+                                segment.integrity_tag = enc_meta.integrity_tag;
+                            }
+                            #[cfg(feature = "advanced-security")]
+                            if let Some(material) = hybrid_state.as_ref() {
+                                segment.pq_ciphertext =
+                                    Some(serialize_ciphertext(&material.ciphertext));
+                                segment.pq_nonce = Some(material.nonce);
+                            }
+
+                            self.nvram
+                                .update_segment_metadata(new_seg_id, segment)
+                                .map_err(|err| map_nvram_error("update_segment_metadata", err))?;
+
+                            dedup_stats.add_segment(0, false);
+
+                            (new_seg_id, false)
+                        }
+                    }
                 } else {
                     // New content - allocate and write
                     let new_seg_id = self
@@ -1392,21 +1440,31 @@ impl LegacyPipeline {
             }
 
             if let Some(existing_seg_id) = self.registry.lookup_content(&content_hash) {
-                let segment = self.nvram.increment_refcount(existing_seg_id)?;
-                let saved_bytes = segment.len as u64;
+                match self.nvram.increment_refcount(existing_seg_id) {
+                    Ok(segment) => {
+                        let saved_bytes = segment.len as u64;
 
-                trace!(
-                    segment = existing_seg_id.0,
-                    saved_bytes,
-                    "dedupe hit using committed segment"
-                );
+                        trace!(
+                            segment = existing_seg_id.0,
+                            saved_bytes,
+                            "dedupe hit using committed segment"
+                        );
 
-                return Ok((
-                    existing_seg_id,
-                    WriteDisposition::ReusedPersistent,
-                    saved_bytes,
-                    None,
-                ));
+                        return Ok((
+                            existing_seg_id,
+                            WriteDisposition::ReusedPersistent,
+                            saved_bytes,
+                            None,
+                        ));
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            segment = existing_seg_id.0,
+                            error = %err,
+                            "dedupe reference missing in nvram map; rewriting segment"
+                        );
+                    }
+                }
             }
         }
 

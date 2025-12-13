@@ -26,7 +26,7 @@ pub fn routes() -> Router<AppState> {
     get,
     path = "/api/v1/system/health",
     tag = "System",
-    responses((status = 200, description = "Node is healthy", body = ApiResponse<HealthStatus>))
+    responses((status = 200, description = "Node is healthy", body = crate::api::models::ApiResponseHealthStatusSchema))
 )]
 pub async fn health(
     State(state): State<AppState>,
@@ -48,7 +48,7 @@ pub async fn health(
     tag = "System",
     security(("jwt" = [])),
     responses(
-        (status = 200, description = "System information", body = ApiResponse<SystemInfo>),
+        (status = 200, description = "System information", body = crate::api::models::ApiResponseSystemInfoSchema),
         (status = 401, description = "Unauthorized")
     )
 )]

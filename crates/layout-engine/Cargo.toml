@@ -17,7 +17,7 @@ pq = ["sha3"]
 anyhow = "1.0"
 blake3 = "1.5"
 sha3 = { version = "0.10", optional = true }
-tch = { version = "0.15", optional = true }
+tch = { version = "0.15", optional = true, features = ["download-libtorch"] }
 common = { path = "../common" }
 
 [dev-dependencies]

@@ -6,21 +6,9 @@ use validator::Validate;
 
 /// The standard API response envelope.
 #[derive(Debug, Serialize, ToSchema)]
-#[aliases(
-    ApiResponsePeersResponse = ApiResponse<PeersResponse>,
-    ApiResponsePeerView = ApiResponse<PeerView>,
-    ApiResponseFilesListResponse = ApiResponse<FilesListResponse>,
-    ApiResponseFileUploadResponse = ApiResponse<FileUploadResponse>,
-    ApiResponseMeshActionResponse = ApiResponse<MeshActionResponse>,
-    ApiResponseTopologyResponse = ApiResponse<TopologyResponse>,
-    ApiResponseStatsResponse = ApiResponse<StatsResponse>,
-    ApiResponseSubscriptionsResponse = ApiResponse<SubscriptionsResponse>,
-    ApiResponseSystemInfo = ApiResponse<SystemInfo>,
-    ApiResponseHealthStatus = ApiResponse<HealthStatus>
-)]
 pub struct ApiResponse<T>
 where
-    T: Serialize + ToSchema<'static>,
+    T: Serialize,
 {
     pub success: bool,
     pub data: Option<T>,
@@ -30,7 +18,7 @@ where
 
 impl<T> ApiResponse<T>
 where
-    T: Serialize + ToSchema<'static>,
+    T: Serialize + ToSchema,
 {
     pub fn success(data: T, meta: Option<Meta>) -> Self {
         Self {
@@ -362,3 +350,28 @@ pub struct SystemInfo {
 pub struct RequestContext {
     pub request_id: String,
 }
+
+// OpenAPI-friendly concrete envelopes for generic ApiResponse<T>.
+macro_rules! api_response_schema {
+    ($name:ident, $inner:ty) => {
+        #[derive(Debug, Serialize, ToSchema, Clone)]
+        pub struct $name {
+            pub success: bool,
+            pub data: Option<$inner>,
+            pub error: Option<ApiErrorBody>,
+            pub meta: Option<Meta>,
+        }
+    };
+}
+
+api_response_schema!(ApiResponsePeersResponseSchema, PeersResponse);
+api_response_schema!(ApiResponsePeerViewSchema, PeerView);
+api_response_schema!(ApiResponseFilesListSchema, FilesListResponse);
+api_response_schema!(ApiResponseFileUploadSchema, FileUploadResponse);
+api_response_schema!(ApiResponseMeshActionSchema, MeshActionResponse);
+api_response_schema!(ApiResponseTopologySchema, TopologyResponse);
+api_response_schema!(ApiResponseStatsSchema, StatsResponse);
+api_response_schema!(ApiResponseSubscriptionsSchema, SubscriptionsResponse);
+api_response_schema!(ApiResponseSystemInfoSchema, SystemInfo);
+api_response_schema!(ApiResponseHealthStatusSchema, HealthStatus);
+api_response_schema!(ApiResponsePublishSchema, PublishResponse);

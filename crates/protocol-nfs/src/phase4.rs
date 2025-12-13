@@ -69,7 +69,7 @@ mod tests {
             .create_capsule_with_segments(capsule_id, 0, Vec::new(), policy.clone())
             .unwrap();
 
-        let content_store = Arc::new(RwLock::new(DummyContentStore::default()));
+        let content_store = Arc::new(RwLock::new(DummyContentStore));
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("nfs_phase4_nvram.log");
         let nvram = Arc::new(RwLock::new(NvramLog::open(&log_path).unwrap()));

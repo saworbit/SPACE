@@ -82,7 +82,7 @@ sha2 = { version = "=0.10.8" } # 2025-11-04 sw: Hash core for HKDF extractor
 
 # Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
 axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
-tower-http = { version = "^0.5.2", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
+tower-http = { version = "^0.6.8", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
 libp2p = { version = "=0.53.2", features = ["gossipsub", "kad", "tcp", "dns", "noise", "yamux", "websocket"] } # 2025-11-16 sw: P2P networking
 libp2p-gossipsub = { version = "=0.46.1" } # 2025-11-16 sw: Gossip protocol
 libp2p-swarm = { version = "^0.44.1" } # 2025-11-16 sw: Swarm behavior
@@ -92,8 +92,8 @@ rand = { version = "=0.8.5" } # 2025-11-16 sw: Random peer selection for gossip
 backoff = { version = "=0.4.0" } # 2025-11-16 sw: Retry logic with exponential backoff
 lru = { version = "=0.12.1" } # 2025-11-16 sw: LRU cache for peer views
 prometheus = { version = "=0.14.0", features = ["process"] } # 2025-11-16 sw: Metrics collection (updated for RUSTSEC-2024-0437)
-leptos = { version = "=0.6.3", features = ["csr"] } # 2025-11-16 sw: Reactive web framework
-leptos_axum = { version = "=0.6.3" } # 2025-11-16 sw: Leptos integration with Axum
+leptos = { version = "=0.6.15", features = ["csr"] } # 2025-11-16 sw: Reactive web framework
+leptos_axum = { version = "=0.6.15" } # 2025-11-16 sw: Leptos integration with Axum
 wasm-bindgen = { version = "^0.2.91" } # 2025-11-16 sw: Wasm interop
 gloo = { version = "=0.11.0" } # 2025-11-16 sw: Browser utilities for Wasm
 web-sys = { version = "^0.3.68", features = ["WebSocket", "MessageEvent", "CloseEvent"] } # 2025-11-16 sw: Web APIs

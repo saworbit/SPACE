@@ -28,11 +28,40 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
+    use mesh_core::{GossipHandler, GossipMessage, GossipStats, Peer, Result};
+    use std::{collections::HashMap, sync::Arc};
+    use tokio::sync::mpsc;
     use tower::ServiceExt;
+
+    struct NoopGossip;
+
+    #[async_trait::async_trait]
+    impl GossipHandler for NoopGossip {
+        async fn broadcast(&self, _topic: &str, _msg: GossipMessage) -> Result<()> {
+            Ok(())
+        }
+
+        async fn subscribe(&self, _topic: &str) -> Result<mpsc::Receiver<GossipMessage>> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+
+        async fn pull_state(&self, _peer_id: &str) -> Result<HashMap<String, Vec<u8>>> {
+            Ok(HashMap::new())
+        }
+
+        async fn get_peers(&self) -> Result<Vec<Peer>> {
+            Ok(Vec::new())
+        }
+
+        async fn get_stats(&self) -> Result<GossipStats> {
+            Ok(GossipStats::default())
+        }
+    }
 
     #[tokio::test]
     async fn health_is_public() {
-        let state = AppState::default();
+        let state = AppState::new(Arc::new(NoopGossip));
         let app = Router::new().nest("/api", router()).with_state(state);
 
         let response = app
@@ -50,7 +79,7 @@ mod tests {
 
     #[tokio::test]
     async fn mesh_requires_auth() {
-        let state = AppState::default();
+        let state = AppState::new(Arc::new(NoopGossip));
         let app = Router::new().nest("/api", router()).with_state(state);
 
         let response = app

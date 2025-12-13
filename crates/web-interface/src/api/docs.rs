@@ -53,7 +53,18 @@ use crate::state::AppState;
             models::SystemInfo,
             models::HealthStatus,
             models::StatsResponse,
-            models::GossipStatsView
+            models::GossipStatsView,
+            models::ApiResponsePeersResponseSchema,
+            models::ApiResponsePeerViewSchema,
+            models::ApiResponseFilesListSchema,
+            models::ApiResponseFileUploadSchema,
+            models::ApiResponseMeshActionSchema,
+            models::ApiResponseTopologySchema,
+            models::ApiResponseStatsSchema,
+            models::ApiResponseSubscriptionsSchema,
+            models::ApiResponseSystemInfoSchema,
+            models::ApiResponseHealthStatusSchema,
+            models::ApiResponsePublishSchema
         )
     ),
     tags(

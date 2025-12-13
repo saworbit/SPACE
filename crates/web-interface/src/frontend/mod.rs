@@ -3,8 +3,6 @@
 //! This module provides the browser-side components for the mesh
 //! data system web interface. It's feature-gated with the "frontend" flag.
 
-#![cfg(feature = "frontend")]
-
 use leptos::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -38,10 +36,10 @@ pub struct PeersResponse {
 /// Main dashboard component
 #[component]
 pub fn MeshGossipDashboard() -> impl IntoView {
-    let (peers_data, set_peers_data) = create_signal(None::<PeersResponse>);
-    let (error_msg, set_error_msg) = create_signal(None::<String>);
-    let (ws_connected, set_ws_connected) = create_signal(false);
-    let (ws_messages, set_ws_messages) = create_signal(Vec::<String>::new());
+    let (peers_data, _set_peers_data) = create_signal(None::<PeersResponse>);
+    let (error_msg, _set_error_msg) = create_signal(None::<String>);
+    let (ws_connected, _set_ws_connected) = create_signal(false);
+    let (ws_messages, _set_ws_messages) = create_signal(Vec::<String>::new());
 
     // Fetch peers on mount
     create_effect(move |_| {

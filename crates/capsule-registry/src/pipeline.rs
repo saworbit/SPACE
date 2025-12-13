@@ -47,9 +47,9 @@ use modular::ModularPipeline;
 use strategy::PipelineStrategy;
 
 enum PipelineKind {
-    Legacy(LegacyPipeline),
+    Legacy(Box<LegacyPipeline>),
     #[cfg(feature = "modular_pipeline")]
-    Modular(ModularPipeline),
+    Modular(Box<ModularPipeline>),
 }
 
 /// Facade that selects a pipeline strategy (legacy vs modular) at runtime.
@@ -70,7 +70,7 @@ impl WritePipeline {
                 match ModularPipeline::try_new(nvram.clone(), registry.clone()) {
                     Ok(Some(strategy)) => {
                         return Self {
-                            strategy: PipelineKind::Modular(strategy),
+                            strategy: PipelineKind::Modular(Box::new(strategy)),
                         }
                     }
                     Ok(None) => {
@@ -89,7 +89,7 @@ impl WritePipeline {
         }
 
         Self {
-            strategy: PipelineKind::Legacy(LegacyPipeline::new(registry, nvram)),
+            strategy: PipelineKind::Legacy(Box::new(LegacyPipeline::new(registry, nvram))),
         }
     }
 
@@ -108,35 +108,35 @@ impl WritePipeline {
                     ModularPipeline::try_new(nvram.clone(), registry.clone())
                 {
                     return Self {
-                        strategy: PipelineKind::Modular(strategy),
+                        strategy: PipelineKind::Modular(Box::new(strategy)),
                     };
                 }
             }
         }
 
         Self {
-            strategy: PipelineKind::Legacy(LegacyPipeline::with_key_manager(
+            strategy: PipelineKind::Legacy(Box::new(LegacyPipeline::with_key_manager(
                 registry,
                 nvram,
                 key_manager,
-            )),
+            ))),
         }
     }
 
     fn strategy(&self) -> &dyn PipelineStrategy {
         match &self.strategy {
-            PipelineKind::Legacy(inner) => inner,
+            PipelineKind::Legacy(inner) => inner.as_ref(),
             #[cfg(feature = "modular_pipeline")]
-            PipelineKind::Modular(inner) => inner,
+            PipelineKind::Modular(inner) => inner.as_ref(),
         }
     }
 
     #[allow(dead_code)]
     fn strategy_mut(&mut self) -> &mut dyn PipelineStrategy {
         match &mut self.strategy {
-            PipelineKind::Legacy(inner) => inner,
+            PipelineKind::Legacy(inner) => inner.as_mut(),
             #[cfg(feature = "modular_pipeline")]
-            PipelineKind::Modular(inner) => inner,
+            PipelineKind::Modular(inner) => inner.as_mut(),
         }
     }
 
