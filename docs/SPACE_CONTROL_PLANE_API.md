@@ -17,6 +17,7 @@ This document summarizes the first pass implementation of the SPACE Control Plan
 - JWT guard with RBAC roles (`admin`, `editor`, `viewer`) injected via middleware; `system/health` stays unauthenticated for probes.
 - Pagination helpers (`page`, `limit`, `sort`, `after_id`) shared across list endpoints.
 - Streaming multipart uploads for objects to avoid base64 inflation.
+- Dev auth helper: `scripts/dev_auth.sh` mints HS256 tokens with `SPACE_JWT_SECRET` (defaults to `dev-secret`); debug builds also accept `Authorization: Bearer space-god-token` (override with `SPACE_DEV_GOD_TOKEN`) for local testing.
 
 ## Endpoints (v1)
 - System: `GET /system/health`, `GET /system/info`, `GET /system/metrics`

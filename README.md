@@ -998,6 +998,7 @@ cargo test --features advanced-security -- --nocapture
 - JWT guard with RBAC (`admin`, `editor`, `viewer`); `system/health` stays public for probes; set `JWT_SECRET` or `GOSSIP_SIGNING_KEY`.
 - Streaming multipart uploads replace base64 for `POST /api/v1/data/objects`; downloads support `GET|HEAD`.
 - See `docs/SPACE_CONTROL_PLANE_API.md` and `docs/WEB_INTERFACE.md` for usage examples.
+- Dev auth helpers: `scripts/dev_auth.sh` mints HS256 tokens (default secret `dev-secret`); debug builds accept `Authorization: Bearer space-god-token` for quick local testing (override with `SPACE_DEV_GOD_TOKEN`).
 
 ### ?? Full-feature linting (LibTorch)
 

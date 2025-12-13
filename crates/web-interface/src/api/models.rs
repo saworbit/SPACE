@@ -116,6 +116,8 @@ pub struct Claims {
     pub sub: String,
     pub role: UserRole,
     pub exp: usize,
+    pub iss: Option<String>,
+    pub scope: Option<Vec<String>>,
     pub iat: Option<usize>,
 }
 
