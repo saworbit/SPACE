@@ -236,10 +236,11 @@ impl ActorState {
                 let is_err = res.is_err();
 
                 if let Some(resp) = work.resp {
-                    let _ = resp.send(
-                        res.map(|_| ())
-                            .map_err(|e| anyhow!("io_uring write failed: {}", e)),
-                    );
+                    let send_res = res
+                        .as_ref()
+                        .map(|_| ())
+                        .map_err(|e| anyhow!("io_uring write failed: {}", e));
+                    let _ = resp.send(send_res);
                 }
 
                 if is_err {
