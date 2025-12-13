@@ -233,17 +233,17 @@ impl ActorState {
             let stream = stream;
             while let Some(work) = rx.recv().await {
                 let (res, _buf) = stream.write_all(work.data).await;
-                let is_err = res.is_err();
+                let mut send_res: Result<()> = Ok(());
 
-                if let Some(resp) = work.resp {
-                    let send_res = res
-                        .as_ref()
-                        .map(|_| ())
-                        .map_err(|e| anyhow!("io_uring write failed: {}", e));
-                    let _ = resp.send(send_res);
+                if let Err(e) = res {
+                    send_res = Err(anyhow!("io_uring write failed: {}", e));
                 }
 
-                if is_err {
+                if let Some(resp) = work.resp {
+                    let _ = resp.send(send_res.clone());
+                }
+
+                if send_res.is_err() {
                     break;
                 }
             }
