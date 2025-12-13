@@ -230,9 +230,11 @@ impl ActorState {
             .map_err(|e| anyhow!("io_uring connect to {} failed: {}", addr, e))?;
 
         tokio_uring::spawn(async move {
-            let mut stream = stream;
+            let stream = stream;
             while let Some(work) = rx.recv().await {
                 let (res, _buf) = stream.write_all(work.data).await;
+                let is_err = res.is_err();
+
                 if let Some(resp) = work.resp {
                     let _ = resp.send(
                         res.map(|_| ())
@@ -240,7 +242,7 @@ impl ActorState {
                     );
                 }
 
-                if res.is_err() {
+                if is_err {
                     break;
                 }
             }
