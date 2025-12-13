@@ -162,6 +162,9 @@ cargo build -p scaling --features "rdma"
 
 # Optional: bring up SoftRoCE for CI/dev without hardware
 sudo scripts/setup_softroce.sh eth0
+
+# If running clippy/check in containers, ensure LibTorch is available for layout-engine
+# (Dockerfile installs CPU libtorch by default)
 ```
 
 ## Build Optimization
