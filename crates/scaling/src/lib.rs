@@ -180,6 +180,7 @@ enum TransportCommand {
         data: Vec<u8>,
         resp: Option<oneshot::Sender<Result<()>>>,
     },
+    #[allow(dead_code)]
     Disconnect {
         target: NodeId,
     },
