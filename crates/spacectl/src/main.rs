@@ -42,6 +42,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(feature = "phase4")]
 use std::sync::Arc;
 use std::sync::Once;
+#[cfg(feature = "phase4")]
 use std::time::Duration;
 #[cfg(feature = "modular_pipeline")]
 use tokio::runtime::Runtime as TokioRuntime;
