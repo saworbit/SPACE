@@ -89,7 +89,7 @@ fn init_tracing() {
 #[command(about = "SPACE storage control utility", long_about = None)]
 struct Cli {
     /// Bearer token for authenticated control-plane calls (optional)
-    #[arg(long, env = "SPACE_AUTH_TOKEN")]
+    #[arg(long)]
     token: Option<String>,
     #[command(subcommand)]
     command: Commands,
@@ -557,7 +557,11 @@ fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
 fn main() -> Result<()> {
     init_tracing();
     let cli = Cli::parse();
-    if let Some(token) = cli.token {
+    let token = cli
+        .token
+        .clone()
+        .or_else(|| std::env::var("SPACE_AUTH_TOKEN").ok());
+    if let Some(token) = token {
         // Surface the token to any future HTTP clients without changing existing flows.
         std::env::set_var("SPACE_AUTH_TOKEN", &token);
     }

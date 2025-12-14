@@ -25,6 +25,19 @@ cargo build --release --features phase4
 
 # End-to-end smoke for NVMe projection + Raft sharding
 ./scripts/test_phase4.sh
+### Dev Authentication (Phase D)
+```bash
+# Mint a dev token (HS256, defaults to dev-secret)
+./scripts/dev_auth.sh > .token
+
+# Run the web server with the matching secret
+JWT_SECRET=dev-secret cargo run -p web-interface
+
+# Export for spacectl or curl
+export SPACE_AUTH_TOKEN=$(cat .token)
+```
+- Debug builds also accept `Authorization: Bearer space-god-token` (override with `SPACE_DEV_GOD_TOKEN`) for quick local testing.
+
 ```
 
 ## What Gets Built
