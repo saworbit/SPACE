@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+/* Custom color tokens for Orbit Command */
+@theme {
+  --color-void: #0b0c10;
+  --color-neon-cyan: #00fff7;
+  --color-nebula-purple: #b47aff;
+  --color-supernova-orange: #ff6b35;
+  --color-glass: rgba(255, 255, 255, 0.05);
+  --color-glass-border: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-void);
+  color: #ffffff;
+  overflow: hidden;
+}
+
+.bg-void {
+  background-color: var(--color-void);
+}
+
+.text-neon-cyan {
+  color: var(--color-neon-cyan);
+}
+
+.text-nebula-purple {
+  color: var(--color-nebula-purple);
+}
+
+.text-supernova-orange {
+  color: var(--color-supernova-orange);
+}
+
+.border-neon-cyan {
+  border-color: var(--color-neon-cyan);
+}
+
+.border-nebula-purple {
+  border-color: var(--color-nebula-purple);
+}
+
+.border-supernova-orange {
+  border-color: var(--color-supernova-orange);
+}
+
+.bg-glass {
+  background: var(--color-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.border-glass {
+  border-color: var(--color-glass-border);
+}
+
+/* Glow effects */
+.glow-cyan {
+  box-shadow: 0 0 20px rgba(0, 255, 247, 0.3);
+}
+
+.glow-purple {
+  box-shadow: 0 0 20px rgba(180, 122, 255, 0.3);
+}
+
+.glow-orange {
+  box-shadow: 0 0 20px rgba(255, 107, 53, 0.3);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 247, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 247, 0.4);
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 255, 247, 0.3);
+  color: white;
+}

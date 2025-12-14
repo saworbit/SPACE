@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Orbit command UI mockup** - Added `UI_mockup/` Vite bundle from the Figma concept with a viewing guide (`docs/guides/UI_MOCKUP.md`) and helper launcher script (`scripts/view_ui_mockup.sh`) so contributors can explore the design locally.
 - **Phase D: Protocol Views & Federation** - NVMe/NFS/FUSE/CSI projection helpers now drive Raft-backed federation/sharding, `spacectl project --view` keeps protocol targets online, and `scripts/test_phase4.sh` validates NVMe projection + discovery end-to-end; Phase D spec added under `docs/specs/PHASE_D_VIEWS_AND_FEDERATION.md`.
 - **SPACE Control Plane API foundation (RFC-001)** - Versioned `/api/v1` routes with JWT guard, standard response envelopes, streaming uploads, OpenAPI generation, and Swagger UI exposed by the web interface (`/swagger-ui`, `/api-docs/openapi.json`).
 - **Phase D Auth Addendum** - Standardized JWT claims + dev tooling: `scripts/dev_auth.sh` mints HS256 tokens, web-interface debug builds accept a configurable `space-god-token`, and docs/specs/PHASE_D_ADDENDUM_AUTH.md captures the schema and integration steps.

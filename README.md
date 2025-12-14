@@ -934,6 +934,7 @@ space/
 |   +-- test_federation_resilience.sh
 |   +-- test_phase4.sh
 |   +-- test_phase4_views.sh
++-- UI_mockup/             # Orbit command interface mock (Vite) - see docs/guides/UI_MOCKUP.md
 +-- Cargo.toml               # Workspace configuration
 +-- README.md                # You are here
 ```
@@ -1320,6 +1321,7 @@ SPACE is a **single-developer research project** exploring novel storage archite
 | 🧪 [Simulations Guide](docs/SIMULATIONS.md) | Testing without hardware |
 | 🐳 [Containerization Guide](docs/CONTAINERIZATION.md) | Docker deployment |
 | 🚀 [S3 Quick Start](docs/guides/QUICKSTART_S3.md) | Protocol view demo |
+| 🎨 [UI Mockup Walkthrough](docs/guides/UI_MOCKUP.md) | Launch the Orbit command interface concept |
 | 🔨 [Build Guide](docs/guides/BUILD.md) | Compilation and testing |
 
 </div>
