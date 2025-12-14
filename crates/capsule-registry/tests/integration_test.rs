@@ -19,8 +19,8 @@ fn cleanup_path(path: &str) {
     }
 }
 
-#[test]
-fn test_write_and_read_capsule() {
+#[tokio::test]
+async fn test_write_and_read_capsule() {
     let base = std::env::temp_dir().join("space_registry_integration");
     let _ = fs::create_dir_all(&base);
     let unique = Uuid::new_v4();
@@ -35,11 +35,11 @@ fn test_write_and_read_capsule() {
     let pipeline = WritePipeline::new(registry, nvram);
 
     let test_data = b"Hello SPACE! This is capsule test data.";
-    let capsule_id = pipeline.write_capsule(test_data).unwrap();
+    let capsule_id = pipeline.write_capsule(test_data).await.unwrap();
 
     println!("Created capsule: {:?}", capsule_id);
 
-    let read_data = pipeline.read_capsule(capsule_id).unwrap();
+    let read_data = pipeline.read_capsule(capsule_id).await.unwrap();
     assert_eq!(test_data.as_slice(), read_data.as_slice());
     println!("Write/Read test passed!");
 
@@ -48,8 +48,8 @@ fn test_write_and_read_capsule() {
     let _ = fs::remove_file(meta_path.to_string_lossy().as_ref());
 }
 
-#[test]
-fn test_compression_integration() {
+#[tokio::test]
+async fn test_compression_integration() {
     let base = std::env::temp_dir().join("space_registry_integration");
     let _ = fs::create_dir_all(&base);
     let unique = Uuid::new_v4();
@@ -64,8 +64,8 @@ fn test_compression_integration() {
     let pipeline = WritePipeline::new(registry, nvram);
 
     let test_data = b"SPACE ".repeat(10_000);
-    let capsule_id = pipeline.write_capsule(&test_data).unwrap();
-    let read_data = pipeline.read_capsule(capsule_id).unwrap();
+    let capsule_id = pipeline.write_capsule(&test_data).await.unwrap();
+    let read_data = pipeline.read_capsule(capsule_id).await.unwrap();
 
     assert_eq!(test_data, read_data);
     println!("Compression integration test passed!");
@@ -87,20 +87,25 @@ mod modular_pipeline_integration {
     use compression::Lz4ZstdCompressor;
     use dedup::Blake3Deduper;
     use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
-    use futures::executor::block_on;
     use nvram_sim::NvramLog;
     use pipeline::Pipeline as ModularPipeline;
     use std::sync::{Arc, Mutex};
     use storage::NvramBackend;
 
-    #[test]
-    fn modular_pipeline_write_succeeds() {
+    #[tokio::test]
+    async fn modular_pipeline_write_succeeds() {
         let mut pipeline: capsule_registry::modular_pipeline::InMemoryPipeline =
             PipelineBuilder::new().build();
         let policy = Policy::default();
 
-        block_on(pipeline.write_capsule(b"modular integration payload", &policy)).unwrap();
-        block_on(pipeline.write_capsule(b"modular integration payload", &policy)).unwrap();
+        pipeline
+            .write_capsule(b"modular integration payload", &policy)
+            .await
+            .unwrap();
+        pipeline
+            .write_capsule(b"modular integration payload", &policy)
+            .await
+            .unwrap();
 
         let stats = pipeline.stats();
         assert!(
@@ -113,8 +118,8 @@ mod modular_pipeline_integration {
         );
     }
 
-    #[test]
-    fn modular_pipeline_encryption_sets_metadata() {
+    #[tokio::test]
+    async fn modular_pipeline_encryption_sets_metadata() {
         let log_path = "modular_pipeline_integration.log";
         let segments_path = format!("{}.segments", log_path);
         let _ = fs::remove_file(log_path);
@@ -136,7 +141,10 @@ mod modular_pipeline_integration {
         );
 
         let policy = Policy::encrypted();
-        block_on(pipeline.write_capsule(b"encrypted modular integration data", &policy)).unwrap();
+        pipeline
+            .write_capsule(b"encrypted modular integration data", &policy)
+            .await
+            .unwrap();
 
         // Re-open the log to inspect persisted metadata.
         let log = nvram_sim::NvramLog::open(log_path).unwrap();
@@ -152,8 +160,8 @@ mod modular_pipeline_integration {
         let _ = fs::remove_file(segments_path);
     }
 
-    #[test]
-    fn registry_pipeline_lifecycle() {
+    #[tokio::test]
+    async fn registry_pipeline_lifecycle() {
         let log_path = "modular_registry_lifecycle.log".to_string();
         let segments_path = format!("{}.segments", log_path);
         let meta_path = "modular_registry_lifecycle.metadata";
@@ -172,21 +180,23 @@ mod modular_pipeline_integration {
         .unwrap();
 
         let policy = Policy::default();
-        let capsule_id =
-            block_on(pipeline.write_capsule(b"registry lifecycle data", &policy)).unwrap();
-        let read_back = block_on(pipeline.read_capsule(capsule_id)).unwrap();
+        let capsule_id = pipeline
+            .write_capsule(b"registry lifecycle data", &policy)
+            .await
+            .unwrap();
+        let read_back = pipeline.read_capsule(capsule_id).await.unwrap();
         assert_eq!(read_back, b"registry lifecycle data");
 
-        block_on(pipeline.delete_capsule(capsule_id)).unwrap();
-        assert!(block_on(pipeline.read_capsule(capsule_id)).is_err());
+        pipeline.delete_capsule(capsule_id).await.unwrap();
+        assert!(pipeline.read_capsule(capsule_id).await.is_err());
 
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(segments_path);
         let _ = fs::remove_file(meta_path);
     }
 
-    #[test]
-    fn registry_pipeline_garbage_collects_orphans() {
+    #[tokio::test]
+    async fn registry_pipeline_garbage_collects_orphans() {
         let log_path = "modular_registry_gc.log".to_string();
         let segments_path = format!("{}.segments", log_path);
         let meta_path = "modular_registry_gc.metadata";
@@ -205,7 +215,10 @@ mod modular_pipeline_integration {
         .unwrap();
 
         let policy = Policy::default();
-        let capsule_id = block_on(pipeline.write_capsule(b"orphaned data block", &policy)).unwrap();
+        let capsule_id = pipeline
+            .write_capsule(b"orphaned data block", &policy)
+            .await
+            .unwrap();
         drop(pipeline);
 
         let capsule = registry.lookup(capsule_id).unwrap();
@@ -223,7 +236,7 @@ mod modular_pipeline_integration {
             registry_nvram_pipeline_with_encryption(&log_path, registry.clone(), key_manager)
                 .unwrap();
 
-        let reclaimed = block_on(pipeline.garbage_collect()).unwrap();
+        let reclaimed = pipeline.garbage_collect().await.unwrap();
         assert_eq!(reclaimed, 1);
         let log = NvramLog::open(&log_path).unwrap();
         assert!(log.get_segment_metadata(seg_id).is_err());

@@ -49,8 +49,8 @@ fn cleanup_path(path: &str) {
     }
 }
 
-#[test]
-fn async_pipeline_processes_segments_in_order() {
+#[tokio::test]
+async fn async_pipeline_processes_segments_in_order() {
     init();
     let (log_path, meta_path) = test_paths("async_pipeline");
     cleanup(&log_path);
@@ -69,19 +69,20 @@ fn async_pipeline_processes_segments_in_order() {
     data.extend((0..2048).map(|i| ((i * 37) % 251) as u8));
 
     let policy = Policy::default();
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let capsule_id = rt
-        .block_on(pipeline.write_capsule_with_policy_async(&data, &policy))
+    let capsule_id = pipeline
+        .write_capsule_with_policy(&data, &policy)
+        .await
         .expect("write capsule");
 
-    let roundtrip = pipeline.read_capsule(capsule_id).expect("read capsule");
+    let roundtrip = pipeline
+        .read_capsule(capsule_id)
+        .await
+        .expect("read capsule");
     assert_eq!(data, roundtrip, "round-trip data mismatch");
 
     drop(pipeline);
     drop(nvram);
     drop(registry);
-    drop(rt);
-
     let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let capsule = reopened.lookup(capsule_id).expect("capsule lookup");
 
@@ -105,8 +106,8 @@ fn async_pipeline_processes_segments_in_order() {
     cleanup(&meta_path);
 }
 
-#[test]
-fn async_pipeline_deduplicates_repeated_payloads() {
+#[tokio::test]
+async fn async_pipeline_deduplicates_repeated_payloads() {
     init();
     let (log_path, meta_path) = test_paths("async_pipeline_dedup");
     cleanup(&log_path);
@@ -118,21 +119,19 @@ fn async_pipeline_deduplicates_repeated_payloads() {
 
     let payload = b"SPACE async dedup".repeat(1024);
     let policy = Policy::default();
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-
-    let first_capsule = rt
-        .block_on(pipeline.write_capsule_with_policy_async(&payload, &policy))
+    let first_capsule = pipeline
+        .write_capsule_with_policy(&payload, &policy)
+        .await
         .expect("first capsule");
-    let second_capsule = rt
-        .block_on(pipeline.write_capsule_with_policy_async(&payload, &policy))
+    let second_capsule = pipeline
+        .write_capsule_with_policy(&payload, &policy)
+        .await
         .expect("second capsule");
 
     // Release all handles before reopening the registry to avoid sled file locks.
     drop(pipeline);
     drop(nvram);
     drop(registry);
-    drop(rt);
-
     let reopened = CapsuleRegistry::open(&meta_path).expect("reopen registry");
     let first = reopened.lookup(first_capsule).expect("first lookup");
     let second = reopened.lookup(second_capsule).expect("second lookup");

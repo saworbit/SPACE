@@ -4,36 +4,6 @@ use nvram_sim::NvramLog;
 
 use crate::CapsuleRegistry;
 
-#[cfg(feature = "pipeline_async")]
-fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
-    // Reuse a single background runtime to avoid per-call thread pool creation.
-    fn global_runtime() -> &'static tokio::runtime::Runtime {
-        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_name("space-sync-bridge")
-                .worker_threads(4)
-                .build()
-                .expect("Failed to create global async runtime")
-        })
-    }
-
-    // Tokio panics if block_on is called from an async executor thread; warn early.
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tracing::warn!(
-            "Calling synchronous Pipeline API from an async context; prefer *_async methods."
-        );
-    }
-
-    global_runtime().block_on(fut)
-}
-
-#[cfg(not(feature = "pipeline_async"))]
-fn block_on_future<F: std::future::Future>(fut: F) -> F::Output {
-    futures::executor::block_on(fut)
-}
-
 mod legacy;
 #[cfg(feature = "modular_pipeline")]
 mod modular;
@@ -152,12 +122,17 @@ impl WritePipeline {
             .downcast_mut::<LegacyPipeline>()
     }
 
-    pub fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
+    pub async fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
         self.write_capsule_with_policy(data, &Policy::default())
+            .await
     }
 
-    pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-        block_on_future(self.strategy().write_capsule(data, policy))
+    pub async fn write_capsule_with_policy(
+        &self,
+        data: &[u8],
+        policy: &Policy,
+    ) -> Result<CapsuleId> {
+        self.strategy().write_capsule(data, policy).await
     }
 
     #[cfg(feature = "pipeline_async")]
@@ -169,20 +144,20 @@ impl WritePipeline {
         self.strategy().write_capsule(data, policy).await
     }
 
-    pub fn delete_capsule(&self, capsule_id: CapsuleId) -> Result<()> {
-        block_on_future(self.strategy().delete_capsule(capsule_id))
+    pub async fn delete_capsule(&self, capsule_id: CapsuleId) -> Result<()> {
+        self.strategy().delete_capsule(capsule_id).await
     }
 
-    pub fn garbage_collect(&self) -> Result<usize> {
-        block_on_future(self.strategy().garbage_collect())
+    pub async fn garbage_collect(&self) -> Result<usize> {
+        self.strategy().garbage_collect().await
     }
 
-    pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
-        block_on_future(self.strategy().read_capsule(id))
+    pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
+        self.strategy().read_capsule(id).await
     }
 
-    pub fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
-        block_on_future(self.strategy().read_range(id, offset, len))
+    pub async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.strategy().read_range(id, offset, len).await
     }
 
     #[cfg(feature = "pipeline_async")]

@@ -1,10 +1,8 @@
-//! Block protocol façade – exposes capsule-backed logical volumes.
+//! Block protocol façade — exposes capsule-backed logical volumes.
 //!
-//! The contract mimics a very small subset of what an NVMe/NBD target would need:
-//! create logical volumes, read ranges, and write ranges.  Each write produces a
-//! brand-new capsule so that the immutable data-plane invariants still hold.
-//! We eagerly delete superseded capsules via the [`WritePipeline`] helper so that
-//! deduplicated segments are correctly reference-counted.
+//! Each write produces a brand-new capsule to preserve immutability and correct
+//! refcounting. The implementation is fully async so protocol handlers can
+//! await pipeline operations without blocking runtime threads.
 
 use anyhow::{anyhow, bail, Result};
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
@@ -12,10 +10,11 @@ use common::CapsuleId;
 use nvram_sim::NvramLog;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::fs;
+use tokio::sync::RwLock;
 
 const DEFAULT_BLOCK_SIZE: u64 = 4096;
 
@@ -85,7 +84,7 @@ impl BlockView {
         let pipeline = Arc::new(WritePipeline::new(registry, nvram));
         let path = metadata_path.as_ref();
         let volumes = if path.exists() {
-            let data = fs::read_to_string(path)?;
+            let data = std::fs::read_to_string(path)?;
             serde_json::from_str(&data)?
         } else {
             BTreeMap::new()
@@ -98,26 +97,28 @@ impl BlockView {
         })
     }
 
-    fn persist(&self) -> Result<()> {
+    async fn persist(&self) -> Result<()> {
         if let Some(path) = &self.metadata_path {
-            let volumes = self.volumes.read().unwrap();
+            let volumes = self.volumes.read().await;
             let json = serde_json::to_string_pretty(&*volumes)?;
-            fs::write(path, json)?;
+            drop(volumes);
+            fs::write(path, json).await?;
         }
         Ok(())
     }
 
     /// Create a volume using the default block size.
-    pub fn create_volume(&self, name: &str, size: u64) -> Result<BlockVolume> {
+    pub async fn create_volume(&self, name: &str, size: u64) -> Result<BlockVolume> {
         self.create_volume_with_block_size(name, size, DEFAULT_BLOCK_SIZE)
+            .await
     }
 
     /// Create a new logical volume.
     ///
     /// Trade-off: we eagerly zero-initialise the backing capsule so all reads
-    /// return deterministic data.  In a production path we would lazily
+    /// return deterministic data. In a production path we would lazily
     /// materialise blocks or use sparse extents.
-    pub fn create_volume_with_block_size(
+    pub async fn create_volume_with_block_size(
         &self,
         name: &str,
         size: u64,
@@ -137,15 +138,12 @@ impl BlockView {
             bail!("Volume size exceeds addressable memory for initialisation");
         }
 
-        {
-            let volumes = self.volumes.read().unwrap();
-            if volumes.contains_key(name) {
-                bail!("Volume already exists: {}", name);
-            }
+        if self.volumes.read().await.contains_key(name) {
+            bail!("Volume already exists: {}", name);
         }
 
         let buffer = vec![0u8; size as usize];
-        let capsule_id = self.pipeline.write_capsule(&buffer)?;
+        let capsule_id = self.pipeline.write_capsule(&buffer).await?;
         let now = unix_timestamp();
 
         let volume = BlockVolume {
@@ -158,22 +156,21 @@ impl BlockView {
             version: 1,
         };
 
-        let mut volumes = self.volumes.write().unwrap();
+        let mut volumes = self.volumes.write().await;
         if volumes.contains_key(name) {
-            // Another thread raced us – drop the new capsule to avoid leakage.
             drop(volumes);
-            let _ = self.pipeline.delete_capsule(capsule_id);
+            let _ = self.pipeline.delete_capsule(capsule_id).await;
             bail!("Volume already exists: {}", name);
         }
         volumes.insert(name.to_string(), volume.clone());
         drop(volumes);
-        self.persist()?;
+        self.persist().await?;
         Ok(volume)
     }
 
     /// Return a snapshot of the volume metadata.
-    pub fn volume(&self, name: &str) -> Result<BlockVolume> {
-        let volumes = self.volumes.read().unwrap();
+    pub async fn volume(&self, name: &str) -> Result<BlockVolume> {
+        let volumes = self.volumes.read().await;
         volumes
             .get(name)
             .cloned()
@@ -181,47 +178,49 @@ impl BlockView {
     }
 
     /// List all known volumes (sorted by name because we use `BTreeMap`).
-    pub fn list_volumes(&self) -> Vec<BlockVolume> {
-        self.volumes.read().unwrap().values().cloned().collect()
+    pub async fn list_volumes(&self) -> Vec<BlockVolume> {
+        self.volumes.read().await.values().cloned().collect()
     }
 
     /// Delete a volume and reclaim the underlying capsule.
-    pub fn delete_volume(&self, name: &str) -> Result<()> {
+    pub async fn delete_volume(&self, name: &str) -> Result<()> {
         let capsule_id;
         {
-            let mut volumes = self.volumes.write().unwrap();
+            let mut volumes = self.volumes.write().await;
             let volume = volumes
                 .remove(name)
                 .ok_or_else(|| anyhow!("Volume not found: {}", name))?;
             capsule_id = volume.capsule_id;
         }
 
-        self.persist()?;
-        let _ = self.pipeline.delete_capsule(capsule_id);
+        self.persist().await?;
+        let _ = self.pipeline.delete_capsule(capsule_id).await;
         Ok(())
     }
 
     /// Read a byte range from the logical volume.
-    pub fn read(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let volume = self.volume(name)?;
+    pub async fn read(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let volume = self.volume(name).await?;
         if offset + len as u64 > volume.size {
             bail!("Read beyond end of volume");
         }
-        self.pipeline.read_range(volume.capsule_id, offset, len)
+        self.pipeline
+            .read_range(volume.capsule_id, offset, len)
+            .await
     }
 
     /// Overwrite a range within the logical volume.
     ///
-    /// We rewrite the whole backing capsule.  The code performs a basic
+    /// We rewrite the whole backing capsule. The code performs a basic
     /// optimistic concurrency check by verifying that metadata wasn't updated
     /// while we were copying.
-    pub fn write(&self, name: &str, offset: u64, data: &[u8]) -> Result<()> {
+    pub async fn write(&self, name: &str, offset: u64, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
 
         let (capsule_id, version) = {
-            let volumes = self.volumes.read().unwrap();
+            let volumes = self.volumes.read().await;
             let volume = volumes
                 .get(name)
                 .ok_or_else(|| anyhow!("Volume not found: {}", name))?;
@@ -231,24 +230,22 @@ impl BlockView {
             (volume.capsule_id, volume.version)
         };
 
-        let mut buffer = self.pipeline.read_capsule(capsule_id)?;
+        let mut buffer = self.pipeline.read_capsule(capsule_id).await?;
         let start = offset as usize;
         let end = start + data.len();
         buffer[start..end].copy_from_slice(data);
 
-        let new_capsule = self.pipeline.write_capsule(&buffer)?;
+        let new_capsule = self.pipeline.write_capsule(&buffer).await?;
         let now = unix_timestamp();
 
-        let mut volumes = self.volumes.write().unwrap();
+        let mut volumes = self.volumes.write().await;
         let volume = volumes
             .get_mut(name)
             .ok_or_else(|| anyhow!("Volume not found: {}", name))?;
 
         if volume.version != version || volume.capsule_id != capsule_id {
-            // Somebody mutated the volume while we were rewriting; drop the new capsule
-            // and ask the caller to retry.
             drop(volumes);
-            let _ = self.pipeline.delete_capsule(new_capsule);
+            let _ = self.pipeline.delete_capsule(new_capsule).await;
             bail!("Volume modified concurrently");
         }
 
@@ -257,8 +254,8 @@ impl BlockView {
         volume.version = volume.version.saturating_add(1);
 
         drop(volumes);
-        self.persist()?;
-        let _ = self.pipeline.delete_capsule(capsule_id);
+        self.persist().await?;
+        let _ = self.pipeline.delete_capsule(capsule_id).await;
         Ok(())
     }
 }

@@ -46,10 +46,6 @@ use std::sync::Arc;
 use std::sync::Once;
 #[cfg(feature = "phase4")]
 use std::time::Duration;
-#[cfg(feature = "modular_pipeline")]
-use tokio::runtime::Runtime as TokioRuntime;
-#[cfg(feature = "phase4")]
-use tokio::runtime::Runtime;
 #[cfg(feature = "phase4")]
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -221,38 +217,36 @@ fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
 #[cfg(feature = "modular_pipeline")]
 fn build_modular_pipeline_handle(
     registry: CapsuleRegistry,
-) -> Result<(modular_pipeline::RegistryPipelineHandle, TokioRuntime)> {
-    let handle = modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
-    let runtime = TokioRuntime::new()?;
-    Ok((handle, runtime))
+) -> Result<modular_pipeline::RegistryPipelineHandle> {
+    modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)
 }
 
 #[cfg(feature = "modular_pipeline")]
-fn modular_write_capsule(data: &[u8]) -> Result<CapsuleId> {
+async fn modular_write_capsule(data: &[u8]) -> Result<CapsuleId> {
     let registry = CapsuleRegistry::new();
-    let (mut handle, runtime) = build_modular_pipeline_handle(registry)?;
-    runtime.block_on(async { handle.write_capsule(data, &Policy::default()).await })
+    let mut handle = build_modular_pipeline_handle(registry)?;
+    handle.write_capsule(data, &Policy::default()).await
 }
 
 #[cfg(feature = "modular_pipeline")]
-fn modular_read_capsule(id: CapsuleId) -> Result<Vec<u8>> {
+async fn modular_read_capsule(id: CapsuleId) -> Result<Vec<u8>> {
     let registry = CapsuleRegistry::new();
-    let (handle, runtime) = build_modular_pipeline_handle(registry)?;
-    runtime.block_on(async { handle.read_capsule(id).await })
+    let handle = build_modular_pipeline_handle(registry)?;
+    handle.read_capsule(id).await
 }
 
-fn run_nfs_command(command: NfsCommands) -> Result<()> {
+async fn run_nfs_command(command: NfsCommands) -> Result<()> {
     let (registry, nvram) = open_registry_and_nvram()?;
     let nfs = NfsView::open(registry, nvram, NFS_NAMESPACE_FILE)?;
 
     match command {
         NfsCommands::Mkdir { path } => {
-            nfs.mkdir(&path)?;
+            nfs.mkdir(&path).await?;
             println!("Created directory tree: {}", path);
         }
         NfsCommands::Write { path, file } => {
             let data = fs::read(&file)?;
-            let capsule = nfs.write_file(&path, data)?;
+            let capsule = nfs.write_file(&path, data).await?;
             println!(
                 "Wrote {} (capsule {}) from {}",
                 path,
@@ -261,11 +255,11 @@ fn run_nfs_command(command: NfsCommands) -> Result<()> {
             );
         }
         NfsCommands::Read { path } => {
-            let data = nfs.read_file(&path)?;
+            let data = nfs.read_file(&path).await?;
             io::stdout().write_all(&data)?;
         }
         NfsCommands::List { path } => {
-            let entries = nfs.list_directory(&path)?;
+            let entries = nfs.list_directory(&path).await?;
             if entries.is_empty() {
                 println!("(empty directory)");
             } else {
@@ -287,11 +281,11 @@ fn run_nfs_command(command: NfsCommands) -> Result<()> {
             }
         }
         NfsCommands::Delete { path } => {
-            nfs.delete(&path)?;
+            nfs.delete(&path).await?;
             println!("Deleted {}", path);
         }
         NfsCommands::Metadata { path } => {
-            let entry = nfs.metadata(&path)?;
+            let entry = nfs.metadata(&path).await?;
             let kind = if entry.is_directory() {
                 "directory"
             } else {
@@ -311,7 +305,7 @@ fn run_nfs_command(command: NfsCommands) -> Result<()> {
     Ok(())
 }
 
-fn run_block_command(command: BlockCommands) -> Result<()> {
+async fn run_block_command(command: BlockCommands) -> Result<()> {
     let (registry, nvram) = open_registry_and_nvram()?;
     let block = BlockView::open(registry, nvram, BLOCK_METADATA_FILE)?;
 
@@ -322,9 +316,11 @@ fn run_block_command(command: BlockCommands) -> Result<()> {
             block_size,
         } => {
             let volume = if let Some(block_size) = block_size {
-                block.create_volume_with_block_size(&name, size, block_size)?
+                block
+                    .create_volume_with_block_size(&name, size, block_size)
+                    .await?
             } else {
-                block.create_volume(&name, size)?
+                block.create_volume(&name, size).await?
             };
             println!(
                 "Created volume {} (size={} bytes, block_size={})",
@@ -334,11 +330,11 @@ fn run_block_command(command: BlockCommands) -> Result<()> {
             );
         }
         BlockCommands::Delete { name } => {
-            block.delete_volume(&name)?;
+            block.delete_volume(&name).await?;
             println!("Deleted volume {}", name);
         }
         BlockCommands::List => {
-            let volumes = block.list_volumes();
+            let volumes = block.list_volumes().await;
             if volumes.is_empty() {
                 println!("(no volumes)");
             } else {
@@ -355,7 +351,7 @@ fn run_block_command(command: BlockCommands) -> Result<()> {
             }
         }
         BlockCommands::Info { name } => {
-            let volume = block.volume(&name)?;
+            let volume = block.volume(&name).await?;
             println!("Name: {}", volume.name());
             println!("Size: {}", volume.size());
             println!("Block Size: {}", volume.block_size());
@@ -369,12 +365,12 @@ fn run_block_command(command: BlockCommands) -> Result<()> {
             offset,
             length,
         } => {
-            let data = block.read(&name, offset, length)?;
+            let data = block.read(&name, offset, length).await?;
             io::stdout().write_all(&data)?;
         }
         BlockCommands::Write { name, offset, file } => {
             let data = fs::read(&file)?;
-            block.write(&name, offset, &data)?;
+            block.write(&name, offset, &data).await?;
             println!(
                 "Wrote {} bytes to volume {} from {}",
                 data.len(),
@@ -514,7 +510,7 @@ async fn handle_project_command(args: ProjectArgs) -> Result<()> {
 }
 
 #[cfg(feature = "phase4")]
-fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
+async fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
     match command {
         SnapshotCommands::Trigger {
             id,
@@ -547,7 +543,7 @@ fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
             );
 
             if wait {
-                std::thread::sleep(Duration::from_millis(100));
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
     }
@@ -555,7 +551,8 @@ fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     init_tracing();
     let cli = Cli::parse();
     let token = cli
@@ -576,7 +573,7 @@ fn main() -> Result<()> {
             let data = fs::read(&file)?;
             #[cfg(feature = "modular_pipeline")]
             if modular {
-                let id = modular_write_capsule(&data)?;
+                let id = modular_write_capsule(&data).await?;
                 println!("Capsule created: {}", id.as_uuid());
                 println!("Size: {} bytes", data.len());
                 return Ok(());
@@ -584,14 +581,7 @@ fn main() -> Result<()> {
 
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::new(registry, nvram);
-            #[cfg(feature = "pipeline_async")]
-            let id = {
-                let policy = Policy::default();
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(pipeline.write_capsule_with_policy_async(&data, &policy))?
-            };
-            #[cfg(not(feature = "pipeline_async"))]
-            let id = pipeline.write_capsule(&data)?;
+            let id = pipeline.write_capsule(&data).await?;
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {} bytes", data.len());
         }
@@ -605,14 +595,14 @@ fn main() -> Result<()> {
 
             #[cfg(feature = "modular_pipeline")]
             if modular {
-                let data = modular_read_capsule(id)?;
+                let data = modular_read_capsule(id).await?;
                 io::stdout().write_all(&data)?;
                 return Ok(());
             }
 
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::new(registry, nvram);
-            let data = pipeline.read_capsule(id)?;
+            let data = pipeline.read_capsule(id).await?;
             io::stdout().write_all(&data)?;
         }
         Commands::List => {
@@ -683,23 +673,21 @@ fn main() -> Result<()> {
 
             let server = S3Server::new(s3_view, port);
 
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async { server.run().await })?;
+            server.run().await?;
         }
         #[cfg(feature = "phase4")]
         Commands::Project(args) => {
-            let rt = Runtime::new()?;
-            rt.block_on(handle_project_command(args))?;
+            handle_project_command(args).await?;
         }
         #[cfg(feature = "phase4")]
         Commands::Snapshot { command } => {
-            handle_snapshot_command(command)?;
+            handle_snapshot_command(command).await?;
         }
         Commands::Nfs { command } => {
-            run_nfs_command(command)?;
+            run_nfs_command(command).await?;
         }
         Commands::Block { command } => {
-            run_block_command(command)?;
+            run_block_command(command).await?;
         }
     }
 

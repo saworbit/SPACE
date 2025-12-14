@@ -20,62 +20,65 @@ fn setup(prefix: &str) -> NfsView {
     NfsView::open(registry, nvram, namespace_path).unwrap()
 }
 
-#[test]
-fn nfs_basic_crud_flow() {
+#[tokio::test]
+async fn nfs_basic_crud_flow() {
     let prefix = "test_nfs_basic";
     let nfs = setup(prefix);
 
-    nfs.mkdir("/data/logs").unwrap();
+    nfs.mkdir("/data/logs").await.unwrap();
 
     let first_capsule = nfs
         .write_file("/data/logs/app.log", b"hello, world".to_vec())
+        .await
         .unwrap();
 
-    let fetched = nfs.read_file("/data/logs/app.log").unwrap();
+    let fetched = nfs.read_file("/data/logs/app.log").await.unwrap();
     assert_eq!(fetched, b"hello, world");
 
-    let entries = nfs.list_directory("/data").unwrap();
+    let entries = nfs.list_directory("/data").await.unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name(), "logs");
     assert!(entries[0].is_directory());
 
-    let log_dir = nfs.metadata("/data/logs").unwrap();
+    let log_dir = nfs.metadata("/data/logs").await.unwrap();
     assert!(log_dir.is_directory());
 
-    let file_meta = nfs.metadata("/data/logs/app.log").unwrap();
+    let file_meta = nfs.metadata("/data/logs/app.log").await.unwrap();
     assert_eq!(file_meta.size(), 12);
     assert_eq!(file_meta.capsule_id().unwrap(), first_capsule);
 
-    let sliced = nfs.read_range("/data/logs/app.log", 7, 5).unwrap();
+    let sliced = nfs.read_range("/data/logs/app.log", 7, 5).await.unwrap();
     assert_eq!(sliced, b"world");
 
     let second_capsule = nfs
         .write_file("/data/logs/app.log", b"goodbye".to_vec())
+        .await
         .unwrap();
     assert_ne!(first_capsule, second_capsule);
 
-    let updated = nfs.read_file("/data/logs/app.log").unwrap();
+    let updated = nfs.read_file("/data/logs/app.log").await.unwrap();
     assert_eq!(updated, b"goodbye");
 
-    nfs.delete("/data/logs/app.log").unwrap();
-    assert!(nfs.read_file("/data/logs/app.log").is_err());
+    nfs.delete("/data/logs/app.log").await.unwrap();
+    assert!(nfs.read_file("/data/logs/app.log").await.is_err());
 
     // Directory still exists, but should now be empty.
-    let log_entries = nfs.list_directory("/data/logs").unwrap();
+    let log_entries = nfs.list_directory("/data/logs").await.unwrap();
     assert!(log_entries.is_empty());
 
     drop(nfs);
     teardown(prefix);
 }
 
-#[test]
-fn nfs_relative_paths_are_normalised() {
+#[tokio::test]
+async fn nfs_relative_paths_are_normalised() {
     let prefix = "test_nfs_normalise";
     let nfs = setup(prefix);
 
     nfs.write_file("tmp/../tmp/file.txt", b"bytes".to_vec())
+        .await
         .unwrap();
-    let meta = nfs.metadata("/tmp/file.txt").unwrap();
+    let meta = nfs.metadata("/tmp/file.txt").await.unwrap();
     assert_eq!(meta.name(), "file.txt");
     assert_eq!(meta.size(), 5);
 
@@ -83,8 +86,8 @@ fn nfs_relative_paths_are_normalised() {
     teardown(prefix);
 }
 
-#[test]
-fn nfs_persists_namespace_state() {
+#[tokio::test]
+async fn nfs_persists_namespace_state() {
     let prefix = "test_nfs_persist";
     teardown(prefix);
     let log_path = format!("{}.nvram", prefix);
@@ -95,8 +98,9 @@ fn nfs_persists_namespace_state() {
         let registry = CapsuleRegistry::open(&meta_path).unwrap();
         let nvram = NvramLog::open(&log_path).unwrap();
         let nfs = NfsView::open(registry, nvram, &namespace_path).unwrap();
-        nfs.mkdir("/persist").unwrap();
+        nfs.mkdir("/persist").await.unwrap();
         nfs.write_file("/persist/file.txt", b"persisted".to_vec())
+            .await
             .unwrap();
     }
 
@@ -104,9 +108,9 @@ fn nfs_persists_namespace_state() {
         let registry = CapsuleRegistry::open(&meta_path).unwrap();
         let nvram = NvramLog::open(&log_path).unwrap();
         let nfs = NfsView::open(registry, nvram, &namespace_path).unwrap();
-        let meta = nfs.metadata("/persist/file.txt").unwrap();
+        let meta = nfs.metadata("/persist/file.txt").await.unwrap();
         assert_eq!(meta.size(), 9);
-        let data = nfs.read_file("/persist/file.txt").unwrap();
+        let data = nfs.read_file("/persist/file.txt").await.unwrap();
         assert_eq!(data, b"persisted");
     }
 

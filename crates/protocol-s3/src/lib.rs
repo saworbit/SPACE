@@ -13,7 +13,6 @@ use std::sync::{Arc, RwLock};
 use tokio::io::AsyncReadExt;
 #[cfg(feature = "modular_pipeline")]
 use tokio::sync::Mutex as TokioMutex;
-use tokio::task;
 use tokio_util::io::{ReaderStream, StreamReader};
 
 pub mod handlers;
@@ -108,10 +107,7 @@ impl S3View {
         let capsule_id = match &self.pipeline {
             PipelineBackend::Legacy(pipeline) => {
                 let pipeline = Arc::clone(pipeline);
-                let payload = Arc::clone(&payload);
-                task::spawn_blocking(move || pipeline.write_capsule(payload.as_slice()))
-                    .await
-                    .map_err(|err| anyhow::anyhow!(err.to_string()))??
+                pipeline.write_capsule(payload.as_slice()).await?
             }
             #[cfg(feature = "modular_pipeline")]
             PipelineBackend::Modular(pipeline) => {
@@ -159,9 +155,7 @@ impl S3View {
         let data = match &self.pipeline {
             PipelineBackend::Legacy(pipeline) => {
                 let pipeline = Arc::clone(pipeline);
-                task::spawn_blocking(move || pipeline.read_capsule(mapping.capsule_id))
-                    .await
-                    .map_err(|err| anyhow::anyhow!(err.to_string()))??
+                pipeline.read_capsule(mapping.capsule_id).await?
             }
             #[cfg(feature = "modular_pipeline")]
             PipelineBackend::Modular(pipeline) => {

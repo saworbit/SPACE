@@ -9,11 +9,67 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use blake3::Hasher;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::Event;
+
+/// Fire-and-forget audit logger backed by an async task.
+#[derive(Clone)]
+pub struct AuditLogger {
+    sender: mpsc::UnboundedSender<AuditEvent>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuditEvent {
+    pub timestamp: String,
+    pub action: String,
+    pub user: String,
+    pub resource: String,
+    pub outcome: String,
+}
+
+static LOGGER: std::sync::OnceLock<AuditLogger> = std::sync::OnceLock::new();
+
+impl AuditLogger {
+    /// Initialize the global audit logger actor.
+    pub fn init(path: impl AsRef<std::path::Path> + Send + 'static) {
+        let (tx, mut rx) = mpsc::unbounded_channel::<AuditEvent>();
+
+        tokio::spawn(async move {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("Failed to open audit log file");
+
+            while let Some(event) = rx.recv().await {
+                if let Ok(json) = serde_json::to_string(&event) {
+                    let _ = writeln!(file, "{}", json);
+                }
+            }
+        });
+
+        let _ = LOGGER.set(AuditLogger { sender: tx });
+    }
+
+    /// Submit an audit event without blocking the caller.
+    pub fn log(action: &str, user: &str, resource: &str, outcome: &str) {
+        if let Some(logger) = LOGGER.get() {
+            let event = AuditEvent {
+                timestamp: Utc::now().to_rfc3339(),
+                action: action.to_string(),
+                user: user.to_string(),
+                resource: resource.to_string(),
+                outcome: outcome.to_string(),
+            };
+            let _ = logger.sender.send(event);
+        }
+    }
+}
 
 /// Append-only audit log handle shared across components.
 #[derive(Clone)]

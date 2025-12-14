@@ -232,6 +232,7 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 - Zero-copy streaming reads (
 ead_capsule_stream) with constant-memory Bytes per segment
 - Cursor-based registry listing (list_capsules(limit, cursor)) to page infinite capsule counts
+- Async-only pipeline and CLI (no block_on bridges) to maximize concurrency
 - XTS-AES-256 encryption with BLAKE3-MAC integrity - basic implementation works
 - Deterministic encryption preserving deduplication - needs more testing
 - NVRAM log simulator for persistent segment storage

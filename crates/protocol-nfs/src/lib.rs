@@ -18,10 +18,11 @@ use common::CapsuleId;
 use nvram_sim::NvramLog;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::fs as async_fs;
+use tokio::sync::RwLock;
 
 #[cfg(feature = "phase4")]
 pub mod phase4;
@@ -212,7 +213,7 @@ impl NfsView {
         let pipeline = Arc::new(WritePipeline::new(registry, nvram));
         let path = namespace_path.as_ref();
         let mut nodes = if path.exists() {
-            let data = fs::read_to_string(path)?;
+            let data = std::fs::read_to_string(path)?;
             serde_json::from_str(&data)?
         } else {
             BTreeMap::new()
@@ -228,11 +229,12 @@ impl NfsView {
         })
     }
 
-    fn persist(&self) -> Result<()> {
+    async fn persist(&self) -> Result<()> {
         if let Some(path) = &self.namespace_path {
-            let nodes = self.nodes.read().unwrap();
+            let nodes = self.nodes.read().await;
             let json = serde_json::to_string_pretty(&*nodes)?;
-            fs::write(path, json)?;
+            drop(nodes);
+            async_fs::write(path, json).await?;
         }
         Ok(())
     }
@@ -242,7 +244,7 @@ impl NfsView {
     /// Rationale: we allocate a brand new capsule per write to keep the metadata
     /// immutable.  If a previous file existed, we ask the pipeline to delete the
     /// superseded capsule once the new data is durable.
-    pub fn write_file(&self, path: &str, data: Vec<u8>) -> Result<CapsuleId> {
+    pub async fn write_file(&self, path: &str, data: Vec<u8>) -> Result<CapsuleId> {
         let path_info = normalize_path(path)?;
         if path_info.is_root() {
             bail!("Cannot write file at root");
@@ -258,7 +260,7 @@ impl NfsView {
 
         // Pre-flight check for directory collisions while avoiding holding the write lock.
         {
-            let nodes = self.nodes.read().unwrap();
+            let nodes = self.nodes.read().await;
             if let Some(existing) = nodes.get(path_info.full()) {
                 if existing.is_directory() {
                     bail!("Cannot overwrite directory with file");
@@ -266,8 +268,8 @@ impl NfsView {
             }
         }
 
-        let capsule_id = self.pipeline.write_capsule(&data)?;
-        let mut nodes = self.nodes.write().unwrap();
+        let capsule_id = self.pipeline.write_capsule(&data).await?;
+        let mut nodes = self.nodes.write().await;
         ensure_directory(&mut nodes, &parent_info, now)?;
 
         // Capture old capsule (if any) so that we can drop it after updating metadata.
@@ -302,19 +304,19 @@ impl NfsView {
 
         if let Some(old_capsule) = old_capsule {
             // Ignore errors when deleting the old capsule – GC will eventually clean up.
-            let _ = self.pipeline.delete_capsule(old_capsule);
+            let _ = self.pipeline.delete_capsule(old_capsule).await;
         }
 
-        self.persist()?;
+        self.persist().await?;
 
         Ok(capsule_id)
     }
 
     /// Read the full file contents for `path`.
-    pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+    pub async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
         let path_info = normalize_path(path)?;
         let node = {
-            let nodes = self.nodes.read().unwrap();
+            let nodes = self.nodes.read().await;
             nodes
                 .get(path_info.full())
                 .cloned()
@@ -322,16 +324,16 @@ impl NfsView {
         };
 
         match node.kind {
-            NfsNodeKind::File { capsule_id, .. } => self.pipeline.read_capsule(capsule_id),
+            NfsNodeKind::File { capsule_id, .. } => self.pipeline.read_capsule(capsule_id).await,
             NfsNodeKind::Directory => bail!("Path is a directory: {}", node.path),
         }
     }
 
     /// Read a byte range from the file at `path`.
-    pub fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+    pub async fn read_range(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         let path_info = normalize_path(path)?;
         let node = {
-            let nodes = self.nodes.read().unwrap();
+            let nodes = self.nodes.read().await;
             nodes
                 .get(path_info.full())
                 .cloned()
@@ -343,32 +345,32 @@ impl NfsView {
                 if offset + len as u64 > size {
                     bail!("Read beyond end of file");
                 }
-                self.pipeline.read_range(capsule_id, offset, len)
+                self.pipeline.read_range(capsule_id, offset, len).await
             }
             NfsNodeKind::Directory => bail!("Path is a directory: {}", node.path),
         }
     }
 
     /// Explicitly create a directory and its parents.
-    pub fn mkdir(&self, path: &str) -> Result<()> {
+    pub async fn mkdir(&self, path: &str) -> Result<()> {
         let path_info = normalize_path(path)?;
         let now = unix_timestamp();
-        let mut nodes = self.nodes.write().unwrap();
+        let mut nodes = self.nodes.write().await;
         ensure_directory(&mut nodes, &path_info, now)?;
         drop(nodes);
-        self.persist()
+        self.persist().await
     }
 
     /// Delete a file or empty directory.  Directories must be empty to avoid
     /// accidentally orphaning entries.
-    pub fn delete(&self, path: &str) -> Result<()> {
+    pub async fn delete(&self, path: &str) -> Result<()> {
         let path_info = normalize_path(path)?;
         if path_info.is_root() {
             bail!("Cannot delete root directory");
         }
 
         let now = unix_timestamp();
-        let mut nodes = self.nodes.write().unwrap();
+        let mut nodes = self.nodes.write().await;
 
         let node = nodes
             .get(path_info.full())
@@ -400,18 +402,18 @@ impl NfsView {
         drop(nodes);
 
         if let Some(capsule_id) = removed_capsule {
-            let _ = self.pipeline.delete_capsule(capsule_id);
+            let _ = self.pipeline.delete_capsule(capsule_id).await;
         }
 
-        self.persist()?;
+        self.persist().await?;
 
         Ok(())
     }
 
     /// Return metadata for the path.
-    pub fn metadata(&self, path: &str) -> Result<NfsEntry> {
+    pub async fn metadata(&self, path: &str) -> Result<NfsEntry> {
         let path_info = normalize_path(path)?;
-        let nodes = self.nodes.read().unwrap();
+        let nodes = self.nodes.read().await;
         nodes
             .get(path_info.full())
             .map(|node| node.to_entry())
@@ -419,9 +421,9 @@ impl NfsView {
     }
 
     /// List the immediate children of `path` (files + directories).
-    pub fn list_directory(&self, path: &str) -> Result<Vec<NfsEntry>> {
+    pub async fn list_directory(&self, path: &str) -> Result<Vec<NfsEntry>> {
         let path_info = normalize_path(path)?;
-        let nodes = self.nodes.read().unwrap();
+        let nodes = self.nodes.read().await;
         let dir_node = nodes
             .get(path_info.full())
             .ok_or_else(|| anyhow!("No such directory: {}", path_info.full()))?;

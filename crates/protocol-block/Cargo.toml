@@ -13,3 +13,4 @@ common = { path = "../common" }
 nvram-sim = { path = "../nvram-sim" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "fs"] }
