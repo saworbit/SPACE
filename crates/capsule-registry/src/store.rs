@@ -13,7 +13,7 @@ pub trait MetadataStore: Send + Sync {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
     fn put_capsule(&self, capsule: &Capsule) -> Result<()>;
     fn delete_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
-    fn list_capsules(&self) -> Result<Vec<Capsule>>;
+    fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>>;
     #[allow(dead_code)]
     fn add_deduped_bytes(&self, id: &CapsuleId, bytes: u64) -> Result<()>;
 
@@ -111,12 +111,25 @@ impl MetadataStore for SledStore {
         }
     }
 
-    fn list_capsules(&self) -> Result<Vec<Capsule>> {
-        let mut capsules = Vec::new();
-        for entry in self.capsules.iter() {
+    fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>> {
+        let mut capsules = Vec::with_capacity(limit);
+
+        let start_key = match start_after {
+            Some(id) => {
+                let mut key = bincode::serialize(&id)?;
+                key.push(0);
+                key
+            }
+            None => Vec::new(),
+        };
+
+        let iter = self.capsules.range(start_key..);
+
+        for entry in iter.take(limit) {
             let (_, value) = entry?;
             capsules.push(bincode::deserialize(&value)?);
         }
+
         Ok(capsules)
     }
 

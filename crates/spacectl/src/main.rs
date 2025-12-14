@@ -59,6 +59,7 @@ use uuid::Uuid;
 const NVRAM_PATH: &str = "space.nvram";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
 const BLOCK_METADATA_FILE: &str = "space.block.json";
+const LIST_PAGE_SIZE: usize = 256;
 
 fn init_tracing() {
     static INIT: Once = Once::new();
@@ -616,12 +617,22 @@ fn main() -> Result<()> {
         }
         Commands::List => {
             let registry = CapsuleRegistry::new();
-            let capsule_ids = registry.list_capsules();
+            let mut cursor = None;
+            let mut printed = false;
 
-            if capsule_ids.is_empty() {
-                println!("(no capsules)");
-            } else {
-                println!("Capsule ID\tSize (bytes)\tSegments");
+            loop {
+                let capsule_ids = registry.list_capsules(LIST_PAGE_SIZE, cursor)?;
+                if capsule_ids.is_empty() {
+                    break;
+                }
+
+                if !printed {
+                    println!("Capsule ID\tSize (bytes)\tSegments");
+                    printed = true;
+                }
+
+                cursor = capsule_ids.last().copied();
+
                 for id in capsule_ids {
                     match registry.lookup(id) {
                         Ok(capsule) => {
@@ -637,6 +648,10 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+
+            if !printed {
+                println!("(no capsules)");
             }
         }
         Commands::ServeS3 {

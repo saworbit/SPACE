@@ -1,12 +1,18 @@
 use std::borrow::Cow;
+use std::pin::Pin;
 
 use anyhow::Result;
+use bytes::Bytes;
 use futures::future::BoxFuture;
+use futures::Stream;
 
 use crate::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
     SegmentId,
 };
+
+/// Type alias for a boxed, sendable data stream used across the pipeline.
+pub type DataStream = Pin<Box<dyn Stream<Item = anyhow::Result<Bytes>> + Send>>;
 
 /// Summary information produced by a compression engine.
 #[derive(Debug, Clone)]

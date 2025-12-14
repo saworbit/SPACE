@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Raft-ready sled metadata store** - Capsule registry now persists to `space.db` via sled with streaming snapshot/restore and Raft-facing apply hooks, eliminating the JSON SPOF and enabling crash-safe recovery.
 - **SwarmBehavior Transformer Pattern** - Dependency-inverted `TransformOps` trait in `common` enables decrypt -> decompress -> re-compress -> re-encrypt during migration with sovereignty enforcement; documented in `docs/specs/PODMS_SWARM_BEHAVIOR.md`.
 - **SwarmOps runtime adapter** - `crates/scaling/src/swarm_ops.rs` implements `TransformOps` with per-capsule XTS key derivation and LZ4/Zstd bridging; detailed in `docs/specs/PODMS_TRANSFORM_OPS.md`.
+- **Phase 1 streaming reads + paginated metadata** - Data-plane reads now expose `read_capsule_stream` for zero-copy `Bytes` streaming and the registry control plane supports cursor-based pagination (`list_capsules(limit, cursor)`), documented with Axum usage and CLI pagination semantics in `docs/guides/STREAMING_READS.md`.
 - **BatchQueue byte ceiling** - Hybrid flush trigger now enforces `max_batch_bytes` (default 4MiB helper) to stop oversized payloads from bypassing count-based limits; targeted tests live in `scripts/test_batch_queue_limits.sh`.
 - **🌐 Multi-Node Capabilities (PODMS Orchestrator)** - Comprehensive distributed mesh networking
   - **New crate: `podms-orchestrator`** - Unified coordination layer for multi-node operations

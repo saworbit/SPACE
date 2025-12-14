@@ -317,6 +317,7 @@ pub fn compress_segment<'a>(
     adaptive_compress(data, policy)
 }
 
+#[derive(Clone)]
 pub struct Lz4ZstdCompressor;
 
 impl Lz4ZstdCompressor {

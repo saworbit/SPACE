@@ -224,14 +224,17 @@ Everything is a **capsule** — a universal 128-bit ID that can be viewed throug
 
 </div>
 
-### ✅ Core Features (Beta Quality - Relatively Stable)
-- 🔮 **Universal capsule storage** with persistent metadata (Sled-backed registry)
-- 💻 **CLI create/read operations** via spacectl (basic functionality works)
-- 🗜️ **Adaptive compression** (LZ4/Zstd with entropy detection) - working well
-- 🔗 **Content-addressed deduplication** (post-compression, BLAKE3 hashing) - functional
-- 🔐 **XTS-AES-256 encryption** with BLAKE3-MAC integrity - basic implementation works
-- 🎯 **Deterministic encryption** preserving deduplication - needs more testing
-- 💾 **NVRAM log simulator** for persistent segment storage
+### Core Features (Beta Quality - Relatively Stable)
+- Universal capsule storage with persistent metadata (Sled-backed registry)
+- CLI create/read operations via spacectl (basic functionality works)
+- Adaptive compression (LZ4/Zstd with entropy detection) - working well
+- Content-addressed deduplication (post-compression, BLAKE3 hashing) - functional
+- Zero-copy streaming reads (
+ead_capsule_stream) with constant-memory Bytes per segment
+- Cursor-based registry listing (list_capsules(limit, cursor)) to page infinite capsule counts
+- XTS-AES-256 encryption with BLAKE3-MAC integrity - basic implementation works
+- Deterministic encryption preserving deduplication - needs more testing
+- NVRAM log simulator for persistent segment storage
 
 ### 🟡 Alpha Features (Working But Rough)
 - 🌐 **S3-compatible REST API** - Basic PUT/GET/DELETE work, incomplete feature set
@@ -1323,6 +1326,7 @@ SPACE is a **single-developer research project** exploring novel storage archite
 | 🚀 [S3 Quick Start](docs/guides/QUICKSTART_S3.md) | Protocol view demo |
 | 🎨 [UI Mockup Walkthrough](docs/guides/UI_MOCKUP.md) | Launch the Orbit command interface concept |
 | 🔨 [Build Guide](docs/guides/BUILD.md) | Compilation and testing |
+| [Streaming Reads & Pagination](docs/guides/STREAMING_READS.md) | Zero-copy capsule reads + cursor listings |
 
 </div>
 

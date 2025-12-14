@@ -39,12 +39,14 @@ lz4 = { workspace = true }
 zstd = { workspace = true }
 blake3 = { workspace = true }
 subtle = { workspace = true }
-bytes = "1.7"
+bytes = { workspace = true }
 sled = "0.34"
 pipeline = { path = "../pipeline", optional = true }
 scaling = { path = "../scaling", optional = true }
 sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation mode support
 async-trait = "0.1"
+tokio-util = { version = "^0.7.11", features = ["io"] }
+async-stream = "0.3"
 
 [dev-dependencies]
 tracing-test = { workspace = true }

@@ -5,7 +5,7 @@ use crate::error::{CompressionError, PipelineError};
 #[cfg(feature = "modular_pipeline")]
 use crate::modular_pipeline;
 use crate::pipeline::strategy::PipelineStrategy;
-use crate::{gc::GarbageCollector, CapsuleRegistry};
+use crate::{gc::GarbageCollector, CapsuleRegistry, DEFAULT_PAGE_SIZE};
 use anyhow::{Error as AnyhowError, Result};
 use async_trait::async_trait;
 #[cfg(feature = "pipeline_async")]
@@ -449,10 +449,27 @@ impl LegacyPipeline {
     fn reconcile_refcounts(&self) -> Result<()> {
         let mut counts: HashMap<SegmentId, u32> = HashMap::new();
 
-        for capsule_id in self.registry.list_capsules() {
-            if let Ok(capsule) = self.registry.lookup(capsule_id) {
-                for seg_id in capsule.segments {
-                    counts.entry(seg_id).and_modify(|c| *c += 1).or_insert(1);
+        let mut cursor: Option<CapsuleId> = None;
+        loop {
+            let page = match self.registry.list_capsules(DEFAULT_PAGE_SIZE, cursor) {
+                Ok(page) => page,
+                Err(err) => {
+                    warn!(error = %err, "failed to list capsules during refcount reconciliation");
+                    break;
+                }
+            };
+
+            if page.is_empty() {
+                break;
+            }
+
+            cursor = page.last().copied();
+
+            for capsule_id in page {
+                if let Ok(capsule) = self.registry.lookup(capsule_id) {
+                    for seg_id in capsule.segments {
+                        counts.entry(seg_id).and_modify(|c| *c += 1).or_insert(1);
+                    }
                 }
             }
         }

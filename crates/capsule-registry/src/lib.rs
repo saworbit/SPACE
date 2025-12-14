@@ -17,6 +17,8 @@ mod store;
 #[cfg(feature = "podms")]
 mod transform;
 
+const DEFAULT_PAGE_SIZE: usize = 1024;
+
 pub mod dedup; // NEW
 pub mod error;
 pub mod gc;
@@ -35,7 +37,7 @@ pub mod modular_pipeline {
     use std::sync::{Arc, Mutex};
 
     use anyhow::Result;
-    use common::{CapsuleId, Policy};
+    use common::{traits::DataStream, CapsuleId, Policy};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
@@ -89,6 +91,13 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.read_capsule(id).await,
                 Self::Plain(p) => p.read_capsule(id).await,
+            }
+        }
+
+        pub async fn read_capsule_stream(&self, id: CapsuleId) -> Result<DataStream> {
+            match self {
+                Self::Encrypted(p) => p.read_capsule_stream(id).await,
+                Self::Plain(p) => p.read_capsule_stream(id).await,
             }
         }
 
@@ -260,6 +269,32 @@ impl CapsuleRegistry {
         })
     }
 
+    fn collect_capsules_paginated(&self, page_size: usize) -> Result<Vec<Capsule>> {
+        if page_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut cursor: Option<CapsuleId> = None;
+        let mut capsules = Vec::new();
+
+        loop {
+            let page = self.store.list_capsules(page_size, cursor)?;
+            if page.is_empty() {
+                break;
+            }
+
+            let page_len = page.len();
+            cursor = page.last().map(|c| c.id);
+            capsules.extend(page);
+
+            if page_len < page_size {
+                break;
+            }
+        }
+
+        Ok(capsules)
+    }
+
     fn insert_capsule(&self, capsule: Capsule) -> Result<()> {
         if self.store.get_capsule(&capsule.id)?.is_some() {
             anyhow::bail!("Capsule collision (extremely unlikely)");
@@ -372,11 +407,9 @@ impl CapsuleRegistry {
         }
     }
 
-    pub fn list_capsules(&self) -> Vec<CapsuleId> {
-        self.store
-            .list_capsules()
-            .map(|capsules| capsules.into_iter().map(|c| c.id).collect())
-            .unwrap_or_default()
+    pub fn list_capsules(&self, limit: usize, cursor: Option<CapsuleId>) -> Result<Vec<CapsuleId>> {
+        let capsules = self.store.list_capsules(limit, cursor)?;
+        Ok(capsules.into_iter().map(|c| c.id).collect())
     }
 
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
@@ -389,7 +422,9 @@ impl CapsuleRegistry {
 
     pub fn get_dedup_stats(&self) -> (usize, usize) {
         let content_store = self.store.list_content().unwrap_or_default();
-        let capsules = self.store.list_capsules().unwrap_or_default();
+        let capsules = self
+            .collect_capsules_paginated(DEFAULT_PAGE_SIZE)
+            .unwrap_or_default();
 
         let total_segments: usize = capsules.iter().map(|c| c.segments.len()).sum();
         let unique_segments = content_store.len();
@@ -398,7 +433,8 @@ impl CapsuleRegistry {
     }
 
     pub fn capsules(&self) -> Vec<Capsule> {
-        self.store.list_capsules().unwrap_or_default()
+        self.collect_capsules_paginated(DEFAULT_PAGE_SIZE)
+            .unwrap_or_default()
     }
 
     pub fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {

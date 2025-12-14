@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 
 use anyhow::{anyhow, Context, Result};
+use async_stream::try_stream;
+use bytes::Bytes;
 use common::{
     traits::{
-        CapsuleCatalog, Compressor, DedupStats, Deduper, EncryptionSummary, Encryptor, Keyring,
-        PolicyEvaluator, StorageBackend, StorageTransaction,
+        CapsuleCatalog, Compressor, DataStream, DedupStats, Deduper, EncryptionSummary, Encryptor,
+        Keyring, PolicyEvaluator, StorageBackend, StorageTransaction,
     },
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
     SegmentId,
@@ -498,6 +500,54 @@ where
         self.stats.clone()
     }
 
+    pub async fn read_capsule_stream(&self, id: CapsuleId) -> Result<DataStream>
+    where
+        C: Compressor + Clone + Send + Sync + 'static,
+        D: Deduper + Send + Sync + 'static,
+        E: Encryptor + Clone + Send + Sync + 'static,
+        S: StorageBackend + Clone + Send + Sync + 'static,
+        Eval: PolicyEvaluator + Send + Sync + 'static,
+        K: Keyring + Send + Sync + 'static,
+        R: CapsuleCatalog + Send + Sync + 'static,
+    {
+        let capsule = self.catalog.lookup_capsule(id)?;
+        let storage = self.storage.clone();
+        let encryptor = self.encryptor.clone();
+        let compressor = self.compressor.clone();
+        let encryption_policy = capsule.policy.encryption.clone();
+
+        let stream = try_stream! {
+            for seg_id in capsule.segments {
+                let metadata = storage.metadata(seg_id).await
+                    .map_err(|e| anyhow!("Failed to fetch metadata for segment {:?}: {}", seg_id, e))?;
+
+                let raw = storage.read(seg_id).await
+                    .map_err(|e| anyhow!("Failed to read segment {:?}: {}", seg_id, e))?;
+
+                let decrypted = if metadata.encrypted {
+                    encryptor
+                        .decrypt(&raw, &encryption_policy, seg_id)
+                        .map_err(|e| anyhow!("Decryption failed for segment {:?}: {}", seg_id, e))?
+                } else {
+                    raw
+                };
+
+                let decompressed = if metadata.compressed {
+                    compressor
+                        .decompress(&decrypted, metadata.compression_algo.as_str())
+                        .map_err(|e| anyhow!("Decompression failed for segment {:?}: {}", seg_id, e))?
+                } else {
+                    decrypted
+                };
+
+                yield Bytes::from(decompressed);
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    /// Deprecated: use `read_capsule_stream` instead.
     pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
         let capsule = self.catalog.lookup_capsule(id)?;
         let mut output = Vec::with_capacity(capsule.size as usize);

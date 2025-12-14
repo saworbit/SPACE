@@ -18,3 +18,7 @@ futures = { workspace = true }
 tracing = { workspace = true }
 blake3 = { workspace = true }
 hex = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { version = "^0.7.11", features = ["io"] }
+bytes = { workspace = true }
+async-stream = "0.3"
