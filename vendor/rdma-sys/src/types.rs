@@ -1,7 +1,7 @@
 use crate::*;
 
 /// This file defines the types directly or indirectly involving union,
-/// in that BindGen cannot handle union very well, so mannually define them.
+/// in that BindGen cannot handle union very well, so manually define them.
 
 /// Struct types involve union in <infiniband/verbs.h>
 

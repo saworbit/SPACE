@@ -28,11 +28,13 @@ jobs:
 
       - name: Fuzz Policy Engine
         run: |
-          cargo fuzz run policy_fuzz --manifest-path fuzz/Cargo.toml --features fuzzing -- -runs=5000000 -max_total_time=300
+          cd fuzz
+          cargo fuzz run policy_fuzz --features fuzzing -- -runs=5000000 -max_total_time=300
 
       - name: Fuzz Encryption Roundtrip
         run: |
-          cargo fuzz run encrypt_roundtrip --manifest-path fuzz/Cargo.toml --features fuzzing -- -runs=5000000 -max_total_time=300
+          cd fuzz
+          cargo fuzz run encrypt_roundtrip --features fuzzing -- -runs=5000000 -max_total_time=300
 
       - name: Archive Crash Artifacts
         if: failure()

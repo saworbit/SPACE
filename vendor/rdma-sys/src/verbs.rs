@@ -249,7 +249,7 @@ pub unsafe fn ibv_post_wq_recv(
     (*wq).post_recv.unwrap()(wq, recv_wr, bad_recv_wr)
 }
 
-// Use intrusive_collections::container_of! instread, once it's stable not nightly
+// Use intrusive_collections::container_of! instead, once it's stable not nightly
 macro_rules! container_of {
     ($ptr:expr, $container:path, $field:ident) => {{
         ($ptr as *const _ as *const u8).sub(memoffset::offset_of!($container, $field))
