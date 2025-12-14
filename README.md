@@ -992,7 +992,7 @@ cargo test --features advanced-security -- --nocapture
 
 ---
 
-## ?? Control Plane API
+## 🚀 Control Plane API
 
 - Versioned REST surface lives under `/api/v1` across `system`, `mesh`, `data`, and `gossip` domains.
 - Standard response envelope (`success`, `data`, `error`, `meta`) with pagination metadata; Swagger UI at `/swagger-ui`, spec at `/api-docs/openapi.json`.
@@ -1001,7 +1001,7 @@ cargo test --features advanced-security -- --nocapture
 - See `docs/SPACE_CONTROL_PLANE_API.md` and `docs/WEB_INTERFACE.md` for usage examples.
 - Dev auth helpers: `scripts/dev_auth.sh` mints HS256 tokens (default secret `dev-secret`); debug builds accept `Authorization: Bearer space-god-token` for quick local testing (override with `SPACE_DEV_GOD_TOKEN`).
 
-### ?? Full-feature linting (LibTorch)
+### 🔧 Full-feature linting (LibTorch)
 
 - The `layout-engine` `ml` feature needs LibTorch 2.2.0. To run `cargo clippy --all-features` locally:
   1. Download `libtorch-win-shared-with-deps-2.2.0+cpu.zip` from https://download.pytorch.org/libtorch/cpu/.
@@ -1314,9 +1314,9 @@ SPACE is a **single-developer research project** exploring novel storage archite
 | 💡 [Patentable Concepts](docs/patentable_concepts.md) | Novel mechanisms |
 | 🔗 [Dedup Implementation](docs/implementation/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
 | 🔐 [Encryption Implementation](docs/implementation/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
-| ?? [Implementation Summary](docs/implementation/IMPLEMENTATION_SUMMARY.md) | Cross-cutting milestones |
-| ?? [Inbound Replication Status](docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) | Progress tracking |
-| ?? [Multi-Node Status](docs/status/MULTI_NODE_STATUS.md) | Federation readiness |
+| 🔗 [Implementation Summary](docs/implementation/IMPLEMENTATION_SUMMARY.md) | Cross-cutting milestones |
+| 🔗 [Inbound Replication Status](docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) | Progress tracking |
+| 🔗 [Multi-Node Status](docs/status/MULTI_NODE_STATUS.md) | Federation readiness |
 | 🌐 [Protocol Views](docs/protocol_views.md) | S3/NFS/block facades |
 | 🧪 [Simulations Guide](docs/SIMULATIONS.md) | Testing without hardware |
 | 🐳 [Containerization Guide](docs/CONTAINERIZATION.md) | Docker deployment |
