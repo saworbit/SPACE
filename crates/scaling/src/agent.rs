@@ -403,6 +403,7 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
         replica_count: usize,
         targets: &[NodeId],
     ) -> Result<()> {
+        let peer_replica_count = replica_count.saturating_sub(1);
         debug!(
             capsule_id = %capsule_id.as_uuid(),
             replica_count = replica_count,
@@ -410,15 +411,28 @@ impl<C: ContentStore + 'static> ScalingAgent<C> {
             "performing metro-sync replication"
         );
 
+        if peer_replica_count == 0 {
+            debug!(
+                capsule_id = %capsule_id.as_uuid(),
+                "replica_count=1; skipping replication"
+            );
+            return Ok(());
+        }
+
         let selected_targets: Vec<NodeId> = if targets.is_empty() {
             let peers = self.mesh_node.discover_peers().await?;
             peers
                 .into_iter()
                 .filter(|peer| peer != &self.mesh_node.id())
-                .take(replica_count)
+                .take(peer_replica_count)
                 .collect()
         } else {
-            targets.iter().copied().take(replica_count).collect()
+            targets
+                .iter()
+                .copied()
+                .filter(|peer| peer != &self.mesh_node.id())
+                .take(peer_replica_count)
+                .collect()
         };
 
         if selected_targets.is_empty() {

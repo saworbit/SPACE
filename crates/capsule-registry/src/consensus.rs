@@ -1,36 +1,8 @@
-use serde::{Deserialize, Serialize};
-
-use common::{Capsule, CapsuleId, ContentHash, SegmentId};
 use std::sync::Arc;
 
 use crate::store::MetadataStore;
+use crate::{metadata_ops::MetadataOp, metadata_ops::OpResult};
 use anyhow::Result;
-
-/// Operations replicated through the Raft log.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MetadataOp {
-    PutCapsule(Capsule),
-    DeleteCapsule(CapsuleId),
-    RegisterContent {
-        hash: ContentHash,
-        segment: SegmentId,
-    },
-    DeregisterContent {
-        hash: ContentHash,
-        segment: SegmentId,
-    },
-}
-
-/// State machine responses surfaced to callers.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum OpResult {
-    Ok,
-    CapsuleFound(Capsule),
-    NotFound,
-    Error(String),
-}
 
 /// State machine that applies replicated metadata operations onto the storage engine.
 #[derive(Clone)]
@@ -84,31 +56,133 @@ impl MetadataStateMachine {
 /// Thin Raft facade to route proposals into the state machine and expose snapshot hooks.
 #[derive(Clone)]
 pub struct RaftNode {
-    fsm: MetadataStateMachine,
+    inner: RaftInner,
+}
+
+#[derive(Clone)]
+enum RaftInner {
+    Single(MetadataStateMachine),
+    Distributed(crate::mesh::MeshRegistryRaft),
 }
 
 impl RaftNode {
     pub fn new(store: Arc<dyn MetadataStore>) -> Self {
         Self {
-            fsm: MetadataStateMachine::new(store),
+            inner: RaftInner::Single(MetadataStateMachine::new(store)),
         }
     }
 
     /// Propose an operation; in single-node mode this applies immediately.
     #[allow(dead_code)]
     pub fn propose(&self, op: MetadataOp) -> Result<OpResult> {
-        self.fsm.apply(op)
+        match &self.inner {
+            RaftInner::Single(fsm) => fsm.apply(op),
+            RaftInner::Distributed(_) => anyhow::bail!("distributed raft requires async propose"),
+        }
+    }
+
+    /// Propose an operation through Raft consensus (distributed or single).
+    pub async fn propose_async(&self, op: MetadataOp) -> Result<OpResult> {
+        match &self.inner {
+            RaftInner::Single(fsm) => fsm.apply(op),
+            RaftInner::Distributed(mesh) => {
+                let resp = mesh
+                    .raft
+                    .client_write(op)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                Ok(resp.data)
+            }
+        }
+    }
+
+    /// Start a new single-node cluster (bootstraps membership and becomes leader).
+    pub async fn bootstrap_distributed(
+        node_id: u64,
+        raft_addr: std::net::SocketAddr,
+        metadata_path: &str,
+        raft_store_path: &str,
+    ) -> Result<Self> {
+        let mesh = crate::mesh::MeshRegistryRaft::start(
+            node_id,
+            raft_addr,
+            metadata_path,
+            raft_store_path,
+            true,
+        )
+        .await?;
+        Ok(Self {
+            inner: RaftInner::Distributed(mesh),
+        })
+    }
+
+    /// Start a node that will join an existing cluster after startup.
+    pub async fn join_distributed(
+        node_id: u64,
+        raft_addr: std::net::SocketAddr,
+        leader_addr: std::net::SocketAddr,
+        metadata_path: &str,
+        raft_store_path: &str,
+    ) -> Result<Self> {
+        let mesh = crate::mesh::MeshRegistryRaft::start(
+            node_id,
+            raft_addr,
+            metadata_path,
+            raft_store_path,
+            false,
+        )
+        .await?;
+
+        crate::mesh::join_cluster(leader_addr, node_id, raft_addr).await?;
+
+        Ok(Self {
+            inner: RaftInner::Distributed(mesh),
+        })
+    }
+
+    /// Best-effort: add a voter if this node is leader.
+    pub async fn add_voter(&self, node_id: u64, raft_addr: std::net::SocketAddr) -> Result<()> {
+        let RaftInner::Distributed(mesh) = &self.inner else {
+            return Ok(());
+        };
+
+        let node = openraft::BasicNode {
+            addr: raft_addr.to_string(),
+        };
+
+        mesh.raft
+            .add_learner(node_id, node, true)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        let metrics = mesh.raft.metrics();
+        let current = metrics.borrow().clone();
+        let mut voters: std::collections::BTreeSet<u64> = current.membership_config.voter_ids().collect();
+        voters.insert(node_id);
+
+        mesh.raft
+            .change_membership(voters, true)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        Ok(())
     }
 
     /// Produce a serialized snapshot for Raft snapshotting.
     #[allow(dead_code)]
     pub fn snapshot(&self) -> Result<Vec<u8>> {
-        self.fsm.snapshot()
+        match &self.inner {
+            RaftInner::Single(fsm) => fsm.snapshot(),
+            RaftInner::Distributed(_) => anyhow::bail!("snapshot not supported in distributed mode"),
+        }
     }
 
     /// Restore state from a Raft snapshot payload.
     #[allow(dead_code)]
     pub fn restore(&self, data: &[u8]) -> Result<()> {
-        self.fsm.restore_snapshot(data)
+        match &self.inner {
+            RaftInner::Single(fsm) => fsm.restore_snapshot(data),
+            RaftInner::Distributed(_) => anyhow::bail!("restore not supported in distributed mode"),
+        }
     }
 }

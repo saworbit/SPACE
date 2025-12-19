@@ -232,7 +232,9 @@ impl PolicyCompiler {
     ) -> Vec<ScalingAction> {
         let strategy = if policy.rpo == Duration::ZERO {
             // Zero-RPO requires synchronous metro-sync
-            ReplicationStrategy::MetroSync { replica_count: 2 }
+            ReplicationStrategy::MetroSync {
+                replica_count: policy.replica_count.max(1) as usize,
+            }
         } else if policy.rpo < Duration::from_secs(60) {
             // Sub-60s RPO uses async batching
             ReplicationStrategy::AsyncWithBatching { rpo: policy.rpo }
@@ -283,7 +285,9 @@ impl PolicyCompiler {
         policy_override.rpo = effective_rpo;
 
         let strategy = if effective_rpo == Duration::ZERO {
-            ReplicationStrategy::MetroSync { replica_count: 2 }
+            ReplicationStrategy::MetroSync {
+                replica_count: policy_override.replica_count.max(1) as usize,
+            }
         } else {
             ReplicationStrategy::AsyncWithBatching { rpo: effective_rpo }
         };
@@ -739,7 +743,7 @@ mod tests {
                 assert_eq!(*id, capsule_id);
                 assert_eq!(
                     *strategy,
-                    ReplicationStrategy::MetroSync { replica_count: 2 }
+                    ReplicationStrategy::MetroSync { replica_count: 3 }
                 );
                 assert_eq!(targets.len(), 2);
             }
@@ -982,7 +986,7 @@ mod tests {
                 assert_eq!(targets.len(), 1);
                 assert!(matches!(
                     strategy,
-                    ReplicationStrategy::MetroSync { replica_count: 2 }
+                    ReplicationStrategy::MetroSync { replica_count: 3 }
                 ));
             }
             _ => panic!("expected replication action"),

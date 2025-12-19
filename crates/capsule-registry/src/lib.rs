@@ -9,10 +9,14 @@ use encryption::KeyManager;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::consensus::{MetadataOp, OpResult, RaftNode};
+use crate::consensus::RaftNode;
+use crate::metadata_ops::{MetadataOp, OpResult};
 use crate::store::{MetadataStore, SledStore};
 
 mod consensus;
+mod metadata_ops;
+pub mod mesh;
+mod raft_rpc;
 mod store;
 #[cfg(feature = "podms")]
 mod transform;

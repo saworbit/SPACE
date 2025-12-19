@@ -10,11 +10,6 @@ use clap::{Parser, Subcommand};
 #[cfg(feature = "phase4")]
 use common::podms::{Telemetry, ZoneId};
 use common::CapsuleId;
-#[cfg(any(
-    feature = "pipeline_async",
-    feature = "modular_pipeline",
-    feature = "phase4"
-))]
 use common::Policy;
 #[cfg(feature = "phase4")]
 use csi_driver_rs::ProvisionRequest;
@@ -37,8 +32,9 @@ use scaling::ContentStore;
 use scaling::MeshNode;
 use std::fs;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 #[cfg(feature = "phase4")]
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 #[cfg(feature = "phase4")]
 use std::path::PathBuf;
 #[cfg(feature = "phase4")]
@@ -51,6 +47,9 @@ use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "phase4")]
 use uuid::Uuid;
+
+use gossip_layer::GossipImpl;
+use mesh_core::{GossipConfig, NodeRole, Peer, PeerStore};
 
 const NVRAM_PATH: &str = "space.nvram";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
@@ -185,6 +184,99 @@ enum BlockCommands {
         offset: u64,
         #[arg(short, long)]
         file: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServerCommands {
+    /// Start a SPACE node (gossip + raft).
+    Start {
+        /// Numeric node id used by the Raft cluster.
+        #[arg(long)]
+        node_id: u64,
+
+        /// Gossip listen address (libp2p TCP).
+        #[arg(long, default_value = "0.0.0.0:7000")]
+        gossip_addr: SocketAddr,
+
+        /// Raft gRPC listen address.
+        #[arg(long, default_value = "0.0.0.0:9000")]
+        raft_addr: SocketAddr,
+
+        /// Path to the capsule metadata store (sled).
+        #[arg(long, default_value = "space.db")]
+        metadata_path: String,
+
+        /// Path to the raft log/state store (sled).
+        #[arg(long, default_value = "space.raft.db")]
+        raft_store_path: String,
+
+        /// Bootstrap a new cluster (becomes leader term 1).
+        #[arg(long)]
+        bootstrap: bool,
+
+        /// Join an existing cluster by contacting a known raft node.
+        #[arg(long)]
+        join: Option<SocketAddr>,
+
+        /// Gossip seed peer(s) to dial (repeatable).
+        #[arg(long)]
+        gossip_seed: Vec<SocketAddr>,
+    },
+
+    /// Query cluster status from a raft node.
+    Status {
+        /// Raft gRPC address of any cluster node.
+        #[arg(long)]
+        addr: SocketAddr,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryCommands {
+    /// Create/update a capsule's metadata through the Raft leader.
+    Put {
+        /// Raft gRPC address of any cluster node.
+        #[arg(long)]
+        addr: SocketAddr,
+
+        /// Capsule UUID.
+        #[arg(long)]
+        id: String,
+
+        /// Capsule size in bytes.
+        #[arg(long, default_value_t = 0)]
+        size: u64,
+
+        /// Segment id(s) belonging to the capsule (repeatable).
+        #[arg(long)]
+        segment: Vec<u64>,
+
+        /// Optional YAML policy file to attach.
+        #[arg(long)]
+        policy_file: Option<String>,
+    },
+
+    /// Fetch capsule metadata from a node's local state machine.
+    Get {
+        /// Raft gRPC address of any cluster node.
+        #[arg(long)]
+        addr: SocketAddr,
+
+        /// Capsule UUID.
+        #[arg(long)]
+        id: String,
+    },
+
+    /// Delete capsule metadata through the Raft leader.
+    Delete {
+        /// Raft gRPC address of any cluster node.
+        #[arg(long)]
+        addr: SocketAddr,
+
+        /// Capsule UUID.
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -429,6 +521,16 @@ enum Commands {
     Block {
         #[command(subcommand)]
         command: BlockCommands,
+    },
+    /// Cluster server operations.
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+    /// Operate on capsule metadata via Raft.
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommands,
     },
 }
 
@@ -689,6 +791,163 @@ async fn main() -> Result<()> {
         Commands::Block { command } => {
             run_block_command(command).await?;
         }
+        Commands::Server { command } => match command {
+            ServerCommands::Start {
+                node_id,
+                gossip_addr,
+                raft_addr,
+                metadata_path,
+                raft_store_path,
+                bootstrap,
+                join,
+                gossip_seed,
+            } => {
+                if bootstrap && join.is_some() {
+                    anyhow::bail!("--bootstrap and --join are mutually exclusive");
+                }
+                if !bootstrap && join.is_none() {
+                    anyhow::bail!("either --bootstrap or --join <addr> is required");
+                }
+
+                let peer_store = PeerStore::new();
+                let local_peer = Peer::new(node_id.to_string(), gossip_addr, NodeRole::StorageNode);
+
+                let gossip = GossipImpl::with_peer_store(
+                    GossipConfig::default(),
+                    local_peer,
+                    raft_addr.port(),
+                    peer_store.clone(),
+                )
+                .await?;
+
+                // Dial seeds from CLI and env `GOSSIP_SEEDS` (comma-separated).
+                let mut seeds = gossip_seed;
+                if let Ok(env_seeds) = std::env::var("GOSSIP_SEEDS") {
+                    for item in env_seeds.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        if let Ok(addr) = item.parse::<SocketAddr>() {
+                            seeds.push(addr);
+                        }
+                    }
+                }
+                for seed in seeds {
+                    let _ = gossip.dial(seed).await;
+                }
+
+                let raft = if bootstrap {
+                    capsule_registry::mesh::MeshRegistryRaft::start(
+                        node_id,
+                        raft_addr,
+                        &metadata_path,
+                        &raft_store_path,
+                        true,
+                    )
+                    .await?
+                } else {
+                    let raft = capsule_registry::mesh::MeshRegistryRaft::start(
+                        node_id,
+                        raft_addr,
+                        &metadata_path,
+                        &raft_store_path,
+                        false,
+                    )
+                    .await?;
+
+                    capsule_registry::mesh::join_cluster(join.unwrap(), node_id, raft_addr).await?;
+                    raft
+                };
+
+                // Forward gossip events into the registry peer monitor.
+                let mut events = gossip.subscribe_events();
+                let (tx, rx) = tokio::sync::mpsc::channel(256);
+                tokio::spawn(async move {
+                    loop {
+                        match events.recv().await {
+                            Ok(ev) => {
+                                if tx.send(ev).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+
+                tokio::spawn(capsule_registry::mesh::monitor_peers(raft.raft.clone(), rx));
+
+                tracing::info!(
+                    node_id = node_id,
+                    gossip_addr = %gossip_addr,
+                    raft_addr = %raft_addr,
+                    bootstrap = bootstrap,
+                    "SPACE node started"
+                );
+
+                tokio::signal::ctrl_c().await?;
+            }
+            ServerCommands::Status { addr } => {
+                let status = capsule_registry::mesh::cluster_status(addr).await?;
+                println!("leader_id: {}", status.leader_id);
+                println!("voters: {:?}", status.voters);
+                println!("learners: {:?}", status.learners);
+            }
+        },
+        Commands::Registry { command } => match command {
+            RegistryCommands::Put {
+                addr,
+                id,
+                size,
+                segment,
+                policy_file,
+            } => {
+                let uuid = id.parse()?;
+                let capsule_id = CapsuleId::from_uuid(uuid);
+                let policy = if let Some(path) = policy_file {
+                    let text = fs::read_to_string(path)?;
+                    serde_yaml::from_str::<Policy>(&text)?
+                } else {
+                    Policy::default()
+                };
+
+                let capsule = common::Capsule {
+                    id: capsule_id,
+                    size,
+                    segments: segment.into_iter().map(common::SegmentId).collect(),
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_secs(),
+                    policy,
+                    deduped_bytes: 0,
+                };
+
+                capsule_registry::mesh::put_capsule(addr, capsule).await?;
+                println!("ok");
+            }
+            RegistryCommands::Get { addr, id } => {
+                let uuid = id.parse()?;
+                let capsule_id = CapsuleId::from_uuid(uuid);
+                match capsule_registry::mesh::get_capsule(addr, capsule_id).await? {
+                    Some(capsule) => {
+                        println!("{}", serde_json::to_string_pretty(&capsule)?);
+                    }
+                    None => {
+                        println!("(not found)");
+                    }
+                }
+            }
+            RegistryCommands::Delete { addr, id } => {
+                let uuid = id.parse()?;
+                let capsule_id = CapsuleId::from_uuid(uuid);
+                match capsule_registry::mesh::delete_capsule(addr, capsule_id).await? {
+                    Some(capsule) => {
+                        println!("{}", serde_json::to_string_pretty(&capsule)?);
+                    }
+                    None => {
+                        println!("(not found)");
+                    }
+                }
+            }
+        },
     }
 
     Ok(())

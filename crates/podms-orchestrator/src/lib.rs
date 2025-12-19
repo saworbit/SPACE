@@ -168,8 +168,9 @@ impl<C: ContentStore + 'static> Orchestrator<C> {
 
         let peer_store = PeerStore::new();
         let local_peer = Peer::new(config.node_id.clone(), config.listen_addr, NodeRole::StorageNode);
+        let raft_port = local_peer.addr.port();
 
-        let gossip = GossipImpl::with_peer_store(gossip_config, local_peer, peer_store)
+        let gossip = GossipImpl::with_peer_store(gossip_config, local_peer, raft_port, peer_store)
             .await
             .context("failed to initialize gossip layer")?;
 
@@ -251,9 +252,11 @@ impl<C: ContentStore + 'static> Orchestrator<C> {
             // - Connect to seed peer
             // - Exchange node IDs via handshake
             // - Register in mesh node
-            //
-            // For now, we just log that we would discover them
-            info!(seed_addr = %addr, "discovering seed peer");
+
+            info!(seed_addr = %addr, "dialing seed peer (gossip)");
+            if let Err(e) = self.gossip.dial(addr).await {
+                warn!(seed_addr = %addr, error = %e, "failed to dial seed peer");
+            }
         }
 
         // 3. Subscribe to gossip topics and bridge to telemetry

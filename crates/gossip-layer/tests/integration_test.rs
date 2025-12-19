@@ -14,14 +14,16 @@ fn local_peer() -> Peer {
 #[tokio::test]
 async fn test_gossip_layer_creation() {
     let config = GossipConfig::default();
-    let result = GossipImpl::new(config, local_peer()).await;
+    let raft_port = local_peer().addr.port();
+    let result = GossipImpl::new(config, local_peer(), raft_port).await;
     assert!(result.is_ok(), "Failed to create gossip layer");
 }
 
 #[tokio::test]
 async fn test_broadcast_heartbeat() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config, local_peer())
+    let raft_port = local_peer().addr.port();
+    let gossip = GossipImpl::new(config, local_peer(), raft_port)
         .await
         .expect("Failed to create gossip layer");
 
@@ -43,7 +45,8 @@ async fn test_broadcast_heartbeat() {
 #[tokio::test]
 async fn test_subscribe_to_topic() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config, local_peer())
+    let raft_port = local_peer().addr.port();
+    let gossip = GossipImpl::new(config, local_peer(), raft_port)
         .await
         .expect("Failed to create gossip layer");
 
@@ -54,7 +57,8 @@ async fn test_subscribe_to_topic() {
 #[tokio::test]
 async fn test_get_stats() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config, local_peer())
+    let raft_port = local_peer().addr.port();
+    let gossip = GossipImpl::new(config, local_peer(), raft_port)
         .await
         .expect("Failed to create gossip layer");
 
@@ -69,7 +73,8 @@ async fn test_get_stats() {
 #[tokio::test]
 async fn test_broadcast_file_uploaded() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config, local_peer())
+    let raft_port = local_peer().addr.port();
+    let gossip = GossipImpl::new(config, local_peer(), raft_port)
         .await
         .expect("Failed to create gossip layer");
 
@@ -87,7 +92,8 @@ async fn test_broadcast_file_uploaded() {
 #[tokio::test]
 async fn test_broadcast_security_alert() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config, local_peer())
+    let raft_port = local_peer().addr.port();
+    let gossip = GossipImpl::new(config, local_peer(), raft_port)
         .await
         .expect("Failed to create gossip layer");
 
@@ -105,7 +111,8 @@ async fn test_broadcast_security_alert() {
 #[tokio::test]
 async fn test_multiple_subscriptions() {
     let config = GossipConfig::default();
-    let gossip = GossipImpl::new(config, local_peer())
+    let raft_port = local_peer().addr.port();
+    let gossip = GossipImpl::new(config, local_peer(), raft_port)
         .await
         .expect("Failed to create gossip layer");
 

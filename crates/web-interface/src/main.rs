@@ -70,7 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_peer = Peer::new(node_id.clone(), gossip_addr, NodeRole::Gateway);
 
     // Initialize gossip layer
-    let gossip_impl = match GossipImpl::with_peer_store(gossip_config.clone(), local_peer, peer_store.clone()).await {
+    let raft_port: u16 = std::env::var("RAFT_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(bind_addr.port());
+
+    let gossip_impl =
+        match GossipImpl::with_peer_store(gossip_config.clone(), local_peer, raft_port, peer_store.clone()).await {
         Ok(g) => {
             info!("Gossip layer initialized successfully");
             g
@@ -80,6 +86,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     };
+
+    // Dial seed peers (best-effort)
+    if let Ok(seeds) = std::env::var("GOSSIP_SEEDS") {
+        for item in seeds.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(addr) = item.parse::<SocketAddr>() {
+                if let Err(err) = gossip_impl.dial(addr).await {
+                    error!(seed = %item, error = %err, "failed to dial seed");
+                }
+            } else {
+                error!(seed = %item, "invalid seed SocketAddr");
+            }
+        }
+    }
 
     let gossip: Arc<dyn mesh_core::GossipHandler> = Arc::new(gossip_impl);
 

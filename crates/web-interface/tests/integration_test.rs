@@ -19,7 +19,9 @@ async fn test_app() -> Router {
         "127.0.0.1:3000".parse().unwrap(),
         NodeRole::Gateway,
     );
-    let gossip = Arc::new(GossipImpl::new(GossipConfig::default(), local_peer).await.expect("gossip init"))
+    let raft_port = local_peer.addr.port();
+    let gossip =
+        Arc::new(GossipImpl::new(GossipConfig::default(), local_peer, raft_port).await.expect("gossip init"))
         as Arc<dyn mesh_core::GossipHandler>;
     build_router(AppState::new(gossip))
 }

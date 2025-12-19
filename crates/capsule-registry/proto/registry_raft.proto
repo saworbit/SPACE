@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package space.capsule_registry.raft;
+
+// Generic bytes wrapper to avoid coupling this proto to openraft internal structs.
+message Bytes {
+  bytes data = 1;
+}
+
+// Raft protocol RPCs (AppendEntries / Vote / InstallSnapshot).
+service RaftRpc {
+  rpc AppendEntries(Bytes) returns (Bytes);
+  rpc Vote(Bytes) returns (Bytes);
+  rpc InstallSnapshot(Bytes) returns (Bytes);
+}
+
+// Cluster management RPCs used by "join".
+message JoinRequest {
+  uint64 node_id = 1;
+  string raft_addr = 2;
+}
+
+message JoinResponse {
+  // The current leader id (best-effort).
+  uint64 leader_id = 1;
+  // Leader gRPC address (best-effort, empty if unknown).
+  string leader_addr = 2;
+  // True if join was accepted and membership updated on this node.
+  bool accepted = 3;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  uint64 leader_id = 1;
+  repeated uint64 voters = 2;
+  repeated uint64 learners = 3;
+}
+
+service ClusterAdmin {
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+  rpc Propose(Bytes) returns (Bytes);
+  rpc GetCapsule(Bytes) returns (Bytes);
+}

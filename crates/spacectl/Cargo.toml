@@ -30,6 +30,8 @@ phase4 = [
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }
+mesh-core = { path = "../mesh-core" }
+gossip-layer = { path = "../gossip-layer" }
 nvram-sim = { path = "../nvram-sim" }
 protocol-s3 = { path = "../protocol-s3" }
 protocol-nfs = { path = "../protocol-nfs" }
@@ -38,7 +40,7 @@ protocol-nvme = { path = "../protocol-nvme" }
 protocol-fuse = { path = "../protocol-fuse" }
 protocol-csi = { path = "../protocol-csi" }
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync", "signal"] }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

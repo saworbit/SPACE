@@ -221,6 +221,7 @@ pub enum GossipEvent {
     Heartbeat {
         peer_id: String,
         raft_port: u16,
+        gossip_addr: Option<SocketAddr>,
         load: LoadReport,
     },
 }

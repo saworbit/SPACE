@@ -161,6 +161,13 @@ pub struct Policy {
     #[cfg(feature = "podms")]
     #[serde(default)]
     pub sovereignty: crate::podms::SovereigntyLevel,
+
+    /// Total number of replicas to maintain for the capsule (including local copy).
+    ///
+    /// `1` means no replication; `3` means local + 2 peers.
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_replica_count")]
+    pub replica_count: u8,
 }
 
 #[cfg(feature = "podms")]
@@ -171,6 +178,11 @@ fn default_rpo() -> std::time::Duration {
 #[cfg(feature = "podms")]
 fn default_latency_target() -> std::time::Duration {
     std::time::Duration::from_millis(10) // 10ms default
+}
+
+#[cfg(feature = "podms")]
+fn default_replica_count() -> u8 {
+    3
 }
 
 impl Default for Policy {
@@ -189,6 +201,8 @@ impl Default for Policy {
             latency_target: default_latency_target(),
             #[cfg(feature = "podms")]
             sovereignty: crate::podms::SovereigntyLevel::default(),
+            #[cfg(feature = "podms")]
+            replica_count: default_replica_count(),
         }
     }
 }
@@ -210,6 +224,8 @@ impl Policy {
             latency_target: default_latency_target(),
             #[cfg(feature = "podms")]
             sovereignty: crate::podms::SovereigntyLevel::default(),
+            #[cfg(feature = "podms")]
+            replica_count: default_replica_count(),
         }
     }
 
@@ -229,6 +245,8 @@ impl Policy {
             latency_target: default_latency_target(),
             #[cfg(feature = "podms")]
             sovereignty: crate::podms::SovereigntyLevel::default(),
+            #[cfg(feature = "podms")]
+            replica_count: default_replica_count(),
         }
     }
 
@@ -248,6 +266,8 @@ impl Policy {
             latency_target: std::time::Duration::from_millis(50), // Higher latency tolerance
             #[cfg(feature = "podms")]
             sovereignty: crate::podms::SovereigntyLevel::Local, // Edge stays local
+            #[cfg(feature = "podms")]
+            replica_count: 1,
         }
     }
 
@@ -267,6 +287,8 @@ impl Policy {
             latency_target: default_latency_target(),
             #[cfg(feature = "podms")]
             sovereignty: crate::podms::SovereigntyLevel::default(),
+            #[cfg(feature = "podms")]
+            replica_count: default_replica_count(),
         }
     }
 
@@ -286,6 +308,8 @@ impl Policy {
             latency_target: default_latency_target(),
             #[cfg(feature = "podms")]
             sovereignty: crate::podms::SovereigntyLevel::default(),
+            #[cfg(feature = "podms")]
+            replica_count: default_replica_count(),
         }
     }
 
@@ -304,6 +328,7 @@ impl Policy {
             rpo: std::time::Duration::ZERO, // Synchronous replication
             latency_target: std::time::Duration::from_millis(2), // 2ms target
             sovereignty: crate::podms::SovereigntyLevel::Zone,
+            replica_count: 3,
         }
     }
 
@@ -321,6 +346,7 @@ impl Policy {
             rpo: std::time::Duration::from_secs(300), // 5 min async
             latency_target: std::time::Duration::from_millis(100), // 100ms target
             sovereignty: crate::podms::SovereigntyLevel::Global,
+            replica_count: 3,
         }
     }
 }
