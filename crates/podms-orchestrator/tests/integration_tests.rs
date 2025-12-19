@@ -263,7 +263,12 @@ mod orchestrator_tests {
         let signing_key = vec![0x42u8; 32];
         let message = GossipMessage::Heartbeat {
             peer_id: "test-peer".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: None,
+            load: mesh_core::LoadReport {
+                storage_used_bytes: 1024,
+                replication_queue_depth: 0,
+            },
             timestamp: 12345,
         };
 
@@ -288,7 +293,9 @@ mod orchestrator_tests {
         let signing_key = vec![0x42u8; 32];
         let message = GossipMessage::Heartbeat {
             peer_id: "test-peer".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: None,
+            load: mesh_core::LoadReport::default(),
             timestamp: 12345,
         };
 

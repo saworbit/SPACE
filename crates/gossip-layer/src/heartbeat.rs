@@ -1,28 +1,21 @@
-//! Heartbeat task for periodic gossip messages.
+//! Heartbeat and liveness tasks for gossip propagation.
 
-use mesh_core::{GossipHandler, GossipMessage, Peer};
-use rand::seq::SliceRandom;
+use mesh_core::{GossipEvent, GossipHandler, GossipMessage, LoadReport, Peer, PeerStore};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
-use tracing::{debug, error};
+use tokio::sync::{broadcast, RwLock};
+use tracing::{error, warn};
 
 /// Periodic heartbeat task for gossip propagation.
 ///
-/// This task runs in the background and periodically selects a random subset
-/// of peers (based on the fanout parameter) to send heartbeat messages to.
-///
-/// # Arguments
-///
-/// * `gossip` - The gossip handler implementation
-/// * `peers` - Shared list of known peers
-/// * `interval_ms` - Heartbeat interval in milliseconds
-/// * `fanout` - Number of peers to gossip to each round
+/// This task runs in the background and broadcasts a heartbeat for the local
+/// node every interval.
 pub async fn heartbeat_task(
     gossip: Arc<dyn GossipHandler>,
-    peers: Arc<RwLock<Vec<Peer>>>,
+    local_peer: Peer,
+    raft_port: u16,
+    load: Arc<RwLock<LoadReport>>,
     interval_ms: u64,
-    fanout: usize,
 ) {
     let interval = Duration::from_millis(interval_ms);
     let mut interval_timer = tokio::time::interval(interval);
@@ -30,34 +23,43 @@ pub async fn heartbeat_task(
     loop {
         interval_timer.tick().await;
 
-        // Select random peers for this round
-        let fanout_peers = {
-            let peers_lock = peers.read().await;
-            if peers_lock.is_empty() {
-                debug!("No peers available for heartbeat");
-                continue;
-            }
-
-            let mut rng = rand::thread_rng();
-            peers_lock
-                .choose_multiple(&mut rng, fanout.min(peers_lock.len()))
-                .cloned()
-                .collect::<Vec<_>>()
+        let load_snapshot = load.read().await.clone();
+        let timestamp = crate::current_timestamp();
+        let msg = GossipMessage::Heartbeat {
+            peer_id: local_peer.id.clone(),
+            raft_port,
+            gossip_addr: Some(local_peer.addr),
+            load: load_snapshot,
+            timestamp,
         };
 
-        debug!("Sending heartbeat to {} peers", fanout_peers.len());
+        if let Err(e) = gossip.broadcast("heartbeat", msg).await {
+            error!("Failed to broadcast heartbeat: {}", e);
+        }
+    }
+}
 
-        // Broadcast heartbeat for each selected peer
-        for peer in fanout_peers {
-            let timestamp = crate::current_timestamp();
-            let msg = GossipMessage::Heartbeat {
-                peer_id: peer.id.clone(),
-                storage_usage: peer.storage_usage,
-                timestamp,
-            };
+/// Monitor peers for missed heartbeats and emit NodeLost events.
+pub async fn liveness_task(
+    peer_store: PeerStore,
+    event_tx: broadcast::Sender<GossipEvent>,
+    interval_ms: u64,
+) {
+    let interval = Duration::from_millis(interval_ms);
+    let mut interval_timer = tokio::time::interval(interval);
+    // Consider peer lost after three missed heartbeats
+    let timeout_secs = (interval_ms / 1000).max(1) * 3;
 
-            if let Err(e) = gossip.broadcast("heartbeat", msg).await {
-                error!("Failed to send heartbeat for peer {}: {}", peer.id, e);
+    loop {
+        interval_timer.tick().await;
+        let now = crate::current_timestamp();
+
+        let peers = peer_store.peers().await;
+        for peer in peers {
+            if now.saturating_sub(peer.last_gossip_heartbeat) > timeout_secs {
+                warn!(peer_id = %peer.id, "peer heartbeat timeout detected");
+                peer_store.remove(&peer.id).await;
+                let _ = event_tx.send(GossipEvent::NodeLost(peer.id.clone()));
             }
         }
     }
@@ -110,13 +112,12 @@ mod tests {
 
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let peer = Peer::new("test-peer".to_string(), addr, NodeRole::Viewer);
-        let peers = Arc::new(RwLock::new(vec![peer]));
+        let load = Arc::new(RwLock::new(LoadReport::default()));
 
         // Spawn heartbeat task with very short interval
         let gossip_clone = gossip.clone();
-        let peers_clone = peers.clone();
         tokio::spawn(async move {
-            heartbeat_task(gossip_clone, peers_clone, 10, 1).await;
+            heartbeat_task(gossip_clone, peer, 8080, load, 10).await;
         });
 
         // Wait for a few heartbeats

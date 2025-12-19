@@ -18,7 +18,7 @@
 //!     id: "peer-123".to_string(),
 //!     addr: "127.0.0.1:8080".parse().unwrap(),
 //!     role: NodeRole::Viewer,
-//!     storage_usage: 1024 * 1024 * 100, // 100 MB
+//!     storage_usage: 0,
 //!     status: "online".to_string(),
 //!     gossip_version: 1,
 //!     last_gossip_heartbeat: 0,
@@ -28,8 +28,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
 /// Errors for core mesh and gossip operations.
 #[derive(Error, Debug, Clone)]
@@ -144,6 +145,86 @@ impl Peer {
     }
 }
 
+/// Shared peer store used across the control plane components.
+#[derive(Clone, Default)]
+pub struct PeerStore {
+    inner: Arc<RwLock<PeerMap>>,
+}
+
+impl PeerStore {
+    /// Create an empty peer store.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Wrap an existing peer map.
+    pub fn from_arc(inner: Arc<RwLock<PeerMap>>) -> Self {
+        Self { inner }
+    }
+
+    /// Access the underlying map.
+    pub fn inner(&self) -> Arc<RwLock<PeerMap>> {
+        self.inner.clone()
+    }
+
+    /// Insert or update a peer; returns true if the peer was newly inserted.
+    pub async fn upsert(&self, peer: Peer) -> bool {
+        let mut guard = self.inner.write().await;
+        let is_new = !guard.contains_key(&peer.id);
+        guard.insert(peer.id.clone(), peer);
+        is_new
+    }
+
+    /// Remove a peer by id and return it if present.
+    pub async fn remove(&self, peer_id: &str) -> Option<Peer> {
+        self.inner.write().await.remove(peer_id)
+    }
+
+    /// Get a peer by id.
+    pub async fn get(&self, peer_id: &str) -> Option<Peer> {
+        self.inner.read().await.get(peer_id).cloned()
+    }
+
+    /// List peers as a vector.
+    pub async fn peers(&self) -> Vec<Peer> {
+        self.inner
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+    }
+}
+
+/// Mapping of peer id to peer descriptor.
+pub type PeerMap = HashMap<String, Peer>;
+
+/// Lightweight load report propagated via gossip heartbeats.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct LoadReport {
+    /// Current storage used by the node in bytes.
+    pub storage_used_bytes: u64,
+    /// Number of queued replication tasks (best-effort).
+    pub replication_queue_depth: u64,
+}
+
+/// Gossip-layer events surfaced to the rest of the system.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GossipEvent {
+    /// A new peer was observed via gossip.
+    NodeDiscovered(Peer),
+    /// A peer is considered lost after heartbeat timeout.
+    NodeLost(String),
+    /// A heartbeat was observed.
+    Heartbeat {
+        peer_id: String,
+        raft_port: u16,
+        load: LoadReport,
+    },
+}
+
 /// Enum for gossip message types.
 ///
 /// Gossip messages are propagated epidemically through the mesh network
@@ -216,8 +297,14 @@ pub enum GossipMessage {
         /// Sender peer ID
         peer_id: String,
 
-        /// Current storage usage
-        storage_usage: u64,
+        /// Advertised raft/control port for this node
+        raft_port: u16,
+
+        /// Optional address for direct control-plane traffic
+        gossip_addr: Option<SocketAddr>,
+
+        /// Current load information
+        load: LoadReport,
 
         /// Timestamp
         timestamp: u64,
@@ -415,7 +502,12 @@ mod tests {
     fn test_gossip_message_size_estimation() {
         let msg = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),
-            storage_usage: 1024,
+            raft_port: 8080,
+            gossip_addr: Some("127.0.0.1:8080".parse().unwrap()),
+            load: LoadReport {
+                storage_used_bytes: 1024,
+                replication_queue_depth: 0,
+            },
             timestamp: 12345,
         };
 

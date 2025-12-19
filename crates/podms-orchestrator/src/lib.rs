@@ -76,7 +76,7 @@ use common::podms::{NodeId, Telemetry, ZoneId};
 use common::traits::CapsuleCatalog;
 use encryption::keymanager::KeyManager;
 use gossip_layer::GossipImpl;
-use mesh_core::{GossipConfig, GossipHandler};
+use mesh_core::{GossipConfig, GossipHandler, NodeRole, Peer, PeerStore};
 use nvram_sim::NvramLog;
 use scaling::agent::ScalingAgent;
 use scaling::{ContentStore, MeshNode};
@@ -166,7 +166,10 @@ impl<C: ContentStore + 'static> Orchestrator<C> {
             signing_key: config.signing_key.clone(),
         };
 
-        let gossip = GossipImpl::new(gossip_config)
+        let peer_store = PeerStore::new();
+        let local_peer = Peer::new(config.node_id.clone(), config.listen_addr, NodeRole::StorageNode);
+
+        let gossip = GossipImpl::with_peer_store(gossip_config, local_peer, peer_store)
             .await
             .context("failed to initialize gossip layer")?;
 
@@ -310,19 +313,21 @@ impl<C: ContentStore + 'static> Orchestrator<C> {
             match msg {
                 mesh_core::GossipMessage::Heartbeat {
                     peer_id: _,
-                    storage_usage,
+                    load,
                     timestamp: _,
+                    raft_port: _,
+                    gossip_addr: _,
                 } => {
                     // Could emit capacity telemetry based on storage usage
-                    if storage_usage > 1_000_000_000_000 {
+                    if load.storage_used_bytes > 1_000_000_000_000 {
                         // >1TB usage
                         // Note: We use a placeholder node_id here because peer_id is a libp2p PeerId string
                         // In a production system, we'd maintain a mapping from PeerId -> NodeId
                         let node_id = NodeId::new(); // Placeholder
                         let event = Telemetry::CapacityThreshold {
                             node_id,
-                            used_bytes: storage_usage,
-                            total_bytes: storage_usage + 100_000_000, // Mock total
+                            used_bytes: load.storage_used_bytes,
+                            total_bytes: load.storage_used_bytes + 100_000_000, // Mock total
                             threshold_pct: 0.9,
                         };
 

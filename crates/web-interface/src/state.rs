@@ -1,7 +1,7 @@
 //! Application state management.
 
 use gossip_layer::GossipImpl;
-use mesh_core::{GossipConfig, GossipHandler, Peer};
+use mesh_core::{GossipConfig, GossipHandler, NodeRole, Peer};
 use prometheus::{Encoder, Registry, TextEncoder};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -169,10 +169,15 @@ impl Default for AppState {
     fn default() -> Self {
         // Create a default gossip implementation for testing
         let config = GossipConfig::default();
+        let local_peer = Peer::new(
+            "web-interface-default".to_string(),
+            "127.0.0.1:3000".parse().unwrap(),
+            NodeRole::Gateway,
+        );
         let gossip = Arc::new(
             tokio::runtime::Runtime::new()
                 .unwrap()
-                .block_on(async { GossipImpl::new(config).await.unwrap() }),
+                .block_on(async { GossipImpl::new(config, local_peer).await.unwrap() }),
         );
         Self::new(gossip)
     }

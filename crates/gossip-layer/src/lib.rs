@@ -17,16 +17,22 @@
 //!
 //! ```rust,no_run
 //! use gossip_layer::GossipImpl;
-//! use mesh_core::{GossipConfig, GossipHandler, GossipMessage};
+//! use mesh_core::{GossipConfig, GossipHandler, GossipMessage, NodeRole, Peer};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = GossipConfig::default();
-//! let gossip = GossipImpl::new(config).await?;
+//! let local_peer = Peer::new("node-1".to_string(), "127.0.0.1:9000".parse()?, NodeRole::StorageNode);
+//! let gossip = GossipImpl::new(config, local_peer).await?;
 //!
 //! // Broadcast a message
 //! let msg = GossipMessage::Heartbeat {
 //!     peer_id: "node-1".to_string(),
-//!     storage_usage: 1024,
+//!     raft_port: 9000,
+//!     gossip_addr: None,
+//!     load: mesh_core::LoadReport {
+//!         storage_used_bytes: 1024,
+//!         replication_queue_depth: 0,
+//!     },
 //!     timestamp: 12345,
 //! };
 //! gossip.broadcast("updates", msg).await?;
@@ -39,11 +45,15 @@ use libp2p::{
     identity::Keypair,
     PeerId,
 };
-use mesh_core::{CoreError, GossipConfig, GossipHandler, GossipMessage, GossipStats, Peer, Result};
+use mesh_core::{
+    CoreError, GossipConfig, GossipEvent, GossipHandler, GossipMessage, GossipStats, LoadReport,
+    NodeRole, Peer, PeerStore, Result,
+};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info};
 
 mod behaviour;
@@ -55,9 +65,13 @@ pub use heartbeat::heartbeat_task;
 pub use message::{verify_message, SignedMessage};
 
 /// Implementation of the gossip protocol using libp2p.
+#[derive(Clone)]
 pub struct GossipImpl {
     /// Local peer ID
     peer_id: PeerId,
+
+    /// Local peer descriptor used for heartbeats
+    local_peer: Peer,
 
     /// Gossip configuration
     config: Arc<GossipConfig>,
@@ -74,8 +88,17 @@ pub struct GossipImpl {
     #[allow(dead_code)]
     stats: Arc<RwLock<GossipStats>>,
 
+    /// Shared peer store across control plane components
+    peer_store: PeerStore,
+
+    /// Heartbeat load snapshot
+    load: Arc<RwLock<LoadReport>>,
+
     /// Command channel sender
     cmd_tx: mpsc::UnboundedSender<GossipCommand>,
+
+    /// Event broadcast channel for consumers (registry, web UI)
+    event_tx: broadcast::Sender<GossipEvent>,
 }
 
 /// Internal commands for the gossip handler
@@ -95,14 +118,27 @@ enum GossipCommand {
     GetStats {
         tx: tokio::sync::oneshot::Sender<GossipStats>,
     },
+    Inject {
+        topic: String,
+        message: GossipMessage,
+    },
 }
 
 impl GossipImpl {
-    /// Create a new gossip implementation.
+    /// Create a new gossip implementation with a fresh peer store.
     ///
     /// This initializes the libp2p swarm with gossipsub behavior and starts
     /// the background event loop.
-    pub async fn new(config: GossipConfig) -> Result<Self> {
+    pub async fn new(config: GossipConfig, local_peer: Peer) -> Result<Self> {
+        Self::with_peer_store(config, local_peer, PeerStore::new()).await
+    }
+
+    /// Create a new gossip implementation that reuses an existing peer store.
+    pub async fn with_peer_store(
+        config: GossipConfig,
+        local_peer: Peer,
+        peer_store: PeerStore,
+    ) -> Result<Self> {
         let keypair = Keypair::generate_ed25519();
         let peer_id = PeerId::from(keypair.public());
 
@@ -112,6 +148,8 @@ impl GossipImpl {
         let topic_channels = Arc::new(RwLock::new(HashMap::new()));
         let peers = Arc::new(RwLock::new(Vec::new()));
         let stats = Arc::new(RwLock::new(GossipStats::default()));
+        let load = Arc::new(RwLock::new(LoadReport::default()));
+        let (event_tx, _) = broadcast::channel(128);
 
         // Create gossipsub config
         let gossipsub_config = gossipsub::ConfigBuilder::default()
@@ -142,10 +180,15 @@ impl GossipImpl {
 
         info!("Gossip layer initialized successfully");
 
+        // Ensure the local peer is present in the shared store
+        peer_store.upsert(local_peer.clone()).await;
+
         // Spawn event loop
         let topic_channels_clone = topic_channels.clone();
         let stats_clone = stats.clone();
         let peers_clone = peers.clone();
+        let peer_store_clone = peer_store.clone();
+        let event_tx_clone = event_tx.clone();
 
         tokio::spawn(async move {
             Self::event_loop(
@@ -154,17 +197,52 @@ impl GossipImpl {
                 topic_channels_clone,
                 stats_clone,
                 peers_clone,
+                peer_store_clone,
+                event_tx_clone,
             )
             .await;
         });
 
+        // Spawn heartbeat and liveness monitors
+        let heartbeat_impl = GossipImpl {
+            peer_id: peer_id.clone(),
+            local_peer: local_peer.clone(),
+            config: Arc::new(config.clone()),
+            topic_channels: topic_channels.clone(),
+            peers: peers.clone(),
+            stats: stats.clone(),
+            peer_store: peer_store.clone(),
+            load: load.clone(),
+            cmd_tx: cmd_tx.clone(),
+            event_tx: event_tx.clone(),
+        };
+
+        let heartbeat_task_gossip: Arc<dyn GossipHandler> = Arc::new(heartbeat_impl.clone());
+        tokio::spawn(heartbeat::heartbeat_task(
+            heartbeat_task_gossip,
+            local_peer.clone(),
+            local_peer.addr.port(),
+            load.clone(),
+            config.heartbeat_interval_ms,
+        ));
+
+        tokio::spawn(heartbeat::liveness_task(
+            peer_store.clone(),
+            event_tx.clone(),
+            config.heartbeat_interval_ms,
+        ));
+
         Ok(Self {
             peer_id,
+            local_peer,
             config: Arc::new(config),
             topic_channels,
             peers,
             stats,
+            peer_store,
+            load,
             cmd_tx,
+            event_tx,
         })
     }
 
@@ -175,6 +253,8 @@ impl GossipImpl {
         topic_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GossipMessage>>>>,
         stats: Arc<RwLock<GossipStats>>,
         peers: Arc<RwLock<Vec<Peer>>>,
+        peer_store: PeerStore,
+        event_tx: broadcast::Sender<GossipEvent>,
     ) {
         loop {
             tokio::select! {
@@ -198,6 +278,7 @@ impl GossipImpl {
                             } else {
                                 debug!("Published message to topic: {}", topic);
                                 stats.write().await.messages_sent += 1;
+                                Self::handle_local_message(&topic, &message, &topic_channels, &peer_store, &event_tx).await;
                             }
                         }
                         GossipCommand::Subscribe { topic, tx } => {
@@ -213,12 +294,15 @@ impl GossipImpl {
                             }
                         }
                         GossipCommand::GetPeers { tx } => {
-                            let peer_list = peers.read().await.clone();
+                            let peer_list = peer_store.peers().await;
                             let _ = tx.send(peer_list);
                         }
                         GossipCommand::GetStats { tx } => {
                             let stats_copy = stats.read().await.clone();
                             let _ = tx.send(stats_copy);
+                        }
+                        GossipCommand::Inject { topic, message } => {
+                            Self::handle_local_message(&topic, &message, &topic_channels, &peer_store, &event_tx).await;
                         }
                     }
                 }
@@ -249,6 +333,72 @@ impl GossipImpl {
     /// Get the local peer ID
     pub fn peer_id(&self) -> &PeerId {
         &self.peer_id
+    }
+
+    /// Get the shared peer store.
+    pub fn peer_store(&self) -> PeerStore {
+        self.peer_store.clone()
+    }
+
+    /// Subscribe to gossip events (peer joins/loss/heartbeats).
+    pub fn subscribe_events(&self) -> broadcast::Receiver<GossipEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Update the local load report that will be advertised in heartbeats.
+    pub async fn set_load_report(&self, load: LoadReport) {
+        let mut guard = self.load.write().await;
+        *guard = load;
+    }
+
+    async fn handle_local_message(
+        topic: &str,
+        message: &GossipMessage,
+        topic_channels: &Arc<RwLock<HashMap<String, mpsc::Sender<GossipMessage>>>>,
+        peer_store: &PeerStore,
+        event_tx: &broadcast::Sender<GossipEvent>,
+    ) {
+        if let Some(tx) = topic_channels.read().await.get(topic).cloned() {
+            let _ = tx.send(message.clone()).await;
+        }
+
+        if let GossipMessage::Heartbeat {
+            peer_id,
+            raft_port,
+            gossip_addr,
+            load,
+            timestamp,
+        } = message
+        {
+            let mut peer = peer_store
+                .get(peer_id)
+                .await
+                .unwrap_or_else(|| {
+                    let addr = gossip_addr.unwrap_or_else(|| {
+                        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), *raft_port)
+                    });
+                    Peer::new(peer_id.clone(), addr, NodeRole::StorageNode)
+                });
+
+            if let Some(addr) = gossip_addr {
+                peer.addr = *addr;
+            } else if peer.addr.port() != *raft_port {
+                peer.addr = SocketAddr::new(peer.addr.ip(), *raft_port);
+            }
+
+            peer.storage_usage = load.storage_used_bytes;
+            peer.last_gossip_heartbeat = *timestamp;
+            let inserted = peer_store.upsert(peer.clone()).await;
+
+            let _ = event_tx.send(GossipEvent::Heartbeat {
+                peer_id: peer_id.clone(),
+                raft_port: *raft_port,
+                load: load.clone(),
+            });
+            if inserted {
+                let _ = event_tx.send(GossipEvent::NodeDiscovered(peer));
+            }
+        }
     }
 
     /// Get current configuration
@@ -324,23 +474,36 @@ pub fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_core::GossipConfig;
+    use mesh_core::{GossipConfig, NodeRole};
+
+    fn local_peer() -> Peer {
+        Peer::new(
+            "local-test".to_string(),
+            "127.0.0.1:9000".parse().unwrap(),
+            NodeRole::StorageNode,
+        )
+    }
 
     #[tokio::test]
     async fn test_gossip_creation() {
         let config = GossipConfig::default();
-        let result = GossipImpl::new(config).await;
+        let result = GossipImpl::new(config, local_peer()).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_broadcast() {
         let config = GossipConfig::default();
-        let gossip = GossipImpl::new(config).await.unwrap();
+        let gossip = GossipImpl::new(config, local_peer()).await.unwrap();
 
         let msg = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: Some("127.0.0.1:9000".parse().unwrap()),
+            load: LoadReport {
+                storage_used_bytes: 1024,
+                replication_queue_depth: 0,
+            },
             timestamp: current_timestamp(),
         };
 

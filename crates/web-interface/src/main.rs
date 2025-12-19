@@ -3,13 +3,13 @@
 //! This starts the Axum HTTP server with all API routes, WebSocket endpoints,
 //! and integration with the gossip layer.
 
-use gossip_layer::{heartbeat_task, GossipImpl};
-use mesh_core::{GossipConfig, Peer};
+use gossip_layer::GossipImpl;
+use mesh_core::{GossipConfig, NodeRole, Peer, PeerStore};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 use web_interface::{build_router, AppState};
 
 #[tokio::main]
@@ -51,11 +51,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gossip_config.fanout, gossip_config.heartbeat_interval_ms, gossip_config.message_ttl
     );
 
+    // Get bind address from environment or use default
+    let bind_addr = std::env::var("BIND_ADDR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 3000)));
+
+    // Shared peer store for UI + control plane routing decisions
+    let peer_store = PeerStore::new();
+
+    // Local peer descriptor (gossip address is the HTTP bind addr by default).
+    let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
+    let gossip_addr: SocketAddr = std::env::var("GOSSIP_ADDR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(bind_addr);
+
+    let local_peer = Peer::new(node_id.clone(), gossip_addr, NodeRole::Gateway);
+
     // Initialize gossip layer
-    let gossip = match GossipImpl::new(gossip_config.clone()).await {
+    let gossip_impl = match GossipImpl::with_peer_store(gossip_config.clone(), local_peer, peer_store.clone()).await {
         Ok(g) => {
             info!("Gossip layer initialized successfully");
-            Arc::new(g) as Arc<dyn mesh_core::GossipHandler>
+            g
         }
         Err(e) => {
             error!("Failed to initialize gossip layer: {}", e);
@@ -63,21 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Initialize peer list
-    let peers = Arc::new(RwLock::new(Vec::<Peer>::new()));
-
-    // Spawn gossip heartbeat task
-    let gossip_clone = gossip.clone();
-    let peers_clone = peers.clone();
-    tokio::spawn(async move {
-        heartbeat_task(
-            gossip_clone,
-            peers_clone,
-            gossip_config.heartbeat_interval_ms,
-            gossip_config.fanout,
-        )
-        .await;
-    });
+    let gossip: Arc<dyn mesh_core::GossipHandler> = Arc::new(gossip_impl);
 
     // Create application state
     let app_state = AppState::new(gossip);
@@ -85,16 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the router
     let app = build_router(app_state);
 
-    // Get bind address from environment or use default
-    let addr = std::env::var("BIND_ADDR")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 3000)));
-
-    info!("Starting server on {}", addr);
+    info!("Starting server on {}", bind_addr);
 
     // Start the server
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())

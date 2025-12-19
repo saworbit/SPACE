@@ -8,17 +8,19 @@ use axum::{
     Router,
 };
 use gossip_layer::GossipImpl;
-use mesh_core::GossipConfig;
+use mesh_core::{GossipConfig, NodeRole, Peer};
 use serde_json::Value;
 use tower::ServiceExt;
 use web_interface::{build_router, AppState};
 
 async fn test_app() -> Router {
-    let gossip = Arc::new(
-        GossipImpl::new(GossipConfig::default())
-            .await
-            .expect("gossip init"),
+    let local_peer = Peer::new(
+        "web-test".to_string(),
+        "127.0.0.1:3000".parse().unwrap(),
+        NodeRole::Gateway,
     );
+    let gossip = Arc::new(GossipImpl::new(GossipConfig::default(), local_peer).await.expect("gossip init"))
+        as Arc<dyn mesh_core::GossipHandler>;
     build_router(AppState::new(gossip))
 }
 

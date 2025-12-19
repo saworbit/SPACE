@@ -144,7 +144,12 @@ mod tests {
         let key = b"test_signing_key_32_bytes_long!!";
         let message = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: None,
+            load: mesh_core::LoadReport {
+                storage_used_bytes: 1024,
+                replication_queue_depth: 0,
+            },
             timestamp: 12345,
         };
 
@@ -160,7 +165,9 @@ mod tests {
 
         let message = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: None,
+            load: mesh_core::LoadReport::default(),
             timestamp: 12345,
         };
 
@@ -174,7 +181,9 @@ mod tests {
         let key = b"test_signing_key_32_bytes_long!!";
         let message = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: None,
+            load: mesh_core::LoadReport::default(),
             timestamp: 12345,
         };
 
@@ -193,7 +202,9 @@ mod tests {
     fn test_message_id_generation() {
         let message = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),
-            storage_usage: 1024,
+            raft_port: 9000,
+            gossip_addr: None,
+            load: mesh_core::LoadReport::default(),
             timestamp: 12345,
         };
 
