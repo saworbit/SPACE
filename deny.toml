@@ -148,8 +148,10 @@ skip = [
     # Older ecosystem versions
     { crate = "bitflags@1.3.2", reason = "transitive pin from various deps" },
     { crate = "getrandom@0.2.16", reason = "rand ecosystem transitive pin" },
+    { crate = "hashbrown@0.12.3", reason = "indexmap 1.x transitive pin (tower 0.4 stack)" },
     { crate = "hashbrown@0.14.5", reason = "std collections compatibility" },
     { crate = "heck@0.4.1", reason = "proc-macro transitive pin" },
+    { crate = "indexmap@1.9.3", reason = "tower 0.4 stack transitive pin" },
     { crate = "linux-raw-sys@0.4.15", reason = "rustix transitive pin" },
     { crate = "rustix@0.38.44", reason = "system interface transitive pin" },
     { crate = "socket2@0.4.10", reason = "tokio-uring/sled compatibility" },
