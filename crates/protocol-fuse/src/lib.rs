@@ -6,6 +6,8 @@
 //! prefer a FIFO so the mount appears quickly and reads stream from the pipeline.
 #![cfg(feature = "phase4")]
 
+#[cfg(unix)]
+use anyhow::anyhow;
 use anyhow::{Context, Result};
 use capsule_registry::pipeline::WritePipeline;
 use capsule_registry::CapsuleRegistry;
@@ -85,7 +87,6 @@ async fn open_fifo_for_write(
     path: &Path,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Option<tokio::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
     use tokio::time::{sleep, Duration};
 
     loop {
@@ -166,23 +167,26 @@ pub async fn mount_fuse_view<C: scaling::ContentStore + 'static>(
             }
 
             #[cfg(unix)]
-            let open_result = match open_fifo_for_write(&content_path, &mut shutdown_rx).await {
-                Some(file) => Ok(file),
+            let mut writer = match open_fifo_for_write(&content_path, &mut shutdown_rx).await {
+                Some(file) => file,
                 None => break,
             };
 
             #[cfg(not(unix))]
-            let open_result = tokio::fs::OpenOptions::new()
+            let mut writer = match tokio::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
                 .open(&content_path)
-                .await;
-
-            let mut writer = match open_result {
+                .await
+            {
                 Ok(file) => file,
                 Err(err) => {
-                    warn!(error = %err, path = %content_path.display(), "failed to open view content");
+                    warn!(
+                        error = %err,
+                        path = %content_path.display(),
+                        "failed to open view content"
+                    );
                     let _ = shutdown_rx.changed().await;
                     continue;
                 }

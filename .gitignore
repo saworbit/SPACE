@@ -8,6 +8,7 @@ Cargo.lock
 *.nvram
 *.nvram.segments
 *.metadata
+**/space.db/
 
 # Test files
 test.txt
