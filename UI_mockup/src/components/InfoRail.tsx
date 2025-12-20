@@ -5,7 +5,7 @@ export function InfoRail() {
   const [metrics, setMetrics] = useState({
     iops: 0,
     latency: 0,
-    federationHealth: 100
+    federationHealth: 100,
   });
 
   useEffect(() => {
@@ -14,7 +14,7 @@ export function InfoRail() {
       setMetrics({
         iops: Math.floor(50000 + Math.random() * 20000),
         latency: parseFloat((0.5 + Math.random() * 0.3).toFixed(2)),
-        federationHealth: Math.floor(95 + Math.random() * 5)
+        federationHealth: Math.floor(95 + Math.random() * 5),
       });
     }, 1000);
 
@@ -45,28 +45,28 @@ export function InfoRail() {
           icon={<Network className="w-4 h-4" />}
           label="FEDERATION"
           value={`${metrics.federationHealth}%`}
-          color={metrics.federationHealth > 98 ? "cyan" : "orange"}
+          color={metrics.federationHealth > 98 ? 'cyan' : 'orange'}
         />
       </div>
     </div>
   );
 }
 
-function Ticker({ 
-  icon, 
-  label, 
-  value, 
-  color 
-}: { 
-  icon: React.ReactNode; 
-  label: string; 
-  value: string; 
-  color: 'cyan' | 'purple' | 'orange' 
+function Ticker({
+  icon,
+  label,
+  value,
+  color,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  color: 'cyan' | 'purple' | 'orange';
 }) {
   const colorClasses = {
     cyan: 'text-neon-cyan',
     purple: 'text-nebula-purple',
-    orange: 'text-supernova-orange'
+    orange: 'text-supernova-orange',
   };
 
   return (

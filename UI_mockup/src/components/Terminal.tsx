@@ -11,7 +11,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
   const [history, setHistory] = useState<HistoryEntry[]>([
     { type: 'output', content: 'Orbit Command Terminal v1.0' },
     { type: 'output', content: 'Type "help" for available commands' },
-    { type: 'output', content: '' }
+    { type: 'output', content: '' },
   ]);
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -47,7 +47,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           { type: 'output', content: '  keys          - Key rotation status' },
           { type: 'output', content: '  clear         - Clear terminal' },
           { type: 'output', content: '  help          - Show this help' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ];
         break;
 
@@ -58,7 +58,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           { type: 'output', content: 'IOPS: 68,432' },
           { type: 'output', content: 'Latency: 0.73ms' },
           { type: 'output', content: 'Federation Health: 98%' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ];
         break;
 
@@ -70,7 +70,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           { type: 'output', content: '3   node-gamma     FOLLOWER  HEALTHY   8.0ms' },
           { type: 'output', content: '4   node-delta     FOLLOWER  LAGGING   45.0ms' },
           { type: 'output', content: '5   node-epsilon   FOLLOWER  HEALTHY   15.0ms' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ];
         break;
 
@@ -79,7 +79,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           output = [
             { type: 'error', content: 'Error: Missing capsule name' },
             { type: 'error', content: 'Usage: deploy <name>' },
-            { type: 'output', content: '' }
+            { type: 'output', content: '' },
           ];
         } else {
           output = [
@@ -88,7 +88,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
             { type: 'output', content: 'Allocating zones...' },
             { type: 'output', content: 'Configuring pipeline...' },
             { type: 'output', content: `✓ Capsule ${parts[1]} deployed successfully` },
-            { type: 'output', content: '' }
+            { type: 'output', content: '' },
           ];
         }
         break;
@@ -100,7 +100,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           { type: 'output', content: 'Cold Data: 200 (50%)' },
           { type: 'output', content: 'GC Pressure: 80 (20%)' },
           { type: 'output', content: 'Average Wear: 42.3%' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ];
         break;
 
@@ -110,7 +110,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           { type: 'output', content: 'Current Key Age: 2847s' },
           { type: 'output', content: 'Time to Rotation: 753s' },
           { type: 'output', content: 'Last Rotation: 47m ago' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ];
         break;
 
@@ -118,7 +118,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
         setHistory([
           { type: 'output', content: 'Orbit Command Terminal v1.0' },
           { type: 'output', content: 'Type "help" for available commands' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ]);
         setInput('');
         return;
@@ -127,7 +127,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
         output = [
           { type: 'error', content: `Command not found: ${command}` },
           { type: 'error', content: 'Type "help" for available commands' },
-          { type: 'output', content: '' }
+          { type: 'output', content: '' },
         ];
     }
 
@@ -155,10 +155,7 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           <TerminalIcon className="w-5 h-5 text-neon-cyan" />
           <span className="text-neon-cyan tracking-wider">SPACECTL TERMINAL</span>
         </div>
-        <button
-          onClick={onClose}
-          className="text-white/60 hover:text-white transition-colors"
-        >
+        <button onClick={onClose} className="text-white/60 hover:text-white transition-colors">
           Close [~]
         </button>
       </div>
@@ -169,15 +166,17 @@ export function Terminal({ onClose }: { onClose: () => void }) {
           <div
             key={index}
             className={
-              entry.type === 'command' ? 'text-neon-cyan' :
-              entry.type === 'error' ? 'text-supernova-orange' :
-              'text-white/80'
+              entry.type === 'command'
+                ? 'text-neon-cyan'
+                : entry.type === 'error'
+                  ? 'text-supernova-orange'
+                  : 'text-white/80'
             }
           >
             {entry.content}
           </div>
         ))}
-        
+
         {/* Input Line */}
         <div className="flex items-center gap-2 mt-2">
           <span className="text-neon-cyan">$</span>
@@ -185,13 +184,13 @@ export function Terminal({ onClose }: { onClose: () => void }) {
             ref={inputRef}
             type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             className="flex-1 bg-transparent border-none outline-none text-white caret-neon-cyan"
             autoFocus
           />
         </div>
-        
+
         <div ref={historyEndRef} />
       </div>
 

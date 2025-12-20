@@ -41,19 +41,18 @@
 //! # }
 //! ```
 
+use futures::StreamExt;
 use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity},
     identity::Keypair,
     multiaddr::Protocol,
     swarm::SwarmEvent,
-    PeerId,
-    SwarmBuilder,
+    PeerId, SwarmBuilder,
 };
 use mesh_core::{
     CoreError, GossipConfig, GossipEvent, GossipHandler, GossipMessage, GossipStats, LoadReport,
     NodeRole, Peer, PeerStore, Result,
 };
-use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -237,7 +236,7 @@ impl GossipImpl {
 
         // Spawn heartbeat and liveness monitors
         let heartbeat_impl = GossipImpl {
-            peer_id: peer_id.clone(),
+            peer_id,
             local_peer: local_peer.clone(),
             config: Arc::new(config.clone()),
             topic_channels: topic_channels.clone(),
@@ -357,17 +356,24 @@ impl GossipImpl {
                             debug!(peer = %peer_id, "gossip connection closed");
                             stats.write().await.connected_peers = swarm.connected_peers().count();
                         }
-                        SwarmEvent::Behaviour(GossipBehaviourEvent::Gossipsub(event)) => {
-                            if let gossipsub::Event::Message { message, .. } = event {
-                                stats.write().await.messages_received += 1;
-                                let topic = message.topic.as_str().to_string();
-                                match bincode::deserialize::<GossipMessage>(&message.data) {
-                                    Ok(decoded) => {
-                                        Self::handle_local_message(&topic, &decoded, &topic_channels, &peer_store, &event_tx).await;
-                                    }
-                                    Err(e) => {
-                                        error!(error = %e, "failed to decode gossip message");
-                                    }
+                        SwarmEvent::Behaviour(GossipBehaviourEvent::Gossipsub(
+                            gossipsub::Event::Message { message, .. },
+                        )) => {
+                            stats.write().await.messages_received += 1;
+                            let topic = message.topic.as_str().to_string();
+                            match bincode::deserialize::<GossipMessage>(&message.data) {
+                                Ok(decoded) => {
+                                    Self::handle_local_message(
+                                        &topic,
+                                        &decoded,
+                                        &topic_channels,
+                                        &peer_store,
+                                        &event_tx,
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "failed to decode gossip message");
                                 }
                             }
                         }
@@ -431,15 +437,12 @@ impl GossipImpl {
             timestamp,
         } = message
         {
-            let mut peer = peer_store
-                .get(peer_id)
-                .await
-                .unwrap_or_else(|| {
-                    let addr = gossip_addr.unwrap_or_else(|| {
-                        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), *raft_port)
-                    });
-                    Peer::new(peer_id.clone(), addr, NodeRole::StorageNode)
+            let mut peer = peer_store.get(peer_id).await.unwrap_or_else(|| {
+                let addr = gossip_addr.unwrap_or_else(|| {
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), *raft_port)
                 });
+                Peer::new(peer_id.clone(), addr, NodeRole::StorageNode)
+            });
 
             if let Some(addr) = gossip_addr {
                 peer.addr = *addr;
@@ -568,7 +571,9 @@ mod tests {
     async fn test_broadcast() {
         let config = GossipConfig::default();
         let raft_port = local_peer().addr.port();
-        let gossip = GossipImpl::new(config, local_peer(), raft_port).await.unwrap();
+        let gossip = GossipImpl::new(config, local_peer(), raft_port)
+            .await
+            .unwrap();
 
         let msg = GossipMessage::Heartbeat {
             peer_id: "test".to_string(),

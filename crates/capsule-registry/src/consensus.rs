@@ -62,6 +62,7 @@ pub struct RaftNode {
 #[derive(Clone)]
 enum RaftInner {
     Single(MetadataStateMachine),
+    #[allow(dead_code)]
     Distributed(crate::mesh::MeshRegistryRaft),
 }
 
@@ -82,6 +83,7 @@ impl RaftNode {
     }
 
     /// Propose an operation through Raft consensus (distributed or single).
+    #[allow(dead_code)]
     pub async fn propose_async(&self, op: MetadataOp) -> Result<OpResult> {
         match &self.inner {
             RaftInner::Single(fsm) => fsm.apply(op),
@@ -97,6 +99,7 @@ impl RaftNode {
     }
 
     /// Start a new single-node cluster (bootstraps membership and becomes leader).
+    #[allow(dead_code)]
     pub async fn bootstrap_distributed(
         node_id: u64,
         raft_addr: std::net::SocketAddr,
@@ -117,6 +120,7 @@ impl RaftNode {
     }
 
     /// Start a node that will join an existing cluster after startup.
+    #[allow(dead_code)]
     pub async fn join_distributed(
         node_id: u64,
         raft_addr: std::net::SocketAddr,
@@ -141,6 +145,7 @@ impl RaftNode {
     }
 
     /// Best-effort: add a voter if this node is leader.
+    #[allow(dead_code)]
     pub async fn add_voter(&self, node_id: u64, raft_addr: std::net::SocketAddr) -> Result<()> {
         let RaftInner::Distributed(mesh) = &self.inner else {
             return Ok(());
@@ -157,7 +162,8 @@ impl RaftNode {
 
         let metrics = mesh.raft.metrics();
         let current = metrics.borrow().clone();
-        let mut voters: std::collections::BTreeSet<u64> = current.membership_config.voter_ids().collect();
+        let mut voters: std::collections::BTreeSet<u64> =
+            current.membership_config.voter_ids().collect();
         voters.insert(node_id);
 
         mesh.raft
@@ -173,7 +179,9 @@ impl RaftNode {
     pub fn snapshot(&self) -> Result<Vec<u8>> {
         match &self.inner {
             RaftInner::Single(fsm) => fsm.snapshot(),
-            RaftInner::Distributed(_) => anyhow::bail!("snapshot not supported in distributed mode"),
+            RaftInner::Distributed(_) => {
+                anyhow::bail!("snapshot not supported in distributed mode")
+            }
         }
     }
 

@@ -1,12 +1,12 @@
 import { motion } from 'motion/react';
 
-export function Sparkline({ 
-  label, 
-  data, 
-  color 
-}: { 
-  label: string; 
-  data: number[]; 
+export function Sparkline({
+  label,
+  data,
+  color,
+}: {
+  label: string;
+  data: number[];
   color: 'cyan' | 'purple' | 'orange';
 }) {
   const width = 120;
@@ -14,16 +14,18 @@ export function Sparkline({
   const padding = 2;
 
   const max = Math.max(...data, 1);
-  const points = data.map((value, index) => {
-    const x = (index / (data.length - 1)) * (width - padding * 2) + padding;
-    const y = height - (value / max) * (height - padding * 2) - padding;
-    return `${x},${y}`;
-  }).join(' ');
+  const points = data
+    .map((value, index) => {
+      const x = (index / (data.length - 1)) * (width - padding * 2) + padding;
+      const y = height - (value / max) * (height - padding * 2) - padding;
+      return `${x},${y}`;
+    })
+    .join(' ');
 
   const colorClasses = {
     cyan: 'stroke-neon-cyan fill-neon-cyan',
     purple: 'stroke-nebula-purple fill-nebula-purple',
-    orange: 'stroke-supernova-orange fill-supernova-orange'
+    orange: 'stroke-supernova-orange fill-supernova-orange',
   };
 
   return (

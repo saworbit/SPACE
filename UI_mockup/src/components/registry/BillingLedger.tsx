@@ -1,5 +1,14 @@
 import { useState } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 import { Download, TrendingUp } from 'lucide-react';
 
 interface UsageData {
@@ -25,7 +34,7 @@ export function BillingLedger() {
     { date: '2024-11-10', storage: 2600, compute: 1380, network: 910 },
     { date: '2024-11-11', storage: 2620, compute: 1290, network: 840 },
     { date: '2024-11-12', storage: 2650, compute: 1410, network: 990 },
-    { date: '2024-11-13', storage: 2670, compute: 1330, network: 870 }
+    { date: '2024-11-13', storage: 2670, compute: 1330, network: 870 },
   ];
 
   const totalStorage = usageData.reduce((sum, d) => sum + d.storage, 0);
@@ -125,22 +134,22 @@ export function BillingLedger() {
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={usageData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis 
-                dataKey="date" 
+              <XAxis
+                dataKey="date"
                 tick={{ fontSize: 12, fill: '#6b7280' }}
-                tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                tickFormatter={value =>
+                  new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                }
               />
               <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} />
-              <Tooltip 
-                contentStyle={{ 
-                  backgroundColor: 'white', 
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: 'white',
                   border: '1px solid #e5e7eb',
-                  fontSize: '12px'
+                  fontSize: '12px',
                 }}
               />
-              <Legend 
-                wrapperStyle={{ fontSize: '12px' }}
-              />
+              <Legend wrapperStyle={{ fontSize: '12px' }} />
               <Bar dataKey="storage" fill="#10b981" name="Storage (GB)" />
               <Bar dataKey="compute" fill="#3b82f6" name="Compute (M inst)" />
               <Bar dataKey="network" fill="#8b5cf6" name="Network (GB)" />
@@ -156,20 +165,38 @@ export function BillingLedger() {
           <table className="w-full">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Date</th>
-                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">Storage (GB-hrs)</th>
-                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">Compute (M inst)</th>
-                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">Network (GB)</th>
-                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">Total Cost</th>
+                <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                  Date
+                </th>
+                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">
+                  Storage (GB-hrs)
+                </th>
+                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">
+                  Compute (M inst)
+                </th>
+                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">
+                  Network (GB)
+                </th>
+                <th className="px-4 py-3 text-right text-xs text-gray-700 tracking-wider uppercase">
+                  Total Cost
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {usageData.map(data => {
-                const cost = (data.storage * 0.023 + data.compute * 0.015 + data.network * 0.09).toFixed(2);
+                const cost = (
+                  data.storage * 0.023 +
+                  data.compute * 0.015 +
+                  data.network * 0.09
+                ).toFixed(2);
                 return (
                   <tr key={data.date} className="hover:bg-gray-50 h-[30px]">
                     <td className="px-4 py-2 text-sm text-gray-900 font-mono">
-                      {new Date(data.date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      {new Date(data.date).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                      })}
                     </td>
                     <td className="px-4 py-2 text-sm text-gray-600 font-mono text-right">
                       {data.storage.toLocaleString()}

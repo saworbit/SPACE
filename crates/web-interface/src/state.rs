@@ -175,11 +175,11 @@ impl Default for AppState {
             NodeRole::Gateway,
         );
         let raft_port = local_peer.addr.port();
-        let gossip = Arc::new(
-            tokio::runtime::Runtime::new()
+        let gossip = Arc::new(tokio::runtime::Runtime::new().unwrap().block_on(async {
+            GossipImpl::new(config, local_peer, raft_port)
+                .await
                 .unwrap()
-                .block_on(async { GossipImpl::new(config, local_peer, raft_port).await.unwrap() }),
-        );
+        }));
         Self::new(gossip)
     }
 }

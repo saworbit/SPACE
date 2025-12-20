@@ -22,11 +22,46 @@ export function CapsuleFlow() {
   const [hoveredConnection, setHoveredConnection] = useState<string | null>(null);
 
   const nodes: FlowNode[] = [
-    { id: 'input', type: 'input', label: 'Data Source', icon: <Play className="w-5 h-5" />, position: { x: 100, y: 200 }, throughput: 125.5 },
-    { id: 'compress', type: 'transform', label: 'Compression', icon: <FileArchive className="w-5 h-5" />, position: { x: 300, y: 150 }, throughput: 98.2 },
-    { id: 'dedup', type: 'transform', label: 'Deduplication', icon: <Minimize2 className="w-5 h-5" />, position: { x: 300, y: 250 }, throughput: 87.4 },
-    { id: 'encrypt', type: 'transform', label: 'Encryption', icon: <Lock className="w-5 h-5" />, position: { x: 500, y: 200 }, throughput: 102.8 },
-    { id: 'output', type: 'output', label: 'Storage', icon: <Settings className="w-5 h-5" />, position: { x: 700, y: 200 }, throughput: 95.3 }
+    {
+      id: 'input',
+      type: 'input',
+      label: 'Data Source',
+      icon: <Play className="w-5 h-5" />,
+      position: { x: 100, y: 200 },
+      throughput: 125.5,
+    },
+    {
+      id: 'compress',
+      type: 'transform',
+      label: 'Compression',
+      icon: <FileArchive className="w-5 h-5" />,
+      position: { x: 300, y: 150 },
+      throughput: 98.2,
+    },
+    {
+      id: 'dedup',
+      type: 'transform',
+      label: 'Deduplication',
+      icon: <Minimize2 className="w-5 h-5" />,
+      position: { x: 300, y: 250 },
+      throughput: 87.4,
+    },
+    {
+      id: 'encrypt',
+      type: 'transform',
+      label: 'Encryption',
+      icon: <Lock className="w-5 h-5" />,
+      position: { x: 500, y: 200 },
+      throughput: 102.8,
+    },
+    {
+      id: 'output',
+      type: 'output',
+      label: 'Storage',
+      icon: <Settings className="w-5 h-5" />,
+      position: { x: 700, y: 200 },
+      throughput: 95.3,
+    },
   ];
 
   const connections: Connection[] = [
@@ -34,7 +69,7 @@ export function CapsuleFlow() {
     { from: 'input', to: 'dedup', active: true },
     { from: 'compress', to: 'encrypt', active: true },
     { from: 'dedup', to: 'encrypt', active: true },
-    { from: 'encrypt', to: 'output', active: true }
+    { from: 'encrypt', to: 'output', active: true },
   ];
 
   const getNodePosition = (nodeId: string) => {
@@ -88,14 +123,14 @@ export function CapsuleFlow() {
                   onHoverStart={() => setHoveredConnection(connectionId)}
                   onHoverEnd={() => setHoveredConnection(null)}
                 />
-                
+
                 {/* Visible line */}
                 <motion.path
                   d={path}
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth={isHovered ? "3" : "2"}
-                  className={isHovered ? "text-neon-cyan" : "text-nebula-purple/60"}
+                  strokeWidth={isHovered ? '3' : '2'}
+                  className={isHovered ? 'text-neon-cyan' : 'text-nebula-purple/60'}
                   initial={{ pathLength: 0 }}
                   animate={{ pathLength: 1 }}
                   transition={{ duration: 1, delay: index * 0.2 }}
@@ -104,28 +139,11 @@ export function CapsuleFlow() {
                 {/* Animated flow particles */}
                 {conn.active && (
                   <>
-                    <motion.circle
-                      r="4"
-                      fill="currentColor"
-                      className="text-neon-cyan"
-                    >
-                      <animateMotion
-                        dur="3s"
-                        repeatCount="indefinite"
-                        path={path}
-                      />
+                    <motion.circle r="4" fill="currentColor" className="text-neon-cyan">
+                      <animateMotion dur="3s" repeatCount="indefinite" path={path} />
                     </motion.circle>
-                    <motion.circle
-                      r="3"
-                      fill="currentColor"
-                      className="text-nebula-purple"
-                    >
-                      <animateMotion
-                        dur="3s"
-                        repeatCount="indefinite"
-                        path={path}
-                        begin="1s"
-                      />
+                    <motion.circle r="3" fill="currentColor" className="text-nebula-purple">
+                      <animateMotion dur="3s" repeatCount="indefinite" path={path} begin="1s" />
                     </motion.circle>
                   </>
                 )}
@@ -141,7 +159,7 @@ export function CapsuleFlow() {
             className="absolute"
             style={{
               left: node.position.x,
-              top: node.position.y
+              top: node.position.y,
             }}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -151,22 +169,28 @@ export function CapsuleFlow() {
           >
             <motion.div
               className={`relative w-24 h-20 bg-glass border-2 rounded-lg flex flex-col items-center justify-center gap-2 cursor-pointer ${
-                node.type === 'input' ? 'border-neon-cyan' :
-                node.type === 'output' ? 'border-neon-cyan' :
-                'border-nebula-purple'
+                node.type === 'input'
+                  ? 'border-neon-cyan'
+                  : node.type === 'output'
+                    ? 'border-neon-cyan'
+                    : 'border-nebula-purple'
               } ${hoveredNode === node.id ? 'glow-cyan' : ''}`}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
             >
-              <div className={
-                node.type === 'input' ? 'text-neon-cyan' :
-                node.type === 'output' ? 'text-neon-cyan' :
-                'text-nebula-purple'
-              }>
+              <div
+                className={
+                  node.type === 'input'
+                    ? 'text-neon-cyan'
+                    : node.type === 'output'
+                      ? 'text-neon-cyan'
+                      : 'text-nebula-purple'
+                }
+              >
                 {node.icon}
               </div>
               <span className="text-white text-xs">{node.label}</span>
-              
+
               {/* Throughput indicator */}
               <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-white/40 text-[10px] whitespace-nowrap">
                 {node.throughput} MB/s
@@ -175,16 +199,18 @@ export function CapsuleFlow() {
               {/* Pulse effect */}
               <motion.div
                 className={`absolute inset-0 rounded-lg border-2 ${
-                  node.type === 'input' || node.type === 'output' ? 'border-neon-cyan' : 'border-nebula-purple'
+                  node.type === 'input' || node.type === 'output'
+                    ? 'border-neon-cyan'
+                    : 'border-nebula-purple'
                 }`}
                 animate={{
                   scale: [1, 1.2, 1],
-                  opacity: [0.5, 0, 0.5]
+                  opacity: [0.5, 0, 0.5],
                 }}
                 transition={{
                   duration: 2,
                   repeat: Infinity,
-                  ease: "easeOut"
+                  ease: 'easeOut',
                 }}
               />
             </motion.div>
@@ -211,7 +237,7 @@ export function CapsuleFlow() {
             style={{
               left: '50%',
               top: '50%',
-              transform: 'translate(-50%, -50%)'
+              transform: 'translate(-50%, -50%)',
             }}
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}

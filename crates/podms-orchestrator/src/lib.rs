@@ -167,7 +167,11 @@ impl<C: ContentStore + 'static> Orchestrator<C> {
         };
 
         let peer_store = PeerStore::new();
-        let local_peer = Peer::new(config.node_id.clone(), config.listen_addr, NodeRole::StorageNode);
+        let local_peer = Peer::new(
+            config.node_id.clone(),
+            config.listen_addr,
+            NodeRole::StorageNode,
+        );
         let raft_port = local_peer.addr.port();
 
         let gossip = GossipImpl::with_peer_store(gossip_config, local_peer, raft_port, peer_store)

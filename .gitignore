@@ -31,6 +31,11 @@ test_dedup*.metadata
 .vscode/
 .idea/
 
+# JS tooling
+node_modules/
+dist/
+.vite/
+
 # Claude Code
 /.claude/
 /.claude/settings.local.json

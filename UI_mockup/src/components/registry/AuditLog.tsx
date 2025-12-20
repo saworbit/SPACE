@@ -17,13 +17,20 @@ export function AuditLog() {
 
   useEffect(() => {
     // Generate mock audit entries
-    const actions = ['CAPSULE_UPDATE', 'ZONE_RESET', 'KEY_ROTATE', 'POLICY_CHANGE', 'NODE_RESTART', 'BACKUP_INIT'];
+    const actions = [
+      'CAPSULE_UPDATE',
+      'ZONE_RESET',
+      'KEY_ROTATE',
+      'POLICY_CHANGE',
+      'NODE_RESTART',
+      'BACKUP_INIT',
+    ];
     const principals = [
       '0x7a9f8e1b',
       '0x4c3d2a5f',
       '0x9b6e4f2c',
       'alice@orbit.sys',
-      'cicd-bot@orbit.sys'
+      'cicd-bot@orbit.sys',
     ];
 
     const generateEntries: AuditEntry[] = [];
@@ -40,27 +47,29 @@ export function AuditLog() {
         metadata: {
           ip: `10.0.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`,
           duration_ms: Math.floor(Math.random() * 500),
-          resource_id: `res-${Math.random().toString(36).substr(2, 9)}`
-        }
+          resource_id: `res-${Math.random().toString(36).substr(2, 9)}`,
+        },
       });
     }
 
     setEntries(generateEntries);
   }, []);
 
-  const filteredEntries = entries.filter(entry => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      entry.action.toLowerCase().includes(query) ||
-      entry.principal.toLowerCase().includes(query) ||
-      entry.status.toLowerCase().includes(query)
-    );
-  }).filter((entry, index) => {
-    // Time travel filter
-    const maxIndex = Math.floor((entries.length * timeRange) / 100);
-    return index < maxIndex;
-  });
+  const filteredEntries = entries
+    .filter(entry => {
+      if (!searchQuery) return true;
+      const query = searchQuery.toLowerCase();
+      return (
+        entry.action.toLowerCase().includes(query) ||
+        entry.principal.toLowerCase().includes(query) ||
+        entry.status.toLowerCase().includes(query)
+      );
+    })
+    .filter((entry, index) => {
+      // Time travel filter
+      const maxIndex = Math.floor((entries.length * timeRange) / 100);
+      return index < maxIndex;
+    });
 
   return (
     <div className="flex flex-col h-full">
@@ -84,7 +93,7 @@ export function AuditLog() {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={e => setSearchQuery(e.target.value)}
               placeholder="severity:WARN AND service:raft-rs AND time > 10m"
               className="w-full pl-10 pr-4 py-2 border border-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent text-sm font-mono"
             />
@@ -104,7 +113,7 @@ export function AuditLog() {
             min="0"
             max="100"
             value={timeRange}
-            onChange={(e) => setTimeRange(Number(e.target.value))}
+            onChange={e => setTimeRange(Number(e.target.value))}
             className="flex-1"
           />
           <span className="text-xs text-gray-600 font-mono w-32">
@@ -120,11 +129,21 @@ export function AuditLog() {
             <table className="w-full">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Timestamp</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Principal</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Action</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Status</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Metadata</th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Timestamp
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Principal
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Action
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Status
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Metadata
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -133,20 +152,18 @@ export function AuditLog() {
                     <td className="px-4 py-2 text-xs text-gray-600 font-mono whitespace-nowrap">
                       {new Date(entry.timestamp).toISOString().replace('T', ' ').substr(0, 23)}
                     </td>
-                    <td className="px-4 py-2 text-xs text-gray-900 font-mono">
-                      {entry.principal}
-                    </td>
-                    <td className="px-4 py-2 text-xs text-gray-900 font-mono">
-                      {entry.action}
-                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-900 font-mono">{entry.principal}</td>
+                    <td className="px-4 py-2 text-xs text-gray-900 font-mono">{entry.action}</td>
                     <td className="px-4 py-2 text-xs">
                       <span className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${
-                          entry.status === 'SUCCESS' ? 'bg-green-500' : 'bg-red-500'
-                        }`} />
-                        <span className={
-                          entry.status === 'SUCCESS' ? 'text-green-700' : 'text-red-700'
-                        }>
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            entry.status === 'SUCCESS' ? 'bg-green-500' : 'bg-red-500'
+                          }`}
+                        />
+                        <span
+                          className={entry.status === 'SUCCESS' ? 'text-green-700' : 'text-red-700'}
+                        >
                           {entry.status}
                         </span>
                       </span>
@@ -164,7 +181,7 @@ export function AuditLog() {
               </tbody>
             </table>
           </div>
-          
+
           {filteredEntries.length === 0 && (
             <div className="text-center py-12 text-gray-500">
               No audit entries found matching your criteria

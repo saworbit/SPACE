@@ -823,7 +823,11 @@ async fn main() -> Result<()> {
                 // Dial seeds from CLI and env `GOSSIP_SEEDS` (comma-separated).
                 let mut seeds = gossip_seed;
                 if let Ok(env_seeds) = std::env::var("GOSSIP_SEEDS") {
-                    for item in env_seeds.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    for item in env_seeds
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
                         if let Ok(addr) = item.parse::<SocketAddr>() {
                             seeds.push(addr);
                         }

@@ -30,15 +30,27 @@ export function IAMTable() {
   const users: User[] = [
     { id: 'u1', name: 'Alice', email: 'alice@orbit.sys', type: 'user', created: '2024-01-15' },
     { id: 'u2', name: 'Bob', email: 'bob@orbit.sys', type: 'user', created: '2024-02-20' },
-    { id: 'u3', name: 'CI/CD Bot', email: 'cicd@orbit.sys', type: 'service', created: '2024-01-10' },
-    { id: 'u4', name: 'Analytics Token', email: 'analytics-key-7a9f', type: 'token', created: '2024-03-01' }
+    {
+      id: 'u3',
+      name: 'CI/CD Bot',
+      email: 'cicd@orbit.sys',
+      type: 'service',
+      created: '2024-01-10',
+    },
+    {
+      id: 'u4',
+      name: 'Analytics Token',
+      email: 'analytics-key-7a9f',
+      type: 'token',
+      created: '2024-03-01',
+    },
   ];
 
   const resources: Resource[] = [
     { id: 'r1', name: 'S3 Bucket A', type: 'storage' },
     { id: 'r2', name: 'NVMe Namespace B', type: 'storage' },
     { id: 'r3', name: 'Capsule-Prod', type: 'compute' },
-    { id: 'r4', name: 'Encryption Keys', type: 'security' }
+    { id: 'r4', name: 'Encryption Keys', type: 'security' },
   ];
 
   const [permissions, setPermissions] = useState<Permission[]>([
@@ -50,25 +62,43 @@ export function IAMTable() {
     { userId: 'u3', resourceId: 'r1', read: true, write: true, execute: true },
     { userId: 'u3', resourceId: 'r2', read: true, write: true, execute: true },
     { userId: 'u3', resourceId: 'r3', read: true, write: true, execute: true },
-    { userId: 'u4', resourceId: 'r1', read: true, write: false, execute: false }
+    { userId: 'u4', resourceId: 'r1', read: true, write: false, execute: false },
   ]);
 
   const getPermission = (userId: string, resourceId: string) => {
-    return permissions.find(p => p.userId === userId && p.resourceId === resourceId) || 
-      { userId, resourceId, read: false, write: false, execute: false };
+    return (
+      permissions.find(p => p.userId === userId && p.resourceId === resourceId) || {
+        userId,
+        resourceId,
+        read: false,
+        write: false,
+        execute: false,
+      }
+    );
   };
 
-  const togglePermission = (userId: string, resourceId: string, type: 'read' | 'write' | 'execute') => {
+  const togglePermission = (
+    userId: string,
+    resourceId: string,
+    type: 'read' | 'write' | 'execute',
+  ) => {
     setPermissions(prev => {
       const existing = prev.find(p => p.userId === userId && p.resourceId === resourceId);
       if (existing) {
-        return prev.map(p => 
-          p.userId === userId && p.resourceId === resourceId
-            ? { ...p, [type]: !p[type] }
-            : p
+        return prev.map(p =>
+          p.userId === userId && p.resourceId === resourceId ? { ...p, [type]: !p[type] } : p,
         );
       } else {
-        return [...prev, { userId, resourceId, read: type === 'read', write: type === 'write', execute: type === 'execute' }];
+        return [
+          ...prev,
+          {
+            userId,
+            resourceId,
+            read: type === 'read',
+            write: type === 'write',
+            execute: type === 'execute',
+          },
+        ];
       }
     });
   };
@@ -85,15 +115,17 @@ export function IAMTable() {
       <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
         <div>
           <h2 className="text-gray-900 tracking-tight">Identity & Access Management</h2>
-          <p className="text-gray-500 text-sm mt-1">Manage users, service accounts, and permissions</p>
+          <p className="text-gray-500 text-sm mt-1">
+            Manage users, service accounts, and permissions
+          </p>
         </div>
-        
+
         <div className="flex gap-2">
           <button
             onClick={() => setView('users')}
             className={`px-4 py-2 text-sm border transition-colors ${
-              view === 'users' 
-                ? 'bg-gray-900 text-white border-gray-900' 
+              view === 'users'
+                ? 'bg-gray-900 text-white border-gray-900'
                 : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
             }`}
           >
@@ -102,8 +134,8 @@ export function IAMTable() {
           <button
             onClick={() => setView('matrix')}
             className={`px-4 py-2 text-sm border transition-colors ${
-              view === 'matrix' 
-                ? 'bg-gray-900 text-white border-gray-900' 
+              view === 'matrix'
+                ? 'bg-gray-900 text-white border-gray-900'
                 : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
             }`}
           >
@@ -122,11 +154,21 @@ export function IAMTable() {
             <table className="w-full bg-white border border-gray-200">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Name</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Email</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Type</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Created</th>
-                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">Actions</th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Name
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Email
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Type
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Created
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -147,11 +189,15 @@ export function IAMTable() {
                       </button>
                     </td>
                     <td className="px-4 py-2 text-sm">
-                      <span className={`inline-flex px-2 py-1 text-xs ${
-                        user.type === 'user' ? 'bg-blue-100 text-blue-800' :
-                        user.type === 'service' ? 'bg-purple-100 text-purple-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
+                      <span
+                        className={`inline-flex px-2 py-1 text-xs ${
+                          user.type === 'user'
+                            ? 'bg-blue-100 text-blue-800'
+                            : user.type === 'service'
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-gray-100 text-gray-800'
+                        }`}
+                      >
                         {user.type.toUpperCase()}
                       </span>
                     </td>
@@ -174,7 +220,10 @@ export function IAMTable() {
                       User / Resource
                     </th>
                     {resources.map(resource => (
-                      <th key={resource.id} className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase border-r border-gray-200">
+                      <th
+                        key={resource.id}
+                        className="px-4 py-3 text-left text-xs text-gray-700 tracking-wider uppercase border-r border-gray-200"
+                      >
                         <div>{resource.name}</div>
                         <div className="text-gray-500 normal-case">{resource.type}</div>
                       </th>
@@ -183,7 +232,10 @@ export function IAMTable() {
                 </thead>
                 <tbody>
                   {users.map(user => (
-                    <tr key={user.id} className="border-b border-gray-200 hover:bg-gray-50 h-[30px]">
+                    <tr
+                      key={user.id}
+                      className="border-b border-gray-200 hover:bg-gray-50 h-[30px]"
+                    >
                       <td className="sticky left-0 z-10 bg-white px-4 py-2 text-sm text-gray-900 border-r border-gray-300">
                         <div>{user.name}</div>
                         <div className="text-xs text-gray-500">{user.type}</div>

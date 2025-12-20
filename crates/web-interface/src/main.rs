@@ -75,8 +75,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(bind_addr.port());
 
-    let gossip_impl =
-        match GossipImpl::with_peer_store(gossip_config.clone(), local_peer, raft_port, peer_store.clone()).await {
+    let gossip_impl = match GossipImpl::with_peer_store(
+        gossip_config.clone(),
+        local_peer,
+        raft_port,
+        peer_store.clone(),
+    )
+    .await
+    {
         Ok(g) => {
             info!("Gossip layer initialized successfully");
             g

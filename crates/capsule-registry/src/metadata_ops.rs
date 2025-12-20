@@ -26,4 +26,3 @@ pub enum OpResult {
     NotFound,
     Error(String),
 }
-

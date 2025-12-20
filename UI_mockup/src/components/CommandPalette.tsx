@@ -11,10 +11,10 @@ interface Command {
   category: string;
 }
 
-export function CommandPalette({ 
-  onClose, 
-  onDimensionChange 
-}: { 
+export function CommandPalette({
+  onClose,
+  onDimensionChange,
+}: {
   onClose: () => void;
   onDimensionChange: (dimension: Dimension) => void;
 }) {
@@ -32,7 +32,7 @@ export function CommandPalette({
         onDimensionChange('capsule');
         onClose();
       },
-      category: 'Actions'
+      category: 'Actions',
     },
     {
       id: 'kill-node',
@@ -43,7 +43,7 @@ export function CommandPalette({
         onDimensionChange('bridge');
         onClose();
       },
-      category: 'Actions'
+      category: 'Actions',
     },
     {
       id: 'rotate-keys',
@@ -54,7 +54,7 @@ export function CommandPalette({
         onDimensionChange('vault');
         onClose();
       },
-      category: 'Security'
+      category: 'Security',
     },
     {
       id: 'start-rebalance',
@@ -65,7 +65,7 @@ export function CommandPalette({
         onDimensionChange('foundry');
         onClose();
       },
-      category: 'Storage'
+      category: 'Storage',
     },
     {
       id: 'view-bridge',
@@ -75,7 +75,7 @@ export function CommandPalette({
         onDimensionChange('bridge');
         onClose();
       },
-      category: 'Navigation'
+      category: 'Navigation',
     },
     {
       id: 'view-capsule',
@@ -85,7 +85,7 @@ export function CommandPalette({
         onDimensionChange('capsule');
         onClose();
       },
-      category: 'Navigation'
+      category: 'Navigation',
     },
     {
       id: 'view-foundry',
@@ -95,7 +95,7 @@ export function CommandPalette({
         onDimensionChange('foundry');
         onClose();
       },
-      category: 'Navigation'
+      category: 'Navigation',
     },
     {
       id: 'view-vault',
@@ -105,7 +105,7 @@ export function CommandPalette({
         onDimensionChange('vault');
         onClose();
       },
-      category: 'Navigation'
+      category: 'Navigation',
     },
     {
       id: 'view-registry',
@@ -115,14 +115,15 @@ export function CommandPalette({
         onDimensionChange('registry');
         onClose();
       },
-      category: 'Navigation'
-    }
+      category: 'Navigation',
+    },
   ];
 
   // Fuzzy search
-  const filteredCommands = commands.filter(cmd =>
-    cmd.label.toLowerCase().includes(query.toLowerCase()) ||
-    cmd.category.toLowerCase().includes(query.toLowerCase())
+  const filteredCommands = commands.filter(
+    cmd =>
+      cmd.label.toLowerCase().includes(query.toLowerCase()) ||
+      cmd.category.toLowerCase().includes(query.toLowerCase()),
   );
 
   useEffect(() => {
@@ -165,7 +166,7 @@ export function CommandPalette({
         initial={{ scale: 0.9, y: -20 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.9, y: -20 }}
-        onClick={(e) => e.stopPropagation()}
+        onClick={e => e.stopPropagation()}
       >
         {/* Search Input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10">
@@ -174,7 +175,7 @@ export function CommandPalette({
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={e => setQuery(e.target.value)}
             placeholder="Type a command or search..."
             className="flex-1 bg-transparent border-none outline-none text-white placeholder-white/30"
           />
@@ -184,9 +185,7 @@ export function CommandPalette({
         {/* Commands List */}
         <div className="max-h-96 overflow-y-auto">
           {filteredCommands.length === 0 ? (
-            <div className="px-4 py-8 text-center text-white/40">
-              No commands found
-            </div>
+            <div className="px-4 py-8 text-center text-white/40">No commands found</div>
           ) : (
             <AnimatePresence mode="popLayout">
               {filteredCommands.map((cmd, index) => (
@@ -208,9 +207,7 @@ export function CommandPalette({
                     <div className="text-white">{cmd.label}</div>
                     <div className="text-white/40 text-xs">{cmd.category}</div>
                   </div>
-                  {index === selectedIndex && (
-                    <div className="text-neon-cyan text-xs">⏎</div>
-                  )}
+                  {index === selectedIndex && <div className="text-neon-cyan text-xs">⏎</div>}
                 </motion.button>
               ))}
             </AnimatePresence>

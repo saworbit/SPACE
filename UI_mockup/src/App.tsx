@@ -45,10 +45,7 @@ export default function App() {
       <InfoRail />
 
       {/* Dock */}
-      <Dock 
-        activeDimension={activeDimension}
-        onDimensionChange={setActiveDimension}
-      />
+      <Dock activeDimension={activeDimension} onDimensionChange={setActiveDimension} />
 
       {/* Main Viewport */}
       <div className="absolute top-12 left-20 right-0 bottom-0 overflow-hidden">
@@ -61,16 +58,14 @@ export default function App() {
 
       {/* Command Palette */}
       {commandPaletteOpen && (
-        <CommandPalette 
+        <CommandPalette
           onClose={() => setCommandPaletteOpen(false)}
           onDimensionChange={setActiveDimension}
         />
       )}
 
       {/* Terminal */}
-      {terminalOpen && (
-        <Terminal onClose={() => setTerminalOpen(false)} />
-      )}
+      {terminalOpen && <Terminal onClose={() => setTerminalOpen(false)} />}
 
       {/* Keyboard hint */}
       <div className="absolute bottom-4 right-4 text-cyan-500/30 text-xs flex gap-4">

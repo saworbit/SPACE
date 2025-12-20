@@ -20,28 +20,26 @@ const navStructure: NavItem[] = [
     label: 'System',
     children: [
       { id: 'audit', label: 'Global Audit Log', view: 'audit' },
-      { id: 'storage', label: 'Storage Inventory', view: 'storage' }
-    ]
+      { id: 'storage', label: 'Storage Inventory', view: 'storage' },
+    ],
   },
   {
     id: 'identity',
     label: 'Identity & Access',
-    children: [
-      { id: 'iam', label: 'IAM Management', view: 'iam' }
-    ]
+    children: [{ id: 'iam', label: 'IAM Management', view: 'iam' }],
   },
   {
     id: 'billing',
     label: 'Billing & Usage',
-    children: [
-      { id: 'ledger', label: 'Usage Ledger', view: 'billing' }
-    ]
-  }
+    children: [{ id: 'ledger', label: 'Usage Ledger', view: 'billing' }],
+  },
 ];
 
 export function Registry() {
   const [activeView, setActiveView] = useState<RegistryView>('iam');
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['system', 'identity', 'billing']));
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(
+    new Set(['system', 'identity', 'billing']),
+  );
 
   const toggleNode = (id: string) => {
     setExpandedNodes(prev => {
@@ -63,7 +61,7 @@ export function Registry() {
           <h1 className="text-gray-900 tracking-tight">THE REGISTER</h1>
           <p className="text-gray-500 text-xs mt-1">Engineer's Logbook</p>
         </div>
-        
+
         <nav className="p-2">
           {navStructure.map(item => (
             <NavNode
@@ -97,7 +95,7 @@ function NavNode({
   onSelect,
   activeView,
   level = 0,
-  expandedNodes
+  expandedNodes,
 }: {
   item: NavItem;
   expanded: boolean;
@@ -122,19 +120,16 @@ function NavNode({
           }
         }}
         className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
-          isActive 
-            ? 'bg-gray-900 text-white' 
-            : 'text-gray-700 hover:bg-gray-100'
+          isActive ? 'bg-gray-900 text-white' : 'text-gray-700 hover:bg-gray-100'
         }`}
         style={{ paddingLeft: `${12 + level * 16}px` }}
       >
-        {hasChildren && (
-          expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />
-        )}
+        {hasChildren &&
+          (expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />)}
         {!hasChildren && <div className="w-4" />}
         <span className={isActive ? '' : ''}>{item.label}</span>
       </button>
-      
+
       {hasChildren && expanded && (
         <div>
           {item.children!.map(child => (

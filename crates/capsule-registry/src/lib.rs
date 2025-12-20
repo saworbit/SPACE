@@ -14,8 +14,8 @@ use crate::metadata_ops::{MetadataOp, OpResult};
 use crate::store::{MetadataStore, SledStore};
 
 mod consensus;
-mod metadata_ops;
 pub mod mesh;
+mod metadata_ops;
 mod raft_rpc;
 mod store;
 #[cfg(feature = "podms")]
