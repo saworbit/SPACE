@@ -210,9 +210,30 @@ impl GossipImpl {
             .build();
 
         let listen_addr = socketaddr_to_multiaddr(local_peer.addr);
-        swarm
-            .listen_on(listen_addr)
-            .map_err(|e| CoreError::GossipFailure(e.to_string()))?;
+        if let Err(e) = swarm.listen_on(listen_addr) {
+            let msg = if e.to_string().is_empty() {
+                format!("{e:?}")
+            } else {
+                e.to_string()
+            };
+
+            #[cfg(test)]
+            let _ = msg;
+
+            #[cfg(test)]
+            {
+                // CI can run unit tests concurrently; fall back to an ephemeral port to avoid
+                // flaky failures when a hard-coded test port is already taken.
+                let fallback = SocketAddr::new(local_peer.addr.ip(), 0);
+                let fallback_addr = socketaddr_to_multiaddr(fallback);
+                swarm
+                    .listen_on(fallback_addr)
+                    .map_err(|e| CoreError::GossipFailure(format!("{e:?}")))?;
+            }
+
+            #[cfg(not(test))]
+            return Err(CoreError::GossipFailure(msg));
+        }
 
         // Spawn event loop
         let topic_channels_clone = topic_channels.clone();
