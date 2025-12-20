@@ -2,11 +2,13 @@
 #![cfg(feature = "phase4")]
 
 use anyhow::{anyhow, Context, Result};
+use capsule_registry::pipeline::WritePipeline;
 use capsule_registry::CapsuleRegistry;
 use common::{CapsuleId, Policy};
 use csi_driver_rs::{CsiServer, ProvisionRequest};
-use protocol_fuse::mount_fuse_view;
+use protocol_fuse::{mount_fuse_view, SpaceViewMount};
 use scaling::{enforce_view_policy, MeshNode};
+use std::sync::Arc;
 use tracing::info_span;
 use uuid::Uuid;
 
@@ -37,8 +39,9 @@ pub async fn publish_capsule_volume<C: scaling::ContentStore + 'static>(
     target_path: &str,
     policy: &Policy,
     mesh: &MeshNode<C>,
+    pipeline: Arc<WritePipeline>,
     registry: &CapsuleRegistry,
-) -> Result<fuse_rs::MountHandle> {
+) -> Result<SpaceViewMount> {
     let capsule_id = CapsuleId::from_uuid(
         Uuid::parse_str(volume_id).with_context(|| format!("invalid capsule UUID: {volume_id}"))?,
     );
@@ -47,12 +50,13 @@ pub async fn publish_capsule_volume<C: scaling::ContentStore + 'static>(
     })
     .await?;
 
-    mount_fuse_view(capsule_id, policy, mesh, target_path, registry).await
+    mount_fuse_view(capsule_id, policy, mesh, pipeline, target_path, registry).await
 }
 
 #[cfg(all(test, feature = "phase4"))]
 mod tests {
     use super::*;
+    use capsule_registry::pipeline::WritePipeline;
     use capsule_registry::CapsuleRegistry;
     use common::podms::ZoneId;
     use common::{CapsuleId, ContentHash, Policy, SegmentId};
@@ -136,17 +140,20 @@ mod tests {
         })
         .await;
 
+        let nvram = NvramLog::open(std::env::temp_dir().join("csi-view.nvram")).unwrap();
+        let pipeline = Arc::new(WritePipeline::new(registry.clone(), nvram));
         let target_path = format!("/tmp/space-csi-{}", capsule_id.as_uuid());
         let handle = publish_capsule_volume(
             &capsule_id.as_uuid().to_string(),
             &target_path,
             &policy,
             &mesh,
+            pipeline,
             &registry,
         )
         .await
         .unwrap();
 
-        assert_eq!(handle.mountpoint(), target_path);
+        assert_eq!(handle.mountpoint().to_string_lossy(), target_path);
     }
 }

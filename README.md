@@ -125,9 +125,9 @@
 | **S3 Multipart** | 🔴 Planned | Not implemented | - |
 | **NFS Export** | 🟠 Experimental | Basic namespace, minimal testing | - |
 | **Block Volumes** | 🟠 Experimental | LUN facade with COW, prototype only | - |
-| **NVMe-oF Target** | 🔴 Planned | Vendor stub exists, not functional | `phase4` |
-| **FUSE Filesystem** | 🔴 Planned | Vendor stub exists, not functional | `phase4` |
-| **CSI Driver (K8s)** | 🔴 Planned | Vendor stub exists, not functional | `phase4` |
+| **NVMe-oF Target** | 🟠 Experimental | SPDK-backed projection scaffolding (simulated) | `phase4` |
+| **FUSE Filesystem** | 🟠 Experimental | Local capsule projection via `content` view | `phase4` |
+| **CSI Driver (K8s)** | 🟠 Experimental | Provision/publish helpers (not a full CSI deployment yet) | `phase4` |
 
 ### Multi-Node & Distributed Features
 
@@ -143,7 +143,7 @@
 | **Cross-Node Dedup** | 🟠 Experimental | Hash-based preservation attempted | `podms` |
 | **Transformation in Transit** | 🟠 Experimental | Re-encrypt/compress design exists | `podms` |
 | **Raft Consensus (metadata)** | 🟠 Experimental | Capsule metadata replicated via Raft (openraft + gRPC); `spacectl server start --bootstrap/--join` | - |
-| **Federated Metadata Sharding (Phase 4)** | 🔴 Planned | Design docs exist; separate from Phase 3 registry Raft | `phase4` |
+| **Federated Metadata Sharding (Phase 4)** | 🟠 Experimental | Policy-driven federation/sharding hooks + local zone bridge | `phase4` |
 
 ### Monitoring & Operations
 
@@ -588,18 +588,17 @@ let policy = Policy::edge_optimized();
 </details>
 
 <details open>
-<summary><b>✨ Phase 4: Protocol Views + Full Mesh Federation</b> 🔴 Planned / ⚪ Stub</summary>
+<summary><b>✨ Phase 4: Protocol Views + Full Mesh Federation</b> 🟠 Experimental</summary>
 
-**Status:** Mostly planned/documented, minimal implementation
+**Status:** Implemented as a simulation-first “View” layer (feature-gated)
 
-- 🔴 **NVMe-oF block targets** – Vendor stub exists, not functional
-- 🔴 **NFS + FUSE + CSI** – Vendor stubs, not wired up
-- 🔴 **Federated metadata mesh** – Design exists, Raft stub only
-- 🟠 **Policy-orchestrated mobility** – Types/telemetry exist, limited integration
-- ⚪ **Full federation** - Documented architecture, not implemented
-- 📄 See [docs/phase4.md](docs/phase4.md) for **planned** architecture
+- 🟠 **NVMe / NFS / CSI projection helpers** – Feature-gated adapters exist (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`)
+- 🟠 **Local view mount** – `spacectl project mount` projects a capsule into a `content` file (streaming FIFO on Unix)
+- 🟠 **Federation (simulated)** – `Policy.federation` + `crates/federation` replicate capsules into zone-scoped stores
+- 🟠 **Policy-orchestrated mobility** – Views invoke `scaling::enforce_view_policy` before projection
+- 📄 See [docs/phase4.md](docs/phase4.md) for current behavior + limitations
 
-**Reality:** Phase 4 is mostly design documents and vendor stubs. The `phase4` feature flag exists but most functionality is not implemented. This represents the future vision, not current capabilities.
+**Reality:** Phase 4 is still experimental, but it is no longer “docs-only”: you can create a capsule, mount a view, and (optionally) replicate into another zone without changing client tooling.
 
 </details>
 
@@ -1385,8 +1384,9 @@ This project has **extensive documentation describing future vision and design g
 
 ### 🔴 What's Planned But Not Implemented
 
-- **Phase 4 protocol views:** NVMe-oF, FUSE, CSI are vendor stubs only
-- **Full mesh federation:** Design documents exist, implementation incomplete
+- **Full Kubernetes integration:** CSI is still a helper/stub; no in-tree driver deployment yet
+- **True kernel-backed FUSE/NBD mounts:** current `project mount` is a simulation-first view
+- **Full mesh federation:** global routing/sharding is still evolving beyond the local zone bridge
 - **Raft consensus:** Capsule metadata Raft exists (Phase 3) but is still experimental; Phase 4 federation/sharding remains planned/stubbed
 - **Production features:** Robust error recovery, monitoring, backup/restore, etc.
 

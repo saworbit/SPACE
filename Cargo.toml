@@ -7,6 +7,7 @@ members = [
     "crates/storage",
     "crates/pipeline",
     "crates/layout-engine",
+    "crates/federation",
     "crates/capsule-registry",
     "crates/nvram-sim",
     "crates/protocol-block",

@@ -79,6 +79,25 @@ pub enum MerkleAlgo {
     SphincsPlus,
 }
 
+/// Federation strategy for distributing capsules across zones.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FederationStrategy {
+    /// Replicate capsule metadata + data into the target zones.
+    ReplicateTo,
+    /// Move capsule ownership into the target zones (replicate then remove locally).
+    MoveTo,
+    /// Cache capsule data at the target zones (best-effort).
+    CacheAt,
+}
+
+/// Global distribution rules for a capsule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FederationPolicy {
+    pub strategy: FederationStrategy,
+    pub target_zones: Vec<String>,
+}
+
 /// Policy knobs for layout planning.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LayoutPolicy {
@@ -140,6 +159,10 @@ pub struct Policy {
     #[serde(default)]
     pub layout: LayoutPolicy,
 
+    /// Phase 4: optional multi-zone federation rules.
+    #[serde(default)]
+    pub federation: Option<FederationPolicy>,
+
     // ========================================================================
     // PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) Fields
     // ========================================================================
@@ -195,6 +218,7 @@ impl Default for Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -218,6 +242,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -239,6 +264,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -260,6 +286,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             #[cfg(feature = "podms")]
             rpo: std::time::Duration::from_secs(300), // 5 min RPO for edge
             #[cfg(feature = "podms")]
@@ -281,6 +308,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -302,6 +330,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -325,6 +354,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             rpo: std::time::Duration::ZERO, // Synchronous replication
             latency_target: std::time::Duration::from_millis(2), // 2ms target
             sovereignty: crate::podms::SovereigntyLevel::Zone,
@@ -343,6 +373,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
+            federation: None,
             rpo: std::time::Duration::from_secs(300), // 5 min async
             latency_target: std::time::Duration::from_millis(100), // 100ms target
             sovereignty: crate::podms::SovereigntyLevel::Global,

@@ -173,19 +173,37 @@ impl PolicyCompiler {
                     view = %view,
                     "view projection telemetry received"
                 );
-                if policy.sovereignty != SovereigntyLevel::Local {
-                    actions.push(ScalingAction::Federate {
-                        capsule_id: *id,
-                        zone: mesh_state.local_zone.clone(),
-                    });
-                }
-                let target_zones = mesh_state.zone_ids();
-                if !target_zones.is_empty() {
-                    actions.push(ScalingAction::ShardEC {
-                        capsule_id: *id,
-                        parity: 2,
-                        zones: target_zones,
-                    });
+                if let Some(federation) = policy.federation.as_ref() {
+                    let zones: Vec<ZoneId> = federation
+                        .target_zones
+                        .iter()
+                        .filter(|z| !z.is_empty())
+                        .map(|name| ZoneId::Geo { name: name.clone() })
+                        .collect();
+
+                    for zone in zones.iter().cloned() {
+                        actions.push(ScalingAction::Federate {
+                            capsule_id: *id,
+                            zone,
+                        });
+                    }
+
+                    if !zones.is_empty() {
+                        actions.push(ScalingAction::ShardEC {
+                            capsule_id: *id,
+                            parity: 2,
+                            zones,
+                        });
+                    }
+                } else {
+                    // Backwards-compatible default: treat any non-local sovereignty as a hint
+                    // to replicate capsule metadata into the wider mesh.
+                    if policy.sovereignty != SovereigntyLevel::Local {
+                        actions.push(ScalingAction::Federate {
+                            capsule_id: *id,
+                            zone: mesh_state.local_zone.clone(),
+                        });
+                    }
                 }
             }
             Telemetry::NodeDegraded { node_id, reason } => {
@@ -563,17 +581,6 @@ impl MeshState {
     /// Get all available node IDs.
     fn available_nodes(&self) -> Vec<NodeId> {
         self.nodes.iter().map(|(id, _)| *id).collect()
-    }
-
-    /// Enumerate unique zones the mesh currently knows about.
-    fn zone_ids(&self) -> Vec<ZoneId> {
-        let mut zones = vec![self.local_zone.clone()];
-        for (_, info) in &self.nodes {
-            if !zones.iter().any(|zone| zone == &info.zone) {
-                zones.push(info.zone.clone());
-            }
-        }
-        zones
     }
 
     /// Check if a node satisfies sovereignty constraints.

@@ -1306,7 +1306,17 @@ impl LegacyPipeline {
 
         #[cfg(all(feature = "phase4", feature = "podms"))]
         if let Some(mesh_node) = &self.mesh_node {
-            if policy.sovereignty != SovereigntyLevel::Local {
+            if let Some(federation) = policy.federation.as_ref() {
+                for zone in federation.target_zones.iter().filter(|z| !z.is_empty()) {
+                    mesh_node
+                        .federate_capsule(
+                            capsule_id,
+                            common::podms::ZoneId::Geo { name: zone.clone() },
+                        )
+                        .await?;
+                }
+            } else if policy.sovereignty != SovereigntyLevel::Local {
+                // Backwards-compatible behavior: federation is driven by sovereignty hints.
                 mesh_node
                     .federate_capsule(capsule_id, mesh_node.zone().clone())
                     .await?;

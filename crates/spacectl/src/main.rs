@@ -1,6 +1,4 @@
-use anyhow::Result;
-#[cfg(feature = "phase4")]
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, Context, Result};
 #[cfg(feature = "modular_pipeline")]
 use capsule_registry::modular_pipeline;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
@@ -10,11 +8,13 @@ use clap::{Parser, Subcommand};
 #[cfg(feature = "phase4")]
 use common::podms::{Telemetry, ZoneId};
 use common::CapsuleId;
-use common::Policy;
+use common::{Policy, SegmentId};
 #[cfg(feature = "phase4")]
 use csi_driver_rs::ProvisionRequest;
 #[cfg(feature = "phase4")]
 use encryption::keymanager::KeyManager;
+#[cfg(feature = "phase4")]
+use federation::FederationBridge;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
 #[cfg(feature = "phase4")]
@@ -35,7 +35,6 @@ use std::io::{self, Write};
 use std::net::SocketAddr;
 #[cfg(feature = "phase4")]
 use std::net::{IpAddr, Ipv4Addr};
-#[cfg(feature = "phase4")]
 use std::path::PathBuf;
 #[cfg(feature = "phase4")]
 use std::sync::Arc;
@@ -45,16 +44,46 @@ use std::time::Duration;
 #[cfg(feature = "phase4")]
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
-#[cfg(feature = "phase4")]
 use uuid::Uuid;
 
 use gossip_layer::GossipImpl;
 use mesh_core::{GossipConfig, NodeRole, Peer, PeerStore};
 
 const NVRAM_PATH: &str = "space.nvram";
+const REGISTRY_DB_PATH: &str = "space.db";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
 const BLOCK_METADATA_FILE: &str = "space.block.json";
 const LIST_PAGE_SIZE: usize = 256;
+
+fn sanitize_zone_component(zone: &str) -> String {
+    let mut out = String::with_capacity(zone.len());
+    for ch in zone.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "default".into()
+    } else {
+        out
+    }
+}
+
+fn registry_path_for_zone(zone: Option<&str>) -> PathBuf {
+    match zone {
+        Some(zone) => PathBuf::from(format!("space.{}.db", sanitize_zone_component(zone))),
+        None => PathBuf::from(REGISTRY_DB_PATH),
+    }
+}
+
+fn nvram_path_for_zone(zone: Option<&str>) -> PathBuf {
+    match zone {
+        Some(zone) => PathBuf::from(format!("space.{}.nvram", sanitize_zone_component(zone))),
+        None => PathBuf::from(NVRAM_PATH),
+    }
+}
 
 fn init_tracing() {
     static INIT: Once = Once::new();
@@ -94,15 +123,41 @@ struct Cli {
 #[cfg(feature = "phase4")]
 #[derive(Clone, Debug, Args)]
 struct ProjectArgs {
+    /// Optional subcommand (e.g. `mount`).
+    #[command(subcommand)]
+    command: Option<ProjectCommand>,
     /// Protocol view to project (nvme, nfs, fuse, csi).
     #[arg(long)]
-    view: String,
+    view: Option<String>,
     /// Capsule UUID to materialize.
     #[arg(long)]
-    id: Uuid,
+    id: Option<Uuid>,
     /// YAML policy file driving the projection.
     #[arg(long)]
-    policy_file: PathBuf,
+    policy_file: Option<PathBuf>,
+    /// Optional zone name (backed by `space.<zone>.db` / `space.<zone>.nvram`).
+    #[arg(long)]
+    zone: Option<String>,
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Clone, Debug, Subcommand)]
+enum ProjectCommand {
+    /// Mount a capsule into a local directory as a file-style view.
+    Mount {
+        /// Capsule UUID to materialize.
+        #[arg(long)]
+        id: Uuid,
+        /// Target directory to project into (creates `content` inside).
+        #[arg(long)]
+        target: PathBuf,
+        /// Optional zone name (backed by `space.<zone>.db` / `space.<zone>.nvram`).
+        #[arg(long)]
+        zone: Option<String>,
+        /// Optional YAML policy override used for view enforcement/federation.
+        #[arg(long)]
+        policy_file: Option<PathBuf>,
+    },
 }
 
 #[cfg(feature = "phase4")]
@@ -300,10 +355,16 @@ enum SnapshotCommands {
     },
 }
 
-fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
-    let registry = CapsuleRegistry::new();
-    let nvram = NvramLog::open(NVRAM_PATH)?;
+fn open_registry_and_nvram_for_zone(zone: Option<&str>) -> Result<(CapsuleRegistry, NvramLog)> {
+    let registry_path = registry_path_for_zone(zone);
+    let nvram_path = nvram_path_for_zone(zone);
+    let registry = CapsuleRegistry::open(&registry_path)?;
+    let nvram = NvramLog::open(&nvram_path)?;
     Ok((registry, nvram))
+}
+
+fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
+    open_registry_and_nvram_for_zone(None)
 }
 
 #[cfg(feature = "modular_pipeline")]
@@ -486,6 +547,20 @@ enum Commands {
         #[arg(long)]
         modular: bool,
     },
+    /// Store a local file as a capsule (Phase 4 projection tests use this shape).
+    Put {
+        /// Input file path
+        file: String,
+        /// Optional capsule UUID to use (default: generate).
+        #[arg(long)]
+        id: Option<String>,
+        /// Optional YAML policy file to attach.
+        #[arg(long)]
+        policy_file: Option<PathBuf>,
+        /// Optional zone name (backed by `space.<zone>.db` / `space.<zone>.nvram`).
+        #[arg(long)]
+        zone: Option<String>,
+    },
     /// Read capsule contents
     Read {
         /// Capsule UUID
@@ -534,7 +609,6 @@ enum Commands {
     },
 }
 
-#[cfg(feature = "phase4")]
 fn load_policy_file(path: &PathBuf) -> Result<Policy> {
     let text = fs::read_to_string(path)?;
     serde_yaml::from_str(&text).map_err(|err| anyhow!(err))
@@ -542,19 +616,85 @@ fn load_policy_file(path: &PathBuf) -> Result<Policy> {
 
 #[cfg(feature = "phase4")]
 async fn handle_project_command(args: ProjectArgs) -> Result<()> {
-    let policy = load_policy_file(&args.policy_file)?;
-    let capsule_id = CapsuleId::from_uuid(args.id);
-    let registry = Arc::new(CapsuleRegistry::new());
-    let view = args.view.to_lowercase();
+    if let Some(ProjectCommand::Mount {
+        id,
+        target,
+        zone,
+        policy_file,
+    }) = args.command
+    {
+        let capsule_id = CapsuleId::from_uuid(id);
+        let (registry, nvram) = open_registry_and_nvram_for_zone(zone.as_deref())?;
+        let registry = Arc::new(registry);
+        let capsule = registry
+            .lookup(capsule_id)
+            .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
+
+        let policy = match policy_file {
+            Some(path) => load_policy_file(&path)?,
+            None => capsule.policy.clone(),
+        };
+
+        let content_store = Arc::new(RwLock::new(DummyContentStore));
+        let nvram_log = Arc::new(RwLock::new(nvram.clone()));
+        let key_manager = Arc::new(RwLock::new(KeyManager::new([0u8; 32])));
+        let zone_name = zone.unwrap_or_else(|| "local".into());
+
+        let mesh = MeshNode::new(
+            ZoneId::Metro { name: zone_name },
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            content_store,
+            nvram_log,
+            key_manager,
+        )
+        .await?;
+
+        let pipeline = Arc::new(WritePipeline::new(registry.as_ref().clone(), nvram));
+        let view = mount_fuse_view(
+            capsule_id,
+            &policy,
+            &mesh,
+            pipeline,
+            &target,
+            registry.as_ref(),
+        )
+        .await?;
+
+        println!(
+            "Mounted capsule {} at {}",
+            capsule_id.as_uuid(),
+            view.mountpoint().display()
+        );
+        tokio::signal::ctrl_c().await?;
+        let _ = view.unmount().await;
+        return Ok(());
+    }
+
+    let capsule_id = CapsuleId::from_uuid(
+        args.id
+            .ok_or_else(|| anyhow!("--id is required unless using `spacectl project mount`"))?,
+    );
+    let view = args
+        .view
+        .clone()
+        .ok_or_else(|| anyhow!("--view is required unless using `spacectl project mount`"))?
+        .to_lowercase();
+    let policy = match args.policy_file.as_ref() {
+        Some(path) => load_policy_file(path)?,
+        None => Policy::default(),
+    };
+
+    let (registry, nvram) = open_registry_and_nvram_for_zone(args.zone.as_deref())?;
+    let registry = Arc::new(registry);
+    let pipeline = Arc::new(WritePipeline::new(registry.as_ref().clone(), nvram.clone()));
 
     let content_store = Arc::new(RwLock::new(DummyContentStore));
-    let nvram_log = Arc::new(RwLock::new(NvramLog::open(NVRAM_PATH)?));
+    let nvram_log = Arc::new(RwLock::new(nvram));
     let key_manager = Arc::new(RwLock::new(KeyManager::new([0u8; 32])));
+    let zone_name = args.zone.clone().unwrap_or_else(|| "local".into());
 
     let mesh = MeshNode::new(
-        ZoneId::Metro {
-            name: "local".into(),
-        },
+        ZoneId::Metro { name: zone_name },
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         content_store,
         nvram_log,
@@ -588,12 +728,19 @@ async fn handle_project_command(args: ProjectArgs) -> Result<()> {
             registry
                 .lookup(capsule_id)
                 .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
-            let mountpoint = format!("/tmp/space-{}", capsule_id.as_uuid());
-            let handle =
-                mount_fuse_view(capsule_id, &policy, &mesh, &mountpoint, registry.as_ref()).await?;
-            println!("FUSE mount ready at {}", mountpoint);
+            let mountpoint = std::env::temp_dir().join(format!("space-{}", capsule_id.as_uuid()));
+            let view = mount_fuse_view(
+                capsule_id,
+                &policy,
+                &mesh,
+                pipeline,
+                &mountpoint,
+                registry.as_ref(),
+            )
+            .await?;
+            println!("View ready at {}", view.mountpoint().display());
             tokio::signal::ctrl_c().await?;
-            drop(handle);
+            let _ = view.unmount().await;
         }
         "csi" => {
             registry
@@ -686,6 +833,50 @@ async fn main() -> Result<()> {
             let id = pipeline.write_capsule(&data).await?;
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {} bytes", data.len());
+        }
+        Commands::Put {
+            file,
+            id,
+            policy_file,
+            zone,
+        } => {
+            let data = fs::read(&file)?;
+            let uuid = match id {
+                Some(id) => Uuid::parse_str(&id).with_context(|| format!("invalid UUID: {id}"))?,
+                None => Uuid::new_v4(),
+            };
+            let capsule_id = CapsuleId::from_uuid(uuid);
+
+            let policy = match policy_file {
+                Some(path) => load_policy_file(&path)?,
+                None => Policy::default(),
+            };
+
+            let (registry, nvram) = open_registry_and_nvram_for_zone(zone.as_deref())?;
+            let seg_id: SegmentId = registry.alloc_segment()?;
+            nvram.append(seg_id, &data)?;
+            registry.create_capsule_with_segments(
+                capsule_id,
+                data.len() as u64,
+                vec![seg_id],
+                policy.clone(),
+            )?;
+
+            println!("{}", capsule_id.as_uuid());
+
+            #[cfg(feature = "phase4")]
+            if policy.federation.is_some() {
+                let bridge = FederationBridge::new(std::env::current_dir()?);
+                let result = bridge
+                    .apply_policy(capsule_id, &policy, &registry, &nvram)
+                    .await?;
+                if result.zones_attempted > 0 {
+                    println!(
+                        "Federation: succeeded {}/{} zones",
+                        result.zones_succeeded, result.zones_attempted
+                    );
+                }
+            }
         }
         Commands::Read {
             capsule_id,

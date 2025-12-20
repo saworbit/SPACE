@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use common::{Capsule, CapsuleId, ContentHash, SegmentId};
+use common::{
+    Capsule, CapsuleId, CompressionPolicy, ContentHash, CryptoProfile, EncryptionPolicy,
+    LayoutPolicy, Policy, SegmentId,
+};
 use serde::{Deserialize, Serialize};
 use sled::Db;
 use std::io::{BufWriter, Cursor, Write};
@@ -37,6 +40,126 @@ struct SnapshotHeader {
     next_segment_id: u64,
     capsule_entries: u64,
     content_entries: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Backwards-compatible decode helpers (bincode + evolving structs)
+// ---------------------------------------------------------------------------
+//
+// `bincode` serializes structs as a fixed-order sequence, which means adding
+// fields to `Policy` breaks decoding of previously persisted capsules.
+// We keep a minimal "legacy" representation here so older registries can still
+// be opened without manual migration.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CapsuleLegacy {
+    id: CapsuleId,
+    size: u64,
+    segments: Vec<SegmentId>,
+    created_at: u64,
+    policy: PolicyLegacy,
+    deduped_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PolicyLegacy {
+    pub compression: CompressionPolicy,
+    pub dedupe: bool,
+    pub compact_interval_secs: Option<u64>,
+    pub erasure_profile: Option<String>,
+    #[serde(default)]
+    pub encryption: EncryptionPolicy,
+    #[serde(default)]
+    pub crypto_profile: CryptoProfile,
+    #[serde(default)]
+    pub layout: LayoutPolicy,
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_duration_60s")]
+    pub rpo: std::time::Duration,
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_duration_10ms")]
+    pub latency_target: std::time::Duration,
+    #[cfg(feature = "podms")]
+    #[serde(default)]
+    pub sovereignty: common::podms::SovereigntyLevel,
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_replica_count_3")]
+    pub replica_count: u8,
+}
+
+#[cfg(feature = "podms")]
+fn default_duration_60s() -> std::time::Duration {
+    std::time::Duration::from_secs(60)
+}
+
+#[cfg(feature = "podms")]
+fn default_duration_10ms() -> std::time::Duration {
+    std::time::Duration::from_millis(10)
+}
+
+#[cfg(feature = "podms")]
+fn default_replica_count_3() -> u8 {
+    3
+}
+
+impl From<PolicyLegacy> for Policy {
+    fn from(value: PolicyLegacy) -> Self {
+        let mut policy = Policy {
+            compression: value.compression,
+            dedupe: value.dedupe,
+            compact_interval_secs: value.compact_interval_secs,
+            erasure_profile: value.erasure_profile,
+            encryption: value.encryption,
+            crypto_profile: value.crypto_profile,
+            layout: value.layout,
+            federation: None,
+            ..Policy::default()
+        };
+
+        #[cfg(feature = "podms")]
+        {
+            policy.rpo = value.rpo;
+            policy.latency_target = value.latency_target;
+            policy.sovereignty = value.sovereignty;
+            policy.replica_count = value.replica_count;
+        }
+
+        policy
+    }
+}
+
+impl From<CapsuleLegacy> for Capsule {
+    fn from(value: CapsuleLegacy) -> Self {
+        Self {
+            id: value.id,
+            size: value.size,
+            segments: value.segments,
+            created_at: value.created_at,
+            policy: value.policy.into(),
+            deduped_bytes: value.deduped_bytes,
+        }
+    }
+}
+
+fn is_unexpected_eof(err: &bincode::Error) -> bool {
+    matches!(
+        &**err,
+        bincode::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+fn decode_capsule_bytes(bytes: &[u8]) -> std::result::Result<Capsule, bincode::Error> {
+    match bincode::deserialize::<Capsule>(bytes) {
+        Ok(capsule) => Ok(capsule),
+        Err(err) if is_unexpected_eof(&err) => bincode::deserialize::<CapsuleLegacy>(bytes)
+            .map(Into::into)
+            .or(Err(err)),
+        Err(err) => Err(err),
+    }
+}
+
+fn decode_capsule(bytes: &[u8]) -> Result<Capsule> {
+    decode_capsule_bytes(bytes).map_err(|err| anyhow!(err))
 }
 
 /// Sled-backed metadata store: crash-safe, concurrent, embeddable.
@@ -88,7 +211,7 @@ impl MetadataStore for SledStore {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>> {
         let key = bincode::serialize(id)?;
         match self.capsules.get(key)? {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
+            Some(bytes) => Ok(Some(decode_capsule(&bytes)?)),
             None => Ok(None),
         }
     }
@@ -106,7 +229,7 @@ impl MetadataStore for SledStore {
         let removed = self.capsules.remove(key)?;
         self.flush()?;
         match removed {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
+            Some(bytes) => Ok(Some(decode_capsule(&bytes)?)),
             None => Ok(None),
         }
     }
@@ -127,7 +250,7 @@ impl MetadataStore for SledStore {
 
         for entry in iter.take(limit) {
             let (_, value) = entry?;
-            capsules.push(bincode::deserialize(&value)?);
+            capsules.push(decode_capsule(&value)?);
         }
 
         Ok(capsules)
@@ -139,7 +262,7 @@ impl MetadataStore for SledStore {
             .capsules
             .fetch_and_update(key, |existing| -> Option<Vec<u8>> {
                 let data = existing?;
-                let mut capsule: Capsule = bincode::deserialize(data).ok()?;
+                let mut capsule: Capsule = decode_capsule_bytes(data).ok()?;
                 capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
                 bincode::serialize(&capsule).ok()
             })?;
@@ -223,7 +346,7 @@ impl MetadataStore for SledStore {
 
             for entry in self.capsules.iter() {
                 let (_, value) = entry?;
-                let capsule: Capsule = bincode::deserialize(&value)?;
+                let capsule: Capsule = decode_capsule(&value)?;
                 bincode::serialize_into(&mut writer, &capsule)?;
             }
 

@@ -8,8 +8,8 @@ pub mod security;
 pub mod policy;
 pub mod traits;
 pub use policy::{
-    CompressionPolicy, CryptoProfile, EncryptionPolicy, LayoutPolicy, LayoutStrategy, MerkleAlgo,
-    Policy,
+    CompressionPolicy, CryptoProfile, EncryptionPolicy, FederationPolicy, FederationStrategy,
+    LayoutPolicy, LayoutStrategy, MerkleAlgo, Policy,
 };
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB

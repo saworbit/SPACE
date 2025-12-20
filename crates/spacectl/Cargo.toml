@@ -22,6 +22,8 @@ phase4 = [
     "protocol-nfs/phase4",
     "protocol-fuse/phase4",
     "protocol-csi/phase4",
+    "dep:federation",
+    "federation/phase4",
     "scaling/phase4",
     "common/podms",
     "csi-driver-rs",
@@ -39,6 +41,7 @@ protocol-block = { path = "../protocol-block" }
 protocol-nvme = { path = "../protocol-nvme" }
 protocol-fuse = { path = "../protocol-fuse" }
 protocol-csi = { path = "../protocol-csi" }
+federation = { path = "../federation", optional = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync", "signal"] }
 clap = { workspace = true, features = ["derive"] }

@@ -17,8 +17,12 @@ common = { path = "../common" }
 scaling = { path = "../scaling", features = ["phase4"] }
 tracing = { workspace = true }
 fuse-rs = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt"] }
+libc = "0.2"
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 encryption = { path = "../encryption" }
 nvram-sim = { path = "../nvram-sim" }
+tempfile = "3"

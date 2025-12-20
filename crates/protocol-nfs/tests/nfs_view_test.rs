@@ -4,10 +4,22 @@ use protocol_nfs::NfsView;
 use std::fs;
 
 fn teardown(prefix: &str) {
-    let _ = fs::remove_file(format!("{}.nvram", prefix));
-    let _ = fs::remove_file(format!("{}.nvram.segments", prefix));
-    let _ = fs::remove_file(format!("{}.metadata", prefix));
-    let _ = fs::remove_file(format!("{}.nfs.json", prefix));
+    fn remove_path(path: &str) {
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => {
+                let _ = fs::remove_dir_all(path);
+            }
+            Ok(_) => {
+                let _ = fs::remove_file(path);
+            }
+            Err(_) => {}
+        }
+    }
+
+    remove_path(&format!("{}.nvram", prefix));
+    remove_path(&format!("{}.nvram.segments", prefix));
+    remove_path(&format!("{}.metadata", prefix));
+    remove_path(&format!("{}.nfs.json", prefix));
 }
 
 fn setup(prefix: &str) -> NfsView {

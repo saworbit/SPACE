@@ -1,0 +1,22 @@
+[package]
+name = "federation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+phase4 = []
+
+[dependencies]
+anyhow = { workspace = true }
+capsule-registry = { path = "../capsule-registry", default-features = false }
+common = { path = "../common" }
+nvram-sim = { path = "../nvram-sim" }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

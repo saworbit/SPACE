@@ -25,6 +25,31 @@ All adapters share the same `WritePipeline` implementation from
 encryption, reference counting, and segment GC, so protocol-specific code
 can focus on simple metadata concerns.
 
+### Phase 4 projections (feature-gated)
+
+Phase 4 adds “Views”: lightweight, stateless protocol adapters that translate legacy I/O into pipeline reads.
+
+| Protocol | Crate | Entry point | Notes |
+|----------|-------|-------------|------|
+| Local projection (“content” view) | `protocol-fuse` | `mount_fuse_view` | Simulation-first mount: creates a `content` file that streams capsule bytes |
+| CSI (Kubernetes) | `protocol-csi` | `publish_capsule_volume` | Stub helper; publishes via the local projection view |
+| NFS export | `protocol-nfs::phase4` | `export_nfs_view` | Registers an export via the vendored `nfs-rs` server |
+| NVMe-oF | `protocol-nvme` | `NvmeView::project` | SPDK-backed projection scaffolding (simulated) |
+
+**CLI usage (Phase 4)**
+
+```bash
+# Build with Phase 4 enabled
+cargo build -p spacectl --features phase4
+
+# Store a file as a capsule (optionally in a zone)
+./target/debug/spacectl put ./hello.txt --id <uuid> --zone zone-a
+
+# Project it locally as a legacy-compatible file view
+./target/debug/spacectl project mount --id <uuid> --target /tmp/space-view --zone zone-a
+cat /tmp/space-view/content
+```
+
 ---
 
 ## 2. NFS namespace view
@@ -119,10 +144,8 @@ and payload integrity.
 - Deleting a file or volume removes its mapping and schedules the underlying
   capsule for GC via the pipeline.  Segments with shared dedupe references are
   retained until every referencing capsule is removed.
-- Future work will layer proper servers (NFSv4, NVMe-oF) atop these façades.
-  The current in-process adapters establish the API contracts required for
-  those services.
+- Phase 4 introduces early protocol projection scaffolding (NVMe/NFS/CSI + a local mount view). Production-grade kernel integrations remain roadmap items.
 
 ---
 
-*Last updated: 2025-10-16*
+*Last updated: 2025-12-20*

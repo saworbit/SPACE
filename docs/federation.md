@@ -2,7 +2,7 @@
 
 ## Metadata Mesh Today
 
-Phase 4 splits `space.metadata` into multiple Paxos-style shards so capsules can be resolved in <100us even after migrating across metros and geos. Each `MeshNode` owns an `Arc<RwLock<HashMap<NodeId, SocketAddr>>>` registry plus a Raft handler that stores serialized capsule records per zone.
+Phase 4 splits `space.metadata` into multiple Paxos-style shards so capsules can be resolved quickly even after migrating across metros and geos. Each `MeshNode` owns an `Arc<RwLock<HashMap<NodeId, SocketAddr>>>` registry plus a Raft handler that stores serialized capsule records per zone (stubbed in `vendor/raft-rs`).
 
 When a view projects, `MeshNode::shard_metadata`:
 
@@ -23,7 +23,7 @@ The shimbed `raft-rs` crate (`vendor/raft-rs`) keeps Raft logic easy to swap out
 - `store_shard(&ShardKey, payload)` writes the metadata blob.
 - `replicate(capsule, zone)` triggers federated replication with telemetry traces.
 
-Each zone hosts several shards (Metro, Geo, Edge). The compiler chooses zones via `MeshState::zone_ids()` and splits parity through `ScalingAction::ShardEC { parity, zones }` so `MeshNode::shard_metadata` can stream updates.
+Each zone hosts several shards (Metro, Geo, Edge). The compiler chooses target zones primarily from `Policy.federation.target_zones` (mapped to `ZoneId::Geo { name }`) and emits `ScalingAction::Federate` / `ScalingAction::ShardEC` so `MeshNode::shard_metadata` can stream updates.
 
 ## Sovereignty & Routing
 
@@ -35,6 +35,16 @@ The policy compiler (`scaling::compiler`) enforces sovereignty before sending ac
 - New telemetry `Telemetry::ViewProjection` maps view names (nvme/nfs/fuse/csi) to routing decisions.
 
 The CLI command `spacectl project` feeds this telemetry event and receives `ScalingAction::Federate` or `ShardEC`. `MeshNode` honors these actions with tracing spans so auditors can reconstruct the cross-zone journey (`info!(capsule = %id, zone = %zone, "stored metadata shard")`).
+
+## Payload Replication (Simulated Zones)
+
+The mesh/Raft sharding path above covers **metadata**. For development-grade, end-to-end “Zone A write → Zone B read” validation, SPACE also provides a simulation-first bridge:
+
+- `crates/federation::FederationBridge` copies capsule metadata + referenced segments into zone-scoped stores:
+  - `space.<zone>.db` (CapsuleRegistry metadata)
+  - `space.<zone>.nvram` (segment payload store)
+
+`spacectl put` will run this bridge when `policy.federation` is present, making the capsule transparently readable when you open the destination zone store (e.g., by passing `--zone` to `spacectl project mount`).
 
 ## Audits & Resilience
 

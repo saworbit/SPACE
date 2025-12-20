@@ -17,6 +17,17 @@ cargo build --release
 # Build with multi-protocol projections enabled
 cargo build --release --features phase4
 
+# Store a local file as a capsule (optionally with federation targets)
+./target/release/spacectl put ./hello.txt --id <CAPSULE_UUID> --policy-file examples/phase4-policy.yaml
+
+# Project a capsule into a local "content" view (serves until Ctrl+C)
+./target/release/spacectl project mount \
+  --id <CAPSULE_UUID> \
+  --target /tmp/space-view
+
+# End-to-end smoke for local projection
+./scripts/test_phase4_projection.sh
+
 # Project a capsule into an NVMe view (serves until Ctrl+C)
 ./target/release/spacectl project \
   --view nvme \
@@ -25,7 +36,10 @@ cargo build --release --features phase4
 
 # End-to-end smoke for NVMe projection + Raft sharding
 ./scripts/test_phase4.sh
+```
+
 ### Dev Authentication (Phase D)
+
 ```bash
 # Mint a dev token (HS256, defaults to dev-secret)
 ./scripts/dev_auth.sh > .token
@@ -37,7 +51,6 @@ JWT_SECRET=dev-secret cargo run -p web-interface
 export SPACE_AUTH_TOKEN=$(cat .token)
 ```
 - Debug builds also accept `Authorization: Bearer space-god-token` (override with `SPACE_DEV_GOD_TOKEN`) for quick local testing.
-
 ```
 
 ## What Gets Built

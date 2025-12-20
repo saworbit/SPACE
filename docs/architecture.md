@@ -284,12 +284,12 @@ async fn health_agent_loop() {
 ---
 ## 9.1 Phase 4: Protocol Views & Federation
 
-Phase 4 is the bridge between the capsule control plane and the external protocol surfaces. Capsules continue to flow through `capsule-registry` and the async pipeline, but the `phase4` feature enables:
+Phase 4 is the bridge between the capsule control plane and the external protocol surfaces. Capsules continue to flow through `capsule-registry` and the pipeline, and the `phase4` feature enables a simulation-first “View” layer:
 
 - Mesh-aware exports (`scaling::MeshNode` exposes `resolve_federated`, `federate_capsule`, and `shard_metadata` plus the `MetadataShard` descriptor)
-- Protocol adapters (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) that project the capsule namespace across NVMe, NFS/FUSE, and CSI
-- Policy steering (`Policy::latency_target`, `Policy::sovereignty`) that triggers federation and QoS enforcement before a view is presented
-- A federated metadata mesh that sharded capsule records and gossips peer ownership, keeping the capsule-to-node map under 100us query latency
+- Protocol adapters (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) that project the capsule namespace across NVMe, NFS, local mounts, and CSI
+- Policy steering (`Policy::latency_target`, `Policy::sovereignty`, `Policy::federation`) that triggers federation/sharding hooks before a view is presented
+- A federated metadata mesh (stubbed Raft shard layer) plus a local zone bridge (`crates/federation`) for dev-grade “Zone A write → Zone B read” validation
 
 ```
 [CapsuleRegistry] --> (write pipeline) --> [MeshNode (phase4)]

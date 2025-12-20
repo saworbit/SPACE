@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Operations replicated through the Raft log.
 #[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MetadataOp {
     PutCapsule(Capsule),
@@ -19,6 +20,7 @@ pub enum MetadataOp {
 
 /// State machine responses surfaced to callers.
 #[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OpResult {
     Ok,
