@@ -554,7 +554,7 @@ mod tests {
     fn local_peer() -> Peer {
         Peer::new(
             "local-test".to_string(),
-            "127.0.0.1:9000".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
             NodeRole::StorageNode,
         )
     }

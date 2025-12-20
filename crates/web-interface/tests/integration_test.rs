@@ -16,7 +16,7 @@ use web_interface::{build_router, AppState};
 async fn test_app() -> Router {
     let local_peer = Peer::new(
         "web-test".to_string(),
-        "127.0.0.1:3000".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
         NodeRole::Gateway,
     );
     let raft_port = local_peer.addr.port();

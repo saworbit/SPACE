@@ -171,7 +171,7 @@ impl Default for AppState {
         let config = GossipConfig::default();
         let local_peer = Peer::new(
             "web-interface-default".to_string(),
-            "127.0.0.1:3000".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
             NodeRole::Gateway,
         );
         let raft_port = local_peer.addr.port();
