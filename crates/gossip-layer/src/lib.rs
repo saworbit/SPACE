@@ -42,17 +42,18 @@
 //! ```
 
 use futures::StreamExt;
-use libp2p::{
-    gossipsub::{self, IdentTopic, MessageAuthenticity},
-    identity::Keypair,
-    multiaddr::Protocol,
-    swarm::SwarmEvent,
-    PeerId, SwarmBuilder,
-};
+use libp2p_core::{transport::Boxed, upgrade, Transport as _};
+use libp2p_gossipsub::{self as gossipsub, IdentTopic, MessageAuthenticity};
+use libp2p_identity::{Keypair, PeerId};
+use libp2p_noise as noise;
+use libp2p_swarm::{Config as SwarmConfig, Swarm, SwarmEvent};
+use libp2p_tcp as tcp;
+use libp2p_yamux as yamux;
 use mesh_core::{
     CoreError, GossipConfig, GossipEvent, GossipHandler, GossipMessage, GossipStats, LoadReport,
     NodeRole, Peer, PeerStore, Result,
 };
+use multiaddr::Protocol;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -194,20 +195,25 @@ impl GossipImpl {
         local_peer.last_gossip_heartbeat = current_timestamp();
         peer_store.upsert(local_peer.clone()).await;
 
-        // Build a full libp2p swarm and start listening.
+        // Build a libp2p swarm using an explicit transport stack (TCP + Noise + Yamux).
         let behaviour = GossipBehaviour { gossipsub };
-        let mut swarm = SwarmBuilder::with_existing_identity(keypair)
-            .with_tokio()
-            .with_tcp(
-                Default::default(),
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
-            )
-            .map_err(|e| CoreError::GossipFailure(e.to_string()))?
-            .with_behaviour(|_key| behaviour)
-            .map_err(|e| CoreError::GossipFailure(e.to_string()))?
-            .with_swarm_config(|cfg| cfg)
-            .build();
+
+        let noise_config =
+            noise::Config::new(&keypair).map_err(|e| CoreError::GossipFailure(e.to_string()))?;
+
+        let transport: Boxed<(PeerId, libp2p_core::muxing::StreamMuxerBox)> =
+            tcp::tokio::Transport::new(tcp::Config::default())
+                .upgrade(upgrade::Version::V1)
+                .authenticate(noise_config)
+                .multiplex(yamux::Config::default())
+                .boxed();
+
+        let mut swarm = Swarm::new(
+            transport,
+            behaviour,
+            peer_id,
+            SwarmConfig::with_tokio_executor(),
+        );
 
         let listen_addr = socketaddr_to_multiaddr(local_peer.addr);
         if let Err(e) = swarm.listen_on(listen_addr) {
@@ -301,7 +307,7 @@ impl GossipImpl {
     /// Background event loop for processing gossip events
     async fn event_loop(
         mut cmd_rx: mpsc::UnboundedReceiver<GossipCommand>,
-        mut swarm: libp2p::Swarm<GossipBehaviour>,
+        mut swarm: Swarm<GossipBehaviour>,
         topic_channels: Arc<RwLock<HashMap<String, mpsc::Sender<GossipMessage>>>>,
         stats: Arc<RwLock<GossipStats>>,
         _peers: Arc<RwLock<Vec<Peer>>>,
@@ -557,8 +563,8 @@ pub fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-fn socketaddr_to_multiaddr(addr: SocketAddr) -> libp2p::Multiaddr {
-    let mut out = libp2p::Multiaddr::empty();
+fn socketaddr_to_multiaddr(addr: SocketAddr) -> multiaddr::Multiaddr {
+    let mut out = multiaddr::Multiaddr::empty();
     match addr.ip() {
         IpAddr::V4(ip) => out.push(Protocol::Ip4(ip)),
         IpAddr::V6(ip) => out.push(Protocol::Ip6(ip)),
