@@ -197,7 +197,7 @@ let event = Telemetry::NewCapsule {
 let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 // → [ScalingAction::Replicate {
 //      capsule_id,
-//      strategy: ReplicationStrategy::MetroSync { replica_count: 2 },
+//      strategy: ReplicationStrategy::MetroSync { replica_count: policy.replica_count as usize },
 //      targets: [node1, node2]
 //    }]
 
@@ -300,14 +300,11 @@ cargo test --package scaling test_dedup_preserving_mirror
 ### Integration Tests (Multi-Node)
 
 ```bash
-# Start 3 nodes in Docker
-docker-compose up --scale nodes=3
+# Phase 3 metadata replication smoke test (Raft leader failover)
+./scripts/test_federation_resilience.sh
 
-# Trigger replication policy
-spacectl set-policy --capsule <id> --rpo 0
-
-# Verify replicas
-spacectl verify-replicas --capsule <id> --expected 2
+# Data-plane replication is validated via scaling integration tests
+cargo test -p scaling --test replication_integration
 ```
 
 ### Fault Injection

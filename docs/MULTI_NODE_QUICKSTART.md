@@ -2,6 +2,8 @@
 
 Get a 3-node SPACE mesh running in under 5 minutes.
 
+> For the Phase 3 **metadata mesh** (Raft + gossip) CLI workflow, see `docs/guides/MESH_CLUSTER.md`.
+
 ## Prerequisites
 
 - Docker & Docker Compose installed

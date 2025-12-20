@@ -44,6 +44,6 @@ Each federation operation logs via `tracing::info` and can be verified by record
 - The Raft shard ID and owner node.
 - The telemetry event that triggered the action.
 
-`MeshNode::federate_capsule` wraps `RaftCluster::replicate` to guarantee cross-zone invariants even during Chaos Mesh partitions (`scripts/test_federation_resilience.sh`). If Raft quorums shrink, the trace still shows the last healthy owner so reads can fall back to the local copy.
+The Phase 4 federation narrative assumes a future zone-scoped shard layer. Today, `scripts/test_federation_resilience.sh` is a **local Phase 3** smoke test that boots a 3-node Raft metadata cluster, kills the leader, and verifies a follower can continue serving metadata reads/writes after re-election.
 
 See [phase4.md](./phase4.md) for CLI flows, scripts, and timelines.

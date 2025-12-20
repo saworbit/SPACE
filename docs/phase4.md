@@ -82,7 +82,7 @@ cargo run -p spacectl -- project \
 2. **Integration idea**
    - Multi-node KIND scenario (Phase4 script) writes capsules, projects an NFS view, federates to a geo zone, and re-reads data.
 3. **Security / Chaos**
-   - `scripts/test_federation_resilience.sh` injects partitions (Chaos Mesh) to ensure Raft shards maintain consistency.
+   - `scripts/test_federation_resilience.sh` is currently a local Phase 3 Raft failover smoke test (3 nodes, leader kill, metadata ops continue). A Chaos Mesh/KIND partition harness is a future add-on.
 4. **Benchmarks (future)**
    - Use Criterion for `project_nvme_view` latency (<50ms) and `MeshNode::federate_capsule` (<100?s) by mocking RDMA loops.
 5. **Smoke scripts**
@@ -91,7 +91,7 @@ cargo run -p spacectl -- project \
 ## Scripts & Deployments
 
 - `scripts/test_phase4_views.sh`: Builds `spacectl` with `--features phase4`, runs a KIND multi-node cluster (`deployment/kind-config.yaml`), projects NVMe/NFS/CSI views, and relies on `kind` `kubectl` to deploy the driver (`deployment/csi-driver.yaml`).
-- `scripts/test_federation_resilience.sh`: Installs Chaos Mesh into KIND, partitions pods, and ensures `spacectl project` still returns consistent metadata.
+- `scripts/test_federation_resilience.sh`: Local 3-node Phase 3 Raft metadata failover smoke test.
 
 ### Deployment Assets
 

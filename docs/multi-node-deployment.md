@@ -2,6 +2,8 @@
 
 This guide explains how to deploy and operate SPACE in multi-node mode with PODMS (Policy-Driven Object Management System) capabilities.
 
+> For the Phase 3 **metadata mesh** (Raft + gossip) CLI workflow, see `docs/guides/MESH_CLUSTER.md`.
+
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)

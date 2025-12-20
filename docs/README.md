@@ -9,6 +9,7 @@
 - [Build Guide](guides/BUILD.md)
 - [S3 Quick Start](guides/QUICKSTART_S3.md)
 - [Multi-Node Quickstart](MULTI_NODE_QUICKSTART.md)
+- [Mesh Cluster (Phase 3)](guides/MESH_CLUSTER.md)
 
 ## Implementation
 - [Dedup Implementation](implementation/DEDUP_IMPLEMENTATION.md)
@@ -25,4 +26,5 @@
 ## Federation & Simulation
 - [PODMS Scaling](podms.md)
 - [Multi-Node Deployment](multi-node-deployment.md)
+- [Phase 3 Mesh Overview](phase3.md)
 - [Simulations Guide](SIMULATIONS.md)

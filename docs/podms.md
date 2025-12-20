@@ -471,7 +471,7 @@ let actions = compiler.compile_scaling_actions(&event, &policy, &mesh_state);
 ### Decision Rules
 
 **1. Replication Strategy** (from `policy.rpo`):
-- `RPO = 0` → `MetroSync { replica_count: 2 }` (synchronous)
+- `RPO = 0` → `MetroSync { replica_count: policy.replica_count }` (synchronous; total copies incl. local)
 - `RPO < 60s` → `AsyncWithBatching { rpo }` (batched async)
 - `RPO >= 60s` → `None` (no immediate replication)
 

@@ -321,7 +321,7 @@ Add mesh topology visualization using D3.js or similar.
 2. **Manual peer discovery** - No mDNS/Kademlia auto-discovery
 3. **ContentStore not integrated** - Awaits capsule-registry changes
 4. **Test fixtures outdated** - Need MeshNode signature updates
-5. **No Raft integration** - Strong consistency via Phase 4
+5. **Raft not fully integrated** - Phase 3 adds Raft for capsule metadata, but PODMS data-plane MeshNode remains separate
 
 ## Next Steps
 
@@ -334,11 +334,11 @@ Add mesh topology visualization using D3.js or similar.
 ### Short Term (Enhancement)
 1. Add mDNS auto-discovery
 2. Implement web UI topology visualization
-3. Add spacectl cluster commands
+3. Add spacectl cluster commands (Phase 3: `spacectl server`/`spacectl registry`)
 4. Create Kubernetes deployment manifests
 
 ### Long Term (Phase 4)
-1. Raft integration for strong consistency
+1. Phase 4 federation/sharding via Raft
 2. Full libp2p swarm with QUIC
 3. Actual RDMA support
 4. ML-based placement optimization

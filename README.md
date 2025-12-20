@@ -142,8 +142,8 @@
 | **Scaling Agents** | 🟠 Experimental | Basic agent loop, minimal coverage | `podms` |
 | **Cross-Node Dedup** | 🟠 Experimental | Hash-based preservation attempted | `podms` |
 | **Transformation in Transit** | 🟠 Experimental | Re-encrypt/compress design exists | `podms` |
-| **Raft Consensus** | ⚪ Stub | Vendor stub only, not wired | `phase4` |
-| **Full Mesh Federation** | 🔴 Planned | Design docs exist, not implemented | `phase4` |
+| **Raft Consensus (metadata)** | 🟠 Experimental | Capsule metadata replicated via Raft (openraft + gRPC); `spacectl server start --bootstrap/--join` | - |
+| **Federated Metadata Sharding (Phase 4)** | 🔴 Planned | Design docs exist; separate from Phase 3 registry Raft | `phase4` |
 
 ### Monitoring & Operations
 
@@ -455,7 +455,8 @@ let policy = Policy::edge_optimized();
 - ✅ Async event emission on capsule writes
 
 **Step 2 - Metro-Sync Replication:**
-- ✅ **Mesh networking** with manual peer registration (gossip planned for Step 3.5)
+- ✅ **Gossip discovery plane** with shared PeerStore + 1s heartbeats (control-plane mesh)
+- ✅ **MeshNode data plane** still uses manual peer registration (gossip integration pending)
 - ✅ **RDMA mock transport** for zero-copy segment mirroring (TCP POC)
 - ✅ **Metro-sync replication** with hash-first dedup checking
 - ✅ **Autonomous scaling agents** consuming telemetry events
@@ -477,26 +478,19 @@ let policy = Policy::edge_optimized();
 
 ### 🔜 PODMS Roadmap
 
-- **Step 3.5** — Gossip-based peer discovery (replace manual registration)
+- **Step 3.5** — Gossip-based peer discovery (control plane done; MeshNode pending)
 - **Step 4** — Full mesh federation & cross-zone routing with Raft
 - **Future** — Adaptive RPO, cost-aware placement, ML-driven heatmaps
 
 ### 🚀 Testing Multi-Node Replication
 
 ```bash
-# Start 3 nodes with Docker Compose
-docker-compose up --scale nodes=3
-
-# Test metro-sync replication (zero-RPO)
-spacectl create-capsule --data "test" --policy metro-sync
-spacectl verify-replicas --expected 2
-
-# Test async geo-replication (5-min RPO)
-spacectl create-capsule --data "test" --policy geo-replicated
-spacectl queue-stats  # Check batch queue depth
+# Phase 3: metadata mesh (Raft + gossip) smoke test (3 nodes, leader failover)
+./scripts/test_federation_resilience.sh
 ```
 
-📚 See [docs/podms.md](docs/podms.md) for architecture details and implementation guide.
+📚 See [docs/podms.md](docs/podms.md) for PODMS architecture details.
+📚 See [docs/guides/MESH_CLUSTER.md](docs/guides/MESH_CLUSTER.md) for Phase 3 Mesh workflows (`spacectl server` + `spacectl registry`).
 
 ---
 
@@ -1393,7 +1387,7 @@ This project has **extensive documentation describing future vision and design g
 
 - **Phase 4 protocol views:** NVMe-oF, FUSE, CSI are vendor stubs only
 - **Full mesh federation:** Design documents exist, implementation incomplete
-- **Raft consensus:** Stub code only, not functional
+- **Raft consensus:** Capsule metadata Raft exists (Phase 3) but is still experimental; Phase 4 federation/sharding remains planned/stubbed
 - **Production features:** Robust error recovery, monitoring, backup/restore, etc.
 
 ### ⚠️ Critical Limitations

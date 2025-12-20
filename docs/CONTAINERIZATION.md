@@ -43,7 +43,7 @@ SPACE containerization provides:
 - Docker 20.10+ or Docker Desktop
 - Docker Compose v2.0+
 - 2GB free disk space
-- Available ports: 8080 (S3), 5000 (registry)
+- Available ports: 8080 (S3), 5000 (legacy registry). Phase 3 mesh uses 7000 (gossip) + 9000 (Raft gRPC).
 
 ### 90-Second Deployment
 
@@ -68,6 +68,8 @@ curl http://localhost:8080/bucket/test.txt
 ## Architecture
 
 ### Container Stack
+
+> Note: The Compose stack below predates Phase 3 mesh wiring and still shows a standalone `registry` service on `:5000`. For the Phase 3 metadata mesh, use `spacectl server start` with `--gossip-addr :7000` and `--raft-addr :9000`.
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -129,20 +131,19 @@ Total: ~150 MB
 
 **Ports**:
 - 8080 - S3 API (configurable)
-- 5000 - Raft consensus (registry mode)
+- 7000 - Gossip discovery (Phase 3 mesh)
+- 9000 - Raft gRPC (Phase 3 metadata mesh)
 
 **User**: `space` (UID 1000, non-root)
 
 **Commands**:
 ```bash
-# S3 server mode
-docker run -p 8080:8080 space-core:latest s3
+# S3 server mode (via spacectl)
+docker run -p 8080:8080 space-core:latest spacectl serve-s3 --port 8080
 
-# Registry mode
-docker run -p 5000:5000 space-core:latest registry
-
-# CLI mode
-docker run space-core:latest cli create --file test.txt
+# Phase 3 metadata mesh node (Raft + gossip)
+docker run -p 7000:7000 -p 9000:9000 space-core:latest spacectl server start \
+  --node-id 1 --bootstrap --gossip-addr 0.0.0.0:7000 --raft-addr 0.0.0.0:9000
 ```
 
 ### space-sim:latest
@@ -195,9 +196,12 @@ S3_BIND_ADDR=0.0.0.0:8080  # S3 listen address
 
 **Registry Configuration**:
 ```bash
-RAFT_BIND_ADDR=0.0.0.0:5000  # Raft consensus address
+# Persisted metadata and Raft state (paths are passed to `spacectl server start`)
 SPACE_METADATA_PATH=/capsules/space.db
-SPACE_NVRAM_PATH=/capsules/space.nvram
+SPACE_RAFT_STORE_PATH=/capsules/space.raft.db
+
+# Optional gossip seeds (comma-separated) for discovery
+GOSSIP_SEEDS=10.0.0.10:7000,10.0.0.11:7000
 ```
 
 **Advanced Security** (requires `--features advanced-security`):
