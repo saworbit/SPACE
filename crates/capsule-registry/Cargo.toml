@@ -62,6 +62,7 @@ tokio = { workspace = true, features = ["full"] }
 
 [build-dependencies]
 tonic-build = "0.11.0"
+protoc-bin-vendored = "3.2.0"
 
 [[bench]]
 name = "pipeline"
