@@ -1,6 +1,14 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::var_os("PROTOC").is_none() {
+    println!("cargo:rerun-if-env-changed=PROTOC");
+
+    let should_set_vendored = match std::env::var_os("PROTOC") {
+        None => true,
+        Some(path) => !std::path::Path::new(&path).is_file(),
+    };
+
+    if should_set_vendored {
         let protoc = protoc_bin_vendored::protoc_bin_path()?;
+        println!("cargo:warning=Using vendored protoc at {}", protoc.display());
         std::env::set_var("PROTOC", protoc);
     }
 
