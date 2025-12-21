@@ -31,7 +31,7 @@ Phase 4 adds “Views”: lightweight, stateless protocol adapters that translat
 
 | Protocol | Crate | Entry point | Notes |
 |----------|-------|-------------|------|
-| Local projection (“content” view) | `protocol-fuse` | `mount_capsule_fuse` (Unix), `mount_fuse_view` (fallback) | Read-only kernel FUSE mount on Unix (`/content`); otherwise streams into a `content` file |
+| Local projection (“content” view) | `protocol-fuse` | `mount_capsule_fuse` (Unix + `kernel_fuse`), `mount_fuse_view` (fallback) | Read-only kernel FUSE mount on Unix (`/content`) when built with kernel support; otherwise streams into a `content` file |
 | CSI (Kubernetes) | `protocol-csi` | `publish_capsule_volume` | Stub helper; publishes via the local projection view |
 | NFS export | `protocol-nfs::phase4` | `export_nfs_view` | Registers an export via the vendored `nfs-rs` server |
 | NVMe-oF | `protocol-nvme` | `NvmeView::project` | SPDK-backed projection scaffolding (simulated) |

@@ -17,6 +17,7 @@ modular_pipeline = [
     "capsule-registry/modular_pipeline",
     "protocol-s3/modular_pipeline",
 ]
+kernel_fuse = ["protocol-fuse/kernel_fuse"]
 phase4 = [
     "protocol-nvme/phase4",
     "protocol-nfs/phase4",

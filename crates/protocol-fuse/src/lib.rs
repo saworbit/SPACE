@@ -26,20 +26,27 @@ const CONTENT_FILENAME: &str = "content";
 const METADATA_FILENAME: &str = "space.json";
 const DEFAULT_STREAM_CHUNK: usize = 1024 * 1024; // 1 MiB
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "kernel_fuse"))]
 mod kernel_fuse;
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "kernel_fuse"))]
 pub use kernel_fuse::{mount_capsule_fuse, SpaceFuse};
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), not(feature = "kernel_fuse")))]
 pub fn mount_capsule_fuse(
     _pipeline: std::sync::Arc<WritePipeline>,
     _capsule_id: CapsuleId,
     _capsule_size: u64,
     _target: impl AsRef<std::path::Path>,
 ) -> Result<()> {
-    anyhow::bail!("kernel FUSE is only supported on Unix targets")
+    #[cfg(not(unix))]
+    anyhow::bail!("kernel FUSE is only supported on Unix targets");
+    #[cfg(all(unix, not(feature = "kernel_fuse")))]
+    anyhow::bail!(
+        "kernel FUSE support not built; enable `protocol-fuse/kernel_fuse` (and install libfuse3-dev)"
+    );
+    #[allow(unreachable_code)]
+    Ok(())
 }
 
 /// Handle representing a projected capsule view.

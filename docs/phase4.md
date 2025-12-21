@@ -2,7 +2,7 @@
 
 > ## ⚠️ PLANNED FEATURES - MOSTLY NOT IMPLEMENTED
 >
-> **Status:** Phase 4 is partially implemented behind the `phase4` feature flag (simulation-first, with an experimental read-only kernel FUSE mount on Unix).
+> **Status:** Phase 4 is partially implemented behind the `phase4` feature flag (simulation-first). An experimental read-only kernel FUSE mount is available on Unix when built with `spacectl` feature `kernel_fuse` and system `libfuse3` headers installed.
 >
 > **Reality Check:**
 > - Protocol projections exist (helpers): `protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`

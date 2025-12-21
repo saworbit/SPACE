@@ -593,7 +593,7 @@ let policy = Policy::edge_optimized();
 **Status:** Implemented as a simulation-first “View” layer (feature-gated), with an experimental read-only kernel FUSE mount on Unix
 
 - 🟠 **NVMe / NFS / CSI projection helpers** – Feature-gated adapters exist (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`)
-- 🟠 **Local projection mount** – `spacectl project mount` prefers a read-only kernel FUSE mount on Unix (`/content`), with a portable `content`-file view fallback elsewhere
+- 🟠 **Local projection mount** – `spacectl project mount` can use an experimental read-only kernel FUSE mount on Unix (enable `spacectl` feature `kernel_fuse` + install `libfuse3-dev`), with a portable `content`-file view fallback elsewhere
 - 🟠 **Federation (simulated)** – `Policy.federation` + `crates/federation` replicate capsules into zone-scoped stores
 - 🟠 **Policy-orchestrated mobility** – Views invoke `scaling::enforce_view_policy` before projection
 - 📄 See [docs/phase4.md](docs/phase4.md) for current behavior + limitations

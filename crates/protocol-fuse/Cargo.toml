@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 phase4 = ["common/podms", "scaling/phase4"]
+kernel_fuse = ["dep:fuser"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -21,7 +22,7 @@ libc = "0.2"
 serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-fuser = "0.12"
+fuser = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
