@@ -30,3 +30,18 @@ pub async fn download(
 
 ## Testing
 - Feature-gated regression: `crates/capsule-registry/tests/streaming_test.rs` validates streaming consistency over multiple segments under `--features modular_pipeline`.
+
+## Phase 5: Streaming Transforms (Compute-over-Data)
+
+When `Policy.transform` is set, the pipeline can wrap `read_capsule_stream` with an
+in-flight WASM transform chain (default trigger: `on-read`):
+
+```yaml
+transform:
+  - name: "redact_pii"
+    image: "file:///opt/space/wasm/redact.wasm"
+    trigger: on-read
+```
+
+This keeps reads streaming (segment-by-segment) while applying the transform inside
+the storage node before bytes hit the network.

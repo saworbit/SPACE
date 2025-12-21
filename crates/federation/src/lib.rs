@@ -5,8 +5,6 @@
 //! behavior by copying capsule metadata + referenced segments into zone-scoped
 //! registries and NVRAM logs.
 
-#![cfg(feature = "phase4")]
-
 pub mod bridge;
 pub mod queue;
 pub mod rpc;
@@ -15,6 +13,17 @@ pub mod state;
 pub mod wan;
 pub mod zones;
 
-pub use bridge::{Bridge, FederationResult};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ZoneConfig {
+    pub name: String,
+    #[serde(alias = "url")]
+    pub endpoint: String,
+    #[serde(alias = "secret")]
+    pub secret_key: String,
+}
+
+pub use bridge::{Bridge, FederationBridge, FederationResult};
 pub use server::FederationServiceImpl;
 pub use server::{serve, serve_from_paths};

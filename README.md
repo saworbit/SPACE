@@ -602,6 +602,22 @@ let policy = Policy::edge_optimized();
 
 </details>
 
+<details open>
+<summary><b>🧠 Phase 5: The Brain (Compute-over-Data / WASM)</b> 🟡 Planned / 🟠 Experimental</summary>
+
+**Status:** Policy schema + initial runtime integration implemented (early/experimental)
+
+- 🟡 **Transform policy** – `Policy.transform` defines an ordered chain of WASM transforms with triggers (`on-read` / `on-write`)
+- 🟡 **Sandboxed execution** – WASM modules run inside wasmtime with fuel + memory limits (traps fail the read/write, not the node)
+- 🟠 **Streaming reads** – transforms wrap `read_capsule_stream` so clients see transformed bytes without pre-materializing derived objects
+- 🟡 **Dogfooding** – `capsule://...` images are intended to load WASM binaries stored in SPACE itself
+- 📄 See [docs/phase5.md](docs/phase5.md) for the schema + ABI
+- 🛠️ Build: `cargo build -p spacectl --features phase5` (enables modular pipeline + WASM transforms)
+
+**Reality:** This phase targets compute-to-data primitives first; derived-output caching and richer ABIs evolve next.
+
+</details>
+
 ---
 
 ## 🚀 Quick Start
@@ -1173,7 +1189,13 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 - 📋 CSI driver for Kubernetes
 - Encryption-transparent views via RegistryTransformOps + centralized enforce_view_policy so protocols serve plaintext while capsules stay XTS-encrypted
 
-### 🚀 Phase 5: Enterprise Features
+### 🧠 Phase 5: The Brain (Compute-over-Data)
+- 🟠 WASM transform engine embedded in the pipeline (`Policy.transform`)
+- 📋 Chained transforms with resource limits (fuel + memory pages)
+- 📋 On-read transforms for streaming clients (no pre-processing storage cost)
+- 📋 On-write transforms for destructive ingest filtering (optional)
+
+### 🚀 Phase 6: Enterprise Features
 - 📋 Metro-sync replication
 - 📋 Policy compiler
 - 📋 Erasure coding (6+2)

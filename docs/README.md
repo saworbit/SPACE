@@ -28,6 +28,7 @@
 - [Multi-Node Deployment](multi-node-deployment.md)
 - [Phase 3 Mesh Overview](phase3.md)
 - [Phase 4 Views & Federation](phase4.md)
+- [Phase 5 WASM Transforms](phase5.md)
 - [Federation Mesh](federation.md)
 - [Protocol Views Guide](protocol_views.md)
 - [Simulations Guide](SIMULATIONS.md)

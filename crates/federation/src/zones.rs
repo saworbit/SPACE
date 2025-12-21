@@ -2,12 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ZoneConfig {
-    pub name: String,
-    pub url: String,
-    pub secret: String,
-}
+pub use crate::ZoneConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZoneDirectory {

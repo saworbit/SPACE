@@ -33,6 +33,9 @@ pub struct Bridge {
     state: ReplicationState,
 }
 
+/// Backwards/compat name matching the Phase 4b docs ("FederationBridge").
+pub type FederationBridge = Bridge;
+
 impl Bridge {
     pub fn open(
         local_registry: Arc<CapsuleRegistry>,

@@ -6,6 +6,7 @@ members = [
     "crates/dedup",
     "crates/storage",
     "crates/pipeline",
+    "crates/transform-engine",
     "crates/layout-engine",
     "crates/federation",
     "crates/capsule-registry",

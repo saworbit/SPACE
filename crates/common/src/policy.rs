@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Cryptography profile for the write pipeline.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -242,6 +243,10 @@ pub struct Policy {
     #[serde(default)]
     pub federation: FederationPolicy,
 
+    /// Phase 5: ordered list of WASM transformations to apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transform: Vec<TransformDef>,
+
     // ========================================================================
     // PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) Fields
     // ========================================================================
@@ -272,6 +277,75 @@ pub struct Policy {
     pub replica_count: u8,
 }
 
+/// Ordered transformation definition applied during read/write streaming.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransformDef {
+    /// Friendly name for logging/debugging (e.g., "thumbnail-gen").
+    pub name: String,
+
+    /// URI of the WASM binary (e.g., "capsule://<ID>", "file:///opt/space/wasm/...").
+    pub image: String,
+
+    /// Execution trigger. Default: `OnRead`.
+    #[serde(default)]
+    pub trigger: TransformTrigger,
+
+    /// Static arguments passed into the WASM environment.
+    #[serde(default)]
+    pub args: HashMap<String, String>,
+
+    /// Resource bounds to prevent denial-of-service.
+    #[serde(default)]
+    pub resources: ResourceLimits,
+
+    /// Optional artifact verification (content-addressable and/or signature).
+    pub verification: Option<ArtifactVerification>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransformTrigger {
+    /// Lazy execution. Computed when the client pulls data.
+    #[default]
+    #[serde(
+        rename = "on-read",
+        alias = "OnRead",
+        alias = "on_read",
+        alias = "onread"
+    )]
+    OnRead,
+    /// Eager execution. Computed during ingest (before persistence).
+    #[serde(
+        rename = "on-write",
+        alias = "OnWrite",
+        alias = "on_write",
+        alias = "onwrite"
+    )]
+    OnWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceLimits {
+    pub max_memory_pages: u32,
+    pub fuel_limit: u64,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_pages: 16,
+            fuel_limit: 10_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactVerification {
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
 #[cfg(feature = "podms")]
 fn default_rpo() -> std::time::Duration {
     std::time::Duration::from_secs(60) // 1 minute default
@@ -298,6 +372,7 @@ impl Default for Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -322,6 +397,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -344,6 +420,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -366,6 +443,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             #[cfg(feature = "podms")]
             rpo: std::time::Duration::from_secs(300), // 5 min RPO for edge
             #[cfg(feature = "podms")]
@@ -388,6 +466,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -410,6 +489,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -434,6 +514,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             rpo: std::time::Duration::ZERO, // Synchronous replication
             latency_target: std::time::Duration::from_millis(2), // 2ms target
             sovereignty: crate::podms::SovereigntyLevel::Zone,
@@ -453,6 +534,7 @@ impl Policy {
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
+            transform: Vec::new(),
             rpo: std::time::Duration::from_secs(300), // 5 min async
             latency_target: std::time::Duration::from_millis(100), // 100ms target
             sovereignty: crate::podms::SovereigntyLevel::Global,
@@ -605,5 +687,33 @@ federation:
         let legacy_json = r#"{"federation":{"target_zones":["zone-b"],"strategy":"replicate-to"}}"#;
         let policy: Policy = serde_json::from_str(legacy_json).unwrap();
         assert_eq!(policy.federation.targets, vec!["zone-b".to_string()]);
+    }
+
+    #[test]
+    fn test_transform_policy_deserialization() {
+        let yaml = r#"
+transform:
+  - name: resize
+    image: capsule://wasm-registry/resize.wasm
+    trigger: on-read
+    args:
+      width: "1080"
+    resources:
+      max_memory_pages: 16
+      fuel_limit: 1000
+    verification:
+      sha256: deadbeef
+"#;
+
+        let policy: Policy = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(policy.transform.len(), 1);
+        assert_eq!(policy.transform[0].trigger, TransformTrigger::OnRead);
+        assert_eq!(policy.transform[0].args.get("width").unwrap(), "1080");
+        assert_eq!(policy.transform[0].resources.max_memory_pages, 16);
+        assert_eq!(policy.transform[0].resources.fuel_limit, 1000);
+        assert_eq!(
+            policy.transform[0].verification.as_ref().unwrap().sha256,
+            "deadbeef"
+        );
     }
 }

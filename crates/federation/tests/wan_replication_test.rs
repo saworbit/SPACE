@@ -51,8 +51,8 @@ async fn replicates_capsule_over_grpc() {
 
     let zone = ZoneConfig {
         name: "zone-2".into(),
-        url: format!("http://{}", addr),
-        secret: "test-secret".into(),
+        endpoint: format!("http://{}", addr),
+        secret_key: "test-secret".into(),
     };
 
     let agent = WanTransferAgent::default();

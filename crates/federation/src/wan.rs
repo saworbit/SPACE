@@ -25,17 +25,17 @@ impl PeerClientManager {
     }
 
     pub async fn connect(&self, zone: &ZoneConfig) -> Result<FederationServiceClient<Channel>> {
-        let endpoint = zone.url.clone();
+        let endpoint = zone.endpoint.clone();
         let client = FederationServiceClient::connect(endpoint)
             .await
-            .with_context(|| format!("connect federation endpoint {}", zone.url))?;
+            .with_context(|| format!("connect federation endpoint {}", zone.endpoint))?;
         Ok(client)
     }
 
     pub fn hello_request(&self, zone: &ZoneConfig) -> HelloRequest {
         HelloRequest {
             zone_id: self.local_zone_id.clone(),
-            secret: zone.secret.clone(),
+            secret: zone.secret_key.clone(),
         }
     }
 }
@@ -220,8 +220,8 @@ impl WanTransferAgent {
 }
 
 fn apply_secret<T>(zone: &ZoneConfig, request: &mut Request<T>) -> Result<()> {
-    let secret =
-        MetadataValue::try_from(zone.secret.clone()).context("encode x-space-secret metadata")?;
+    let secret = MetadataValue::try_from(zone.secret_key.clone())
+        .context("encode x-space-secret metadata")?;
     request.metadata_mut().insert("x-space-secret", secret);
     Ok(())
 }

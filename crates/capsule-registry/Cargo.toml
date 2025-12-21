@@ -10,6 +10,7 @@ publish = false
 default = []
 pipeline_async = ["dep:num_cpus"]
 modular_pipeline = ["dep:pipeline"]
+phase5 = ["modular_pipeline", "pipeline/phase5"]
 advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
 podms = ["pipeline_async", "common/podms", "dep:scaling"]
 phase4 = [

@@ -13,6 +13,7 @@ use common::{
 };
 use compression::Lz4ZstdCompressor;
 use dedup::Blake3Deduper;
+use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use storage::{InMemoryBackend, NvramBackend};
@@ -22,6 +23,17 @@ use encryption::{
     compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE, KeyManager,
 };
 use layout_engine::LayoutEngine;
+#[cfg(feature = "phase5")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "phase5")]
+use common::{TransformDef, TransformTrigger};
+#[cfg(feature = "phase5")]
+use futures::future::BoxFuture;
+#[cfg(feature = "phase5")]
+use transform_engine::{ModuleResolver, TransformEngine};
+#[cfg(feature = "phase5")]
+use uuid::Uuid;
 
 /// Minimal encryptor that performs no-op transformations.
 #[derive(Default, Clone)]
@@ -339,6 +351,92 @@ impl CapsuleCatalog for InMemoryCatalog {
     }
 }
 
+#[cfg(feature = "phase5")]
+fn wasm_engine() -> Result<&'static TransformEngine> {
+    static ENGINE: OnceLock<Result<TransformEngine>> = OnceLock::new();
+    match ENGINE.get_or_init(TransformEngine::new) {
+        Ok(engine) => Ok(engine),
+        Err(err) => Err(anyhow!(err.to_string())).context("init wasm transform engine"),
+    }
+}
+
+#[cfg(feature = "phase5")]
+struct PipelineModuleResolver<'a, C, E, S, R> {
+    compressor: &'a C,
+    encryptor: &'a E,
+    storage: &'a S,
+    catalog: &'a R,
+}
+
+#[cfg(feature = "phase5")]
+impl<'a, C, E, S, R> PipelineModuleResolver<'a, C, E, S, R>
+where
+    C: Compressor + Send + Sync,
+    E: Encryptor + Send + Sync,
+    S: StorageBackend + Send + Sync,
+    R: CapsuleCatalog + Send + Sync,
+{
+    async fn read_capsule_bytes(&self, capsule_id: CapsuleId) -> Result<Vec<u8>> {
+        let capsule = self.catalog.lookup_capsule(capsule_id)?;
+        let mut out = Vec::with_capacity(capsule.size as usize);
+
+        for seg_id in &capsule.segments {
+            let metadata = self.storage.metadata(*seg_id).await?;
+            let raw = self.storage.read(*seg_id).await?;
+
+            let decrypted = if metadata.encrypted {
+                self.encryptor
+                    .decrypt(&raw, &capsule.policy.encryption, *seg_id)?
+            } else {
+                raw
+            };
+
+            let decompressed = if metadata.compressed {
+                self.compressor
+                    .decompress(&decrypted, metadata.compression_algo.as_str())?
+            } else {
+                decrypted
+            };
+
+            out.extend_from_slice(&decompressed);
+        }
+
+        Ok(out)
+    }
+
+    async fn read_file(image: &str) -> Result<Vec<u8>> {
+        let path = if let Some(rest) = image.strip_prefix("file://") {
+            rest.trim_start_matches('/').to_string()
+        } else {
+            image.to_string()
+        };
+        std::fs::read(&path).with_context(|| format!("read wasm module at {path}"))
+    }
+}
+
+#[cfg(feature = "phase5")]
+impl<'a, C, E, S, R> ModuleResolver for PipelineModuleResolver<'a, C, E, S, R>
+where
+    C: Compressor + Send + Sync,
+    E: Encryptor + Send + Sync,
+    S: StorageBackend + Send + Sync,
+    R: CapsuleCatalog + Send + Sync,
+{
+    fn load<'b>(&'b self, image: &'b str) -> BoxFuture<'b, Result<Vec<u8>>> {
+        Box::pin(async move {
+            if let Some(rest) = image.strip_prefix("capsule://") {
+                let id = rest.trim_matches('/');
+                let uuid = Uuid::parse_str(id).with_context(|| {
+                    format!("invalid capsule URI (expected capsule://<UUID>): {image}")
+                })?;
+                return self.read_capsule_bytes(CapsuleId::from_uuid(uuid)).await;
+            }
+
+            Self::read_file(image).await
+        })
+    }
+}
+
 /// Pipeline orchestrator that composes the modular traits.
 pub struct Pipeline<C, D, E, S, Eval, K, R>
 where
@@ -391,6 +489,185 @@ where
         }
     }
 
+    #[cfg(feature = "phase5")]
+    async fn apply_on_write_transforms(&self, data: &[u8], policy: &Policy) -> Result<Vec<u8>>
+    where
+        C: Compressor + Clone + Send + Sync + 'static,
+        D: Deduper + Send + Sync + 'static,
+        E: Encryptor + Clone + Send + Sync + 'static,
+        S: StorageBackend + Clone + Send + Sync + 'static,
+        Eval: PolicyEvaluator + Send + Sync + 'static,
+        K: Keyring + Send + Sync + 'static,
+        R: CapsuleCatalog + Send + Sync + 'static,
+    {
+        let transforms: Vec<TransformDef> = policy
+            .transform
+            .iter()
+            .filter(|t| t.trigger == TransformTrigger::OnWrite)
+            .cloned()
+            .collect();
+
+        if transforms.is_empty() {
+            return Ok(data.to_vec());
+        }
+
+        let engine = wasm_engine()?;
+        let resolver = PipelineModuleResolver {
+            compressor: &self.compressor,
+            encryptor: &self.encryptor,
+            storage: &self.storage,
+            catalog: &self.catalog,
+        };
+
+        let chunk_bytes = 4 * 1024 * 1024;
+        let base = futures::stream::iter(
+            data.chunks(chunk_bytes)
+                .map(|chunk| Ok::<Bytes, anyhow::Error>(Bytes::copy_from_slice(chunk)))
+                .collect::<Vec<_>>(),
+        );
+
+        let mut stream: DataStream = Box::pin(base);
+        for def in transforms {
+            stream = engine.execute_stream(stream, def, &resolver).await?;
+        }
+
+        let mut out = Vec::new();
+        let mut stream = Box::pin(stream);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            out.extend_from_slice(&chunk);
+        }
+        Ok(out)
+    }
+
+    #[cfg(feature = "phase5")]
+    #[instrument(skip_all)]
+    pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId>
+    where
+        C: Compressor + Clone + Send + Sync + 'static,
+        D: Deduper + Send + Sync + 'static,
+        E: Encryptor + Clone + Send + Sync + 'static,
+        S: StorageBackend + Clone + Send + Sync + 'static,
+        Eval: PolicyEvaluator + Send + Sync + 'static,
+        K: Keyring + Send + Sync + 'static,
+        R: CapsuleCatalog + Send + Sync + 'static,
+    {
+        let transformed_data;
+        let data = if policy
+            .transform
+            .iter()
+            .any(|t| t.trigger == TransformTrigger::OnWrite)
+        {
+            transformed_data = self.apply_on_write_transforms(data, policy).await?;
+            transformed_data.as_slice()
+        } else {
+            data
+        };
+
+        let capsule_id = CapsuleId::new();
+        let compression_policy = self
+            .evaluator
+            .evaluate_compression(policy, &data[..data.len().min(1024)])?;
+        let chunk_size = policy.layout.strategy.default_segment_size();
+        let data_slices: Vec<&[u8]> = data.chunks(chunk_size).collect();
+        let layout_engine = LayoutEngine::new(policy);
+        let zone_plan = layout_engine.synthesize(&[capsule_id], &data_slices, policy)?;
+        let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
+
+        let mut segment_ids = Vec::new();
+        let mut dedup_stats = DedupStats::new();
+
+        for zone in zone_plan.zones {
+            for seg in zone.segments {
+                let start = seg.offset as usize;
+                let end = start.saturating_add(seg.length as usize);
+                if end > data.len() {
+                    return Err(anyhow!(
+                        "zone plan refers beyond input data: {} > {}",
+                        end,
+                        data.len()
+                    ));
+                }
+                let chunk = &data[start..end];
+                let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
+                let hash = self.deduper.hash_content(view.as_ref());
+
+                if let Some(existing) = self.catalog.lookup_content(&hash) {
+                    let mut metadata = self.storage.metadata(existing).await?;
+                    metadata.ref_count += 1;
+                    metadata.deduplicated = metadata.ref_count > 1;
+                    let mut txn = self.storage.begin_txn().await?;
+                    txn.set_segment_metadata(existing, metadata).await?;
+                    txn.commit().await?;
+                    self.deduper.update_stats(summary.output_size as u64, true);
+                    self.stats.record(summary.output_size as u64, true);
+                    dedup_stats.record(summary.output_size as u64, true);
+                    segment_ids.push(existing);
+                } else {
+                    let mut txn = self.storage.begin_txn().await?;
+                    let seg_id = self.catalog.allocate_segment()?;
+
+                    let (payload, encryption_summary) = if encryption_policy.is_enabled() {
+                        let _key = self
+                            .keyring
+                            .as_ref()
+                            .map(|keyring| keyring.derive_key(capsule_id, seg_id))
+                            .transpose()?;
+                        let (encrypted, summary) = self.encryptor.encrypt(
+                            Cow::Borrowed(view.as_ref()),
+                            &encryption_policy,
+                            seg_id,
+                        )?;
+                        (encrypted, summary)
+                    } else {
+                        (view.into_owned(), EncryptionSummary::new("none"))
+                    };
+
+                    txn.append(seg_id, &payload).await?;
+                    let metadata = Segment {
+                        id: seg_id,
+                        offset: 0,
+                        len: payload.len() as u32,
+                        plain_len: Some(summary.original_size as u32),
+                        compressed: summary.compressed,
+                        compression_algo: summary.algorithm.clone(),
+                        content_hash: Some(hash.clone()),
+                        ref_count: 1,
+                        deduplicated: false,
+                        access_count: 0,
+                        encryption_version: encryption_summary.encryption_version,
+                        key_version: encryption_summary.key_version,
+                        tweak_nonce: encryption_summary.tweak_nonce,
+                        integrity_tag: encryption_summary.integrity_tag,
+                        encrypted: encryption_policy.is_enabled(),
+                        pq_ciphertext: None,
+                        pq_nonce: None,
+                    };
+                    txn.set_segment_metadata(seg_id, metadata).await?;
+                    txn.commit().await?;
+
+                    self.catalog.register_content(hash.clone(), seg_id)?;
+                    self.deduper.register_content(hash, seg_id)?;
+                    self.deduper.update_stats(summary.output_size as u64, false);
+                    self.stats.record(summary.output_size as u64, false);
+                    dedup_stats.record(summary.output_size as u64, false);
+                    segment_ids.push(seg_id);
+                }
+            }
+        }
+
+        self.catalog.create_capsule(
+            capsule_id,
+            data.len() as u64,
+            policy,
+            segment_ids,
+            &dedup_stats,
+        )?;
+
+        Ok(capsule_id)
+    }
+
+    #[cfg(not(feature = "phase5"))]
     #[instrument(skip_all)]
     pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
         let capsule_id = CapsuleId::new();
@@ -511,21 +788,21 @@ where
         R: CapsuleCatalog + Send + Sync + 'static,
     {
         let capsule = self.catalog.lookup_capsule(id)?;
-        let storage = self.storage.clone();
-        let encryptor = self.encryptor.clone();
-        let compressor = self.compressor.clone();
+        let storage_stream = self.storage.clone();
+        let encryptor_stream = self.encryptor.clone();
+        let compressor_stream = self.compressor.clone();
         let encryption_policy = capsule.policy.encryption.clone();
 
         let stream = try_stream! {
             for seg_id in capsule.segments {
-                let metadata = storage.metadata(seg_id).await
+                let metadata = storage_stream.metadata(seg_id).await
                     .map_err(|e| anyhow!("Failed to fetch metadata for segment {:?}: {}", seg_id, e))?;
 
-                let raw = storage.read(seg_id).await
+                let raw = storage_stream.read(seg_id).await
                     .map_err(|e| anyhow!("Failed to read segment {:?}: {}", seg_id, e))?;
 
                 let decrypted = if metadata.encrypted {
-                    encryptor
+                    encryptor_stream
                         .decrypt(&raw, &encryption_policy, seg_id)
                         .map_err(|e| anyhow!("Decryption failed for segment {:?}: {}", seg_id, e))?
                 } else {
@@ -533,7 +810,7 @@ where
                 };
 
                 let decompressed = if metadata.compressed {
-                    compressor
+                    compressor_stream
                         .decompress(&decrypted, metadata.compression_algo.as_str())
                         .map_err(|e| anyhow!("Decompression failed for segment {:?}: {}", seg_id, e))?
                 } else {
@@ -544,32 +821,60 @@ where
             }
         };
 
-        Ok(Box::pin(stream))
+        let out: DataStream = Box::pin(stream);
+
+        #[cfg(feature = "phase5")]
+        let mut out = out;
+
+        #[cfg(feature = "phase5")]
+        {
+            let transforms: Vec<TransformDef> = capsule
+                .policy
+                .transform
+                .iter()
+                .filter(|t| t.trigger == TransformTrigger::OnRead)
+                .cloned()
+                .collect();
+
+            if !transforms.is_empty() {
+                let engine = wasm_engine()?;
+                let storage_resolver = self.storage.clone();
+                let encryptor_resolver = self.encryptor.clone();
+                let compressor_resolver = self.compressor.clone();
+
+                let resolver = PipelineModuleResolver {
+                    compressor: &compressor_resolver,
+                    encryptor: &encryptor_resolver,
+                    storage: &storage_resolver,
+                    catalog: &self.catalog,
+                };
+
+                for def in transforms {
+                    out = engine.execute_stream(out, def, &resolver).await?;
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     /// Deprecated: use `read_capsule_stream` instead.
-    pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
-        let capsule = self.catalog.lookup_capsule(id)?;
-        let mut output = Vec::with_capacity(capsule.size as usize);
-
-        for seg_id in &capsule.segments {
-            let metadata = self.storage.metadata(*seg_id).await?;
-            let raw = self.storage.read(*seg_id).await?;
-            let decrypted = if metadata.encrypted {
-                self.encryptor
-                    .decrypt(&raw, &capsule.policy.encryption, *seg_id)?
-            } else {
-                raw
-            };
-            let decompressed = if metadata.compressed {
-                self.compressor
-                    .decompress(&decrypted, metadata.compression_algo.as_str())?
-            } else {
-                decrypted
-            };
-            output.extend_from_slice(&decompressed);
+    pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>>
+    where
+        C: Compressor + Clone + Send + Sync + 'static,
+        D: Deduper + Send + Sync + 'static,
+        E: Encryptor + Clone + Send + Sync + 'static,
+        S: StorageBackend + Clone + Send + Sync + 'static,
+        Eval: PolicyEvaluator + Send + Sync + 'static,
+        K: Keyring + Send + Sync + 'static,
+        R: CapsuleCatalog + Send + Sync + 'static,
+    {
+        let mut stream = self.read_capsule_stream(id).await?;
+        let mut output = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            output.extend_from_slice(&chunk);
         }
-
         Ok(output)
     }
 

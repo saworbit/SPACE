@@ -8,6 +8,7 @@
 > - Protocol projections exist (helpers): `protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`
 > - Local projection mount exists: `spacectl project mount` (prefers a read-only kernel FUSE mount on Unix; falls back to a `content`-file view)
 > - Federation (Phase 4b) uses a gRPC WAN bridge: `Policy.federation.targets` + `spacectl zone add` + `spacectl federation serve`
+> - Phase 5 (planned/early): `Policy.transform` attaches WASM transforms to read/write streaming (see `docs/phase5.md`)
 >
 > This document mixes current behavior and aspirational architecture. When unsure, treat it as a guide for the `phase4` feature implementation.
 >

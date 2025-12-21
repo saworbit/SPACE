@@ -59,3 +59,18 @@ cold_storage:
   encryption:
     type: xts_aes256
     key_version: 1
+
+# Phase 5: Compute-over-Data (WASM) - apply a transform on reads.
+video_resize_on_read:
+  transform:
+    - name: "resize_1080p"
+      image: "capsule://wasm-registry/resize.wasm"
+      trigger: on-read
+      args:
+        width: "1920"
+        height: "1080"
+      resources:
+        max_memory_pages: 16
+        fuel_limit: 10000000
+      verification:
+        sha256: "<hex>"

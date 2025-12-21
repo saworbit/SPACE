@@ -14,7 +14,7 @@ use csi_driver_rs::ProvisionRequest;
 #[cfg(feature = "phase4")]
 use encryption::keymanager::KeyManager;
 #[cfg(feature = "phase4")]
-use federation::Bridge;
+use federation::FederationBridge;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
 #[cfg(feature = "phase4")]
@@ -953,8 +953,11 @@ async fn main() -> Result<()> {
             #[cfg(feature = "phase4")]
             if !policy.federation.targets.is_empty() {
                 let local_zone_id = zone.clone().unwrap_or_else(|| "local".into());
-                let bridge =
-                    Bridge::open_default(Arc::clone(&registry), Arc::clone(&nvram), local_zone_id)?;
+                let bridge = FederationBridge::open_default(
+                    Arc::clone(&registry),
+                    Arc::clone(&nvram),
+                    local_zone_id,
+                )?;
                 let result = bridge.apply_policy(capsule_id).await?;
                 if result.zones_attempted > 0 {
                     println!(
@@ -1156,6 +1159,46 @@ async fn main() -> Result<()> {
 
                 tokio::spawn(capsule_registry::mesh::monitor_peers(raft.raft.clone(), rx));
 
+                #[cfg(feature = "phase4")]
+                {
+                    let registry = Arc::new(CapsuleRegistry::open(&metadata_path)?);
+                    let nvram_path = std::env::var("SPACE_NVRAM_PATH")
+                        .ok()
+                        .unwrap_or_else(|| NVRAM_PATH.to_string());
+                    let nvram = Arc::new(NvramLog::open(&nvram_path)?);
+                    let local_zone_id = std::env::var("SPACE_ZONE_ID")
+                        .ok()
+                        .unwrap_or_else(|| format!("node-{}", node_id));
+                    let poll_secs = std::env::var("SPACE_FEDERATION_POLL_SECS")
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(15);
+
+                    match FederationBridge::open_default(
+                        Arc::clone(&registry),
+                        Arc::clone(&nvram),
+                        local_zone_id,
+                    ) {
+                        Ok(bridge) => {
+                            tokio::spawn(async move {
+                                if let Err(err) =
+                                    bridge.run_polling(Duration::from_secs(poll_secs)).await
+                                {
+                                    tracing::error!(error = %err, "federation bridge exited");
+                                }
+                            });
+                            tracing::info!(
+                                nvram_path = %nvram_path,
+                                poll_secs = poll_secs,
+                                "federation bridge started"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "failed to start federation bridge");
+                        }
+                    }
+                }
+
                 tracing::info!(
                     node_id = node_id,
                     gossip_addr = %gossip_addr,
@@ -1178,7 +1221,11 @@ async fn main() -> Result<()> {
             ZoneCommands::Add { name, url, secret } => {
                 let path = federation::zones::ZoneDirectory::default_path()?;
                 let mut directory = federation::zones::ZoneDirectory::load(&path)?;
-                directory.upsert(federation::zones::ZoneConfig { name, url, secret });
+                directory.upsert(federation::zones::ZoneConfig {
+                    name,
+                    endpoint: url,
+                    secret_key: secret,
+                });
                 directory.save(&path)?;
                 println!("ok");
             }
@@ -1189,7 +1236,7 @@ async fn main() -> Result<()> {
                     println!("(no zones)");
                 } else {
                     for zone in directory.zones {
-                        println!("{}\t{}\t***", zone.name, zone.url);
+                        println!("{}\t{}\t***", zone.name, zone.endpoint);
                     }
                 }
             }
