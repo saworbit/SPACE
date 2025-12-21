@@ -283,7 +283,7 @@ pub struct TransformDef {
     /// Friendly name for logging/debugging (e.g., "thumbnail-gen").
     pub name: String,
 
-    /// URI of the WASM binary (e.g., "capsule://<ID>", "file:///opt/space/wasm/...").
+    /// URI of the WASM binary (e.g., `capsule://{id}`, `file:///opt/space/wasm/...`).
     pub image: String,
 
     /// Execution trigger. Default: `OnRead`.
