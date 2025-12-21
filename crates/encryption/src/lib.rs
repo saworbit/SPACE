@@ -59,6 +59,7 @@
 
 // Module declarations
 pub mod error;
+pub mod key_provider;
 pub mod keymanager;
 pub mod mac;
 pub mod policy;
@@ -66,6 +67,7 @@ pub mod xts;
 
 // Re-exports for convenience
 pub use error::{EncryptionError, Result};
+pub use key_provider::{AwsKmsProvider, EnvProvider, HashiCorpVaultProvider, KeyProvider};
 pub use keymanager::{KeyManager, XtsKeyPair};
 pub use mac::{compute_mac, verify_mac, MAC_TAG_SIZE};
 pub use policy::{EncryptionMetadata, EncryptionPolicy, EncryptionStats};

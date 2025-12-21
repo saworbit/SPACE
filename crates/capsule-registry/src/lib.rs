@@ -49,7 +49,7 @@ pub mod modular_pipeline {
         InMemoryPipeline, KeyManagerKeyring, NoopEncryptor, NullKeyring, NvramPipeline,
         NvramPipelineWithEncryption, Pipeline, PipelineBuilder, XtsEncryptor,
     };
-    pub use storage::{InMemoryBackend, NvramBackend};
+    pub use storage::{AutoFsBackend, InMemoryBackend, NvramBackend};
 
     pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
         path: P,
@@ -78,9 +78,31 @@ pub mod modular_pipeline {
         crate::CapsuleRegistry,
     >;
 
+    pub type RegistryFsEncryptedPipeline = Pipeline<
+        compression::Lz4ZstdCompressor,
+        dedup::Blake3Deduper,
+        XtsEncryptor,
+        AutoFsBackend,
+        DefaultPolicyEvaluator,
+        KeyManagerKeyring,
+        crate::CapsuleRegistry,
+    >;
+
+    pub type RegistryFsPlainPipeline = Pipeline<
+        compression::Lz4ZstdCompressor,
+        dedup::Blake3Deduper,
+        NoopEncryptor,
+        AutoFsBackend,
+        DefaultPolicyEvaluator,
+        NullKeyring,
+        crate::CapsuleRegistry,
+    >;
+
     pub enum RegistryPipelineHandle {
         Encrypted(RegistryEncryptedPipeline),
         Plain(RegistryPlainPipeline),
+        FsEncrypted(RegistryFsEncryptedPipeline),
+        FsPlain(RegistryFsPlainPipeline),
     }
 
     impl RegistryPipelineHandle {
@@ -88,6 +110,8 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.write_capsule(data, policy).await,
                 Self::Plain(p) => p.write_capsule(data, policy).await,
+                Self::FsEncrypted(p) => p.write_capsule(data, policy).await,
+                Self::FsPlain(p) => p.write_capsule(data, policy).await,
             }
         }
 
@@ -95,6 +119,8 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.read_capsule(id).await,
                 Self::Plain(p) => p.read_capsule(id).await,
+                Self::FsEncrypted(p) => p.read_capsule(id).await,
+                Self::FsPlain(p) => p.read_capsule(id).await,
             }
         }
 
@@ -102,6 +128,8 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.read_capsule_stream(id).await,
                 Self::Plain(p) => p.read_capsule_stream(id).await,
+                Self::FsEncrypted(p) => p.read_capsule_stream(id).await,
+                Self::FsPlain(p) => p.read_capsule_stream(id).await,
             }
         }
 
@@ -109,6 +137,8 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.read_range(id, offset, len).await,
                 Self::Plain(p) => p.read_range(id, offset, len).await,
+                Self::FsEncrypted(p) => p.read_range(id, offset, len).await,
+                Self::FsPlain(p) => p.read_range(id, offset, len).await,
             }
         }
 
@@ -116,6 +146,8 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.delete_capsule(id).await,
                 Self::Plain(p) => p.delete_capsule(id).await,
+                Self::FsEncrypted(p) => p.delete_capsule(id).await,
+                Self::FsPlain(p) => p.delete_capsule(id).await,
             }
         }
 
@@ -123,6 +155,8 @@ pub mod modular_pipeline {
             match self {
                 Self::Encrypted(p) => p.garbage_collect().await,
                 Self::Plain(p) => p.garbage_collect().await,
+                Self::FsEncrypted(p) => p.garbage_collect().await,
+                Self::FsPlain(p) => p.garbage_collect().await,
             }
         }
     }
@@ -132,7 +166,7 @@ pub mod modular_pipeline {
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
         let backend = NvramBackend::open(path)?;
-        registry_pipeline_from_backend(backend, registry)
+        registry_pipeline_from_nvram_backend(backend, registry)
     }
 
     pub fn registry_pipeline_from_log(
@@ -140,7 +174,7 @@ pub mod modular_pipeline {
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
         let backend = NvramBackend::from_log(log);
-        registry_pipeline_from_backend(backend, registry)
+        registry_pipeline_from_nvram_backend(backend, registry)
     }
 
     pub fn registry_nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
@@ -149,16 +183,39 @@ pub mod modular_pipeline {
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryEncryptedPipeline> {
         let storage = NvramBackend::open(path)?;
-        build_encrypted_pipeline(storage, registry, key_manager)
+        build_nvram_encrypted_pipeline(storage, registry, key_manager)
     }
 
-    fn registry_pipeline_from_backend(
+    pub async fn registry_pipeline_from_storage_root<P: AsRef<std::path::Path>>(
+        root: P,
+        registry: crate::CapsuleRegistry,
+    ) -> Result<RegistryPipelineHandle> {
+        let reheat_on_read = std::env::var("SPACE_REHEAT_ON_READ")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let cold_root = std::env::var("SPACE_COLD_ROOT")
+            .ok()
+            .map(std::path::PathBuf::from);
+
+        let storage = AutoFsBackend::open(root).await?;
+        let storage = if let Some(cold) = cold_root {
+            storage.with_tiering(cold, reheat_on_read)
+        } else {
+            storage
+        };
+
+        registry_pipeline_from_fs_backend(storage, registry)
+    }
+
+    fn registry_pipeline_from_nvram_backend(
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
         if let Ok(manager) = KeyManager::from_env() {
             let km = Arc::new(Mutex::new(manager));
-            let pipeline = build_encrypted_pipeline(storage, registry, km)?;
+            let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
         } else {
             Ok(RegistryPipelineHandle::Plain(Pipeline::new(
@@ -173,11 +230,48 @@ pub mod modular_pipeline {
         }
     }
 
-    fn build_encrypted_pipeline(
+    fn registry_pipeline_from_fs_backend(
+        storage: AutoFsBackend,
+        registry: crate::CapsuleRegistry,
+    ) -> Result<RegistryPipelineHandle> {
+        if let Ok(manager) = KeyManager::from_env() {
+            let km = Arc::new(Mutex::new(manager));
+            let pipeline = build_fs_encrypted_pipeline(storage, registry, km)?;
+            Ok(RegistryPipelineHandle::FsEncrypted(pipeline))
+        } else {
+            Ok(RegistryPipelineHandle::FsPlain(Pipeline::new(
+                compression::Lz4ZstdCompressor,
+                dedup::Blake3Deduper::default(),
+                NoopEncryptor,
+                storage,
+                DefaultPolicyEvaluator,
+                None,
+                registry,
+            )))
+        }
+    }
+
+    fn build_nvram_encrypted_pipeline(
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryEncryptedPipeline> {
+        Ok(Pipeline::new(
+            compression::Lz4ZstdCompressor,
+            dedup::Blake3Deduper::default(),
+            XtsEncryptor::new(Arc::clone(&key_manager)),
+            storage,
+            DefaultPolicyEvaluator,
+            Some(KeyManagerKeyring::new(key_manager)),
+            registry,
+        ))
+    }
+
+    fn build_fs_encrypted_pipeline(
+        storage: AutoFsBackend,
+        registry: crate::CapsuleRegistry,
+        key_manager: Arc<Mutex<KeyManager>>,
+    ) -> Result<RegistryFsEncryptedPipeline> {
         Ok(Pipeline::new(
             compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),

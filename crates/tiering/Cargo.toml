@@ -1,0 +1,21 @@
+[package]
+name = "tiering"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+# Enables AuditLog tailing via common's advanced-security module.
+audit = ["common/advanced-security"]
+
+[dependencies]
+anyhow = { workspace = true }
+common = { path = "../common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "time", "rt", "macros"] }
+tracing = { workspace = true }
+

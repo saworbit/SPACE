@@ -11,3 +11,15 @@ anyhow = { workspace = true }
 common = { path = "../common" }
 futures = { workspace = true }
 nvram-sim = { path = "../nvram-sim" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "macros"] }
+tiering = { path = "../tiering" }
+
+[features]
+default = []
+# Linux-only io_uring backend (requires kernel support at runtime).
+uring = ["dep:tokio-uring"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-uring = { version = "0.4", optional = true }

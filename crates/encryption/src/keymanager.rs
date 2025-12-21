@@ -17,6 +17,7 @@
 //! Old versions kept for reading legacy segments
 
 use crate::error::{EncryptionError, Result};
+use crate::key_provider::KeyProvider;
 use blake3;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -228,6 +229,14 @@ impl KeyManager {
         let mut master_key = [0u8; MASTER_KEY_SIZE];
         master_key.copy_from_slice(&bytes);
 
+        Ok(Self::new(master_key))
+    }
+
+    /// Create a key manager from an external key provider (KMS/HSM/Vault).
+    ///
+    /// Prefer this over `from_env()` for production deployments.
+    pub async fn from_provider(provider: &dyn KeyProvider) -> Result<Self> {
+        let master_key = provider.fetch_master_key().await?;
         Ok(Self::new(master_key))
     }
 

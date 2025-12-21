@@ -343,13 +343,27 @@ impl NvramTransaction {
     pub fn set_segment_metadata(&mut self, seg_id: SegmentId, segment: Segment) -> Result<()> {
         self.ensure_active()?;
 
-        let pending = self
+        if let Some(pending) = self
             .pending
             .iter_mut()
             .find(|entry| entry.segment.id == seg_id)
-            .ok_or_else(|| anyhow!("pending segment {:?} not found", seg_id))?;
+        {
+            let mut merged = segment;
+            merged.id = seg_id;
+            merged.offset = pending.segment.offset;
+            merged.len = pending.segment.len;
+            pending.segment = merged;
+            return Ok(());
+        }
 
-        pending.segment = segment;
+        // Metadata update for an existing segment (eg. refcount bumps from dedup hits).
+        // Preserve storage-derived offset/len from the committed record.
+        let existing = self.log.get_segment_metadata(seg_id)?;
+        let mut merged = segment;
+        merged.id = seg_id;
+        merged.offset = existing.offset;
+        merged.len = existing.len;
+        self.log.update_segment_metadata(seg_id, merged)?;
         Ok(())
     }
 

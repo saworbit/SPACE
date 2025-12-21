@@ -5,6 +5,7 @@ members = [
     "crates/compression",
     "crates/dedup",
     "crates/storage",
+    "crates/tiering",
     "crates/pipeline",
     "crates/transform-engine",
     "crates/layout-engine",
