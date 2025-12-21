@@ -20,6 +20,12 @@ cargo build --release --features phase4
 # Store a local file as a capsule (optionally with federation targets)
 ./target/release/spacectl put ./hello.txt --id <CAPSULE_UUID> --policy-file examples/phase4-policy.yaml
 
+# (Optional) Phase 4b federation receiver (run in the destination zone/cluster)
+./target/release/spacectl federation serve --addr 0.0.0.0:9001 --secret <SHARED_KEY>
+
+# (Optional) Register a remote zone endpoint in the local config (~/.space/zones.json)
+./target/release/spacectl zone add --name us-west --url http://127.0.0.1:9001 --secret <SHARED_KEY>
+
 # Project a capsule into a local "content" view (optional kernel FUSE on Unix; fallback elsewhere; serves until Ctrl+C)
 # - Kernel FUSE requires `libfuse3-dev` and `cargo build --features "phase4,kernel_fuse"`.
 ./target/release/spacectl project mount \

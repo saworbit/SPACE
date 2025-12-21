@@ -12,11 +12,23 @@ phase4 = []
 
 [dependencies]
 anyhow = { workspace = true }
+blake3 = { workspace = true }
+bincode = { workspace = true }
 capsule-registry = { path = "../capsule-registry", default-features = false }
 common = { path = "../common" }
 nvram-sim = { path = "../nvram-sim" }
+prost = "0.13.5"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sled = "0.34"
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tokio-stream = { version = "0.1.17", features = ["net"] }
+tonic = { version = "0.12.3", features = ["transport"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+tonic-build = "0.12.3"
+protoc-bin-vendored = "3.2.0"

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package space.federation.v1;
+
+service FederationService {
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc PushSegment(stream SegmentChunk) returns (TransferAck);
+  rpc RegisterCapsule(CapsuleMetadata) returns (RegisterAck);
+}
+
+message HelloRequest {
+  string zone_id = 1;
+  string secret = 2;
+}
+
+message HelloResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message SegmentChunk {
+  string capsule_id = 1;
+  uint32 segment_index = 2;
+  bytes content_hash = 3;
+  bytes data = 4;
+  uint64 total_len = 5;
+}
+
+message TransferAck {
+  bool ok = 1;
+  uint64 segment_id = 2;
+  string message = 3;
+}
+
+message CapsuleMetadata {
+  string capsule_id = 1;
+  uint64 size = 2;
+  uint64 created_at = 3;
+  repeated uint64 segment_ids = 4;
+  bytes policy_json = 5;
+  uint64 deduped_bytes = 6;
+}
+
+message RegisterAck {
+  bool ok = 1;
+  bool already_exists = 2;
+  string message = 3;
+}
+

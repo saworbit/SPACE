@@ -14,7 +14,7 @@ use csi_driver_rs::ProvisionRequest;
 #[cfg(feature = "phase4")]
 use encryption::keymanager::KeyManager;
 #[cfg(feature = "phase4")]
-use federation::FederationBridge;
+use federation::Bridge;
 use nvram_sim::NvramLog;
 use protocol_block::BlockView;
 #[cfg(feature = "phase4")]
@@ -36,7 +36,6 @@ use std::net::SocketAddr;
 #[cfg(feature = "phase4")]
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-#[cfg(feature = "phase4")]
 use std::sync::Arc;
 use std::sync::Once;
 #[cfg(feature = "phase4")]
@@ -284,6 +283,45 @@ enum ServerCommands {
         /// Raft gRPC address of any cluster node.
         #[arg(long)]
         addr: SocketAddr,
+    },
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Subcommand)]
+enum ZoneCommands {
+    /// Add or update a remote Zone endpoint.
+    Add {
+        /// Zone name/alias (e.g., "us-west").
+        #[arg(long)]
+        name: String,
+        /// Federation gRPC endpoint (e.g., "http://127.0.0.1:9001").
+        #[arg(long)]
+        url: String,
+        /// Shared secret for inter-zone replication.
+        #[arg(long)]
+        secret: String,
+    },
+    /// List known Zones.
+    List,
+}
+
+#[cfg(feature = "phase4")]
+#[derive(Subcommand)]
+enum FederationCommands {
+    /// Start the Federation gRPC service (Phase 4b receiver).
+    Serve {
+        /// Listen address for federation gRPC.
+        #[arg(long, default_value = "0.0.0.0:9001")]
+        addr: SocketAddr,
+        /// Path to the capsule metadata store (sled).
+        #[arg(long, default_value = "space.db")]
+        metadata_path: String,
+        /// Path to the NVRAM segment log.
+        #[arg(long, default_value = "space.nvram")]
+        nvram_path: String,
+        /// Expected shared secret (defaults to `SPACE_FEDERATION_SECRET` if set).
+        #[arg(long)]
+        secret: Option<String>,
     },
 }
 
@@ -602,6 +640,18 @@ enum Commands {
         #[command(subcommand)]
         command: ServerCommands,
     },
+    /// Manage the "Known Universe" of remote Zones (Phase 4b).
+    #[cfg(feature = "phase4")]
+    Zone {
+        #[command(subcommand)]
+        command: ZoneCommands,
+    },
+    /// Federation operations (Phase 4b).
+    #[cfg(feature = "phase4")]
+    Federation {
+        #[command(subcommand)]
+        command: FederationCommands,
+    },
     /// Operate on capsule metadata via Raft.
     Registry {
         #[command(subcommand)]
@@ -887,6 +937,8 @@ async fn main() -> Result<()> {
             };
 
             let (registry, nvram) = open_registry_and_nvram_for_zone(zone.as_deref())?;
+            let registry = Arc::new(registry);
+            let nvram = Arc::new(nvram);
             let seg_id: SegmentId = registry.alloc_segment()?;
             nvram.append(seg_id, &data)?;
             registry.create_capsule_with_segments(
@@ -899,11 +951,11 @@ async fn main() -> Result<()> {
             println!("{}", capsule_id.as_uuid());
 
             #[cfg(feature = "phase4")]
-            if policy.federation.is_some() {
-                let bridge = FederationBridge::new(std::env::current_dir()?);
-                let result = bridge
-                    .apply_policy(capsule_id, &policy, &registry, &nvram)
-                    .await?;
+            if !policy.federation.targets.is_empty() {
+                let local_zone_id = zone.clone().unwrap_or_else(|| "local".into());
+                let bridge =
+                    Bridge::open_default(Arc::clone(&registry), Arc::clone(&nvram), local_zone_id)?;
+                let result = bridge.apply_policy(capsule_id).await?;
                 if result.zones_attempted > 0 {
                     println!(
                         "Federation: succeeded {}/{} zones",
@@ -1119,6 +1171,39 @@ async fn main() -> Result<()> {
                 println!("leader_id: {}", status.leader_id);
                 println!("voters: {:?}", status.voters);
                 println!("learners: {:?}", status.learners);
+            }
+        },
+        #[cfg(feature = "phase4")]
+        Commands::Zone { command } => match command {
+            ZoneCommands::Add { name, url, secret } => {
+                let path = federation::zones::ZoneDirectory::default_path()?;
+                let mut directory = federation::zones::ZoneDirectory::load(&path)?;
+                directory.upsert(federation::zones::ZoneConfig { name, url, secret });
+                directory.save(&path)?;
+                println!("ok");
+            }
+            ZoneCommands::List => {
+                let path = federation::zones::ZoneDirectory::default_path()?;
+                let directory = federation::zones::ZoneDirectory::load(&path)?;
+                if directory.zones.is_empty() {
+                    println!("(no zones)");
+                } else {
+                    for zone in directory.zones {
+                        println!("{}\t{}\t***", zone.name, zone.url);
+                    }
+                }
+            }
+        },
+        #[cfg(feature = "phase4")]
+        Commands::Federation { command } => match command {
+            FederationCommands::Serve {
+                addr,
+                metadata_path,
+                nvram_path,
+                secret,
+            } => {
+                let secret = secret.or_else(|| std::env::var("SPACE_FEDERATION_SECRET").ok());
+                federation::serve_from_paths(addr, &metadata_path, &nvram_path, secret).await?;
             }
         },
         Commands::Registry { command } => match command {

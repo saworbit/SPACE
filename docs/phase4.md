@@ -7,7 +7,7 @@
 > **Reality Check:**
 > - Protocol projections exist (helpers): `protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`
 > - Local projection mount exists: `spacectl project mount` (prefers a read-only kernel FUSE mount on Unix; falls back to a `content`-file view)
-> - Federation is simulated: `Policy.federation` + `crates/federation` replicate capsules into zone-scoped stores
+> - Federation (Phase 4b) uses a gRPC WAN bridge: `Policy.federation.targets` + `spacectl zone add` + `spacectl federation serve`
 >
 > This document mixes current behavior and aspirational architecture. When unsure, treat it as a guide for the `phase4` feature implementation.
 >
@@ -49,7 +49,7 @@ Each protocol forwards actions to `MeshNode::federate_capsule` and `MeshNode::sh
 - `MeshNode` uses `RaftCluster::{new, for_zone}` and `ShardKey::new` when sharding metadata, writing serialized capsule records to Raft logs (stubbed in `vendor/raft-rs`).
 - Capsules derive deterministic shard IDs via `CapsuleId::shard_keys(count)`.
 - The CLI triggers these flows through the `spacectl project --view <nvme|nfs|fuse|csi>` command (see below).
-- For *payload* replication between simulated zones, use `crates/federation::FederationBridge`, which copies capsule metadata + referenced segments into `space.<zone>.db` and `space.<zone>.nvram`.
+- For *payload* replication across zones, use `crates/federation::Bridge` with `spacectl zone add` + `spacectl federation serve` (see `scripts/test_federation_mock.sh`).
 
 
 ### Security & Transformation
@@ -68,7 +68,7 @@ cargo run -p spacectl -- project \
 ```
 
 - The command loads a YAML policy, spins up a minimal `MeshNode` (Metro zone, `127.0.0.1:0`), and routes to the right protocol helper.
-- Policies can request sovereignty/latency targets and optional federation rules via `federation` (strategy + target zones).
+- Policies can request sovereignty/latency targets and optional federation rules via `federation` (targets + priority).
 - Enable the entire pipeline with `cargo build --features phase4` or `spacectl --features phase4 project ...`.
 
 **Local projection mount (recommended for dev validation)**

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use common::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, CryptoProfile, EncryptionPolicy,
-    LayoutPolicy, Policy, SegmentId,
+    FederationStrategy, LayoutPolicy, Policy, SegmentId,
 };
 use serde::{Deserialize, Serialize};
 use sled::Db;
@@ -62,6 +62,50 @@ struct CapsuleLegacy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct CapsuleLegacyV2 {
+    id: CapsuleId,
+    size: u64,
+    segments: Vec<SegmentId>,
+    created_at: u64,
+    policy: PolicyLegacyV2,
+    deduped_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PolicyLegacyV2 {
+    pub compression: CompressionPolicy,
+    pub dedupe: bool,
+    pub compact_interval_secs: Option<u64>,
+    pub erasure_profile: Option<String>,
+    #[serde(default)]
+    pub encryption: EncryptionPolicy,
+    #[serde(default)]
+    pub crypto_profile: CryptoProfile,
+    #[serde(default)]
+    pub layout: LayoutPolicy,
+    #[serde(default)]
+    pub federation: Option<FederationPolicyLegacy>,
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_duration_60s")]
+    pub rpo: std::time::Duration,
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_duration_10ms")]
+    pub latency_target: std::time::Duration,
+    #[cfg(feature = "podms")]
+    #[serde(default)]
+    pub sovereignty: common::podms::SovereigntyLevel,
+    #[cfg(feature = "podms")]
+    #[serde(default = "default_replica_count_3")]
+    pub replica_count: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FederationPolicyLegacy {
+    pub strategy: FederationStrategy,
+    pub target_zones: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PolicyLegacy {
     pub compression: CompressionPolicy,
     pub dedupe: bool,
@@ -104,6 +148,7 @@ fn default_replica_count_3() -> u8 {
 
 impl From<PolicyLegacy> for Policy {
     fn from(value: PolicyLegacy) -> Self {
+        #[cfg(feature = "podms")]
         let mut policy = Policy {
             compression: value.compression,
             dedupe: value.dedupe,
@@ -112,9 +157,63 @@ impl From<PolicyLegacy> for Policy {
             encryption: value.encryption,
             crypto_profile: value.crypto_profile,
             layout: value.layout,
-            federation: None,
             ..Policy::default()
         };
+
+        #[cfg(not(feature = "podms"))]
+        let policy = Policy {
+            compression: value.compression,
+            dedupe: value.dedupe,
+            compact_interval_secs: value.compact_interval_secs,
+            erasure_profile: value.erasure_profile,
+            encryption: value.encryption,
+            crypto_profile: value.crypto_profile,
+            layout: value.layout,
+            ..Policy::default()
+        };
+
+        #[cfg(feature = "podms")]
+        {
+            policy.rpo = value.rpo;
+            policy.latency_target = value.latency_target;
+            policy.sovereignty = value.sovereignty;
+            policy.replica_count = value.replica_count;
+        }
+
+        policy
+    }
+}
+
+impl From<PolicyLegacyV2> for Policy {
+    fn from(value: PolicyLegacyV2) -> Self {
+        #[cfg(feature = "podms")]
+        let mut policy = Policy {
+            compression: value.compression,
+            dedupe: value.dedupe,
+            compact_interval_secs: value.compact_interval_secs,
+            erasure_profile: value.erasure_profile,
+            encryption: value.encryption,
+            crypto_profile: value.crypto_profile,
+            layout: value.layout,
+            ..Policy::default()
+        };
+
+        #[cfg(not(feature = "podms"))]
+        let mut policy = Policy {
+            compression: value.compression,
+            dedupe: value.dedupe,
+            compact_interval_secs: value.compact_interval_secs,
+            erasure_profile: value.erasure_profile,
+            encryption: value.encryption,
+            crypto_profile: value.crypto_profile,
+            layout: value.layout,
+            ..Policy::default()
+        };
+
+        if let Some(fed) = value.federation {
+            policy.federation.targets = fed.target_zones;
+            policy.federation.strategy = Some(fed.strategy);
+        }
 
         #[cfg(feature = "podms")]
         {
@@ -141,6 +240,19 @@ impl From<CapsuleLegacy> for Capsule {
     }
 }
 
+impl From<CapsuleLegacyV2> for Capsule {
+    fn from(value: CapsuleLegacyV2) -> Self {
+        Self {
+            id: value.id,
+            size: value.size,
+            segments: value.segments,
+            created_at: value.created_at,
+            policy: value.policy.into(),
+            deduped_bytes: value.deduped_bytes,
+        }
+    }
+}
+
 fn is_unexpected_eof(err: &bincode::Error) -> bool {
     matches!(
         &**err,
@@ -151,10 +263,17 @@ fn is_unexpected_eof(err: &bincode::Error) -> bool {
 fn decode_capsule_bytes(bytes: &[u8]) -> std::result::Result<Capsule, bincode::Error> {
     match bincode::deserialize::<Capsule>(bytes) {
         Ok(capsule) => Ok(capsule),
-        Err(err) if is_unexpected_eof(&err) => bincode::deserialize::<CapsuleLegacy>(bytes)
-            .map(Into::into)
-            .or(Err(err)),
-        Err(err) => Err(err),
+        Err(err) => {
+            if let Ok(capsule) = bincode::deserialize::<CapsuleLegacyV2>(bytes).map(Into::into) {
+                return Ok(capsule);
+            }
+            if is_unexpected_eof(&err) {
+                return bincode::deserialize::<CapsuleLegacy>(bytes)
+                    .map(Into::into)
+                    .or(Err(err));
+            }
+            Err(err)
+        }
     }
 }
 

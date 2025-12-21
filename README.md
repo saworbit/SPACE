@@ -143,7 +143,7 @@
 | **Cross-Node Dedup** | 🟠 Experimental | Hash-based preservation attempted | `podms` |
 | **Transformation in Transit** | 🟠 Experimental | Re-encrypt/compress design exists | `podms` |
 | **Raft Consensus (metadata)** | 🟠 Experimental | Capsule metadata replicated via Raft (openraft + gRPC); `spacectl server start --bootstrap/--join` | - |
-| **Federated Metadata Sharding (Phase 4)** | 🟠 Experimental | Policy-driven federation/sharding hooks + local zone bridge | `phase4` |
+| **Federated Metadata Sharding (Phase 4)** | 🟠 Experimental | Policy-driven federation/sharding hooks + Phase 4b gRPC bridge | `phase4` |
 
 ### Monitoring & Operations
 
@@ -594,7 +594,7 @@ let policy = Policy::edge_optimized();
 
 - 🟠 **NVMe / NFS / CSI projection helpers** – Feature-gated adapters exist (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`)
 - 🟠 **Local projection mount** – `spacectl project mount` can use an experimental read-only kernel FUSE mount on Unix (enable `spacectl` feature `kernel_fuse` + install `libfuse3-dev`), with a portable `content`-file view fallback elsewhere
-- 🟠 **Federation (simulated)** – `Policy.federation` + `crates/federation` replicate capsules into zone-scoped stores
+- 🟠 **Federation (Phase 4b, gRPC)** – `Policy.federation.targets` triggers async replication via `spacectl zone add` + `spacectl federation serve`
 - 🟠 **Policy-orchestrated mobility** – Views invoke `scaling::enforce_view_policy` before projection
 - 📄 See [docs/phase4.md](docs/phase4.md) for current behavior + limitations
 
@@ -1386,7 +1386,7 @@ This project has **extensive documentation describing future vision and design g
 
 - **Full Kubernetes integration:** CSI is still a helper/stub; no in-tree driver deployment yet
 - **Kernel-backed mounts:** read-only FUSE is now available on Unix (experimental); NBD remains unimplemented
-- **Full mesh federation:** global routing/sharding is still evolving beyond the local zone bridge
+- **Full mesh federation:** global routing/sharding is still evolving beyond the Phase 4b gRPC bridge
 - **Raft consensus:** Capsule metadata Raft exists (Phase 3) but is still experimental; Phase 4 federation/sharding remains planned/stubbed
 - **Production features:** Robust error recovery, monitoring, backup/restore, etc.
 
@@ -1504,7 +1504,7 @@ spacectl block delete vol1
 - 🟢 Core Storage: Beta quality
 - 🟡 Protocol Views: Alpha/Experimental
 - 🟠 Multi-Node: Experimental proof-of-concept
-- 🔴 Federation: Planned/Stub
+- 🟠 Federation: Experimental (gRPC WAN bridge)
 
 ---
 

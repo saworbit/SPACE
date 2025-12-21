@@ -1306,8 +1306,8 @@ impl LegacyPipeline {
 
         #[cfg(all(feature = "phase4", feature = "podms"))]
         if let Some(mesh_node) = &self.mesh_node {
-            if let Some(federation) = policy.federation.as_ref() {
-                for zone in federation.target_zones.iter().filter(|z| !z.is_empty()) {
+            if !policy.federation.targets.is_empty() {
+                for zone in policy.federation.targets.iter().filter(|z| !z.is_empty()) {
                     mesh_node
                         .federate_capsule(
                             capsule_id,

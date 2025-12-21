@@ -289,7 +289,7 @@ Phase 4 is the bridge between the capsule control plane and the external protoco
 - Mesh-aware exports (`scaling::MeshNode` exposes `resolve_federated`, `federate_capsule`, and `shard_metadata` plus the `MetadataShard` descriptor)
 - Protocol adapters (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) that project the capsule namespace across NVMe, NFS, local mounts, and CSI
 - Policy steering (`Policy::latency_target`, `Policy::sovereignty`, `Policy::federation`) that triggers federation/sharding hooks before a view is presented
-- A federated metadata mesh (stubbed Raft shard layer) plus a local zone bridge (`crates/federation`) for dev-grade “Zone A write → Zone B read” validation
+- A federated metadata mesh (stubbed Raft shard layer) plus a Phase 4b WAN bridge (`crates/federation`) for dev-grade “Zone A write → Zone B read” validation across clusters
 
 ```
 [CapsuleRegistry] --> (write pipeline) --> [MeshNode (phase4)]

@@ -309,6 +309,20 @@ impl CapsuleRegistry {
         }
     }
 
+    /// Insert capsule metadata if it does not already exist.
+    ///
+    /// Returns `true` if newly inserted, or `false` if a capsule with the same ID
+    /// is already present (idempotent insert).
+    pub fn put_capsule(&self, capsule: Capsule) -> Result<bool> {
+        if self.store.get_capsule(&capsule.id)?.is_some() {
+            return Ok(false);
+        }
+        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+            OpResult::Ok => Ok(true),
+            other => anyhow::bail!("unexpected raft response: {:?}", other),
+        }
+    }
+
     pub fn create_capsule_with_segments(
         &self,
         id: CapsuleId,

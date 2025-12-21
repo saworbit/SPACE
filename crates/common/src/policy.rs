@@ -91,11 +91,89 @@ pub enum FederationStrategy {
     CacheAt,
 }
 
-/// Global distribution rules for a capsule.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Priority class for inter-zone transfers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransferPriority {
+    /// Best-effort replication via background queue.
+    #[default]
+    Background,
+    /// Urgent replication that should bypass normal scheduling.
+    Critical,
+}
+
+/// Federation directives attached to a capsule policy.
+///
+/// Accepts multiple wire formats for backwards-compatibility:
+/// - `federation: ["us-west"]`
+/// - `federation: { targets: ["us-west"], priority: critical }`
+/// - legacy `federation: { target_zones: ["us-west"], strategy: replicate-to }`
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FederationPolicy {
-    pub strategy: FederationStrategy,
-    pub target_zones: Vec<String>,
+    /// List of target Zone IDs or aliases (e.g., "eu-central-1").
+    #[serde(default)]
+    pub targets: Vec<String>,
+    /// Priority of transfer (Background vs Critical).
+    #[serde(default)]
+    pub priority: TransferPriority,
+    /// Legacy strategy knob retained for compatibility (ignored by Phase 4b replication).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<FederationStrategy>,
+}
+
+impl Default for FederationPolicy {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            priority: TransferPriority::Background,
+            strategy: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum FederationPolicyRepr {
+    Targets(Vec<String>),
+    Fields(FederationPolicyFields),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FederationPolicyFields {
+    #[serde(default, alias = "target_zones")]
+    targets: Vec<String>,
+    #[serde(default)]
+    priority: TransferPriority,
+    #[serde(default)]
+    strategy: Option<FederationStrategy>,
+}
+
+impl<'de> Deserialize<'de> for FederationPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            match FederationPolicyRepr::deserialize(deserializer)? {
+                FederationPolicyRepr::Targets(targets) => Ok(Self {
+                    targets,
+                    ..Self::default()
+                }),
+                FederationPolicyRepr::Fields(fields) => Ok(Self {
+                    targets: fields.targets,
+                    priority: fields.priority,
+                    strategy: fields.strategy,
+                }),
+            }
+        } else {
+            let fields = FederationPolicyFields::deserialize(deserializer)?;
+            Ok(Self {
+                targets: fields.targets,
+                priority: fields.priority,
+                strategy: fields.strategy,
+            })
+        }
+    }
 }
 
 /// Policy knobs for layout planning.
@@ -134,6 +212,7 @@ impl LayoutStrategy {
 
 /// Storage efficiency policy
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Policy {
     /// Compression algorithm and level
     pub compression: CompressionPolicy,
@@ -161,7 +240,7 @@ pub struct Policy {
 
     /// Phase 4: optional multi-zone federation rules.
     #[serde(default)]
-    pub federation: Option<FederationPolicy>,
+    pub federation: FederationPolicy,
 
     // ========================================================================
     // PODMS (Policy-Orchestrated Disaggregated Mesh Scaling) Fields
@@ -218,7 +297,7 @@ impl Default for Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -242,7 +321,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -264,7 +343,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -286,7 +365,7 @@ impl Policy {
             encryption: EncryptionPolicy::default(),
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: std::time::Duration::from_secs(300), // 5 min RPO for edge
             #[cfg(feature = "podms")]
@@ -308,7 +387,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -330,7 +409,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             #[cfg(feature = "podms")]
             rpo: default_rpo(),
             #[cfg(feature = "podms")]
@@ -354,7 +433,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             rpo: std::time::Duration::ZERO, // Synchronous replication
             latency_target: std::time::Duration::from_millis(2), // 2ms target
             sovereignty: crate::podms::SovereigntyLevel::Zone,
@@ -373,7 +452,7 @@ impl Policy {
             encryption: EncryptionPolicy::XtsAes256 { key_version: None },
             crypto_profile: CryptoProfile::default(),
             layout: LayoutPolicy::default(),
-            federation: None,
+            federation: FederationPolicy::default(),
             rpo: std::time::Duration::from_secs(300), // 5 min async
             latency_target: std::time::Duration::from_millis(100), // 100ms target
             sovereignty: crate::podms::SovereigntyLevel::Global,
@@ -502,5 +581,29 @@ mod tests {
         let json = serde_json::to_string(&policy).unwrap();
         let deserialized: Policy = serde_json::from_str(&json).unwrap();
         assert!(deserialized.encryption.is_enabled());
+    }
+
+    #[test]
+    fn test_federation_policy_deserialization_variants() {
+        let shorthand_yaml = r#"
+federation:
+  - us-west
+"#;
+        let policy: Policy = serde_yaml::from_str(shorthand_yaml).unwrap();
+        assert_eq!(policy.federation.targets, vec!["us-west".to_string()]);
+        assert_eq!(policy.federation.priority, TransferPriority::Background);
+
+        let explicit_yaml = r#"
+federation:
+  targets: ["eu-central-1"]
+  priority: critical
+"#;
+        let policy: Policy = serde_yaml::from_str(explicit_yaml).unwrap();
+        assert_eq!(policy.federation.targets, vec!["eu-central-1".to_string()]);
+        assert_eq!(policy.federation.priority, TransferPriority::Critical);
+
+        let legacy_json = r#"{"federation":{"target_zones":["zone-b"],"strategy":"replicate-to"}}"#;
+        let policy: Policy = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(policy.federation.targets, vec!["zone-b".to_string()]);
     }
 }

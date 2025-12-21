@@ -8,5 +8,13 @@
 #![cfg(feature = "phase4")]
 
 pub mod bridge;
+pub mod queue;
+pub mod rpc;
+pub mod server;
+pub mod state;
+pub mod wan;
+pub mod zones;
 
-pub use bridge::{FederationBridge, FederationResult};
+pub use bridge::{Bridge, FederationResult};
+pub use server::FederationServiceImpl;
+pub use server::{serve, serve_from_paths};

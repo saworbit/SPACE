@@ -173,9 +173,10 @@ impl PolicyCompiler {
                     view = %view,
                     "view projection telemetry received"
                 );
-                if let Some(federation) = policy.federation.as_ref() {
-                    let zones: Vec<ZoneId> = federation
-                        .target_zones
+                if !policy.federation.targets.is_empty() {
+                    let zones: Vec<ZoneId> = policy
+                        .federation
+                        .targets
                         .iter()
                         .filter(|z| !z.is_empty())
                         .map(|name| ZoneId::Geo { name: name.clone() })

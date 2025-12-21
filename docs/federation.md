@@ -23,7 +23,7 @@ The shimbed `raft-rs` crate (`vendor/raft-rs`) keeps Raft logic easy to swap out
 - `store_shard(&ShardKey, payload)` writes the metadata blob.
 - `replicate(capsule, zone)` triggers federated replication with telemetry traces.
 
-Each zone hosts several shards (Metro, Geo, Edge). The compiler chooses target zones primarily from `Policy.federation.target_zones` (mapped to `ZoneId::Geo { name }`) and emits `ScalingAction::Federate` / `ScalingAction::ShardEC` so `MeshNode::shard_metadata` can stream updates.
+Each zone hosts several shards (Metro, Geo, Edge). The compiler chooses target zones primarily from `Policy.federation.targets` (mapped to `ZoneId::Geo { name }`) and emits `ScalingAction::Federate` / `ScalingAction::ShardEC` so `MeshNode::shard_metadata` can stream updates.
 
 ## Sovereignty & Routing
 
@@ -36,15 +36,15 @@ The policy compiler (`scaling::compiler`) enforces sovereignty before sending ac
 
 The CLI command `spacectl project` feeds this telemetry event and receives `ScalingAction::Federate` or `ShardEC`. `MeshNode` honors these actions with tracing spans so auditors can reconstruct the cross-zone journey (`info!(capsule = %id, zone = %zone, "stored metadata shard")`).
 
-## Payload Replication (Simulated Zones)
+## Payload Replication (Phase 4b WAN Bridge)
 
-The mesh/Raft sharding path above covers **metadata**. For development-grade, end-to-end “Zone A write → Zone B read” validation, SPACE also provides a simulation-first bridge:
+The mesh/Raft sharding path above covers **metadata**. For development-grade, end-to-end “Zone A write → Zone B read” validation, SPACE also provides a Phase 4b WAN bridge:
 
-- `crates/federation::FederationBridge` copies capsule metadata + referenced segments into zone-scoped stores:
-  - `space.<zone>.db` (CapsuleRegistry metadata)
-  - `space.<zone>.nvram` (segment payload store)
+- `crates/federation::Bridge` enqueues per-zone replication jobs based on `policy.federation.targets`.
+- `crates/federation::FederationService` (gRPC) receives segments + capsule metadata over HTTP/2.
+- `spacectl zone add` manages remote endpoints; `spacectl federation serve` runs the receiver.
 
-`spacectl put` will run this bridge when `policy.federation` is present, making the capsule transparently readable when you open the destination zone store (e.g., by passing `--zone` to `spacectl project mount`).
+For a minimal two-zone mock, see `scripts/test_federation_mock.sh`.
 
 ## Audits & Resilience
 
