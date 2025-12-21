@@ -31,7 +31,7 @@ Phase 4 adds “Views”: lightweight, stateless protocol adapters that translat
 
 | Protocol | Crate | Entry point | Notes |
 |----------|-------|-------------|------|
-| Local projection (“content” view) | `protocol-fuse` | `mount_fuse_view` | Simulation-first mount: creates a `content` file that streams capsule bytes |
+| Local projection (“content” view) | `protocol-fuse` | `mount_capsule_fuse` (Unix), `mount_fuse_view` (fallback) | Read-only kernel FUSE mount on Unix (`/content`); otherwise streams into a `content` file |
 | CSI (Kubernetes) | `protocol-csi` | `publish_capsule_volume` | Stub helper; publishes via the local projection view |
 | NFS export | `protocol-nfs::phase4` | `export_nfs_view` | Registers an export via the vendored `nfs-rs` server |
 | NVMe-oF | `protocol-nvme` | `NvmeView::project` | SPDK-backed projection scaffolding (simulated) |
@@ -144,7 +144,7 @@ and payload integrity.
 - Deleting a file or volume removes its mapping and schedules the underlying
   capsule for GC via the pipeline.  Segments with shared dedupe references are
   retained until every referencing capsule is removed.
-- Phase 4 introduces early protocol projection scaffolding (NVMe/NFS/CSI + a local mount view). Production-grade kernel integrations remain roadmap items.
+- Phase 4 introduces early protocol projection scaffolding (NVMe/NFS/CSI + a local mount view). Kernel-backed FUSE is now available on Unix (experimental); other kernel integrations remain roadmap items.
 
 ---
 

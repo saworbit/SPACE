@@ -1,9 +1,10 @@
 //! Phase 4 "View" projection for local file semantics.
 //!
-//! This crate intentionally avoids tying the engine to a specific kernel FUSE
-//! implementation. Instead it provides a small adapter that can "materialize"
-//! a capsule into a directory by exposing a `content` file. On Unix platforms we
-//! prefer a FIFO so the mount appears quickly and reads stream from the pipeline.
+//! This crate provides two projection modes:
+//! - A kernel-backed, read-only FUSE filesystem (Unix only) that exposes a single
+//!   `content` file.
+//! - A portable "file view" fallback that materializes `content` (FIFO on Unix,
+//!   regular file elsewhere) and streams bytes from the pipeline.
 #![cfg(feature = "phase4")]
 
 #[cfg(unix)]
@@ -24,6 +25,22 @@ use tracing::{info, info_span, warn};
 const CONTENT_FILENAME: &str = "content";
 const METADATA_FILENAME: &str = "space.json";
 const DEFAULT_STREAM_CHUNK: usize = 1024 * 1024; // 1 MiB
+
+#[cfg(unix)]
+mod kernel_fuse;
+
+#[cfg(unix)]
+pub use kernel_fuse::{mount_capsule_fuse, SpaceFuse};
+
+#[cfg(not(unix))]
+pub fn mount_capsule_fuse(
+    _pipeline: std::sync::Arc<WritePipeline>,
+    _capsule_id: CapsuleId,
+    _capsule_size: u64,
+    _target: impl AsRef<std::path::Path>,
+) -> Result<()> {
+    anyhow::bail!("kernel FUSE is only supported on Unix targets")
+}
 
 /// Handle representing a projected capsule view.
 #[derive(Debug)]

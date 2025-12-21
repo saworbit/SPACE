@@ -2,11 +2,11 @@
 
 > ## ⚠️ PLANNED FEATURES - MOSTLY NOT IMPLEMENTED
 >
-> **Status:** Phase 4 is partially implemented behind the `phase4` feature flag (simulation-first).
+> **Status:** Phase 4 is partially implemented behind the `phase4` feature flag (simulation-first, with an experimental read-only kernel FUSE mount on Unix).
 >
 > **Reality Check:**
 > - Protocol projections exist (helpers): `protocol-nvme`, `protocol-nfs::phase4`, `protocol-csi`
-> - Local “view mount” exists: `spacectl project mount` (projects a capsule into a directory with `content`)
+> - Local projection mount exists: `spacectl project mount` (prefers a read-only kernel FUSE mount on Unix; falls back to a `content`-file view)
 > - Federation is simulated: `Policy.federation` + `crates/federation` replicate capsules into zone-scoped stores
 >
 > This document mixes current behavior and aspirational architecture. When unsure, treat it as a guide for the `phase4` feature implementation.
@@ -39,7 +39,7 @@ Goals:
 
 - `protocol-nvme` returns `NvmeView` backed by `spdk-rs` namespaces. It calls `policy_compiler::compile_scaling` (via `scaling::compiler`) with `Telemetry::ViewProjection` to emit `ScalingAction::Federate`/`ShardEC` hooks.
 - `protocol-nfs` exposes `export_nfs_view()` returning a running `nfs-rs::NfsServer`. Federation actions mirror the NVMe flow.
-- `protocol-fuse` provides a simulation-first local view mount: it materializes a directory containing a `content` file that streams capsule bytes from the pipeline.
+- `protocol-fuse` provides the local projection mount: a read-only kernel FUSE filesystem on Unix (exposing `/content`), with a portable `content`-file view fallback elsewhere.
 - `protocol-csi` provisions Kubernetes volumes through `csi-driver-rs` (stub) and publishes capsules via the local view mount.
 
 Each protocol forwards actions to `MeshNode::federate_capsule` and `MeshNode::shard_metadata`, which now talks to a lightweight `raft-rs` cluster stub storing shards per zone.
@@ -89,7 +89,7 @@ cat /tmp/space-view/content
 1. **Unit Tests per crate**
    - `protocol-nvme` ensures `project_nvme_view` returns an `NvmeView` and exercises Raft stubs.
    - `protocol-nfs` reuses the metadata assertions and validates the `NfsServer` is configured even after federation.
-   - `protocol-fuse` and `protocol-csi` have tokio tests that mount/provision volumes and assert the handles are live.
+   - `protocol-fuse` and `protocol-csi` have tokio tests for the portable view mount/provisioning handles (kernel FUSE is Unix-only).
 2. **Integration idea**
    - Multi-node KIND scenario (Phase4 script) writes capsules, projects an NFS view, federates to a geo zone, and re-reads data.
 3. **Security / Chaos**

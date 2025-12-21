@@ -20,7 +20,7 @@ use protocol_block::BlockView;
 #[cfg(feature = "phase4")]
 use protocol_csi::csi_provision_capsule;
 #[cfg(feature = "phase4")]
-use protocol_fuse::mount_fuse_view;
+use protocol_fuse::{mount_capsule_fuse, mount_fuse_view};
 #[cfg(feature = "phase4")]
 use protocol_nfs::phase4::export_nfs_view;
 use protocol_nfs::NfsView;
@@ -630,6 +630,24 @@ async fn handle_project_command(args: ProjectArgs) -> Result<()> {
             .lookup(capsule_id)
             .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
 
+        fs::create_dir_all(&target)
+            .with_context(|| format!("create mount target {}", target.display()))?;
+
+        let pipeline = Arc::new(WritePipeline::new(registry.as_ref().clone(), nvram.clone()));
+        println!(
+            "Mounting capsule {} at {} (read-only FUSE: {}/content)",
+            capsule_id.as_uuid(),
+            target.display(),
+            target.display()
+        );
+
+        match mount_capsule_fuse(Arc::clone(&pipeline), capsule_id, capsule.size, &target) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                eprintln!("Kernel FUSE mount unavailable ({err}); falling back to file view.");
+            }
+        }
+
         let policy = match policy_file {
             Some(path) => load_policy_file(&path)?,
             None => capsule.policy.clone(),
@@ -649,7 +667,7 @@ async fn handle_project_command(args: ProjectArgs) -> Result<()> {
         )
         .await?;
 
-        let pipeline = Arc::new(WritePipeline::new(registry.as_ref().clone(), nvram));
+        let pipeline = Arc::clone(&pipeline);
         let view = mount_fuse_view(
             capsule_id,
             &policy,
@@ -725,10 +743,26 @@ async fn handle_project_command(args: ProjectArgs) -> Result<()> {
             drop(server);
         }
         "fuse" => {
-            registry
+            let capsule = registry
                 .lookup(capsule_id)
                 .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
             let mountpoint = std::env::temp_dir().join(format!("space-{}", capsule_id.as_uuid()));
+            fs::create_dir_all(&mountpoint)
+                .with_context(|| format!("create mount target {}", mountpoint.display()))?;
+            println!(
+                "Mounting capsule {} at {} (read-only FUSE: {}/content)",
+                capsule_id.as_uuid(),
+                mountpoint.display(),
+                mountpoint.display()
+            );
+
+            match mount_capsule_fuse(Arc::clone(&pipeline), capsule_id, capsule.size, &mountpoint) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    eprintln!("Kernel FUSE mount unavailable ({err}); falling back to file view.");
+                }
+            }
+
             let view = mount_fuse_view(
                 capsule_id,
                 &policy,

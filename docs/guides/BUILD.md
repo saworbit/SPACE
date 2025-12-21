@@ -20,7 +20,7 @@ cargo build --release --features phase4
 # Store a local file as a capsule (optionally with federation targets)
 ./target/release/spacectl put ./hello.txt --id <CAPSULE_UUID> --policy-file examples/phase4-policy.yaml
 
-# Project a capsule into a local "content" view (serves until Ctrl+C)
+# Project a capsule into a local "content" view (kernel FUSE on Unix; fallback elsewhere; serves until Ctrl+C)
 ./target/release/spacectl project mount \
   --id <CAPSULE_UUID> \
   --target /tmp/space-view

@@ -158,6 +158,8 @@ skip = [
     { crate = "socket2@0.5.10", reason = "tokio/mio compatibility" },
     { crate = "socket2@0.6.1", reason = "hyper-util/tokio compatibility" },
     { crate = "syn@1.0.109", reason = "proc-macro v1 compatibility" },
+    { crate = "zerocopy@0.6.6", reason = "fuser transitive pin (Unix-only kernel FUSE projection)" },
+    { crate = "zerocopy-derive@0.6.6", reason = "fuser transitive pin (Unix-only kernel FUSE projection)" },
 
     # parking_lot ecosystem split (sled vs tokio/libp2p stacks)
     { crate = "parking_lot@0.11.2", reason = "sled pin" },

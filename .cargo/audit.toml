@@ -14,4 +14,10 @@ ignore = [
     "RUSTSEC-2021-0139",  # ansi_term unmaintained (build-time only)
     "RUSTSEC-2021-0145",  # atty potential unaligned read (build-time only)
     "RUSTSEC-2024-0375",  # atty unmaintained (build-time only)
+    # Phase 4a kernel FUSE projection (Unix only, read-only; dev/experimental).
+    # `fuser` currently depends on `users` and carries advisories with no fixed upgrade.
+    "RUSTSEC-2021-0154",  # fuser - uninitialized memory read/leak (no fixed upgrade)
+    "RUSTSEC-2023-0040",  # users - unmaintained (transitive via fuser)
+    "RUSTSEC-2023-0059",  # users - unaligned read (transitive via fuser)
+    "RUSTSEC-2025-0040",  # users - `root` appended to group listings (transitive via fuser)
 ]
