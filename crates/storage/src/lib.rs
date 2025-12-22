@@ -378,7 +378,7 @@ impl TokioFsBackend {
         };
 
         if let Some(heatmap) = &self.heatmap {
-            heatmap.record_access(segment);
+            heatmap.record_access(segment.0);
         }
 
         Ok(out)

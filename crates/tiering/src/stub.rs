@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use common::StorageStub;
 use object_store::path::Path as ObjPath;
+
+pub use common::StorageStub;
 
 pub const STUB_MAGIC: &str = "SPACE_STUB_V1";
 

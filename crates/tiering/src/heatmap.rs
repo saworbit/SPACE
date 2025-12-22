@@ -15,7 +15,7 @@ pub struct AccessStats {
 #[derive(Clone, Default)]
 pub struct Heatmap {
     // In production, back this with Sled. For now, memory is fine.
-    stats: Arc<DashMap<SegmentId, AccessStats>>,
+    stats: Arc<DashMap<u64, AccessStats>>, // Key: SegmentId.0
 }
 
 impl Heatmap {
@@ -23,7 +23,7 @@ impl Heatmap {
         Self::default()
     }
 
-    pub fn record_access(&self, segment_id: SegmentId) {
+    pub fn record_access(&self, segment_id: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -40,17 +40,25 @@ impl Heatmap {
             });
     }
 
-    pub fn get_stats(&self, segment_id: SegmentId) -> Option<AccessStats> {
+    pub fn record_access_id(&self, segment_id: SegmentId) {
+        self.record_access(segment_id.0);
+    }
+
+    pub fn get_stats(&self, segment_id: u64) -> Option<AccessStats> {
         self.stats.get(&segment_id).map(|r| r.value().clone())
     }
 
-    pub fn get_cold_candidates(&self, age_seconds: u64, limit: usize) -> Vec<SegmentId> {
+    pub fn get_stats_id(&self, segment_id: SegmentId) -> Option<AccessStats> {
+        self.get_stats(segment_id.0)
+    }
+
+    pub fn get_cold_candidates(&self, age_seconds: u64) -> Vec<u64> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        let mut items: Vec<(SegmentId, u64)> = self
+        let mut items: Vec<(u64, u64)> = self
             .stats
             .iter()
             .filter(|r| now.saturating_sub(r.value().last_accessed) > age_seconds)
@@ -58,10 +66,14 @@ impl Heatmap {
             .collect();
 
         items.sort_by_key(|(_, last_accessed)| *last_accessed);
-        items.into_iter().take(limit).map(|(id, _)| id).collect()
+        items.into_iter().map(|(id, _)| id).collect()
     }
 
     pub fn cold_candidates(&self, threshold: Duration, limit: usize) -> Vec<SegmentId> {
-        self.get_cold_candidates(threshold.as_secs(), limit)
+        self.get_cold_candidates(threshold.as_secs())
+            .into_iter()
+            .take(limit)
+            .map(SegmentId)
+            .collect()
     }
 }

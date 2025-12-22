@@ -128,7 +128,7 @@ impl UringBackend {
             };
 
             if let Some(heatmap) = &self.heatmap {
-                heatmap.record_access(segment);
+                heatmap.record_access(segment.0);
             }
 
             return Ok(out);
@@ -137,7 +137,7 @@ impl UringBackend {
         if let Some(paths) = &self.tiering {
             let out = recall_segment_from_cold(paths, segment, self.reheat_on_read).await?;
             if let Some(heatmap) = &self.heatmap {
-                heatmap.record_access(segment);
+                heatmap.record_access(segment.0);
             }
             return Ok(out);
         }

@@ -46,10 +46,10 @@ pub fn spawn_audit_heatmap_watcher(
                             match serde_json::from_str::<AuditRecord>(line) {
                                 Ok(record) => match record.event {
                                     Event::SegmentAppended { segment_id, .. } => {
-                                        heatmap.record_access(segment_id);
+                                        heatmap.record_access(segment_id.0);
                                     }
                                     Event::DedupHit { segment_id, .. } => {
-                                        heatmap.record_access(segment_id);
+                                        heatmap.record_access(segment_id.0);
                                     }
                                     _ => {}
                                 },
