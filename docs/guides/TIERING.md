@@ -42,3 +42,8 @@ export SPACE_COLD_ROOT=/path/to/space-cold-objects
 - `remote_url`: e.g. `s3://bucket/segments/<id>.bin`
 - `checksum`: e.g. `sha256:<hex>`
 
+## Rust APIs
+
+- `tiering::Heatmap` exposes `record_access(u64)` and `get_cold_candidates(age_seconds) -> Vec<u64>` where the `u64` is the numeric `SegmentId` (`SegmentId.0`).
+- `tiering::TieringAgent` is the long-running background worker used by `spawn_tiering_agent`.
+- `common::StorageStub` is the canonical stub struct; it is also re-exported as `tiering::StorageStub` for convenience.
