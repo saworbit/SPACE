@@ -118,7 +118,7 @@ pub struct FederationPolicy {
     #[serde(default)]
     pub priority: TransferPriority,
     /// Legacy strategy knob retained for compatibility (ignored by Phase 4b replication).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub strategy: Option<FederationStrategy>,
 }
 
@@ -244,7 +244,7 @@ pub struct Policy {
     pub federation: FederationPolicy,
 
     /// Phase 5: ordered list of WASM transformations to apply.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub transform: Vec<TransformDef>,
 
     // ========================================================================
@@ -342,7 +342,7 @@ impl Default for ResourceLimits {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactVerification {
     pub sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub signature: Option<String>,
 }
 

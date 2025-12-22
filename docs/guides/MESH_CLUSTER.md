@@ -4,6 +4,9 @@ This guide covers the Phase 3 metadata mesh: gossip discovery + Raft metadata re
 
 ## Start a 3-node cluster (local)
 
+Notes:
+- `--metadata-path` and `--raft-store-path` are per-node sled directories; each node must have its own unique paths (especially on Windows).
+
 Terminal 1 (bootstrap leader):
 
 ```bash

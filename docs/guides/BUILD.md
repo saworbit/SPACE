@@ -183,7 +183,10 @@ curl http://localhost:8080/health
 chmod +x scripts/demo_s3.sh
 ./scripts/demo_s3.sh
 
-# 7. Stop server
+# 7. Golden Path verification (Windows: run via Git Bash)
+./scripts/test_golden_path.sh
+
+# 8. Stop server
 kill $SERVER_PID
 ```
 

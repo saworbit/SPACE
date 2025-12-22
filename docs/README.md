@@ -11,6 +11,7 @@
 - [Autonomous Tiering (Phase 6)](guides/TIERING.md)
 - [Multi-Node Quickstart](MULTI_NODE_QUICKSTART.md)
 - [Mesh Cluster (Phase 3)](guides/MESH_CLUSTER.md)
+- Golden Path Verification: `scripts/test_golden_path.sh`
 
 ## Implementation
 - [Dedup Implementation](implementation/DEDUP_IMPLEMENTATION.md)

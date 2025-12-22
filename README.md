@@ -487,6 +487,9 @@ let policy = Policy::edge_optimized();
 ```bash
 # Phase 3: metadata mesh (Raft + gossip) smoke test (3 nodes, leader failover)
 ./scripts/test_federation_resilience.sh
+
+# Golden Path: UI + S3 + tiering + mesh + WASM transforms (Windows: run via Git Bash)
+./scripts/test_golden_path.sh
 ```
 
 📚 See [docs/podms.md](docs/podms.md) for PODMS architecture details.

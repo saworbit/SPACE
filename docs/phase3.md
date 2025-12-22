@@ -14,6 +14,12 @@ The fastest end-to-end smoke test is the local failover harness:
 ./scripts/test_federation_resilience.sh
 ```
 
+For a broader cross-phase validation (UI + S3 + tiering + mesh + WASM transforms), run:
+
+```bash
+./scripts/test_golden_path.sh
+```
+
 For manual workflows, see `docs/guides/MESH_CLUSTER.md`.
 
 ## CLI surface

@@ -341,11 +341,14 @@ pub struct RegistryStateMachine {
 }
 
 impl RegistryStateMachine {
-    pub fn open(metadata_path: &str, raft_path: &str) -> Result<Self> {
-        let store = Arc::new(SledStore::open(metadata_path)?);
+    pub fn open(store: Arc<dyn MetadataStore>, raft_path: &str) -> Result<Self> {
         let fsm = MetadataStateMachine::new(store);
 
-        let raft_db = sled::open(raft_path)?;
+        // NOTE: On Windows (and on some filesystems), opening the same sled DB path more than once
+        // in a single process fails due to file locking. The Raft log store and state machine are
+        // independent, so keep their on-disk metadata in separate sled directories.
+        let raft_sm_path = std::path::PathBuf::from(raft_path).join("sm");
+        let raft_db = sled::open(raft_sm_path)?;
         let meta = raft_db.open_tree("raft_sm")?;
         Ok(Self {
             fsm,
@@ -882,8 +885,20 @@ impl raft_rpc::cluster_admin_server::ClusterAdmin for ClusterAdminService {
         &self,
         request: Request<raft_rpc::Bytes>,
     ) -> Result<Response<raft_rpc::Bytes>, Status> {
-        let op: MetadataOp = bincode::deserialize(&request.into_inner().data)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let data = request.into_inner().data;
+        let op: MetadataOp = match serde_json::from_slice(&data) {
+            Ok(op) => op,
+            Err(err) => {
+                let head_len = data.len().min(16);
+                tracing::error!(
+                    len = data.len(),
+                    head = ?&data[..head_len],
+                    error = %err,
+                    "cluster admin propose payload decode failed"
+                );
+                return Err(Status::invalid_argument(err.to_string()));
+            }
+        };
 
         let reply = match self.raft.client_write(op).await {
             Ok(resp) => ClientWriteReply::Applied(resp.data),
@@ -896,7 +911,7 @@ impl raft_rpc::cluster_admin_server::ClusterAdmin for ClusterAdminService {
             Err(err) => ClientWriteReply::Error(err.to_string()),
         };
 
-        let bytes = bincode::serialize(&reply).map_err(|e| Status::internal(e.to_string()))?;
+        let bytes = serde_json::to_vec(&reply).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(raft_rpc::Bytes { data: bytes }))
     }
 
@@ -904,7 +919,7 @@ impl raft_rpc::cluster_admin_server::ClusterAdmin for ClusterAdminService {
         &self,
         request: Request<raft_rpc::Bytes>,
     ) -> Result<Response<raft_rpc::Bytes>, Status> {
-        let id: common::CapsuleId = bincode::deserialize(&request.into_inner().data)
+        let id: common::CapsuleId = serde_json::from_slice(&request.into_inner().data)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         let result = self
@@ -912,7 +927,7 @@ impl raft_rpc::cluster_admin_server::ClusterAdmin for ClusterAdminService {
             .get_capsule(&id)
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let bytes = bincode::serialize(&result).map_err(|e| Status::internal(e.to_string()))?;
+        let bytes = serde_json::to_vec(&result).map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(raft_rpc::Bytes { data: bytes }))
     }
 }
@@ -936,16 +951,15 @@ impl MeshRegistryRaft {
             .map_err(|e| anyhow!(e))?;
         let config = Arc::new(config);
 
+        let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(metadata_path)?);
         let log_store = RegistryLogStore::open(raft_store_path).context("open raft log store")?;
-        let state_machine = RegistryStateMachine::open(metadata_path, raft_store_path)
+        let state_machine = RegistryStateMachine::open(Arc::clone(&store), raft_store_path)
             .context("open raft state machine")?;
         let network = RegistryNetworkFactory;
 
         let raft = Raft::new(node_id, config, network, log_store, state_machine)
             .await
             .map_err(|e| anyhow!(e))?;
-
-        let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(metadata_path)?);
 
         let raft_clone = raft.clone();
         let store_clone = store.clone();
@@ -1063,7 +1077,7 @@ async fn propose_via(addr: std::net::SocketAddr, op: MetadataOp) -> Result<OpRes
             .context("connect propose endpoint")?;
 
         let req = raft_rpc::Bytes {
-            data: bincode::serialize(&op)?,
+            data: serde_json::to_vec(&op)?,
         };
 
         let bytes = client
@@ -1073,7 +1087,7 @@ async fn propose_via(addr: std::net::SocketAddr, op: MetadataOp) -> Result<OpRes
             .into_inner()
             .data;
 
-        let reply: ClientWriteReply = bincode::deserialize(&bytes)?;
+        let reply: ClientWriteReply = serde_json::from_slice(&bytes)?;
         match reply {
             ClientWriteReply::Applied(res) => return Ok(res),
             ClientWriteReply::Forward { leader_addr, .. } => {
@@ -1121,7 +1135,7 @@ pub async fn get_capsule(
         .context("connect get_capsule endpoint")?;
 
     let req = raft_rpc::Bytes {
-        data: bincode::serialize(&id)?,
+        data: serde_json::to_vec(&id)?,
     };
 
     let bytes = client
@@ -1131,7 +1145,7 @@ pub async fn get_capsule(
         .into_inner()
         .data;
 
-    let result: Option<common::Capsule> = bincode::deserialize(&bytes)?;
+    let result: Option<common::Capsule> = serde_json::from_slice(&bytes)?;
     Ok(result)
 }
 
