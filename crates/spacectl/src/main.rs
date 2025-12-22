@@ -1038,8 +1038,60 @@ async fn main() -> Result<()> {
             #[cfg(feature = "modular_pipeline")]
             let s3_view = if modular {
                 let registry = CapsuleRegistry::new();
-                let handle = modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
-                S3View::new_modular(handle)
+                if let Ok(storage_root) = std::env::var("SPACE_STORAGE_ROOT") {
+                    let storage_root = PathBuf::from(storage_root);
+                    let heatmap = tiering::Heatmap::new();
+
+                    let reheat_on_read = std::env::var("SPACE_REHEAT_ON_READ")
+                        .ok()
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+
+                    let cold_root = std::env::var("SPACE_COLD_ROOT").ok().map(PathBuf::from);
+
+                    let mut storage = storage::AutoFsBackend::open(&storage_root).await?;
+                    if let Some(cold_root) = cold_root.clone() {
+                        storage = storage.with_tiering(cold_root.clone(), reheat_on_read)?;
+
+                        let bucket = std::env::var("SPACE_COLD_BUCKET")
+                            .ok()
+                            .unwrap_or_else(|| "bucket".to_string());
+                        let paths = tiering::TieringPaths::simulated_s3_with_bucket(
+                            storage_root.clone(),
+                            cold_root,
+                            bucket,
+                        )?;
+
+                        let mut config = tiering::TieringConfig::default_scan();
+                        if let Ok(v) = std::env::var("SPACE_COLD_THRESHOLD_SECS") {
+                            if let Ok(secs) = v.parse::<u64>() {
+                                config.cold_threshold = std::time::Duration::from_secs(secs);
+                            }
+                        }
+                        if let Ok(v) = std::env::var("SPACE_TIER_SCAN_INTERVAL_SECS") {
+                            if let Ok(secs) = v.parse::<u64>() {
+                                config.scan_interval = std::time::Duration::from_secs(secs);
+                            }
+                        }
+                        if let Ok(v) = std::env::var("SPACE_TIER_MAX_SEGMENTS_PER_SCAN") {
+                            if let Ok(limit) = v.parse::<usize>() {
+                                config.max_segments_per_scan = limit;
+                            }
+                        }
+
+                        let _tiering_agent =
+                            tiering::spawn_tiering_agent(Arc::new(paths), config, heatmap.clone())?;
+                    }
+
+                    storage = storage.with_heatmap(heatmap);
+                    let handle =
+                        modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)?;
+                    S3View::new_modular(handle)
+                } else {
+                    let handle =
+                        modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
+                    S3View::new_modular(handle)
+                }
             } else {
                 let registry = CapsuleRegistry::new();
                 let nvram = NvramLog::open(NVRAM_PATH)?;

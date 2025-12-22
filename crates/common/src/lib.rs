@@ -6,12 +6,14 @@ use uuid::Uuid;
 pub mod security;
 
 pub mod policy;
+pub mod stub;
 pub mod traits;
 pub use policy::{
     ArtifactVerification, CompressionPolicy, CryptoProfile, EncryptionPolicy, FederationPolicy,
     FederationStrategy, LayoutPolicy, LayoutStrategy, MerkleAlgo, Policy, ResourceLimits,
     TransferPriority, TransformDef, TransformTrigger,
 };
+pub use stub::StorageStub;
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 

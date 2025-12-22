@@ -201,7 +201,7 @@ pub mod modular_pipeline {
 
         let storage = AutoFsBackend::open(root).await?;
         let storage = if let Some(cold) = cold_root {
-            storage.with_tiering(cold, reheat_on_read)
+            storage.with_tiering(cold, reheat_on_read)?
         } else {
             storage
         };
@@ -230,7 +230,7 @@ pub mod modular_pipeline {
         }
     }
 
-    fn registry_pipeline_from_fs_backend(
+    pub fn registry_pipeline_from_fs_backend(
         storage: AutoFsBackend,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {

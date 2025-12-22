@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use common::traits::CapsuleCatalog;
 use tokio::task::JoinHandle;
 
 use crate::{migrate_segment_to_cold, Heatmap, TieringConfig, TieringPaths};
@@ -18,37 +17,22 @@ impl TieringAgentHandle {
 }
 
 pub fn spawn_tiering_agent(
-    catalog: Arc<dyn CapsuleCatalog>,
+    paths: Arc<TieringPaths>,
     config: TieringConfig,
     heatmap: Heatmap,
 ) -> Result<TieringAgentHandle> {
-    let paths = TieringPaths {
-        hot_root: config.hot_root.clone(),
-        cold_root: config.cold_root.clone(),
-    };
-
     let handle = tokio::spawn(async move {
         loop {
             let candidates =
-                heatmap.cold_candidates(config.cold_threshold, config.max_capsules_per_scan);
-            for capsule_id in candidates {
-                let capsule = match catalog.lookup_capsule(capsule_id) {
-                    Ok(c) => c,
-                    Err(err) => {
-                        tracing::debug!(error = %err, capsule = %capsule_id.as_uuid(), "tiering: lookup failed");
-                        continue;
-                    }
-                };
+                heatmap.cold_candidates(config.cold_threshold, config.max_segments_per_scan);
 
-                for segment in capsule.segments {
-                    if let Err(err) = migrate_segment_to_cold(&paths, segment).await {
-                        tracing::debug!(
-                            error = %err,
-                            capsule = %capsule_id.as_uuid(),
-                            segment = segment.0,
-                            "tiering: migrate failed"
-                        );
-                    }
+            for segment in candidates {
+                if let Err(err) = migrate_segment_to_cold(&paths, segment).await {
+                    tracing::debug!(
+                        error = %err,
+                        segment = segment.0,
+                        "tiering: migrate failed"
+                    );
                 }
             }
 

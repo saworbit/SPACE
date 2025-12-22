@@ -13,9 +13,13 @@ audit = ["common/advanced-security"]
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = { workspace = true }
 common = { path = "../common" }
+dashmap = "5.5.3"
+hex = { workspace = true }
+object_store = "0.11.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["fs", "time", "rt", "macros"] }
 tracing = { workspace = true }
-

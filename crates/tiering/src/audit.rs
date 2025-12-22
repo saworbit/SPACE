@@ -45,11 +45,11 @@ pub fn spawn_audit_heatmap_watcher(
                             }
                             match serde_json::from_str::<AuditRecord>(line) {
                                 Ok(record) => match record.event {
-                                    Event::CapsuleRead { capsule_id, .. } => {
-                                        heatmap.touch(capsule_id);
+                                    Event::SegmentAppended { segment_id, .. } => {
+                                        heatmap.record_access(segment_id);
                                     }
-                                    Event::CapsuleCreated { capsule_id, .. } => {
-                                        heatmap.touch(capsule_id);
+                                    Event::DedupHit { segment_id, .. } => {
+                                        heatmap.record_access(segment_id);
                                     }
                                     _ => {}
                                 },

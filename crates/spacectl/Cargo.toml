@@ -37,6 +37,8 @@ phase4 = [
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }
+storage = { path = "../storage" }
+tiering = { path = "../tiering" }
 mesh-core = { path = "../mesh-core" }
 gossip-layer = { path = "../gossip-layer" }
 nvram-sim = { path = "../nvram-sim" }

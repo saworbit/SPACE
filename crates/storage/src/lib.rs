@@ -11,7 +11,10 @@ use futures::future::{self, BoxFuture};
 use nvram_sim::{NvramLog, NvramTransaction};
 use tokio::io::AsyncWriteExt;
 
-use tiering::{migrate_segment_to_cold, recall_segment_from_cold, TieringPaths};
+use tiering::{
+    delete_segment_from_cold, is_stub_bytes, migrate_segment_to_cold, recall_segment_from_cold,
+    Heatmap, TieringPaths,
+};
 
 #[cfg(all(target_os = "linux", feature = "uring"))]
 mod uring;
@@ -288,13 +291,14 @@ impl StorageBackend for NvramBackend {
 ///
 /// Layout:
 /// - `root/segments/<id>.bin` data payload (hot)
-/// - `root/segments/<id>.stub.json` redirect stub (cold)
+/// - `root/segments/<id>.bin` JSON stub payload (cold, `SPACE_STUB_V1`)
 /// - `root/metadata/<id>.json` segment metadata
 #[derive(Clone)]
 pub struct TokioFsBackend {
     root: Arc<std::path::PathBuf>,
     tiering: Option<Arc<TieringPaths>>,
     reheat_on_read: bool,
+    heatmap: Option<Heatmap>,
 }
 
 impl TokioFsBackend {
@@ -306,16 +310,25 @@ impl TokioFsBackend {
             root: Arc::new(root),
             tiering: None,
             reheat_on_read: false,
+            heatmap: None,
         })
     }
 
-    pub fn with_tiering(mut self, cold_root: std::path::PathBuf, reheat_on_read: bool) -> Self {
-        let paths = TieringPaths {
-            hot_root: (*self.root).clone(),
-            cold_root,
-        };
+    pub fn with_tiering(
+        mut self,
+        cold_root: std::path::PathBuf,
+        reheat_on_read: bool,
+    ) -> Result<Self> {
+        let bucket = std::env::var("SPACE_COLD_BUCKET").unwrap_or_else(|_| "bucket".to_string());
+        let paths =
+            TieringPaths::simulated_s3_with_bucket((*self.root).clone(), cold_root, bucket)?;
         self.tiering = Some(Arc::new(paths));
         self.reheat_on_read = reheat_on_read;
+        Ok(self)
+    }
+
+    pub fn with_heatmap(mut self, heatmap: Heatmap) -> Self {
+        self.heatmap = Some(heatmap);
         self
     }
 
@@ -338,24 +351,37 @@ impl TokioFsBackend {
     }
 
     async fn read_bytes(&self, segment: SegmentId) -> Result<Vec<u8>> {
-        let data_path = self.data_path(segment);
-        if tokio::fs::try_exists(&data_path).await.unwrap_or(false) {
-            return Ok(tokio::fs::read(&data_path).await?);
+        let out = if let Some(paths) = &self.tiering {
+            recall_segment_from_cold(paths, segment, self.reheat_on_read).await?
+        } else {
+            let data_path = self.data_path(segment);
+            if tokio::fs::try_exists(&data_path).await.unwrap_or(false) {
+                let raw = tokio::fs::read(&data_path).await?;
+                if is_stub_bytes(&raw) {
+                    return Err(anyhow!(
+                        "segment {} is cold but tiering is not configured",
+                        segment.0
+                    ));
+                }
+                raw
+            } else {
+                let stub_path = self.stub_path(segment);
+                if tokio::fs::try_exists(&stub_path).await.unwrap_or(false) {
+                    return Err(anyhow!(
+                        "segment {} is cold but tiering is not configured",
+                        segment.0
+                    ));
+                }
+
+                return Err(anyhow!("segment {:?} not found", segment));
+            }
+        };
+
+        if let Some(heatmap) = &self.heatmap {
+            heatmap.record_access(segment);
         }
 
-        if let Some(paths) = &self.tiering {
-            return recall_segment_from_cold(paths, segment, self.reheat_on_read).await;
-        }
-
-        let stub_path = self.stub_path(segment);
-        if tokio::fs::try_exists(&stub_path).await.unwrap_or(false) {
-            return Err(anyhow!(
-                "segment {} is cold but tiering is not configured",
-                segment.0
-            ));
-        }
-
-        Err(anyhow!("segment {:?} not found", segment))
+        Ok(out)
     }
 
     pub async fn migrate_to_cold(&self, segment: SegmentId) -> Result<()> {
@@ -431,7 +457,7 @@ impl TokioFsTransaction {
         let _ = tokio::fs::remove_file(self.metadata_path(segment)).await;
 
         if let Some(paths) = &self.tiering {
-            let _ = tokio::fs::remove_file(paths.cold_object_path(segment)).await;
+            let _ = delete_segment_from_cold(paths, segment).await;
         }
 
         Ok(())
@@ -495,7 +521,7 @@ impl StorageTransaction for TokioFsTransaction {
                 .await;
 
                 if let Some(paths) = &tiering {
-                    let _ = tokio::fs::remove_file(paths.cold_object_path(segment)).await;
+                    let _ = delete_segment_from_cold(paths, segment).await;
                 }
             }
 
@@ -603,11 +629,19 @@ impl AutoFsBackend {
         Ok(Self::Tokio(TokioFsBackend::open(root).await?))
     }
 
-    pub fn with_tiering(self, cold_root: std::path::PathBuf, reheat_on_read: bool) -> Self {
+    pub fn with_tiering(self, cold_root: std::path::PathBuf, reheat_on_read: bool) -> Result<Self> {
         match self {
-            Self::Tokio(b) => Self::Tokio(b.with_tiering(cold_root, reheat_on_read)),
+            Self::Tokio(b) => Ok(Self::Tokio(b.with_tiering(cold_root, reheat_on_read)?)),
             #[cfg(all(target_os = "linux", feature = "uring"))]
-            Self::Uring(b) => Self::Uring(b.with_tiering(cold_root, reheat_on_read)),
+            Self::Uring(b) => Ok(Self::Uring(b.with_tiering(cold_root, reheat_on_read)?)),
+        }
+    }
+
+    pub fn with_heatmap(self, heatmap: Heatmap) -> Self {
+        match self {
+            Self::Tokio(b) => Self::Tokio(b.with_heatmap(heatmap)),
+            #[cfg(all(target_os = "linux", feature = "uring"))]
+            Self::Uring(b) => Self::Uring(b.with_heatmap(heatmap)),
         }
     }
 }

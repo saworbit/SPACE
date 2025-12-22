@@ -8,7 +8,10 @@ use common::{Segment, SegmentId};
 use futures::future::{self, BoxFuture};
 use tokio::sync::{mpsc, oneshot};
 
-use tiering::{migrate_segment_to_cold, recall_segment_from_cold, TieringPaths};
+use tiering::{
+    delete_segment_from_cold, is_stub_bytes, migrate_segment_to_cold, recall_from_stub_bytes,
+    recall_segment_from_cold, Heatmap, TieringPaths,
+};
 
 #[derive(Debug)]
 enum UringCommand {
@@ -34,6 +37,7 @@ pub struct UringBackend {
     root: Arc<PathBuf>,
     tiering: Option<Arc<TieringPaths>>,
     reheat_on_read: bool,
+    heatmap: Option<Heatmap>,
 }
 
 impl UringBackend {
@@ -54,16 +58,21 @@ impl UringBackend {
             root: Arc::new(root),
             tiering: None,
             reheat_on_read: false,
+            heatmap: None,
         })
     }
 
-    pub fn with_tiering(mut self, cold_root: PathBuf, reheat_on_read: bool) -> Self {
-        let paths = TieringPaths {
-            hot_root: (*self.root).clone(),
-            cold_root,
-        };
+    pub fn with_tiering(mut self, cold_root: PathBuf, reheat_on_read: bool) -> Result<Self> {
+        let bucket = std::env::var("SPACE_COLD_BUCKET").unwrap_or_else(|_| "bucket".to_string());
+        let paths =
+            TieringPaths::simulated_s3_with_bucket((*self.root).clone(), cold_root, bucket)?;
         self.tiering = Some(Arc::new(paths));
         self.reheat_on_read = reheat_on_read;
+        Ok(self)
+    }
+
+    pub fn with_heatmap(mut self, heatmap: Heatmap) -> Self {
+        self.heatmap = Some(heatmap);
         self
     }
 
@@ -85,20 +94,12 @@ impl UringBackend {
             .join(format!("{}.stub.json", segment.0))
     }
 
-    async fn read_len_hint(&self, segment: SegmentId) -> Option<usize> {
-        let meta_path = self.metadata_path(segment);
-        let bytes = tokio::fs::read(&meta_path).await.ok()?;
-        let seg: Segment = serde_json::from_slice(&bytes).ok()?;
-        Some(seg.len as usize)
-    }
-
     async fn read_bytes(&self, segment: SegmentId) -> Result<Vec<u8>> {
         let data_path = self.data_path(segment);
         if tokio::fs::try_exists(&data_path).await.unwrap_or(false) {
-            let len = self
-                .read_len_hint(segment)
-                .await
-                .or_else(|| std::fs::metadata(&data_path).ok().map(|m| m.len() as usize))
+            let len = std::fs::metadata(&data_path)
+                .ok()
+                .map(|m| m.len() as usize)
                 .unwrap_or(0);
 
             let (resp_tx, resp_rx) = oneshot::channel();
@@ -109,13 +110,36 @@ impl UringBackend {
                     resp: resp_tx,
                 })
                 .map_err(|_| anyhow!("io_uring actor is not running"))?;
-            return resp_rx
+            let raw = resp_rx
                 .await
                 .map_err(|_| anyhow!("io_uring actor dropped response"))??;
+
+            let out = if is_stub_bytes(&raw) {
+                if let Some(paths) = &self.tiering {
+                    recall_from_stub_bytes(paths, segment, &raw, self.reheat_on_read).await?
+                } else {
+                    return Err(anyhow!(
+                        "segment {} is cold but tiering is not configured",
+                        segment.0
+                    ));
+                }
+            } else {
+                raw
+            };
+
+            if let Some(heatmap) = &self.heatmap {
+                heatmap.record_access(segment);
+            }
+
+            return Ok(out);
         }
 
         if let Some(paths) = &self.tiering {
-            return recall_segment_from_cold(paths, segment, self.reheat_on_read).await;
+            let out = recall_segment_from_cold(paths, segment, self.reheat_on_read).await?;
+            if let Some(heatmap) = &self.heatmap {
+                heatmap.record_access(segment);
+            }
+            return Ok(out);
         }
 
         let stub_path = self.stub_path(segment);
@@ -195,7 +219,7 @@ impl UringTransaction {
         let _ = tokio::fs::remove_file(self.backend.stub_path(segment)).await;
         let _ = tokio::fs::remove_file(self.backend.metadata_path(segment)).await;
         if let Some(paths) = &self.backend.tiering {
-            let _ = tokio::fs::remove_file(paths.cold_object_path(segment)).await;
+            let _ = delete_segment_from_cold(paths, segment).await;
         }
         Ok(())
     }

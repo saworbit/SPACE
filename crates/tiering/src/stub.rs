@@ -1,62 +1,49 @@
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use anyhow::{anyhow, Context, Result};
-use common::SegmentId;
-use serde::{Deserialize, Serialize};
+use common::StorageStub;
+use object_store::path::Path as ObjPath;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum StubBackend {
-    SimulatedS3,
+pub const STUB_MAGIC: &str = "SPACE_STUB_V1";
+
+pub fn is_stub_bytes(bytes: &[u8]) -> bool {
+    bytes.starts_with(br#"{"magic":"SPACE_STUB_V1""#)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SegmentStub {
-    pub segment_id: u64,
-    pub backend: StubBackend,
-    pub remote_key: String,
-    pub migrated_at: u64,
+pub fn parse_stub(bytes: &[u8]) -> Result<StorageStub> {
+    let stub: StorageStub = serde_json::from_slice(bytes).context("deserialize storage stub")?;
+    if stub.magic != STUB_MAGIC {
+        return Err(anyhow!("unexpected stub magic: {}", stub.magic));
+    }
+    Ok(stub)
 }
 
-impl SegmentStub {
-    pub fn new_simulated_s3(segment: SegmentId, remote_key: String) -> Self {
-        Self {
-            segment_id: segment.0,
-            backend: StubBackend::SimulatedS3,
-            remote_key,
-            migrated_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        }
+pub fn make_stub(remote_url: String, original_size: u64, checksum: String) -> StorageStub {
+    StorageStub {
+        magic: STUB_MAGIC.to_string(),
+        original_size,
+        remote_url,
+        checksum,
+    }
+}
+
+/// Extract the object-store path from a remote URL.
+///
+/// Supported:
+/// - `s3://bucket/<key>`
+/// - `local://<key>`
+/// - `<key>` (fallback)
+pub fn object_path_from_remote_url(remote_url: &str) -> Result<ObjPath> {
+    if let Some(rest) = remote_url.strip_prefix("s3://") {
+        // s3://bucket/key...
+        let rest = rest.trim_start_matches('/');
+        let (_bucket, key) = rest.split_once('/').ok_or_else(|| {
+            anyhow!("invalid s3 remote url (expected s3://bucket/key): {remote_url}")
+        })?;
+        return Ok(ObjPath::from(key));
     }
 
-    pub fn to_json_bytes(&self) -> Result<Vec<u8>> {
-        serde_json::to_vec_pretty(self).context("serialize segment stub")
+    if let Some(rest) = remote_url.strip_prefix("local://") {
+        return Ok(ObjPath::from(rest.trim_start_matches('/')));
     }
 
-    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).context("deserialize segment stub")
-    }
-
-    pub fn load(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path).with_context(|| format!("read stub {}", path.display()))?;
-        Self::from_json_bytes(&bytes)
-    }
-
-    pub fn validate_for_segment(&self, segment: SegmentId) -> Result<()> {
-        if self.segment_id != segment.0 {
-            return Err(anyhow!(
-                "stub segment id mismatch: expected {}, got {}",
-                segment.0,
-                self.segment_id
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn cold_object_path(&self, cold_root: &Path) -> PathBuf {
-        cold_root.join(&self.remote_key)
-    }
+    Ok(ObjPath::from(remote_url.trim_start_matches('/')))
 }

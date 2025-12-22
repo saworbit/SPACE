@@ -9,9 +9,12 @@ mod audit;
 
 pub use agent::{spawn_tiering_agent, TieringAgentHandle};
 pub use config::TieringConfig;
-pub use heatmap::{AccessMetrics, Heatmap};
-pub use mover::{migrate_segment_to_cold, recall_segment_from_cold, TieringPaths};
-pub use stub::{SegmentStub, StubBackend};
+pub use heatmap::{AccessStats, Heatmap};
+pub use mover::{
+    delete_segment_from_cold, migrate_segment_to_cold, recall_from_stub_bytes,
+    recall_segment_from_cold, TieringPaths,
+};
+pub use stub::{is_stub_bytes, object_path_from_remote_url, parse_stub, STUB_MAGIC};
 
 #[cfg(feature = "audit")]
 pub use audit::{spawn_audit_heatmap_watcher, AuditWatcherHandle};
