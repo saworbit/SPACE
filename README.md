@@ -1197,6 +1197,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 ### 🚀 Phase 6: Enterprise Features
 - 📋 Metro-sync replication
+- 📋 Autonomous tiering (hot/cold) + rehydrate
 - 📋 Policy compiler
 - 📋 Erasure coding (6+2)
 - 📋 Hardware offload (DPU/GPU)

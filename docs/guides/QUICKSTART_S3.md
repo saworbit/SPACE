@@ -24,6 +24,15 @@ cargo build --release
 ./target/release/spacectl serve-s3 --port 8080
 ```
 
+> Optional: run with the modular pipeline + filesystem storage backend (required for Phase 6 tiering).
+>
+> ```bash
+> cargo build --release --features modular_pipeline
+> export SPACE_STORAGE_ROOT=./space.storage
+> export SPACE_COLD_ROOT=./space.cold
+> ./target/release/spacectl serve-s3 --port 8080 --modular
+> ```
+
 You should see:
 ```
 🚀 SPACE S3 Protocol View listening on http://0.0.0.0:8080
@@ -152,6 +161,7 @@ Now that protocol views work, you can:
 3. **Add Block View** - Expose capsules via NVMe-oF
 4. **Add Encryption** - Per-segment XTS-AES-256
 5. **Add Replication** - Metro-sync between nodes
+6. **Enable Tiering** - Hot/cold offload + rehydrate (Phase 6) via [Tiering Guide](TIERING.md)
 
 ## Troubleshooting
 

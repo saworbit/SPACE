@@ -141,6 +141,7 @@ and payload integrity.
 - The protocol JSON files are intentionally human-readable.  Treat them as
   diagnostic artefacts during development; production deployments would move
   to a durable metadata store.
+- Tiering (Phase 6) is implemented at the storage backend layer; protocol views continue to use the same read APIs and will transparently rehydrate cold segments when enabled. See `docs/guides/TIERING.md`.
 - Deleting a file or volume removes its mapping and schedules the underlying
   capsule for GC via the pipeline.  Segments with shared dedupe references are
   retained until every referencing capsule is removed.

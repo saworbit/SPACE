@@ -198,7 +198,7 @@ fn write_object(id: Uuid, data: &[u8], pol: &Policy) -> Result<()> {
                                              |
                                              ├─ cache hit (NVRAM)
                                              ├─ flash hit (direct)
-                                             └─ disk / cold tier → promote
+                                             └─ disk / cold tier (stub redirect) → rehydrate + promote
 ```
 
 ### 6.3 Autonomous Repair Loop

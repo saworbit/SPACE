@@ -129,7 +129,7 @@ Each facade delegates I/O to the shared `WritePipeline`, ensuring compression, d
                                              │
                                              ├─ cache hit (NVRAM)
                                              ├─ flash hit (direct)
-                                             └─ disk / cold tier → promote
+                                             └─ disk / cold tier (stub redirect) → rehydrate + promote
 ```
 
 ---

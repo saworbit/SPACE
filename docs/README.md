@@ -8,6 +8,7 @@
 ## Guides
 - [Build Guide](guides/BUILD.md)
 - [S3 Quick Start](guides/QUICKSTART_S3.md)
+- [Autonomous Tiering (Phase 6)](guides/TIERING.md)
 - [Multi-Node Quickstart](MULTI_NODE_QUICKSTART.md)
 - [Mesh Cluster (Phase 3)](guides/MESH_CLUSTER.md)
 
