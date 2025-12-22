@@ -253,14 +253,14 @@ async fn main() -> anyhow::Result<()> {
     // Create mesh node in a zone
     let zone = ZoneId::Metro { name: "us-west-1a".into() };
     let listen_addr = "127.0.0.1:8000".parse().unwrap();
-    let mesh_node = Arc::new(MeshNode::new(zone, listen_addr).await->);
+    let mesh_node = Arc::new(MeshNode::new(zone, listen_addr).await?);
 
     // Start mesh with seed nodes
     let seeds = vec!["127.0.0.1:8001".parse().unwrap()];
-    mesh_node.start(seeds).await->;
+    mesh_node.start(seeds).await?;
 
     // Create pipeline with mesh and telemetry
-    let runtime = RuntimeHandles::from_env()->;
+    let runtime = RuntimeHandles::from_env()?;
     let registry = (*runtime.registry).clone();
     let nvram = runtime.nvram.read().await.clone();
     let (tx, rx) = mpsc::unbounded_channel();
@@ -275,7 +275,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Write with metro-sync policy (RPO=0)
     let data = b"Important data requiring zero-RPO";
-    let capsule_id = pipeline.write_capsule_with_policy_async(data, &Policy::metro_sync()).await->;
+    let capsule_id = pipeline
+        .write_capsule_with_policy_async(data, &Policy::metro_sync())
+        .await?;
 
     // Segments automatically mirrored to peers!
     println!("Capsule {} replicated", capsule_id.as_uuid());

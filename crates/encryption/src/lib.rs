@@ -67,7 +67,10 @@ pub mod xts;
 
 // Re-exports for convenience
 pub use error::{EncryptionError, Result};
-pub use key_provider::{AwsKmsProvider, EnvProvider, HashiCorpVaultProvider, KeyProvider};
+pub use key_provider::{
+    AwsKmsProvider, EnvKeyProvider, EnvProvider, FileKeyProvider, FileProvider,
+    HashiCorpVaultProvider, KeyProvider,
+};
 pub use keymanager::{KeyManager, XtsKeyPair};
 pub use mac::{compute_mac, verify_mac, MAC_TAG_SIZE};
 pub use policy::{EncryptionMetadata, EncryptionPolicy, EncryptionStats};

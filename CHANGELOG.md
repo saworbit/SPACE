@@ -85,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Control Plane API surfaced** - README and web interface guide now call out the RFC-001 `/api/v1` surface, JWT guard, standard response envelopes, and Swagger UI at `/swagger-ui`.
+- **Encryption key providers** - Added `encryption::KeyProvider` (env/file providers) and wired `capsule_registry::runtime::RuntimeHandles::from_env` to source the master key via `SPACE_MASTER_KEY_FILE` or `SPACE_MASTER_KEY`.
 - **LibTorch + rdma-sys hygiene** - Full `--all-features` clippy now supported via documented LibTorch 2.2.0 setup; rdma-sys is vendored with an explicit MIT license and deny config clarifications to silence missing-license noise.
 - **S3 protocol now streams** - `protocol-s3` handlers and `S3View` accept streaming bodies (Axum `Body::from_stream`), avoiding O(N) buffering for PUT/GET while keeping a temporary bridge to the legacy pipeline; documented in `docs/specs/PERFORMANCE_FIX_S3_STREAMING.md` with new streaming tests.
 - **Global async runtime for sync pipeline** - `capsule-registry` uses a single `tokio` runtime (via `OnceLock`) for synchronous bridge calls instead of constructing a runtime per operation, eliminating millisecond-scale latency spikes and adding a warning when called from an async context.

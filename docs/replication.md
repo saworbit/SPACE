@@ -127,7 +127,7 @@ let key_pair = HKDF(
 ```
 
 **Features:**
-- Master key from env (`SPACE_MASTER_KEY`) or TPM
+- Master key from `KeyProvider` (env/file/TPM/KMS)
 - Key rotation support (version-based)
 - In-memory key cache with ZeroizeOnDrop
 - FIPS-compliant when using TPM provider
@@ -213,7 +213,7 @@ services:
   node1:
     image: space:latest
     environment:
-      - SPACE_MASTER_KEY=0x1234...  # 64-char hex
+      - SPACE_MASTER_KEY=1234...  # 64-char hex (no 0x prefix)
       - NODE_ID=node1
       - MESH_LISTEN_ADDR=0.0.0.0:12345
     ports:
@@ -225,7 +225,7 @@ services:
   node2:
     image: space:latest
     environment:
-      - SPACE_MASTER_KEY=0x1234...  # Same key!
+      - SPACE_MASTER_KEY=1234...  # Same key!
       - NODE_ID=node2
       - MESH_LISTEN_ADDR=0.0.0.0:12345
       - PEER_NODES=node1:12345
@@ -238,7 +238,7 @@ services:
   node3:
     image: space:latest
     environment:
-      - SPACE_MASTER_KEY=0x1234...
+      - SPACE_MASTER_KEY=1234...
       - NODE_ID=node3
       - MESH_LISTEN_ADDR=0.0.0.0:12345
       - PEER_NODES=node1:12345,node2:12345
@@ -262,6 +262,7 @@ volumes:
 ```bash
 # Node 1 (primary)
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
+# export SPACE_MASTER_KEY_FILE=/run/secrets/space_master_key
 export NODE_ID=node1
 export MESH_LISTEN_ADDR=0.0.0.0:12345
 spacectl serve-s3 --port 8080 &

@@ -179,7 +179,8 @@ SPACE_LOG_FORMAT=compact   # Log format (compact, json)
 
 **Encryption**:
 ```bash
-SPACE_MASTER_KEY=<64-hex>  # 256-bit master key
+SPACE_MASTER_KEY=<64-hex>            # 256-bit master key (dev/CI; 64 hex chars)
+SPACE_MASTER_KEY_FILE=/run/secrets/space_master_key  # preferred (Docker secret / file)
 SPACE_KYBER_KEY_PATH=/capsules/kyber.key  # Post-quantum key
 ```
 

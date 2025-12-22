@@ -376,8 +376,13 @@ mod tests {
 
     #[test]
     fn test_mac_with_large_data() {
-        // Test with 4MB segment
-        let ciphertext = vec![42u8; 4 * 1024 * 1024];
+        // Test with a larger segment. Keep this small under Miri for runtime.
+        let size = if cfg!(miri) {
+            64 * 1024
+        } else {
+            4 * 1024 * 1024
+        };
+        let ciphertext = vec![42u8; size];
         let metadata = EncryptionMetadata::new_xts(1, [9u8; 16], ciphertext.len() as u32);
         let key1 = [77u8; 32];
         let key2 = [88u8; 32];

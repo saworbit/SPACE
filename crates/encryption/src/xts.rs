@@ -308,8 +308,14 @@ mod tests {
         let key_pair = km.get_key(1).unwrap();
         let tweak = [9u8; 16];
 
-        // Test with 4MB (typical segment size)
-        let large_data = vec![42u8; 4 * 1024 * 1024];
+        // Test with a larger buffer (typical segment size is 4MB).
+        // Keep this small under Miri for runtime.
+        let size = if cfg!(miri) {
+            4 * 1024
+        } else {
+            4 * 1024 * 1024
+        };
+        let large_data = vec![42u8; size];
 
         let ciphertext = encrypt(&large_data, key_pair, &tweak).unwrap();
         assert_eq!(ciphertext.len(), large_data.len());

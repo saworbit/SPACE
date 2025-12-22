@@ -237,7 +237,15 @@ impl KeyManager {
     /// Prefer this over `from_env()` for production deployments.
     pub async fn from_provider(provider: &dyn KeyProvider) -> Result<Self> {
         let master_key = provider.fetch_master_key().await?;
-        Ok(Self::new(master_key))
+        if master_key.len() != MASTER_KEY_SIZE {
+            return Err(EncryptionError::InvalidKeyLength {
+                expected: MASTER_KEY_SIZE,
+                actual: master_key.len(),
+            });
+        }
+        let mut master_key_array = [0u8; MASTER_KEY_SIZE];
+        master_key_array.copy_from_slice(master_key.as_slice());
+        Ok(Self::new(master_key_array))
     }
 
     /// Construct a key manager backed by a TPM implementation.

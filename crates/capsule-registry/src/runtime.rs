@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use common::Policy;
-use encryption::KeyManager;
+use encryption::{EnvKeyProvider, FileKeyProvider, KeyManager, KeyProvider};
+use futures::executor::block_on;
 use nvram_sim::NvramLog;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -23,7 +24,8 @@ impl RuntimeHandles {
     ///
     /// - `SPACE_METADATA_PATH` (optional, default: "space.db")
     /// - `SPACE_NVRAM_PATH` (optional, default: "space.nvram")
-    /// - `SPACE_MASTER_KEY` (required, hex-encoded)
+    /// - `SPACE_MASTER_KEY_FILE` (optional, path to a key file)
+    /// - `SPACE_MASTER_KEY` (optional, hex-encoded; dev fallback if unset)
     pub fn from_env() -> Result<Self> {
         let metadata_path =
             std::env::var("SPACE_METADATA_PATH").unwrap_or_else(|_| "space.db".to_string());
@@ -40,8 +42,14 @@ impl RuntimeHandles {
                 .with_context(|| format!("opening nvram log at {}", nvram_path))?,
         ));
 
+        let key_provider: Box<dyn KeyProvider> = match std::env::var("SPACE_MASTER_KEY_FILE") {
+            Ok(path) if !path.trim().is_empty() => Box::new(FileKeyProvider::new(path)),
+            _ => Box::new(EnvKeyProvider::default()),
+        };
+
         let key_manager = Arc::new(RwLock::new(
-            KeyManager::from_env().context("initializing KeyManager from SPACE_MASTER_KEY")?,
+            block_on(KeyManager::from_provider(&*key_provider))
+                .context("initializing KeyManager from KeyProvider")?,
         ));
 
         Ok(Self {

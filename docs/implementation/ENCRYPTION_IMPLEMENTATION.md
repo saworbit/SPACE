@@ -118,14 +118,15 @@ metadata.set_integrity_tag(tag: [u8; 16])
 #### KeyManager
 ```rust
 pub struct KeyManager {
-    master_key: [u8; 32],                    // From SPACE_MASTER_KEY env or TPM
+    master_key: [u8; 32],                    // From KeyProvider (env/file/TPM/KMS)
     hkdf_salt: [u8; 32],                     // Device / TPM provided salt
     key_cache: HashMap<u32, XtsKeyPair>,     // Derived keys
     current_version: u32,                    // Active version
 }
 
 // Initialization
-KeyManager::from_env() -> Result<Self>          // From SPACE_MASTER_KEY
+KeyManager::from_env() -> Result<Self>          // From SPACE_MASTER_KEY (hex; legacy helper)
+KeyManager::from_provider(provider: &dyn KeyProvider) -> Result<Self>  // async; env/file/vault/KMS
 KeyManager::from_tpm<T: TpmProvider>(provider: &T) -> Result<Self>
 KeyManager::new(master_key: [u8; 32]) -> Self   // Explicit (testing)
 

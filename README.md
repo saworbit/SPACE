@@ -408,7 +408,7 @@ cargo build -p scaling --features "podms,rdma"
 # (Linux optional) Spin up SoftRoCE for CI/local validation
 sudo scripts/setup_softroce.sh eth0
 ```
-Production wiring: set `SPACE_METADATA_PATH`, `SPACE_NVRAM_PATH`, and `SPACE_MASTER_KEY`, then build agents via `capsule_registry::runtime::RuntimeHandles::from_env()` so `ScalingAgent::with_runtime` uses real registry/log/key-manager handles.
+Production wiring: set `SPACE_METADATA_PATH`, `SPACE_NVRAM_PATH`, and either `SPACE_MASTER_KEY` (64-hex) or `SPACE_MASTER_KEY_FILE`, then build agents via `capsule_registry::runtime::RuntimeHandles::from_env()` so `ScalingAgent::with_runtime` uses real registry/log/key-manager handles.
 
 ### 🎯 Key Features (Step 3)
 
@@ -714,11 +714,14 @@ docker compose down
 ### 🔐 Setup Encryption *(Optional)*
 
 ```bash
-# Generate master key for encryption
+# Option A: master key via env (64 hex chars)
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 # Verify setup
 echo ${#SPACE_MASTER_KEY}  # Should output 64
+
+# Option B: master key via file (e.g., Docker secret)
+# export SPACE_MASTER_KEY_FILE=/run/secrets/space_master_key
 ```
 
 ### 🛡️ Advanced Security Setup *(Optional)*
@@ -1121,8 +1124,11 @@ Result: Dedup WORKS! 🎉
 ### ⚡ Quick Encryption Setup
 
 ```bash
-# Generate 256-bit master key
+# Option A: 256-bit master key via env (64 hex chars)
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
+
+# Option B: master key via file (e.g., Docker secret)
+# export SPACE_MASTER_KEY_FILE=/run/secrets/space_master_key
 
 # Encryption now auto-enabled! ✨
 ```
@@ -1433,8 +1439,9 @@ This project has **extensive documentation describing future vision and design g
 # Build SPACE
 cargo build --release
 
-# Optional: Enable encryption
+# Optional: Enable encryption (choose one)
 export SPACE_MASTER_KEY=$(openssl rand -hex 32)
+# export SPACE_MASTER_KEY_FILE=/run/secrets/space_master_key
 
 # Create a file with repeated content
 echo "SPACE STORAGE PLATFORM" > demo.txt
