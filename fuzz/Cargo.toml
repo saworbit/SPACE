@@ -12,8 +12,8 @@ fuzzing = []
 anyhow = "1"
 libfuzzer-sys = "0.4"
 
-[package.metadata.cargo-fuzz]
-features = ["fuzzing"]
+[package.metadata]
+cargo-fuzz = true
 
 [dependencies.common]
 path = "../crates/common"
