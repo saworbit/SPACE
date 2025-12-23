@@ -4,15 +4,15 @@
 //!
 //! 1. **Foundry NVMe-oF Binding** (Milestone 8.2): Expose Foundry volumes as
 //!    NVMe-oF targets using SPDK. This allows Linux kernels to mount volumes
-//!    as local block devices over TCP/IP.
+//!    as local block devices over TCP/IP. Available with the `spdk` feature.
 //!
 //! 2. **Phase 4 Capsule Projection**: Project capsules into NVMe-oF targets
-//!    with PODMS federation and metadata sharding.
+//!    with PODMS federation and metadata sharding. Available with the `phase4` feature.
 //!
 //! ## Foundry NVMe-oF Binding
 //!
-//! The `foundry_bdev` module provides the async bridge between SPDK's polling
-//! reactor and Tokio's async runtime. See [`foundry_bdev`] for details.
+//! The `foundry_bdev` module (when enabled with the `spdk` feature) provides
+//! the async bridge between SPDK's polling reactor and Tokio's async runtime.
 //!
 //! ## Phase 4 Capsule Projection
 //!
