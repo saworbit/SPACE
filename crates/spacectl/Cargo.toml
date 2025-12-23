@@ -22,6 +22,7 @@ phase5 = [
     "modular_pipeline",
 ]
 kernel_fuse = ["protocol-fuse/kernel_fuse"]
+spdk = ["protocol-nvme/spdk"]  # Enable SPDK NVMe-oF integration
 phase4 = [
     "protocol-nvme/phase4",
     "protocol-nfs/phase4",

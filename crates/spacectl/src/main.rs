@@ -48,7 +48,9 @@ use uuid::Uuid;
 use gossip_layer::GossipImpl;
 use mesh_core::{GossipConfig, NodeRole, Peer, PeerStore};
 
+#[cfg(feature = "spdk")]
 use foundry::{Foundry, VolumeId};
+#[cfg(feature = "spdk")]
 use protocol_nvme::foundry_bdev;
 
 const NVRAM_PATH: &str = "space.nvram";
@@ -639,6 +641,7 @@ enum Commands {
         command: BlockCommands,
     },
     /// Expose a Foundry volume via NVMe-oF (Milestone 8.2)
+    #[cfg(feature = "spdk")]
     Expose {
         /// Volume ID (UUID) to expose
         #[arg(long)]
@@ -1141,6 +1144,7 @@ async fn main() -> Result<()> {
         Commands::Block { command } => {
             run_block_command(command).await?;
         }
+        #[cfg(feature = "spdk")]
         Commands::Expose {
             volume_id,
             name,

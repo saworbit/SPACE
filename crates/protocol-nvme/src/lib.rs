@@ -19,6 +19,8 @@
 //! The Phase 4 functionality is behind the `phase4` feature flag.
 
 // Foundry NVMe-oF binding (Milestone 8.2)
+// Only available when SPDK is linked
+#[cfg(feature = "spdk")]
 pub mod foundry_bdev;
 
 // Phase 4 capsule projection (feature-gated)
