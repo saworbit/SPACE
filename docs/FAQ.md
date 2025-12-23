@@ -147,4 +147,17 @@ Large Volumes (1GB): ~5-10s for snapshot, ~3-7s for restore (throughput ~100-200
 
 Dedup Ratio: 2-10x space savings for OS images and databases with common patterns.
 
+Q: Can I expose Foundry volumes over the network?
+A: Yes. Milestone 8.2 implements NVMe-oF (NVMe over Fabrics) binding, allowing any Linux kernel to mount a Foundry volume as a local NVMe block device over TCP/IP. The implementation features:
+
+SPDK Integration: An async bridge between SPDK's polling reactor and Tokio's async runtime.
+
+Lock-Free I/O: MPSC channels for command submission and lock-free queues for completions.
+
+Network Exposure: Volumes are exposed via standard NVMe-oF protocol on TCP port 4420 (configurable).
+
+Kernel Mounting: Linux clients use standard nvme-cli tools to connect: sudo nvme connect -t tcp -n nqn.2024-01.io.space:vol-1 -a 127.0.0.1 -s 4420.
+
+This transforms Foundry from local block storage into network-attached storage while maintaining full NVMe protocol compatibility. Use spacectl expose --volume-id <UUID> --name vol-1 --port 4420 to start exposing a volume.
+
 Future optimizations include incremental snapshots (only changed blocks) and copy-on-write for instant snapshots.

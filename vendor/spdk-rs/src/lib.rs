@@ -1,6 +1,112 @@
-//! Simplified SPDK helper used by the Phase 4 NVMe view projection.
+//! SPDK bindings for SPACE.
+//!
+//! This crate provides two levels of SPDK integration:
+//!
+//! 1. **High-level abstractions** for Phase 4 capsule projection (mock implementations)
+//! 2. **Low-level C FFI bindings** for Milestone 8.2 NVMe-oF integration (real SPDK)
 
 use std::sync::Arc;
+
+/// Low-level C FFI bindings to SPDK.
+///
+/// These bindings allow integration with the actual SPDK library for NVMe-oF
+/// target functionality. They are used by the `protocol-nvme` crate's `foundry_bdev`
+/// module.
+pub mod bindings {
+    use std::ffi::c_void;
+
+    /// SPDK bdev I/O structure (opaque from Rust perspective).
+    ///
+    /// This is a forward declaration of the C struct. We don't need the full
+    /// definition since we only work with pointers.
+    #[repr(C)]
+    pub struct spdk_bdev_io {
+        /// Anonymous union containing I/O type-specific data.
+        pub u: spdk_bdev_io_u,
+    }
+
+    /// Union containing I/O type-specific data.
+    #[repr(C)]
+    pub union spdk_bdev_io_u {
+        pub bdev: std::mem::ManuallyDrop<spdk_bdev_io_u_bdev>,
+    }
+
+    /// Bdev-specific I/O data.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct spdk_bdev_io_u_bdev {
+        /// Scatter-gather list for I/O.
+        pub iovs: *mut iovec,
+        /// Number of iovecs.
+        pub iovcnt: i32,
+        /// Starting block address.
+        pub offset_blocks: u64,
+        /// Number of blocks.
+        pub num_blocks: u64,
+    }
+
+    /// POSIX iovec structure for scatter-gather I/O.
+    #[repr(C)]
+    pub struct iovec {
+        /// Base address of memory region.
+        pub iov_base: *mut c_void,
+        /// Size of memory region.
+        pub iov_len: usize,
+    }
+
+    /// SPDK poller structure (opaque).
+    #[repr(C)]
+    pub struct spdk_poller {
+        _private: [u8; 0],
+    }
+
+    /// I/O completion status codes.
+    pub const SPDK_BDEV_IO_STATUS_SUCCESS: i32 = 0;
+    pub const SPDK_BDEV_IO_STATUS_FAILED: i32 = -1;
+    pub const SPDK_BDEV_IO_STATUS_NOMEM: i32 = -2;
+
+    /// Poller callback function type.
+    ///
+    /// Returns the number of events processed (for SPDK's busy/idle heuristics).
+    pub type SpdkPollerFn = Option<extern "C" fn(arg: *mut c_void) -> i32>;
+
+    // External C functions from SPDK library
+    //
+    // These are declared but not implemented here. Linking against libspdk
+    // will provide the actual implementations.
+
+    extern "C" {
+        /// Register a poller to be called periodically.
+        ///
+        /// # Arguments
+        ///
+        /// * `fn` - Callback function
+        /// * `arg` - Opaque argument passed to callback
+        /// * `period_microseconds` - Polling period (0 = every tick)
+        ///
+        /// # Returns
+        ///
+        /// Pointer to poller handle, or NULL on error.
+        pub fn spdk_poller_register(
+            fn_: SpdkPollerFn,
+            arg: *mut c_void,
+            period_microseconds: u64,
+        ) -> *mut spdk_poller;
+
+        /// Complete a bdev I/O operation.
+        ///
+        /// This must be called exactly once for each I/O submitted to a bdev.
+        ///
+        /// # Safety
+        ///
+        /// - `bdev_io` must be a valid pointer from SPDK
+        /// - Must be called from the SPDK thread
+        /// - `bdev_io` must not be used after this call
+        pub fn spdk_bdev_io_complete(bdev_io: *mut spdk_bdev_io, status: i32);
+    }
+}
+
+// High-level abstractions for Phase 4 (mock implementations)
 
 /// Represents an NVMe namespace that can be exported.
 #[derive(Debug, Clone)]

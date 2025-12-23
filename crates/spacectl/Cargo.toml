@@ -60,3 +60,4 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 csi-driver-rs = { workspace = true, optional = true }
 encryption = { path = "../encryption" }
+foundry = { path = "../foundry" }

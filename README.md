@@ -144,7 +144,8 @@
 | **S3 Multipart** | 🔴 Planned | Not implemented | - |
 | **NFS Export** | 🟠 Experimental | Basic namespace, minimal testing | - |
 | **Block Volumes** | 🟠 Experimental | LUN facade with COW, prototype only | - |
-| **NVMe-oF Target** | 🟠 Experimental | SPDK-backed projection scaffolding (simulated) | `phase4` |
+| **NVMe-oF Target (Foundry)** | 🟡 Alpha | SPDK async bridge for Foundry volumes | - |
+| **NVMe-oF Target (Capsule)** | 🟠 Experimental | SPDK-backed capsule projection (simulated) | `phase4` |
 | **FUSE Filesystem** | 🟠 Experimental | Local capsule projection via `content` view | `phase4` |
 | **CSI Driver (K8s)** | 🟠 Experimental | Provision/publish helpers (not a full CSI deployment yet) | `phase4` |
 
@@ -725,6 +726,7 @@ docker compose down
 **What you get**:
 - ✅ **NVRAM simulation**: File-backed log for testing pipeline
 - ✅ **NVMe-oF simulation**: Native NVMe/TCP target with optional SPDK feature gating and automatic fallback; ships `nvme-cli` helper scripts
+- ✅ **Foundry NVMe-oF**: Expose Foundry volumes via `spacectl expose` with SPDK async bridge (Milestone 8.2)
 - ✅ **Multi-node setup**: Simulate distributed capsule mesh
 
 **For more details**:

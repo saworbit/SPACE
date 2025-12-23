@@ -1,19 +1,44 @@
-//! NVMe-oF view projection helpers for Phase 4.
+//! NVMe-oF protocol bindings for SPACE.
 //!
-//! This crate implements the "one capsule, infinite views" concept by projecting
-//! capsules into NVMe-oF targets while coordinating mesh federation and metadata
-//! sharding via PODMS policies.
-#![cfg(feature = "phase4")]
+//! This crate provides two main functionalities:
+//!
+//! 1. **Foundry NVMe-oF Binding** (Milestone 8.2): Expose Foundry volumes as
+//!    NVMe-oF targets using SPDK. This allows Linux kernels to mount volumes
+//!    as local block devices over TCP/IP.
+//!
+//! 2. **Phase 4 Capsule Projection**: Project capsules into NVMe-oF targets
+//!    with PODMS federation and metadata sharding.
+//!
+//! ## Foundry NVMe-oF Binding
+//!
+//! The `foundry_bdev` module provides the async bridge between SPDK's polling
+//! reactor and Tokio's async runtime. See [`foundry_bdev`] for details.
+//!
+//! ## Phase 4 Capsule Projection
+//!
+//! The Phase 4 functionality is behind the `phase4` feature flag.
 
+// Foundry NVMe-oF binding (Milestone 8.2)
+pub mod foundry_bdev;
+
+// Phase 4 capsule projection (feature-gated)
+#[cfg(feature = "phase4")]
 use anyhow::{Context, Result};
+#[cfg(feature = "phase4")]
 use capsule_registry::CapsuleRegistry;
+#[cfg(feature = "phase4")]
 use common::{Capsule, CapsuleId, Policy};
+#[cfg(feature = "phase4")]
 use scaling::{enforce_view_policy, MeshNode};
+#[cfg(feature = "phase4")]
 use serde::Serialize;
+#[cfg(feature = "phase4")]
 use spdk_rs::{Bdev, BlockRange, Namespace, NvmeTarget, NvmeTargetBuilder, NvmfSubsystem};
+#[cfg(feature = "phase4")]
 use tracing::{info, info_span};
 
 /// Handle representing an exported NVMe view.
+#[cfg(feature = "phase4")]
 #[derive(Debug)]
 pub struct NvmeView {
     pub subsystem_nqn: String,
@@ -24,6 +49,7 @@ pub struct NvmeView {
     target: NvmeTarget,
 }
 
+#[cfg(feature = "phase4")]
 impl NvmeView {
     /// Retrieve the capsule referenced by this view.
     pub fn capsule_id(&self) -> CapsuleId {
@@ -46,6 +72,7 @@ impl NvmeView {
     }
 }
 
+#[cfg(feature = "phase4")]
 #[derive(Debug, Serialize)]
 struct NamespaceDescriptor {
     capsule_id: CapsuleId,
@@ -53,6 +80,7 @@ struct NamespaceDescriptor {
     segments: Vec<String>,
 }
 
+#[cfg(feature = "phase4")]
 fn build_namespace(capsule: &Capsule) -> Result<Namespace> {
     let descriptor = NamespaceDescriptor {
         capsule_id: capsule.id,
@@ -67,6 +95,7 @@ fn build_namespace(capsule: &Capsule) -> Result<Namespace> {
     Ok(Namespace::new(blob))
 }
 
+#[cfg(feature = "phase4")]
 fn register_bdev(capsule: &Capsule, bdev_name: &str) -> Result<Bdev> {
     let segments: Vec<String> = if capsule.segments.is_empty() {
         vec!["unmapped".to_string()]
@@ -100,6 +129,7 @@ fn register_bdev(capsule: &Capsule, bdev_name: &str) -> Result<Bdev> {
 }
 
 /// Project a capsule into an NVMe-oF target with PODMS federation.
+#[cfg(feature = "phase4")]
 pub async fn project_nvme_view<C: scaling::ContentStore + 'static>(
     id: CapsuleId,
     policy: &Policy,
@@ -112,6 +142,7 @@ pub async fn project_nvme_view<C: scaling::ContentStore + 'static>(
     NvmeView::project(&capsule, policy, mesh, registry).await
 }
 
+#[cfg(feature = "phase4")]
 impl NvmeView {
     /// Create a fully-projected NVMe view for a capsule.
     pub async fn project<C: scaling::ContentStore + 'static>(

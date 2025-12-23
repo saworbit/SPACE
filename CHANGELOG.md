@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 5 comprehensive integration tests (roundtrip, large volumes, sparse, compression, empty)
     - Full documentation in `docs/guides/FOUNDRY.md` with usage examples
     - Production-ready error handling and tracing instrumentation
+  - **Milestone 8.2: The Protocol (NVMe-oF Binding)** - Network exposure of Foundry volumes via SPDK
+    - New module `protocol-nvme::foundry_bdev` bridges SPDK polling reactor with Tokio async runtime
+    - `IoBridge` provides lock-free async I/O bridge using MPSC channels + lock-free SegQueue for completions
+    - SPDK bdev FFI layer with `init_foundry_bdev()`, `foundry_bdev_poll()`, and `submit_io()` for C integration
+    - Extended `vendor/spdk-rs` with proper C FFI bindings: `spdk_bdev_io`, `spdk_poller_register()`, `spdk_bdev_io_complete()`
+    - New `spacectl expose` command exposes volumes via NVMe-oF TCP (default port 4420)
+    - Integration test script `scripts/test_nvme_loopback.sh` validates kernel initiator connectivity and I/O
+    - Thread-safe pointer handling across async boundaries (pointer→usize→pointer conversion)
+    - 4096-byte block size for standard NVMe compatibility
+    - Full documentation with architecture diagrams and usage examples
 - **Phase 4b: The Bridge (Global Federation)** - gRPC (HTTP/2) receiver + push-based, chunked segment transfer, `Policy.federation.targets`/`priority`, persistent replication queue/state, and new CLI commands: `spacectl zone add|list` + `spacectl federation serve` + `scripts/test_federation_mock.sh`.
 - **Phase 5: The Brain (Compute-over-Data)** - Added `Policy.transform` (ordered WASM transform chain) schema with triggers (`on-read`/`on-write`), resource limits (memory pages + fuel), and optional artifact verification (sha256 + signature). Runtime execution is implemented in the new `transform-engine` crate and wired into the `pipeline` crate (feature `phase5`) for on-read/on-write streaming transforms.
 - **Phase 6: The Metal (Autonomous Tiering)** - Background thermostat tracks segment access and offloads cold segment payloads to S3-compatible object storage, replacing hot bytes with a `SPACE_STUB_V1` pointer and transparently rehydrating on reads (optional write-back via `SPACE_REHEAT_ON_READ`). Public APIs are exposed via `tiering::{Heatmap, TieringAgent}` and `common::StorageStub`.

@@ -48,6 +48,9 @@ use uuid::Uuid;
 use gossip_layer::GossipImpl;
 use mesh_core::{GossipConfig, NodeRole, Peer, PeerStore};
 
+use foundry::{Foundry, VolumeId};
+use protocol_nvme::foundry_bdev;
+
 const NVRAM_PATH: &str = "space.nvram";
 const REGISTRY_DB_PATH: &str = "space.db";
 const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
@@ -635,6 +638,21 @@ enum Commands {
         #[command(subcommand)]
         command: BlockCommands,
     },
+    /// Expose a Foundry volume via NVMe-oF (Milestone 8.2)
+    Expose {
+        /// Volume ID (UUID) to expose
+        #[arg(long)]
+        volume_id: String,
+        /// Logical name for the volume (used in NQN)
+        #[arg(long)]
+        name: String,
+        /// NVMe-oF TCP port
+        #[arg(short, long, default_value = "4420")]
+        port: u16,
+        /// Volume size in bytes (for new volumes)
+        #[arg(long)]
+        size: Option<u64>,
+    },
     /// Cluster server operations.
     Server {
         #[command(subcommand)]
@@ -1122,6 +1140,66 @@ async fn main() -> Result<()> {
         }
         Commands::Block { command } => {
             run_block_command(command).await?;
+        }
+        Commands::Expose {
+            volume_id,
+            name,
+            port,
+            size,
+        } => {
+            println!("Exposing Foundry volume via NVMe-oF");
+            println!("Volume ID: {}", volume_id);
+            println!("Volume Name: {}", name);
+            println!("NVMe-oF Port: {}", port);
+
+            // Parse volume ID
+            let vol_id = Uuid::parse_str(&volume_id)
+                .with_context(|| format!("Invalid volume UUID: {}", volume_id))?;
+            let volume_id = VolumeId::from_uuid(vol_id);
+
+            // Create or get the Foundry instance
+            let foundry = Foundry::new();
+
+            // Get or create the volume
+            let volume = if let Some(size_bytes) = size {
+                // Create a new volume
+                println!("Creating new volume with size {} bytes", size_bytes);
+                foundry.create_volume(volume_id, size_bytes, None).await?
+            } else {
+                // Get existing volume
+                println!("Looking up existing volume");
+                foundry.get_volume(volume_id).await?
+            };
+
+            let volume_size = volume.size().await?;
+            println!(
+                "Volume size: {} bytes ({} MB)",
+                volume_size,
+                volume_size / (1024 * 1024)
+            );
+
+            // Start NVMe-oF target
+            let nqn = format!("nqn.2024-01.io.space:{}", name);
+            println!("\nStarting NVMe-oF target...");
+            println!("NQN: {}", nqn);
+            println!("Listen: 0.0.0.0:{}", port);
+
+            foundry_bdev::start_nvme_target(volume, &name, port).await?;
+
+            println!("\nNVMe-oF target is running.");
+            println!("\nTo connect from a Linux initiator:");
+            println!(
+                "  sudo nvme connect -t tcp -n {} -a 127.0.0.1 -s {}",
+                nqn, port
+            );
+            println!("\nPress Ctrl+C to stop...");
+
+            // Wait for Ctrl+C
+            tokio::signal::ctrl_c().await?;
+
+            println!("\nShutting down NVMe-oF target...");
+            foundry_bdev::stop_nvme_target().await?;
+            println!("Shutdown complete.");
         }
         Commands::Server { command } => match command {
             ServerCommands::Start {

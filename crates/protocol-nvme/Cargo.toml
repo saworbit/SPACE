@@ -20,6 +20,12 @@ tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
+# Dependencies for Foundry NVMe-oF binding (Milestone 8.2)
+tokio = { workspace = true, features = ["full"] }
+crossbeam-queue = "0.3"
+bytes = { workspace = true }
+foundry = { path = "../foundry" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 encryption = { path = "../encryption" }
