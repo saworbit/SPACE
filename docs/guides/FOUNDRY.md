@@ -421,7 +421,6 @@ foundry.delete_volume(volume_id).await?;
 
 ## References
 
-- [Implementation Plan](../../.claude/plans/memoized-nibbling-tarjan.md)
 - [VolumeBackend Trait Source](../../crates/foundry/src/backend/mod.rs)
 - [LegacyBackend Implementation](../../crates/foundry/src/backend/legacy.rs)
 - [MagmaBackend Implementation](../../crates/foundry/src/backend/magma.rs)

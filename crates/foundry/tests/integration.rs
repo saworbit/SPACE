@@ -107,7 +107,10 @@ async fn test_large_sequential_writes() {
     let first_chunk = backend.read_at(0, chunk_size).await.unwrap();
     assert_eq!(first_chunk[0], 0);
 
-    let last_chunk = backend.read_at(9 * chunk_size as u64, chunk_size).await.unwrap();
+    let last_chunk = backend
+        .read_at(9 * chunk_size as u64, chunk_size)
+        .await
+        .unwrap();
     assert_eq!(last_chunk[0], 9);
 }
 
@@ -129,7 +132,10 @@ async fn test_sparse_volume_operations() {
 
     // Write at the end (sparse in between)
     let data_end = Bytes::from(vec![0xBB; 4096]);
-    backend.write_at(size - 4096, data_end.clone()).await.unwrap();
+    backend
+        .write_at(size - 4096, data_end.clone())
+        .await
+        .unwrap();
 
     // Read from the beginning
     let read_start = backend.read_at(0, 4096).await.unwrap();
@@ -174,7 +180,10 @@ async fn test_volume_resize() {
 
     // Verify we can write to the new region
     let new_data = Bytes::from(vec![0x99; 4096]);
-    backend.write_at(15 * 1024 * 1024, new_data.clone()).await.unwrap();
+    backend
+        .write_at(15 * 1024 * 1024, new_data.clone())
+        .await
+        .unwrap();
     let read_new = backend.read_at(15 * 1024 * 1024, 4096).await.unwrap();
     assert_eq!(read_new, new_data);
 }
@@ -226,8 +235,7 @@ async fn test_multiple_volumes() {
 #[tokio::test]
 async fn test_backend_fallback() {
     let temp_dir = TempDir::new().unwrap();
-    let foundry = Foundry::with_data_dir(temp_dir.path())
-        .with_backend(BackendType::Auto);
+    let foundry = Foundry::with_data_dir(temp_dir.path()).with_backend(BackendType::Auto);
 
     let volume_id = VolumeId::new();
 
@@ -280,7 +288,6 @@ async fn test_error_handling() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_windows_file_sharing() {
-
     let temp_dir = TempDir::new().unwrap();
     let foundry = Foundry::with_data_dir(temp_dir.path());
 

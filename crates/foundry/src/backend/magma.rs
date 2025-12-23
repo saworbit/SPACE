@@ -20,6 +20,7 @@ struct PhysicalAddr {
     /// Physical offset in the device
     offset: u64,
     /// Length of the data at this location
+    #[allow(dead_code)] // Used for future validation and GC
     len: u32,
 }
 
@@ -237,14 +238,14 @@ impl VolumeBackend for MagmaBackend {
 
             // 3. Update L2P map (block-level granularity)
             let block_start = offset / self.block_size;
-            let block_end = (offset + len as u64 + self.block_size - 1) / self.block_size;
+            let block_end = (offset + len as u64).div_ceil(self.block_size);
 
             for block in block_start..block_end {
                 let block_offset = block * self.block_size;
                 let data_start = offset.max(block_offset);
                 let data_end = (offset + len as u64).min((block + 1) * self.block_size);
 
-                let offset_in_data = (data_start - offset) as u64;
+                let offset_in_data = data_start - offset;
                 let block_len = (data_end - data_start) as u32;
 
                 self.l2p_map.insert(

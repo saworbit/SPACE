@@ -62,26 +62,21 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-pub use backend::{VolumeBackend, VolumeId};
 pub use backend::legacy::LegacyBackend;
-pub use backend::magma::{MagmaBackend, GcStats};
+pub use backend::magma::{GcStats, MagmaBackend};
+pub use backend::{VolumeBackend, VolumeId};
 pub use error::{FoundryError, Result};
 
 /// Backend type selection for volume creation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendType {
     /// Automatically select backend: try Magma, fallback to Legacy
+    #[default]
     Auto,
     /// Force file-based backend (guaranteed to work)
     Legacy,
     /// Force log-structured backend (fail if unavailable)
     Magma,
-}
-
-impl Default for BackendType {
-    fn default() -> Self {
-        BackendType::Auto
-    }
 }
 
 /// Foundry volume manager.
@@ -435,6 +430,9 @@ mod tests {
             .create_volume(volume_id, 1024 * 1024, Some(BackendType::Magma))
             .await;
 
-        assert!(matches!(result, Err(FoundryError::BackendUnavailable { .. })));
+        assert!(matches!(
+            result,
+            Err(FoundryError::BackendUnavailable { .. })
+        ));
     }
 }

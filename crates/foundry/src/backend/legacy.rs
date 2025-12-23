@@ -150,7 +150,10 @@ impl VolumeBackend for LegacyBackend {
                 .ok_or_else(|| FoundryError::config_error("Volume not initialized"))?;
 
             // Clone file to avoid holding lock during I/O
-            let mut file_clone = file.try_clone().await.map_err(|e| FoundryError::io_error(offset, e))?;
+            let mut file_clone = file
+                .try_clone()
+                .await
+                .map_err(|e| FoundryError::io_error(offset, e))?;
             drop(file_guard);
 
             // Seek and read
@@ -186,7 +189,10 @@ impl VolumeBackend for LegacyBackend {
                 .ok_or_else(|| FoundryError::config_error("Volume not initialized"))?;
 
             // Clone file to avoid holding lock during I/O
-            let mut file_clone = file.try_clone().await.map_err(|e| FoundryError::io_error(offset, e))?;
+            let mut file_clone = file
+                .try_clone()
+                .await
+                .map_err(|e| FoundryError::io_error(offset, e))?;
             drop(file_guard);
 
             // Seek and write
@@ -372,7 +378,10 @@ mod tests {
             .await
             .unwrap();
 
-        let read_data = backend.read_at(1024 * 1024 + 512 * 1024, 4096).await.unwrap();
+        let read_data = backend
+            .read_at(1024 * 1024 + 512 * 1024, 4096)
+            .await
+            .unwrap();
         assert_eq!(read_data, data);
     }
 }
