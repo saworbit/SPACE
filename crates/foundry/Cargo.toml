@@ -1,0 +1,33 @@
+[package]
+name = "foundry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+dashmap = "5.5.3"
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["fileapi", "winnt"] }
+
+[features]
+default = []
+# Future: SPDK integration for raw NVMe access
+magma = []
+# Future: io_uring integration for O_DIRECT
+uring = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3.8"

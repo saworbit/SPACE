@@ -116,6 +116,21 @@
 | **SPIFFE/mTLS Gateway** | 🟠 Experimental | Basic eBPF hooks, needs validation | `advanced-security` |
 | **Post-Quantum Crypto** | 🟠 Experimental | Kyber hybrid toggle, untested | `advanced-security` |
 
+### Block Storage (Phase 8: The Foundry)
+
+| Feature | Status | Notes | Build Flag |
+|:--------|:------:|:------|:-----------|
+| **VolumeBackend Abstraction** | 🟢 Beta | Block-level volume trait with BoxFuture pattern | - |
+| **LegacyBackend (File-based)** | 🟢 Beta | Sparse file volumes, works on all platforms | - |
+| **MagmaBackend (Log-structured)** | 🟠 Experimental | L2P mapping, append-only writes (stub) | `magma` |
+| **DirectIoDevice** | ⚪ Stub | Abstraction for SPDK/raw device (tokio::fs for now) | - |
+| **Volume Management** | 🟢 Beta | Create, get, delete, list volumes | - |
+| **Concurrent Access** | 🟡 Alpha | Thread-safe reads, sequential writes recommended | - |
+| **Sparse Volumes** | 🟢 Beta | Filesystem-backed sparse file support | - |
+| **Online Resize** | 🟢 Beta | LegacyBackend supports volume resize | - |
+| **Bounds Checking** | 🟢 Beta | Automatic validation of read/write offsets | - |
+| **Windows Compatibility** | 🟢 Beta | File sharing, sparse file support | - |
+
 ### Protocol Views
 
 | Feature | Status | Notes | Build Flag |

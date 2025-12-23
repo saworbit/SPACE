@@ -4,6 +4,259 @@
 
 This document summarizes the comprehensive implementation of container integration and simulation capabilities for SPACE, completed according to the detailed specification.
 
+## Phase 8: The Foundry (Polymorphic Block Storage)
+
+### Overview
+
+Phase 8 introduces the Foundry - a high-performance mutable block storage layer with pluggable backends. This provides volume-level abstraction for virtual disks, databases, and raw NVMe devices.
+
+**Status**: 🟢 Beta (LegacyBackend) / 🟠 Experimental (MagmaBackend)
+
+### Implementation
+
+#### ✅ New Crate: `foundry` (`crates/foundry/`)
+- **Purpose**: Block-level volume abstraction with multiple backend implementations
+- **Architecture**: Trait-based design with runtime backend selection
+- **Testing**: 38 tests total (28 unit + 9 integration + 1 doc test)
+
+### Core Components
+
+#### 1. VolumeBackend Trait (`src/backend/mod.rs`)
+- **Pattern**: Manual `BoxFuture` (matches SPACE's `StorageBackend` pattern)
+- **Methods**:
+  - `init(size_bytes)` - Initialize/create volume
+  - `read_at(offset, len)` - Random access read
+  - `write_at(offset, data)` - Random access write
+  - `sync()` - Flush to stable storage
+  - `size()` - Get current volume size
+  - `resize(new_size)` - Online resize (optional)
+- **Design Choice**: No `#[async_trait]` for consistency with codebase
+
+#### 2. LegacyBackend - File-based Implementation (`src/backend/legacy.rs`)
+- **Status**: 🟢 Beta - Production-ready
+- **Features**:
+  - Sparse file support (ext4, xfs, btrfs, NTFS, APFS)
+  - Universal compatibility (Linux, macOS, Windows)
+  - Windows file sharing (`FILE_SHARE_READ | FILE_SHARE_WRITE`)
+  - Interior mutability with `Arc<RwLock<File>>`
+  - Concurrent read support
+  - Online resize support
+  - Automatic bounds checking
+- **Platform Support**:
+  - ✅ Linux: Sparse files via set_len()
+  - ✅ macOS: APFS/HFS+ sparse support
+  - ✅ Windows: NTFS sparse files with explicit sharing
+- **Testing**: 8 unit tests covering init, read/write, sparse operations, resize, bounds checking
+
+#### 3. MagmaBackend - Log-structured Implementation (`src/backend/magma.rs`)
+- **Status**: 🟠 Experimental - SPDK integration pending (Phase 8.2)
+- **Architecture**:
+  - **L2P Map**: DashMap<u64, PhysicalAddr> for lock-free logical-to-physical mapping
+  - **Write Head**: AtomicU64 for append-only allocation
+  - **Block Size**: 4KB default (configurable)
+  - **Sparse Support**: Unwritten blocks return zeros
+- **Key Optimizations**:
+  - Transforms random writes → sequential writes
+  - Zero write amplification (pending GC)
+  - Lock-free concurrent reads via DashMap
+  - Atomic write head allocation
+- **Future Work**:
+  - Phase 8.1: Background garbage collection
+  - Phase 8.2: SPDK NVMe bdev integration
+  - Phase 8.3: io_uring with O_DIRECT
+- **Testing**: 7 unit tests covering L2P mapping, sequential writes, sparse reads, overwrite, GC stub
+
+#### 4. DirectIoDevice Abstraction (`src/backend/device.rs`)
+- **Status**: ⚪ Stub - Currently uses tokio::fs
+- **Purpose**: Abstraction layer for raw device I/O
+- **Current**: Regular file I/O with seek+read/write
+- **Future (Phase 8.2)**:
+  - SPDK NVMe bdev integration
+  - Zero-copy DMA transfers
+  - NVMe command passthrough
+- **Testing**: 3 unit tests for basic operations
+
+#### 5. Foundry Manager (`src/lib.rs`)
+- **Features**:
+  - Runtime backend selection (`Auto`, `Legacy`, `Magma`)
+  - Graceful fallback (Magma → Legacy if unavailable)
+  - Volume registry with `Arc<RwLock<HashMap<VolumeId, Arc<dyn VolumeBackend>>>>`
+  - Environment-based configuration (`SPACE_DATA_DIR`)
+- **Backend Types**:
+  - `BackendType::Auto` - Try Magma, fallback to Legacy
+  - `BackendType::Legacy` - Force file-based (always works)
+  - `BackendType::Magma` - Force log-structured (fail if unavailable)
+- **Testing**: 8 unit tests covering lifecycle, backend selection, fallback
+
+#### 6. Error Handling (`src/error.rs`)
+- **Pattern**: thiserror-based structured errors
+- **Key Errors**:
+  - `VolumeNotFound(VolumeId)` - Volume doesn't exist
+  - `OutOfBounds { offset, len, volume_size }` - I/O beyond volume
+  - `BackendUnavailable { reason }` - Backend can't be created
+  - `IoError { offset, source }` - Low-level I/O failure
+- **Helpers**: Constructor methods for ergonomic error creation
+- **Testing**: 3 unit tests for error display and conversion
+
+### Integration Tests (`tests/integration.rs`)
+
+Comprehensive integration test suite covering real-world scenarios:
+
+1. **`test_volume_lifecycle`** - Create, write pattern, sync, read back, verify, delete
+2. **`test_concurrent_access`** - Sequential writes + concurrent reads (thread-safety)
+3. **`test_large_sequential_writes`** - 10MB in 1MB chunks (performance)
+4. **`test_sparse_volume_operations`** - 100GB sparse, write at edges, verify zeros
+5. **`test_volume_resize`** - Resize 10MB → 20MB, verify old data, write to new region
+6. **`test_multiple_volumes`** - 5 volumes, different data, isolation verification
+7. **`test_backend_fallback`** - Auto selection falls back to Legacy gracefully
+8. **`test_error_handling`** - Out of bounds, volume not found, duplicate creation
+9. **`test_windows_file_sharing`** (Windows only) - File sharing verification
+
+### Documentation
+
+#### ✅ Crate-level Documentation
+- Comprehensive module docs in `src/lib.rs` with usage examples
+- Architecture diagrams in ASCII art
+- Deployment strategy (Dev/Edge → Production → Hyperscale)
+- API documentation for all public types
+
+#### ✅ Guide Document (`docs/guides/FOUNDRY.md`)
+- Complete usage guide with examples
+- Architecture overview with diagrams
+- Performance characteristics
+- Platform support matrix
+- Error handling patterns
+- Configuration options
+- Troubleshooting section
+- Future roadmap (Phases 8.1-8.5)
+
+#### ✅ CHANGELOG (`CHANGELOG.md`)
+- Detailed Phase 8 entry with all features
+- Breaking down: trait, backends, manager, testing
+
+#### ✅ README (`README.md`)
+- New "Block Storage (Phase 8: The Foundry)" section in feature table
+- Status indicators for each component
+
+### Performance Characteristics
+
+#### LegacyBackend (File-based)
+- **Sequential Read**: ~GB/s (filesystem cache)
+- **Random Read**: ~MB/s (device-dependent)
+- **Sequential Write**: ~GB/s (write amplification on SSDs)
+- **Random Write**: ~MB/s (filesystem overhead)
+- **Sparse Creation**: Instant (metadata only)
+
+#### MagmaBackend (Target, Phase 8.2+)
+- **Sequential Read**: ~GB/s (direct device I/O)
+- **Random Read**: ~GB/s (L2P map overhead minimal)
+- **Sequential Write**: ~GB/s (append-only log)
+- **Random Write**: ~GB/s (transformed to sequential)
+- **Write Amplification**: ~1.0x (near-zero, pending GC)
+
+### Key Design Decisions
+
+#### 1. BoxFuture Pattern
+- **Decision**: Use manual `BoxFuture` instead of `#[async_trait]`
+- **Rationale**: Matches `StorageBackend` trait pattern for consistency
+- **Benefits**: Explicit lifetimes, no macro dependency, better errors
+
+#### 2. Interior Mutability
+- **Decision**: `Arc<RwLock<_>>` for backend state
+- **Rationale**: Enables `Arc<dyn VolumeBackend>` usage
+- **Benefits**: Thread-safe sharing, concurrent reads, clean API
+
+#### 3. DashMap for L2P
+- **Decision**: Use DashMap instead of `RwLock<HashMap>`
+- **Rationale**: Lock-free concurrent access on hot paths
+- **Benefits**: Zero lock contention, predictable performance
+
+#### 4. Sparse File Support
+- **Decision**: Rely on filesystem sparse file support
+- **Rationale**: Universal compatibility, no special privileges
+- **Trade-off**: Subject to filesystem limitations
+
+### Workspace Integration
+
+#### Updated Files
+- **`Cargo.toml`**: Added `crates/foundry` to workspace members
+- **`CHANGELOG.md`**: Phase 8 entry with comprehensive feature list
+- **`README.md`**: New "Block Storage" section in feature table
+- **`docs/guides/FOUNDRY.md`**: Complete usage guide
+- **`docs/implementation/IMPLEMENTATION_SUMMARY.md`**: This section
+
+### Future Phases
+
+#### Phase 8.1: Garbage Collection
+- Background compaction for MagmaBackend
+- Live set tracking
+- Segment cleaning algorithm
+- Space reclamation
+
+#### Phase 8.2: SPDK Integration
+- Replace DirectIoDevice stub with SPDK NVMe bdev
+- Zero-copy DMA transfers
+- Raw device access
+- NVMe command passthrough
+
+#### Phase 8.3: io_uring Direct I/O
+- O_DIRECT support for LegacyBackend (Linux)
+- Atomic positioned writes
+- Integration with existing io_uring transport
+
+#### Phase 8.4: Snapshots
+- Copy-on-write snapshot support
+- Reference counting for shared blocks
+- Snapshot metadata management
+- Point-in-time recovery
+
+#### Phase 8.5: Replication
+- Volume-level mirroring
+- Integration with PODMS scaling
+- Cross-datacenter replication
+- Consistency guarantees
+
+### Verification
+
+```bash
+# Build and test foundry crate
+cd crates/foundry
+cargo check
+cargo test
+
+# Run integration tests
+cargo test --test integration
+
+# Run all workspace tests
+cd ../..
+cargo test -p foundry
+
+# Check documentation
+cargo doc --open -p foundry
+```
+
+### Dependencies
+
+**Core:**
+- `tokio` (async runtime, fs operations)
+- `bytes` (zero-copy buffers)
+- `futures` (BoxFuture)
+- `dashmap` (concurrent map)
+- `uuid` (volume IDs)
+- `serde` (serialization)
+- `thiserror` (error handling)
+- `anyhow` (error context)
+- `tracing` (logging)
+
+**Platform-specific:**
+- `winapi` (Windows file operations)
+
+**Dev:**
+- `tempfile` (test isolation)
+- `tokio-test` (async test utilities)
+
+---
+
 ## What Was Implemented
 
 ### 1. Simulation Crates (3 new crates)

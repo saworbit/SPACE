@@ -28,6 +28,7 @@ members = [
     "crates/gossip-layer",      # NEW: Gossip protocol layer using libp2p
     "crates/web-interface",     # NEW: Next-gen web interface with Axum + Leptos
     "crates/podms-orchestrator", # NEW: PODMS multi-node orchestration layer
+    "crates/foundry",           # NEW: Phase 8 polymorphic block storage
     "xtask",
     "vendor/raft-rs",
     "vendor/spdk-rs",
