@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 phase4 = ["common/podms", "scaling/phase4"]
+spdk-tests = []  # Enable tests that require SPDK to be linked
 
 [dependencies]
 anyhow = { workspace = true }
@@ -29,4 +30,5 @@ foundry = { path = "../foundry" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 encryption = { path = "../encryption" }
+tempfile = "3.0"
 nvram-sim = { path = "../nvram-sim" }

@@ -189,7 +189,10 @@ impl IoBridge {
     }
 }
 
-#[cfg(test)]
+// Tests require SPDK to be linked, so we only compile them when the actual SPDK
+// library is available. In practice, these would run in a Linux environment with
+// SPDK installed.
+#[cfg(all(test, feature = "spdk-tests"))]
 mod tests {
     use super::*;
     use foundry::{BackendType, Foundry, VolumeId};
