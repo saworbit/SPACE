@@ -104,6 +104,7 @@ impl LegacyBackend {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(false)
                 .open(path)
                 .await
                 .map_err(|e| e.into())
