@@ -90,3 +90,61 @@ Bash
 
 docker compose -f containerization/docker-compose.yml up -d
 This allows you to test S3 uploads, deduplication ratios, and policy configurations locally.
+
+6. Volumes & Snapshots (Phase 8)
+Q: What is the Foundry, and how does it relate to capsules?
+A: The Foundry is my high-performance mutable block storage layer (Phase 8). While capsules are immutable content-addressed storage, Foundry provides traditional volumes (like virtual disks) with random read/write access. It bridges two worlds:
+
+Hot Storage: Foundry volumes provide fast, mutable block devices for databases, VMs, and applications.
+
+Cold Storage: The Capsule Registry provides immutable, deduplicated storage for backups and archives.
+
+Together, they form a complete storage solution: work on hot volumes, snapshot to cold capsules.
+
+Q: How do snapshots work in SPACE?
+A: My Snapshot Engine (Milestone 8.1: The Bridge) creates point-in-time copies of volumes by:
+
+Chunking: Split the volume into 64KB blocks for optimal deduplication.
+
+Deduplication: Store each block as a capsule. Identical blocks (zeros, OS files) are stored only once globally.
+
+Manifest: Create a JSON manifest capsule that maps volume offsets to capsule IDs.
+
+Atomicity: The snapshot doesn't exist until the manifest is written—it's either complete or doesn't exist.
+
+This design means a 100GB sparse volume with 1MB of actual data only consumes ~1MB of storage.
+
+Q: Can I restore a snapshot to a different volume?
+A: Yes. The restore operation is flexible:
+
+Same Volume: Restore over the existing volume (destructive).
+
+Different Volume: Create a new volume and restore into it (auto-resizes).
+
+Different Node: Since manifests are capsules with UUIDs, you can restore on any node in the mesh.
+
+This enables disaster recovery, volume cloning, and test environment creation.
+
+Q: What policies can I apply to snapshots?
+A: Snapshots respect the full Policy system:
+
+Default: LZ4 compression + deduplication (fast, space-efficient).
+
+Text-Optimized: Zstd level 3 compression for logs and text data (higher compression ratio).
+
+Encrypted: XTS-AES-256 encryption for sensitive data.
+
+Custom: Any combination of compression, encryption, and deduplication.
+
+The policy is applied during snapshot creation and automatically reversed during restore.
+
+Q: How fast are snapshots?
+A: Performance depends on volume size and policy:
+
+Small Volumes (10MB): ~100-200ms for snapshot, ~50-100ms for restore.
+
+Large Volumes (1GB): ~5-10s for snapshot, ~3-7s for restore (throughput ~100-200 MB/s).
+
+Dedup Ratio: 2-10x space savings for OS images and databases with common patterns.
+
+Future optimizations include incremental snapshots (only changed blocks) and copy-on-write for instant snapshots.

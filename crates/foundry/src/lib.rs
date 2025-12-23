@@ -55,6 +55,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod snapshot;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -11,12 +11,16 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 dashmap = "5.5.3"
 futures = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+# Internal crates for snapshot engine
+capsule-registry = { path = "../capsule-registry" }
+common = { path = "../common" }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["fileapi", "winnt"] }
@@ -31,3 +35,5 @@ uring = []
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.8"
+nvram-sim = { path = "../nvram-sim" }
+tracing-subscriber = { workspace = true }

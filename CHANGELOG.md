@@ -47,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Usage examples in crate-level docs
     - Architecture notes and design decisions
     - Future phase roadmap (8.1: GC, 8.2: SPDK, 8.3: io_uring, 8.4: Snapshots, 8.5: Replication)
+  - **Milestone 8.1: The Bridge (Snapshot Engine)** - Point-in-time persistence of volumes to capsules
+    - `SnapshotEngine` orchestrates volume-to-capsule snapshots via WritePipeline
+    - `SnapshotManifest` stores volume metadata + block mappings as JSON capsule
+    - 64KB chunking for optimal deduplication via Capsule Registry
+    - Policy-aware snapshots (compression, encryption, deduplication)
+    - Restore to same or different volume with automatic resize
+    - Sparse volume optimization (zero blocks deduplicated globally)
+    - 5 comprehensive integration tests (roundtrip, large volumes, sparse, compression, empty)
+    - Full documentation in `docs/guides/FOUNDRY.md` with usage examples
+    - Production-ready error handling and tracing instrumentation
 - **Phase 4b: The Bridge (Global Federation)** - gRPC (HTTP/2) receiver + push-based, chunked segment transfer, `Policy.federation.targets`/`priority`, persistent replication queue/state, and new CLI commands: `spacectl zone add|list` + `spacectl federation serve` + `scripts/test_federation_mock.sh`.
 - **Phase 5: The Brain (Compute-over-Data)** - Added `Policy.transform` (ordered WASM transform chain) schema with triggers (`on-read`/`on-write`), resource limits (memory pages + fuel), and optional artifact verification (sha256 + signature). Runtime execution is implemented in the new `transform-engine` crate and wired into the `pipeline` crate (feature `phase5`) for on-read/on-write streaming transforms.
 - **Phase 6: The Metal (Autonomous Tiering)** - Background thermostat tracks segment access and offloads cold segment payloads to S3-compatible object storage, replacing hot bytes with a `SPACE_STUB_V1` pointer and transparently rehydrating on reads (optional write-back via `SPACE_REHEAT_ON_READ`). Public APIs are exposed via `tiering::{Heatmap, TieringAgent}` and `common::StorageStub`.

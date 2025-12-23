@@ -130,6 +130,10 @@
 | **Online Resize** | 🟢 Beta | LegacyBackend supports volume resize | - |
 | **Bounds Checking** | 🟢 Beta | Automatic validation of read/write offsets | - |
 | **Windows Compatibility** | 🟢 Beta | File sharing, sparse file support | - |
+| **Snapshot Engine** | 🟢 Beta | Point-in-time volume snapshots to capsules (Milestone 8.1) | - |
+| **Snapshot Restore** | 🟢 Beta | Restore snapshots to same or different volume | - |
+| **Policy-Aware Snapshots** | 🟢 Beta | Compression, encryption, deduplication support | - |
+| **Sparse Snapshot Optimization** | 🟢 Beta | 64KB chunking with global zero-block dedup | - |
 
 ### Protocol Views
 
