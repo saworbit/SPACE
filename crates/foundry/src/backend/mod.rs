@@ -39,6 +39,14 @@ impl std::fmt::Display for VolumeId {
     }
 }
 
+impl std::str::FromStr for VolumeId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
+    }
+}
+
 /// Abstraction for block-level volume storage.
 ///
 /// Unlike `StorageBackend` (segment-based), `VolumeBackend` provides random-access
