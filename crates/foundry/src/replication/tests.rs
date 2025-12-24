@@ -5,12 +5,14 @@ use crate::backend::VolumeBackend;
 use crate::{BackendType, Foundry, VolumeId};
 use bytes::Bytes;
 use std::sync::Arc;
+use tempfile::TempDir;
 use tokio::time::{sleep, Duration};
 
 #[tokio::test]
 async fn test_replication_handshake() {
     // Setup: Create a replica node
-    let replica_foundry = Arc::new(Foundry::new());
+    let temp_dir = TempDir::new().unwrap();
+    let replica_foundry = Arc::new(Foundry::with_data_dir(temp_dir.path()));
     let volume_id = VolumeId::new();
 
     // Create volume on replica
@@ -44,7 +46,8 @@ async fn test_replication_handshake() {
 #[tokio::test]
 async fn test_replication_write() {
     // Setup: Create replica node
-    let replica_foundry = Arc::new(Foundry::new());
+    let replica_temp = TempDir::new().unwrap();
+    let replica_foundry = Arc::new(Foundry::with_data_dir(replica_temp.path()));
     let volume_id = VolumeId::new();
 
     let replica_volume = replica_foundry
@@ -64,7 +67,8 @@ async fn test_replication_write() {
     sleep(Duration::from_millis(100)).await;
 
     // Setup: Create primary node
-    let primary_foundry = Foundry::new();
+    let primary_temp = TempDir::new().unwrap();
+    let primary_foundry = Foundry::with_data_dir(primary_temp.path());
     let primary_volume = primary_foundry
         .create_volume(volume_id, 1024 * 1024, Some(BackendType::Legacy))
         .await
@@ -103,7 +107,8 @@ async fn test_replication_write() {
 #[tokio::test]
 async fn test_replication_multiple_writes() {
     // Setup: Create replica node
-    let replica_foundry = Arc::new(Foundry::new());
+    let replica_temp = TempDir::new().unwrap();
+    let replica_foundry = Arc::new(Foundry::with_data_dir(replica_temp.path()));
     let volume_id = VolumeId::new();
 
     let replica_volume = replica_foundry
@@ -123,7 +128,8 @@ async fn test_replication_multiple_writes() {
     sleep(Duration::from_millis(100)).await;
 
     // Setup: Create primary node
-    let primary_foundry = Foundry::new();
+    let primary_temp = TempDir::new().unwrap();
+    let primary_foundry = Foundry::with_data_dir(primary_temp.path());
     let primary_volume = primary_foundry
         .create_volume(volume_id, 1024 * 1024, Some(BackendType::Legacy))
         .await
@@ -165,7 +171,8 @@ async fn test_replication_multiple_writes() {
 #[tokio::test]
 async fn test_replication_handshake_invalid_volume() {
     // Setup: Create a replica node
-    let replica_foundry = Arc::new(Foundry::new());
+    let temp_dir = TempDir::new().unwrap();
+    let replica_foundry = Arc::new(Foundry::with_data_dir(temp_dir.path()));
 
     // Start replication server
     let replica_port = 14424;
