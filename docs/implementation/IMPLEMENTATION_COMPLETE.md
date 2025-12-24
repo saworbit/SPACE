@@ -338,8 +338,4 @@ Remaining work (ContentStore impl, tests, docs updates) is optional polish that 
 **Test Coverage:** Wire protocol unit tests ✅, Integration tests pending
 **Documentation:** Comprehensive (replication.md, status doc, this summary)
 
-**Contributors:**
-- Claude Code (Anthropic) - Implementation
-- SPACE Project Team - Requirements & Architecture
-
 For questions or support, see [CONTRIBUTING.md](CONTRIBUTING.md).
