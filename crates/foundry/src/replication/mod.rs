@@ -16,6 +16,7 @@
 //!
 //! ```no_run
 //! use foundry::{Foundry, BackendType, VolumeId};
+//! use foundry::backend::VolumeBackend;
 //! use foundry::replication::{ReplicationClient, ReplicatedBackend};
 //! use std::sync::Arc;
 //!
