@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use crate::Foundry;
 use crate::backend::VolumeId;
+use crate::Foundry;
 
 use super::protocol::{ReplicationMessage, ReplicationResponse};
 
@@ -27,18 +27,25 @@ use super::protocol::{ReplicationMessage, ReplicationResponse};
 ///
 /// Never returns under normal operation. Errors are logged and connections
 /// are dropped on protocol violations.
-pub async fn start_replication_server(foundry: Arc<Foundry>, port: u16) -> crate::error::Result<()> {
+pub async fn start_replication_server(
+    foundry: Arc<Foundry>,
+    port: u16,
+) -> crate::error::Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
-        .map_err(|e| crate::error::FoundryError::config_error(format!("Failed to bind replication server: {}", e)))?;
+        .map_err(|e| {
+            crate::error::FoundryError::config_error(format!(
+                "Failed to bind replication server: {}",
+                e
+            ))
+        })?;
 
     tracing::info!(port = port, "Replication server listening");
 
     loop {
-        let (socket, addr) = listener
-            .accept()
-            .await
-            .map_err(|e| crate::error::FoundryError::config_error(format!("Failed to accept connection: {}", e)))?;
+        let (socket, addr) = listener.accept().await.map_err(|e| {
+            crate::error::FoundryError::config_error(format!("Failed to accept connection: {}", e))
+        })?;
 
         let foundry = foundry.clone();
 
@@ -60,13 +67,7 @@ async fn handle_replication_connection(
     let (mut reader, mut writer) = socket.into_split();
     let mut active_volume = None;
 
-    loop {
-        // Read Length
-        let len = match reader.read_u64().await {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-
+    while let Ok(len) = reader.read_u64().await {
         // Read Packet
         let mut buf = vec![0u8; len as usize];
         if reader.read_exact(&mut buf).await.is_err() {

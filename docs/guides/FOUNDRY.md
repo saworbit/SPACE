@@ -755,6 +755,159 @@ MagmaBackend uses DashMap for lock-free concurrent access:
 
 **Workaround:** Use `BackendType::Auto` for graceful fallback to Legacy
 
+## Chain Replication (Milestone 8.4)
+
+### Overview
+
+Chain replication provides synchronous replication for zero RPO (Recovery Point Objective). Every write to a primary volume is replicated to a secondary node before being acknowledged to the client.
+
+### Architecture
+
+```
+Primary Node                          Replica Node
+┌─────────────┐                      ┌─────────────┐
+│   Client    │                      │             │
+└──────┬──────┘                      │             │
+       │ write()                     │             │
+       ▼                              │             │
+┌─────────────────┐                  │             │
+│ ReplicatedBackend│─────TCP────────▶│   Server    │
+│  (Wrapper)      │  Replication     │             │
+└─────────────────┘    Stream        └──────┬──────┘
+       │ │                                   │
+       │ │ Parallel execution                │
+       │ │                                   ▼
+       │ │                            ┌─────────────┐
+       │ │                            │   Volume    │
+       │ │                            │  (Replica)  │
+       │ │                            └─────────────┘
+       │ └──────waits for both────────┘
+       │
+       ▼
+┌─────────────┐
+│   Volume    │
+│  (Primary)  │
+└─────────────┘
+```
+
+### Key Features
+
+- **Zero RPO**: Writes acknowledged only after both primary and replica confirm
+- **Parallel Execution**: Local write and replication happen simultaneously
+- **Stop-and-Wait Protocol**: Simple, reliable (pipelining planned for Phase 9)
+- **Length-Delimited TCP**: Custom framing for maximum throughput
+- **Handshake Validation**: Volume ID verification on connection
+
+### Usage
+
+#### Setting up a Replica Node
+
+```rust
+use foundry::{Foundry, replication::start_replication_server};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> foundry::error::Result<()> {
+    let foundry = Arc::new(Foundry::new());
+
+    // Create the volume that will receive replicated writes
+    let volume_id = VolumeId::from_str("...")?;
+    foundry.create_volume(volume_id, 10 * 1024 * 1024, None).await?;
+
+    // Start replication server on port 4421
+    start_replication_server(foundry, 4421).await?;
+
+    Ok(())
+}
+```
+
+#### Setting up a Primary Node with Replication
+
+```rust
+use foundry::{Foundry, VolumeId, BackendType};
+use foundry::replication::{ReplicationClient, ReplicatedBackend};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> foundry::error::Result<()> {
+    let foundry = Foundry::new();
+    let volume_id = VolumeId::new();
+
+    // Create local primary volume
+    let local = foundry
+        .create_volume(volume_id, 10 * 1024 * 1024, None)
+        .await?;
+
+    // Connect to replica
+    let replicator = ReplicationClient::connect(
+        "replica.example.com:4421",
+        volume_id.to_string()
+    ).await?;
+
+    // Wrap with replication
+    let replicated = Arc::new(ReplicatedBackend::new(local, replicator));
+
+    // All writes are now replicated synchronously
+    replicated.write_at(0, bytes::Bytes::from(vec![0x42; 4096])).await?;
+
+    Ok(())
+}
+```
+
+### Wire Protocol
+
+The replication protocol uses length-delimited binary frames:
+
+```
+[8-byte length][bincode-serialized payload]
+```
+
+**Messages:**
+- `Handshake { volume_id }`: Initial connection setup
+- `Write { offset, data }`: Write operation to replicate
+- `Ack`: Message acknowledgment
+
+**Responses:**
+- `Ok`: Operation successful
+- `Error(String)`: Operation failed with reason
+
+### Performance Characteristics
+
+- **Latency**: Primary write + network RTT + replica write
+- **Throughput**: Limited by network bandwidth and replica write speed
+- **Optimization**: Local write and replication parallelized via `tokio::join!`
+
+### Failure Modes
+
+| Scenario | Behavior |
+|----------|----------|
+| Replica unavailable | Write fails (no degraded mode in 8.4) |
+| Network partition | Write fails after TCP timeout |
+| Replica write error | Error propagated to client, write fails |
+| Primary crash | Replica has all acknowledged writes |
+
+**Note:** Automatic failover and degraded mode are planned for Phase 9.
+
+### Testing
+
+Run replication tests:
+
+```bash
+# Automated tests
+cargo test -p foundry replication
+
+# Manual test script
+bash scripts/test_replication.sh
+```
+
+### Future Enhancements (Phase 9)
+
+- **Pipelined Replication**: Multiple outstanding requests for higher throughput
+- **Request IDs**: Track in-flight operations
+- **Automatic Failover**: Promote replica to primary on failure
+- **Multi-Node**: Chain of N replicas
+- **Degraded Mode**: Continue operating if replica fails
+
 ## Security Considerations
 
 ### Data-at-Rest Encryption

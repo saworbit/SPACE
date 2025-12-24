@@ -32,9 +32,9 @@ impl ReplicationClient {
     ///
     /// A `ReplicationClient` ready to replicate writes.
     pub async fn connect(target_addr: &str, volume_id: String) -> Result<Self> {
-        let mut stream = TcpStream::connect(target_addr)
-            .await
-            .map_err(|e| FoundryError::config_error(format!("Failed to connect to replica: {}", e)))?;
+        let mut stream = TcpStream::connect(target_addr).await.map_err(|e| {
+            FoundryError::config_error(format!("Failed to connect to replica: {}", e))
+        })?;
 
         // 1. Handshake
         let handshake = ReplicationMessage::Handshake {
@@ -44,31 +44,31 @@ impl ReplicationClient {
             .map_err(|e| FoundryError::config_error(format!("Serialize error: {}", e)))?;
 
         // Write length-prefixed frame
-        stream
-            .write_u64(encoded.len() as u64)
-            .await
-            .map_err(|e| FoundryError::config_error(format!("Failed to write handshake length: {}", e)))?;
+        stream.write_u64(encoded.len() as u64).await.map_err(|e| {
+            FoundryError::config_error(format!("Failed to write handshake length: {}", e))
+        })?;
         stream
             .write_all(&encoded)
             .await
             .map_err(|e| FoundryError::config_error(format!("Failed to write handshake: {}", e)))?;
 
         // Wait for handshake ack
-        let len = stream
-            .read_u64()
-            .await
-            .map_err(|e| FoundryError::config_error(format!("Failed to read handshake response length: {}", e)))?;
+        let len = stream.read_u64().await.map_err(|e| {
+            FoundryError::config_error(format!("Failed to read handshake response length: {}", e))
+        })?;
         let mut buf = vec![0u8; len as usize];
-        stream
-            .read_exact(&mut buf)
-            .await
-            .map_err(|e| FoundryError::config_error(format!("Failed to read handshake response: {}", e)))?;
+        stream.read_exact(&mut buf).await.map_err(|e| {
+            FoundryError::config_error(format!("Failed to read handshake response: {}", e))
+        })?;
 
         let response: ReplicationResponse = bincode::deserialize(&buf)
             .map_err(|e| FoundryError::config_error(format!("Deserialize error: {}", e)))?;
 
         if let ReplicationResponse::Error(e) = response {
-            return Err(FoundryError::config_error(format!("Handshake failed: {}", e)));
+            return Err(FoundryError::config_error(format!(
+                "Handshake failed: {}",
+                e
+            )));
         }
 
         tracing::info!(
@@ -87,18 +87,27 @@ impl ReplicationClient {
                 let encoded = match bincode::serialize(&msg) {
                     Ok(bytes) => bytes,
                     Err(e) => {
-                        let _ = reply_tx.send(Err(FoundryError::config_error(format!("Serialization failed: {}", e))));
+                        let _ = reply_tx.send(Err(FoundryError::config_error(format!(
+                            "Serialization failed: {}",
+                            e
+                        ))));
                         continue;
                     }
                 };
 
                 // Send
                 if let Err(e) = writer.write_u64(encoded.len() as u64).await {
-                    let _ = reply_tx.send(Err(FoundryError::config_error(format!("Failed to write message length: {}", e))));
+                    let _ = reply_tx.send(Err(FoundryError::config_error(format!(
+                        "Failed to write message length: {}",
+                        e
+                    ))));
                     break;
                 }
                 if let Err(e) = writer.write_all(&encoded).await {
-                    let _ = reply_tx.send(Err(FoundryError::config_error(format!("Failed to write message: {}", e))));
+                    let _ = reply_tx.send(Err(FoundryError::config_error(format!(
+                        "Failed to write message: {}",
+                        e
+                    ))));
                     break;
                 }
 
@@ -113,20 +122,29 @@ impl ReplicationClient {
                                     let _ = reply_tx.send(Ok(()));
                                 }
                                 Ok(ReplicationResponse::Error(e)) => {
-                                    let _ = reply_tx.send(Err(FoundryError::config_error(format!("Replica error: {}", e))));
+                                    let _ = reply_tx.send(Err(FoundryError::config_error(
+                                        format!("Replica error: {}", e),
+                                    )));
                                 }
                                 Err(e) => {
-                                    let _ = reply_tx.send(Err(FoundryError::config_error(format!("Failed to deserialize response: {}", e))));
+                                    let _ = reply_tx.send(Err(FoundryError::config_error(
+                                        format!("Failed to deserialize response: {}", e),
+                                    )));
                                     break;
                                 }
                             }
                         } else {
-                            let _ = reply_tx.send(Err(FoundryError::config_error("Connection broken".to_string())));
+                            let _ = reply_tx.send(Err(FoundryError::config_error(
+                                "Connection broken".to_string(),
+                            )));
                             break;
                         }
                     }
                     Err(e) => {
-                        let _ = reply_tx.send(Err(FoundryError::config_error(format!("Failed to read response: {}", e))));
+                        let _ = reply_tx.send(Err(FoundryError::config_error(format!(
+                            "Failed to read response: {}",
+                            e
+                        ))));
                         break;
                     }
                 }

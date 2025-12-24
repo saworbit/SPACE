@@ -9,14 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ReplicationMessage {
     /// Initial handshake to identify volume.
-    Handshake {
-        volume_id: String,
-    },
+    Handshake { volume_id: String },
     /// A write operation to be applied.
-    Write {
-        offset: u64,
-        data: Vec<u8>,
-    },
+    Write { offset: u64, data: Vec<u8> },
     /// Acknowledge a specific operation was persisted.
     Ack,
 }

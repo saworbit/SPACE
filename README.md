@@ -135,6 +135,7 @@
 | **Snapshot Restore** | 🟢 Beta | Restore snapshots to same or different volume | - |
 | **Policy-Aware Snapshots** | 🟢 Beta | Compression, encryption, deduplication support | - |
 | **Sparse Snapshot Optimization** | 🟢 Beta | 64KB chunking with global zero-block dedup | - |
+| **Chain Replication** | 🟢 Beta | Synchronous replication for zero RPO (Milestone 8.4) | - |
 
 ### Protocol Views
 

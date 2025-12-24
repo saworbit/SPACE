@@ -80,6 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Full integration: Foundry manager updated to use `open_or_create()` for seamless recovery
     - Performance: <100ms checkpoint time for 10K L2P entries, <5% write overhead
     - Quality checks: All tests pass, clippy clean, no security vulnerabilities (cargo audit)
+  - **Milestone 8.4: Chain Replication (High Availability)** - Synchronous replication for zero RPO
+    - `replication::ReplicationClient`: Primary-side actor with length-delimited TCP framing + stop-and-wait protocol
+    - `replication::start_replication_server()`: Replica-side server accepts connections and applies writes to local volumes
+    - `replication::ReplicatedBackend`: VolumeBackend wrapper that parallels local write + remote replication
+    - Wire protocol: `ReplicationMessage` enum (Handshake, Write, Ack) with bincode serialization
+    - Zero RPO guarantee: Client writes acknowledged only after both primary and replica confirm persistence
+    - Handshake validation with volume ID verification
+    - `VolumeId` now implements `FromStr` for parsing from string IDs
+    - Architecture: Primary → local write + replicate → wait for both → ack client
+    - 4 comprehensive tests: handshake, single write, multiple writes, error handling for invalid volumes
+    - Test script: `scripts/test_replication.sh` for manual verification
+    - Quality: All 42 tests pass (38 existing + 4 new), clippy clean, formatted
 - **Phase 4b: The Bridge (Global Federation)** - gRPC (HTTP/2) receiver + push-based, chunked segment transfer, `Policy.federation.targets`/`priority`, persistent replication queue/state, and new CLI commands: `spacectl zone add|list` + `spacectl federation serve` + `scripts/test_federation_mock.sh`.
 - **Phase 5: The Brain (Compute-over-Data)** - Added `Policy.transform` (ordered WASM transform chain) schema with triggers (`on-read`/`on-write`), resource limits (memory pages + fuel), and optional artifact verification (sha256 + signature). Runtime execution is implemented in the new `transform-engine` crate and wired into the `pipeline` crate (feature `phase5`) for on-read/on-write streaming transforms.
 - **Phase 6: The Metal (Autonomous Tiering)** - Background thermostat tracks segment access and offloads cold segment payloads to S3-compatible object storage, replacing hot bytes with a `SPACE_STUB_V1` pointer and transparently rehydrating on reads (optional write-back via `SPACE_REHEAT_ON_READ`). Public APIs are exposed via `tiering::{Heatmap, TieringAgent}` and `common::StorageStub`.
