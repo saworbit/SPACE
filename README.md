@@ -122,7 +122,8 @@
 |:--------|:------:|:------|:-----------|
 | **VolumeBackend Abstraction** | 🟢 Beta | Block-level volume trait with BoxFuture pattern | - |
 | **LegacyBackend (File-based)** | 🟢 Beta | Sparse file volumes, works on all platforms | - |
-| **MagmaBackend (Log-structured)** | 🟠 Experimental | L2P mapping, append-only writes (stub) | `magma` |
+| **MagmaBackend (Log-structured)** | 🟢 Beta | L2P mapping, append-only writes, crash recovery | `magma` |
+| **Magma Durability** | 🟢 Beta | Checkpoint + log replay recovery (Milestone 8.3) | - |
 | **DirectIoDevice** | ⚪ Stub | Abstraction for SPDK/raw device (tokio::fs for now) | - |
 | **Volume Management** | 🟢 Beta | Create, get, delete, list volumes | - |
 | **Concurrent Access** | 🟡 Alpha | Thread-safe reads, sequential writes recommended | - |

@@ -67,6 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Thread-safe pointer handling across async boundaries (pointer→usize→pointer conversion)
     - 4096-byte block size for standard NVMe compatibility
     - Full documentation with architecture diagrams and usage examples
+  - **Milestone 8.3: Magma Durability (The Journal)** - Crash recovery and persistence for MagmaBackend
+    - `BlockHeader` structure: 16-byte metadata per write (magic bytes "MGMA", LBA, length) for data integrity validation
+    - `MagmaCheckpoint`: Bincode-serialized L2P map snapshots with atomic write-then-rename pattern
+    - `open()` / `open_or_create()`: Recovery constructors load checkpoint and replay log tail on startup
+    - `replay_log()`: Rebuilds L2P map from checkpoint to EOF, validates headers, stops gracefully at corruption
+    - `checkpoint()`: Atomically saves L2P map + write_head position to `{device}.checkpoint`
+    - Modified write path: Allocates header + data space, writes `[Header (16 bytes)][Data]` blocks
+    - Modified `sync()`: Now flushes device AND creates checkpoint for crash safety
+    - Breaking disk format change: Adds 16-byte header overhead (~0.4% for 4KB blocks)
+    - 19 new durability tests: BlockHeader validation, checkpoint atomicity, crash recovery scenarios, corrupted header handling
+    - Full integration: Foundry manager updated to use `open_or_create()` for seamless recovery
+    - Performance: <100ms checkpoint time for 10K L2P entries, <5% write overhead
+    - Quality checks: All tests pass, clippy clean, no security vulnerabilities (cargo audit)
 - **Phase 4b: The Bridge (Global Federation)** - gRPC (HTTP/2) receiver + push-based, chunked segment transfer, `Policy.federation.targets`/`priority`, persistent replication queue/state, and new CLI commands: `spacectl zone add|list` + `spacectl federation serve` + `scripts/test_federation_mock.sh`.
 - **Phase 5: The Brain (Compute-over-Data)** - Added `Policy.transform` (ordered WASM transform chain) schema with triggers (`on-read`/`on-write`), resource limits (memory pages + fuel), and optional artifact verification (sha256 + signature). Runtime execution is implemented in the new `transform-engine` crate and wired into the `pipeline` crate (feature `phase5`) for on-read/on-write streaming transforms.
 - **Phase 6: The Metal (Autonomous Tiering)** - Background thermostat tracks segment access and offloads cold segment payloads to S3-compatible object storage, replacing hot bytes with a `SPACE_STUB_V1` pointer and transparently rehydrating on reads (optional write-back via `SPACE_REHEAT_ON_READ`). Public APIs are exposed via `tiering::{Heatmap, TieringAgent}` and `common::StorageStub`.

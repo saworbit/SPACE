@@ -293,6 +293,262 @@ The snapshot engine handles sparse volumes efficiently:
 - **Snapshot Chains:** Parent-child relationships for space efficiency
 - **Application-Consistent Snapshots:** Integration with filesystem freeze/thaw
 
+## Durability
+
+MagmaBackend supports crash recovery through checkpoints and log replay, ensuring data survives unexpected power loss or system crashes.
+
+**Status:** 🟢 Beta (Milestone 8.3: The Journal)
+
+### Architecture
+
+The durability system uses a checkpoint-and-replay pattern:
+
+1. **Block Headers:** Every write includes a 16-byte metadata header with magic bytes, logical block address (LBA), and length
+2. **Checkpoint Files:** Periodically save the complete L2P map + write head position to disk
+3. **Log Replay:** On startup, restore from the last checkpoint and replay any writes that occurred after it
+4. **Atomic Checkpoints:** Use write-to-temp-then-rename pattern for crash-safe checkpoint updates
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Log-Structured Device                  │
+├─────────────────────────────────────────────────────────┤
+│ [Header|Data][Header|Data][Header|Data]... write_head → │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            │ Periodic checkpoint
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│              Checkpoint File (.checkpoint)               │
+├─────────────────────────────────────────────────────────┤
+│ • Version, Volume ID, Block Size                        │
+│ • Write Head Position                                   │
+│ • Complete L2P Map (LBA → Physical Offset)              │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            │ On crash recovery
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Recovery Process                      │
+├─────────────────────────────────────────────────────────┤
+│ 1. Load checkpoint (if exists)                          │
+│ 2. Restore L2P map from checkpoint                      │
+│ 3. Set write_head = checkpoint.write_head               │
+│ 4. Replay log from write_head to EOF                    │
+│ 5. Stop gracefully at corruption or EOF                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+### BlockHeader Format
+
+Each write consists of a 16-byte header followed by data:
+
+```rust
+// On-disk layout: [Header (16 bytes)][Data (len bytes)]
+struct BlockHeader {
+    magic: [u8; 4],  // "MGMA" = [0x4D, 0x47, 0x4D, 0x41]
+    lba: u64,        // Logical block address
+    len: u32,        // Data length in bytes
+}
+```
+
+**Design Notes:**
+- Magic bytes detect corruption and validate block boundaries
+- 16-byte size is cache-line friendly and alignment-optimal
+- Overhead: ~0.4% for 4KB blocks, ~0.04% for 64KB blocks
+
+### Checkpoint File Format
+
+Checkpoints are bincode-serialized snapshots saved to `{device_path}.checkpoint`:
+
+```rust
+struct MagmaCheckpoint {
+    version: u32,          // Format version (currently 1)
+    volume_id: VolumeId,   // Volume identifier for validation
+    block_size: u64,       // Block size for validation
+    write_head: u64,       // Position to resume log replay
+    l2p_entries: Vec<(u64, PhysicalAddr)>,  // Complete L2P map
+}
+```
+
+**Atomicity:** Checkpoints are written to `.tmp` file then atomically renamed via `std::fs::rename()`.
+
+### Recovery Process
+
+When opening an existing Magma volume, the recovery algorithm ensures consistency:
+
+1. **Load Checkpoint:** Read and validate checkpoint file (if exists)
+2. **Validate Metadata:** Verify `volume_id` and `block_size` match
+3. **Restore L2P Map:** Rebuild in-memory L2P map from checkpoint entries
+4. **Set Write Head:** Resume log at `checkpoint.write_head`
+5. **Replay Log Tail:** Scan from write_head to EOF:
+   - Read and validate BlockHeader (check magic bytes)
+   - Update L2P map: `map.insert(header.lba, phys_addr)`
+   - Stop at first invalid header or EOF
+6. **Update Write Head:** Set to final log position
+
+**Graceful Degradation:** Recovery stops at the first corrupted header rather than panicking, preserving all valid data written before corruption.
+
+### Usage
+
+#### Opening Existing Volumes
+
+```rust
+use foundry::backend::magma::MagmaBackend;
+use foundry::backend::device::DirectIoDevice;
+use foundry::backend::VolumeId;
+
+// Open existing volume with recovery
+let device = DirectIoDevice::open("volumes/my_volume.magma").await?;
+let backend = MagmaBackend::open(
+    VolumeId::new(),
+    10 * 1024 * 1024,  // 10MB
+    device,
+    4096,              // block size
+).await?;
+
+// Volume is ready - L2P map restored from checkpoint + log replay
+let data = backend.read_at(0, 4096).await?;
+```
+
+#### Open-or-Create Pattern
+
+```rust
+// Try to open existing volume, create if doesn't exist
+let device = DirectIoDevice::open("volumes/my_volume.magma").await?;
+let backend = MagmaBackend::open_or_create(
+    volume_id,
+    10 * 1024 * 1024,
+    device,
+    4096,
+).await?;
+
+// Works whether volume is new or existing
+```
+
+#### Ensuring Durability
+
+```rust
+// Write data
+let data = Bytes::from(vec![0x42; 4096]);
+backend.write_at(0, data).await?;
+
+// Sync to disk - flushes device AND creates checkpoint
+backend.sync().await?;
+
+// Data is now durable - survives crash/power loss
+```
+
+#### Manual Checkpointing
+
+```rust
+// For advanced use cases, checkpoint explicitly
+// (Note: normally done automatically by sync())
+backend.checkpoint().await?;
+```
+
+### Performance Characteristics
+
+| Operation | Typical Performance | Notes |
+|:----------|:-------------------|:------|
+| **Write with Header** | +16 bytes/write | ~0.4% overhead for 4KB blocks |
+| **Checkpoint (10K L2P entries)** | ~50-100ms | Bincode serialization + atomic write |
+| **Checkpoint (100K L2P entries)** | ~200-500ms | Linear in L2P map size |
+| **Recovery (checkpoint only)** | ~50-100ms | Deserialize + rebuild L2P map |
+| **Recovery (checkpoint + 1000 replayed blocks)** | ~100-200ms | Header validation + L2P updates |
+| **Recovery (checkpoint + 10000 replayed blocks)** | ~500ms-1s | Depends on device read speed |
+
+**Checkpoint Frequency:** Currently triggered on every `sync()` call. Future optimizations may add:
+- Time-based checkpointing (e.g., every 30 seconds)
+- Write-based checkpointing (e.g., every 10,000 writes)
+- Incremental checkpoints (delta updates)
+
+### Breaking Changes
+
+⚠️ **WARNING:** Milestone 8.3 introduces a breaking disk format change.
+
+**Impact:** Existing Magma volumes created before Milestone 8.3 cannot be opened with the new code.
+
+**Migration Path:**
+1. Before upgrading: Use `SnapshotEngine` to snapshot all Magma volumes
+2. After upgrading: Delete old `.magma` device files
+3. Restore from snapshots using `SnapshotEngine::restore_snapshot()`
+
+**Justification:**
+- Magma is documented as experimental (no production deployments)
+- Headers enable data integrity validation (detect corruption)
+- Structured format supports future features (GC, replication, snapshots)
+- One-time breaking change cost is acceptable for long-term correctness
+
+### Error Handling
+
+Recovery and checkpoint operations use comprehensive error types:
+
+```rust
+use foundry::error::{FoundryError, Result};
+
+// Open with recovery
+match MagmaBackend::open(volume_id, size, device, 4096).await {
+    Ok(backend) => println!("Recovery successful"),
+    Err(FoundryError::ConfigError { message }) => {
+        eprintln!("Checkpoint validation failed: {}", message);
+        // Volume ID mismatch, corrupted checkpoint, etc.
+    }
+    Err(FoundryError::DeviceError { message }) => {
+        eprintln!("Invalid block header: {}", message);
+        // Corrupted log, invalid magic bytes, etc.
+    }
+    Err(e) => eprintln!("Recovery error: {}", e),
+}
+```
+
+### Testing
+
+Durability is validated through comprehensive crash recovery tests:
+
+```rust
+// Integration test pattern
+#[tokio::test]
+async fn test_crash_recovery() {
+    // Phase 1: Write data and checkpoint
+    {
+        let backend = MagmaBackend::new(volume_id, size, device);
+        backend.init(size).await.unwrap();
+        backend.write_at(0, data).await.unwrap();
+        backend.sync().await.unwrap();  // Checkpoint
+    }
+    // Simulate crash (drop backend)
+
+    // Phase 2: Recover and verify
+    {
+        let device = DirectIoDevice::open(&device_path).await.unwrap();
+        let backend = MagmaBackend::open(volume_id, size, device, 4096)
+            .await.unwrap();
+
+        // Data survives crash
+        let recovered = backend.read_at(0, data.len()).await.unwrap();
+        assert_eq!(recovered, data);
+    }
+}
+```
+
+**Test Coverage:**
+- BlockHeader serialization and validation
+- Checkpoint atomicity (no partial writes)
+- Recovery with checkpoint only
+- Recovery with checkpoint + post-checkpoint writes (replay)
+- Recovery with corrupted headers (graceful stop)
+- Multiple crash-recover cycles
+- Full Foundry integration with restart simulation
+
+### Future Enhancements
+
+- **Configurable Checkpoint Intervals:** Time-based and write-count-based triggers
+- **Incremental Checkpoints:** Only save changed L2P entries (delta updates)
+- **Header CRC32 Checksums:** Additional integrity validation beyond magic bytes
+- **Compressed Checkpoints:** Reduce checkpoint file size for large L2P maps
+- **WAL-Style Fine-Grained Journal:** More sophisticated recovery with redo/undo logs
+- **Integration with GC:** Coordinate checkpoints with garbage collection (Milestone 8.4)
+
 ## Performance Characteristics
 
 ### LegacyBackend

@@ -266,20 +266,23 @@ impl Foundry {
         LegacyBackend::create(id, volume_path, size_bytes).await
     }
 
-    /// Try to create a Magma backend.
+    /// Create or open a Magma backend.
     ///
-    /// Currently this always fails (stub) because raw device integration
-    /// is not yet implemented.
+    /// Uses DirectIoDevice for storage and supports crash recovery via
+    /// checkpoint-based replay. Opens existing volumes if a checkpoint exists,
+    /// otherwise creates a new volume.
     async fn try_create_magma(
-        _id: VolumeId,
-        _size_bytes: u64,
-        _data_dir: &std::path::Path,
+        id: VolumeId,
+        size_bytes: u64,
+        data_dir: &std::path::Path,
     ) -> Result<MagmaBackend> {
-        // Check for raw device access capability
-        // For now, always fail (stub)
-        Err(FoundryError::backend_unavailable(
-            "Magma backend not yet implemented (requires SPDK/raw device integration)",
-        ))
+        use backend::device::DirectIoDevice;
+
+        let device_path = data_dir.join(format!("{}.magma", id.0));
+        let device = DirectIoDevice::open(&device_path).await?;
+
+        // Use open_or_create to support recovery
+        MagmaBackend::open_or_create(id, size_bytes, device, MagmaBackend::DEFAULT_BLOCK_SIZE).await
     }
 }
 
@@ -421,19 +424,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_foundry_backend_magma_unavailable() {
+    async fn test_foundry_backend_magma_available() {
         let temp_dir = TempDir::new().unwrap();
         let foundry = Foundry::with_data_dir(temp_dir.path());
 
-        // Forcing Magma should fail (not implemented yet)
+        // Magma backend is now available
         let volume_id = VolumeId::new();
-        let result = foundry
+        let backend = foundry
             .create_volume(volume_id, 1024 * 1024, Some(BackendType::Magma))
-            .await;
+            .await
+            .unwrap();
 
-        assert!(matches!(
-            result,
-            Err(FoundryError::BackendUnavailable { .. })
-        ));
+        // Verify it's a Magma backend by writing and reading
+        let test_data = Bytes::from(vec![0xAB; 4096]);
+        backend.write_at(0, test_data.clone()).await.unwrap();
+        let read_data = backend.read_at(0, 4096).await.unwrap();
+        assert_eq!(read_data, test_data);
     }
 }
