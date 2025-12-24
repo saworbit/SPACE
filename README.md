@@ -3,8 +3,8 @@
 # 🚀 SPACE
 ### Storage Platform for Adaptive Computational Ecosystems
 
-[![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://rust-lang.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/license/apache-2-0)
 [![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
 
 ### *One capsule. Infinite views.*

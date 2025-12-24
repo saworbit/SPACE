@@ -486,6 +486,6 @@ Apache 2.0 (consistent with SPACE project)
 
 - [Gossip Protocol Overview](https://en.wikipedia.org/wiki/Gossip_protocol)
 - [libp2p Gossipsub Specification](https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/README.md)
-- [Axum Documentation](https://docs.rs/axum)
+- [Axum Documentation](https://docs.rs/axum/latest/axum/)
 - [Leptos Framework](https://leptos.dev)
 - [SPACE Project Main README](../README.md)

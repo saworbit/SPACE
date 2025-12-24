@@ -568,7 +568,7 @@ echo "Backup complete: $BACKUP_DIR"
 ## References
 
 - [Docker Documentation](https://docs.docker.com/)
-- [Docker Compose Specification](https://docs.docker.com/compose/compose-file/)
+- [Docker Compose Specification](https://docs.docker.com/reference/compose-file/)
 - [SPACE Architecture](architecture.md)
 - [SPACE Simulations Guide](SIMULATIONS.md)
 
