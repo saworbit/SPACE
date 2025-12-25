@@ -574,6 +574,6 @@ echo "Backup complete: $BACKUP_DIR"
 
 ---
 
-**© 2024 SPACE Project** • [MIT OR Apache 2.0 License](../LICENSE)
+**© 2024 SPACE Project** • [MIT License](../LICENSE-MIT) OR [Apache 2.0 License](../LICENSE-APACHE)
 
 *Built with Rust • Deployed with Docker*

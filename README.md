@@ -1398,7 +1398,7 @@ This follows the same licensing model as the Rust programming language itself.
 
 **Why dual license?** You can choose whichever license works best for your project. Both are permissive open source licenses, but Apache 2.0 includes an explicit patent grant which provides additional legal protection.
 
-[📄 License Information](LICENSE) • [🤝 Contributing Guide](CONTRIBUTING.md)
+[📄 MIT License](LICENSE-MIT) • [📄 Apache 2.0 License](LICENSE-APACHE) • [🤝 Contributing Guide](CONTRIBUTING.md)
 
 </div>
 
