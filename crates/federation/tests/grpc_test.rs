@@ -30,7 +30,7 @@ async fn test_raft_service_receive_message() {
 
     // Create client and send message
     let registry = PeerRegistry::new();
-    registry.add_peer(2, format!("http://{}", addr)).await;
+    registry.add_peer(2, format!("http://{}", addr));
 
     let client = RaftTransportClient::new(Arc::new(registry));
 
@@ -66,70 +66,55 @@ async fn test_raft_service_receive_message() {
 }
 
 /// Test peer registry add/get/remove operations.
-#[tokio::test]
-async fn test_peer_registry_operations() {
+#[test]
+fn test_peer_registry_operations() {
     let registry = PeerRegistry::new();
 
     // Add peers
-    registry
-        .add_peer(1, "http://127.0.0.1:4422".to_string())
-        .await;
-    registry
-        .add_peer(2, "http://127.0.0.1:4423".to_string())
-        .await;
-    registry
-        .add_peer(3, "http://127.0.0.1:4424".to_string())
-        .await;
+    registry.add_peer(1, "http://127.0.0.1:4422".to_string());
+    registry.add_peer(2, "http://127.0.0.1:4423".to_string());
+    registry.add_peer(3, "http://127.0.0.1:4424".to_string());
 
     // Verify get
     assert_eq!(
-        registry.get_peer(1).await,
+        registry.get_peer(1),
         Some("http://127.0.0.1:4422".to_string())
     );
     assert_eq!(
-        registry.get_peer(2).await,
+        registry.get_peer(2),
         Some("http://127.0.0.1:4423".to_string())
     );
     assert_eq!(
-        registry.get_peer(3).await,
+        registry.get_peer(3),
         Some("http://127.0.0.1:4424".to_string())
     );
 
     // Unknown peer
-    assert_eq!(registry.get_peer(99).await, None);
+    assert_eq!(registry.get_peer(99), None);
 
     // Remove peer
-    registry.remove_peer(2).await;
-    assert_eq!(registry.get_peer(2).await, None);
+    registry.remove_peer(2);
+    assert_eq!(registry.get_peer(2), None);
 
     // Other peers still exist
-    assert!(registry.get_peer(1).await.is_some());
-    assert!(registry.get_peer(3).await.is_some());
+    assert!(registry.get_peer(1).is_some());
+    assert!(registry.get_peer(3).is_some());
 
     println!("✓ Peer registry operations work correctly");
 }
 
 /// Test peer registry initialization from config.
-#[tokio::test]
-async fn test_peer_registry_from_config() {
+#[test]
+fn test_peer_registry_from_config() {
     let registry = PeerRegistry::from_config(&[
         (1, "http://node1:4422"),
         (2, "http://node2:4422"),
         (3, "http://node3:4422"),
     ]);
 
-    assert_eq!(
-        registry.get_peer(1).await,
-        Some("http://node1:4422".to_string())
-    );
-    assert_eq!(
-        registry.get_peer(2).await,
-        Some("http://node2:4422".to_string())
-    );
-    assert_eq!(
-        registry.get_peer(3).await,
-        Some("http://node3:4422".to_string())
-    );
+    assert_eq!(registry.get_peer(1), Some("http://node1:4422".to_string()));
+    assert_eq!(registry.get_peer(2), Some("http://node2:4422".to_string()));
+    assert_eq!(registry.get_peer(3), Some("http://node3:4422".to_string()));
 
     println!("✓ Peer registry from_config works correctly");
 }
@@ -153,7 +138,7 @@ async fn test_multiple_messages() {
 
     // Create client
     let registry = PeerRegistry::new();
-    registry.add_peer(2, format!("http://{}", addr)).await;
+    registry.add_peer(2, format!("http://{}", addr));
     let client = RaftTransportClient::new(Arc::new(registry));
 
     // Send multiple messages
@@ -206,7 +191,7 @@ async fn test_connection_pooling() {
 
     // Create client
     let registry = PeerRegistry::new();
-    registry.add_peer(2, format!("http://{}", addr)).await;
+    registry.add_peer(2, format!("http://{}", addr));
     let client = RaftTransportClient::new(Arc::new(registry));
 
     // Send many messages rapidly - connection pooling should reuse the connection
@@ -275,7 +260,7 @@ async fn test_start_raft_server() {
 
     // Send a message
     let registry = PeerRegistry::new();
-    registry.add_peer(2, format!("http://{}", addr)).await;
+    registry.add_peer(2, format!("http://{}", addr));
     let client = RaftTransportClient::new(Arc::new(registry));
 
     let msg = Message {

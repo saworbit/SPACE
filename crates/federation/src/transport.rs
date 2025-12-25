@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use prost::Message as ProstMessage;
 use raft::prelude::Message;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error};
@@ -37,14 +37,14 @@ impl PeerRegistry {
     /// # Arguments
     /// - `node_id`: The Raft node ID
     /// - `addr`: The gRPC endpoint (e.g., "http://127.0.0.1:4422")
-    pub async fn add_peer(&self, node_id: u64, addr: String) {
+    pub fn add_peer(&self, node_id: u64, addr: String) {
         debug!(node_id = node_id, addr = %addr, "registered peer");
-        self.peers.write().await.insert(node_id, addr);
+        self.peers.write().unwrap().insert(node_id, addr);
     }
 
     /// Look up a peer's gRPC endpoint by node ID.
-    pub async fn get_peer(&self, node_id: u64) -> Option<String> {
-        self.peers.read().await.get(&node_id).cloned()
+    pub fn get_peer(&self, node_id: u64) -> Option<String> {
+        self.peers.read().unwrap().get(&node_id).cloned()
     }
 
     /// Create a registry from a list of (node_id, address) pairs.
@@ -65,13 +65,13 @@ impl PeerRegistry {
             .iter()
             .map(|(id, addr)| (*id, addr.to_string()))
             .collect();
-        *registry.peers.blocking_write() = map;
+        *registry.peers.write().unwrap() = map;
         registry
     }
 
     /// Remove a peer from the registry.
-    pub async fn remove_peer(&self, node_id: u64) {
-        self.peers.write().await.remove(&node_id);
+    pub fn remove_peer(&self, node_id: u64) {
+        self.peers.write().unwrap().remove(&node_id);
         debug!(node_id = node_id, "removed peer");
     }
 }
@@ -142,8 +142,11 @@ impl RaftService for RaftServiceImpl {
 pub struct RaftTransportClient {
     registry: Arc<PeerRegistry>,
     /// Connection pool: node_id -> gRPC client
-    connections:
-        Arc<RwLock<HashMap<u64, crate::rpc::raft_service_client::RaftServiceClient<Channel>>>>,
+    connections: Arc<
+        tokio::sync::RwLock<
+            HashMap<u64, crate::rpc::raft_service_client::RaftServiceClient<Channel>>,
+        >,
+    >,
 }
 
 impl RaftTransportClient {
@@ -151,7 +154,7 @@ impl RaftTransportClient {
     pub fn new(registry: Arc<PeerRegistry>) -> Self {
         Self {
             registry,
-            connections: Arc::new(RwLock::new(HashMap::new())),
+            connections: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -221,7 +224,6 @@ impl RaftTransportClient {
         let addr = self
             .registry
             .get_peer(node_id)
-            .await
             .ok_or_else(|| anyhow::anyhow!("unknown peer: {}", node_id))?;
 
         debug!(node_id = node_id, addr = %addr, "connecting to peer");
@@ -286,33 +288,29 @@ mod tests {
     use std::net::SocketAddr;
     use tokio::time::Duration;
 
-    #[tokio::test]
-    async fn test_peer_registry() {
+    #[test]
+    fn test_peer_registry() {
         let registry = PeerRegistry::new();
 
-        registry
-            .add_peer(1, "http://127.0.0.1:4422".to_string())
-            .await;
-        registry
-            .add_peer(2, "http://127.0.0.1:4423".to_string())
-            .await;
+        registry.add_peer(1, "http://127.0.0.1:4422".to_string());
+        registry.add_peer(2, "http://127.0.0.1:4423".to_string());
 
         assert_eq!(
-            registry.get_peer(1).await,
+            registry.get_peer(1),
             Some("http://127.0.0.1:4422".to_string())
         );
         assert_eq!(
-            registry.get_peer(2).await,
+            registry.get_peer(2),
             Some("http://127.0.0.1:4423".to_string())
         );
-        assert_eq!(registry.get_peer(3).await, None);
+        assert_eq!(registry.get_peer(3), None);
 
-        registry.remove_peer(1).await;
-        assert_eq!(registry.get_peer(1).await, None);
+        registry.remove_peer(1);
+        assert_eq!(registry.get_peer(1), None);
     }
 
-    #[tokio::test]
-    async fn test_peer_registry_from_config() {
+    #[test]
+    fn test_peer_registry_from_config() {
         let registry = PeerRegistry::from_config(&[
             (1, "http://127.0.0.1:4422"),
             (2, "http://127.0.0.1:4423"),
@@ -320,15 +318,15 @@ mod tests {
         ]);
 
         assert_eq!(
-            registry.get_peer(1).await,
+            registry.get_peer(1),
             Some("http://127.0.0.1:4422".to_string())
         );
         assert_eq!(
-            registry.get_peer(2).await,
+            registry.get_peer(2),
             Some("http://127.0.0.1:4423".to_string())
         );
         assert_eq!(
-            registry.get_peer(3).await,
+            registry.get_peer(3),
             Some("http://127.0.0.1:4424".to_string())
         );
     }
@@ -352,7 +350,7 @@ mod tests {
 
         // Create client and send message
         let registry = PeerRegistry::new();
-        registry.add_peer(2, format!("http://{}", addr)).await;
+        registry.add_peer(2, format!("http://{}", addr));
 
         let client = RaftTransportClient::new(Arc::new(registry));
 
