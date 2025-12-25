@@ -312,7 +312,7 @@ Principal Architect, SPACE Project
 
 ---
 
-© 2025 Shane Wall & contributors. Licensed under the Apache License, Version 2.0.
+© 2025 Shane Wall & contributors. Licensed under MIT OR Apache License 2.0.
 ## Phase 5: Beyond the Mesh
 
 Phase 4 closes the loop on universal views and full-mesh metadata shards. Phase 5 will build on what we shipped:\\

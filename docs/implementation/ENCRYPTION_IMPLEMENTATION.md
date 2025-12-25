@@ -608,4 +608,4 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 ---
 
-© 2025 Shane Wall. Licensed under Apache 2.0.
+© 2025 Shane Wall. Licensed under MIT OR Apache 2.0.

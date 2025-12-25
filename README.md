@@ -4,7 +4,8 @@
 ### Storage Platform for Adaptive Computational Ecosystems
 
 [![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://rust-lang.org/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/license/apache-2-0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
 
 ### *One capsule. Infinite views.*
@@ -1385,11 +1386,19 @@ SPACE is a **single-developer research project** exploring novel storage archite
 
 <div align="center">
 
-**Apache 2.0** — Permissive open source license with patent grant
+**Dual Licensed: MIT OR Apache 2.0**
+
+SPACE is dual-licensed under your choice of either:
+- **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- **Apache License 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+
+This follows the same licensing model as the Rust programming language itself.
 
 ✅ **Commercial use allowed** • 📝 **Retain attribution** • 🤝 **Contributions welcome**
 
-[📄 Full License](LICENSE) • [🤝 Contributing Guide](CONTRIBUTING.md)
+**Why dual license?** You can choose whichever license works best for your project. Both are permissive open source licenses, but Apache 2.0 includes an explicit patent grant which provides additional legal protection.
+
+[📄 License Information](LICENSE) • [🤝 Contributing Guide](CONTRIBUTING.md)
 
 </div>
 
@@ -1564,7 +1573,7 @@ spacectl block delete vol1
 
 ---
 
-**© 2024 SPACE Project** • Licensed under [Apache 2.0](LICENSE)
+**© 2024 SPACE Project** • Licensed under [MIT](LICENSE-MIT) OR [Apache 2.0](LICENSE-APACHE)
 
 **⚠️ Use at your own risk** • Educational and research purposes only • Not production ready
 

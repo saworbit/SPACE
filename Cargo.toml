@@ -45,7 +45,7 @@ rdma-sys = { path = "vendor/rdma-sys" }
 version = "0.1.0"
 edition = "2021"
 authors = ["Shane Wall <shane@adaptive-storage.dev>"]
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 # Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)

@@ -480,7 +480,7 @@ Node roles supported:
 
 ## License
 
-Apache 2.0 (consistent with SPACE project)
+MIT OR Apache 2.0 (consistent with SPACE project)
 
 ## References
 

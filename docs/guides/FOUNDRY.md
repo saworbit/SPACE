@@ -954,4 +954,4 @@ When contributing to the Foundry:
 
 ## License
 
-Apache 2.0 - See [LICENSE](../../LICENSE) for details.
+MIT OR Apache 2.0 - See [LICENSE](../../LICENSE) for details.

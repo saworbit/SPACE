@@ -2,6 +2,17 @@
 
 Thank you for helping harden SPACE. This document highlights day-to-day expectations with an emphasis on dependency hygiene and security auditing.
 
+## Licensing
+
+SPACE is dual-licensed under **MIT OR Apache 2.0**. This means:
+
+- **All contributions will be licensed under the same terms** (MIT OR Apache 2.0)
+- By submitting a pull request, you agree to license your contributions under both licenses
+- Users can choose which license they prefer when using SPACE
+- This follows the same approach as the Rust programming language and many other Rust projects
+
+See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for the full license texts.
+
 ## Getting Started
 - Install the latest stable Rust toolchain (`rustup default stable`).
 - Run `cargo xtask audit` before opening a pull request to execute formatting, checks, and security tooling in one pass.

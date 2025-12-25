@@ -5,7 +5,7 @@ SPACE enforces deterministic, auditable builds for every crate in the workspace.
 ## Goals
 - Prevent supply-chain compromise through version pinning, reproducible builds, and continuous auditing.
 - Ensure cryptographic dependencies uphold constant-time guarantees and align with `implementation/ENCRYPTION_IMPLEMENTATION.md`.
-- Minimise dependency bloat while keeping license posture Apache-2.0 / MIT compatible.
+- Minimise dependency bloat while keeping license posture MIT / Apache-2.0 compatible (dual licensed).
 
 ## Workflow Summary
 1. **Plan** – classify the dependency change (new crate, feature toggle, version bump) and map its tier.
