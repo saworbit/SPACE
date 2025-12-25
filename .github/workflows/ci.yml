@@ -23,7 +23,7 @@ jobs:
         # Default features avoid torch-sys / libtorch requirement in CI.
         # Running without --locked lets cargo refresh the lockfile when needed.
       - name: Test
-        run: cargo test --workspace
-        # Run with the workspace default feature set (CPU-only layout engine).
-      - name: BatchQueue limit tests
-        run: bash scripts/test_batch_queue_limits.sh
+        run: cargo test --workspace -- --test-threads=2
+        # Limit parallelism to 2 threads to reduce resource contention in CI.
+        # This prevents transient failures due to filesystem timing issues.
+        # BatchQueue tests are included in workspace tests, no need for separate script.

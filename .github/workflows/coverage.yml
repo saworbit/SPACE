@@ -3,8 +3,8 @@ name: Code Coverage
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # Only run coverage on main branch to avoid duplicate test execution.
+  # PRs run tests via ci.yml workflow.
 
 jobs:
   coverage:
@@ -18,7 +18,7 @@ jobs:
 
       - name: Generate Coverage Report
         run: |
-          cargo tarpaulin --workspace --timeout 120 --out Xml
+          cargo tarpaulin --workspace --timeout 120 --out Xml -- --test-threads=2
         env:
           RUST_LOG: info
 
