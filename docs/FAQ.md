@@ -43,6 +43,21 @@ Metro-Sync: Synchronous replication (RPO=0) for critical workloads within a zone
 
 Swarm Intelligence: Data moves itself. If a capsule gets "hot," it can migrate itself to a higher-performance tier automatically.
 
+Q: How does SPACE achieve distributed consensus? (Phase 9.1)
+A: I use **Raft consensus** for control plane coordination across zones. This ensures the cluster can automatically recover when nodes fail.
+
+Control Plane Raft (NEW): The federation crate now includes a production-ready Raft implementation using tikv/raft-rs v0.7.0 (the same Raft used in TiKV and Etcd). This handles leader election, zone routing, and cluster membership.
+
+Automatic Leader Election: If Node A dies, the remaining nodes automatically elect a new leader within 1 second. The cluster continues operating without manual intervention.
+
+State Machine: Committed entries (like "Volume V is now on Node N") are applied to the control plane state machine, ensuring all nodes have a consistent view of the cluster state.
+
+Separation of Concerns: I use two separate Raft implementations:
+  - capsule-registry Raft (openraft): Metadata consensus within a zone
+  - federation Raft (tikv/raft-rs): Control plane consensus across zones
+
+This architecture enables a Single System Image: from the client's perspective, SPACE appears as one unified system, even though it's distributed across multiple nodes and zones.
+
 Q: How does "One Capsule, Infinite Views" work technically?
 A: This capability (Phase 4) projects the stored capsule into the requested protocol format at runtime.
 

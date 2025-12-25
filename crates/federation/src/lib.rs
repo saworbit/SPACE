@@ -6,6 +6,7 @@
 //! registries and NVRAM logs.
 
 pub mod bridge;
+pub mod engine;
 pub mod queue;
 pub mod rpc;
 pub mod server;
@@ -25,5 +26,6 @@ pub struct ZoneConfig {
 }
 
 pub use bridge::{Bridge, FederationBridge, FederationResult};
+pub use engine::{RaftEngine, RaftEngineConfig};
 pub use server::FederationServiceImpl;
 pub use server::{serve, serve_from_paths};

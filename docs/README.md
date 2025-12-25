@@ -31,6 +31,7 @@
 - [Phase 3 Mesh Overview](phase3.md)
 - [Phase 4 Views & Federation](phase4.md)
 - [Phase 5 WASM Transforms](phase5.md)
+- **[Phase 9.1 Federation Control Plane (Raft Consensus)](federation.md)** ⭐ NEW
 - [Federation Mesh](federation.md)
 - [Protocol Views Guide](protocol_views.md)
 - [Simulations Guide](SIMULATIONS.md)

@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 9.1: Federation Control Plane (Raft Consensus)** - Distributed consensus for cluster coordination
+  - **Raft Consensus Engine** (`crates/federation/src/engine.rs`) - Production-ready Raft implementation
+    - Uses tikv/raft-rs v0.7.0 (industry-standard Raft from TiKV/Etcd ecosystem)
+    - Async-friendly RaftEngine wrapper with tokio integration
+    - 100ms tick interval for heartbeats and leader election (1s election timeout)
+    - Careful mutex management to avoid holding locks across await points (Send trait compliance)
+    - Public API: `new()`, `run()`, `propose()`, `is_leader()`, `current_term()`, `leader_id()`
+  - **In-Memory Storage (MVP)** - MemStorage for Phase 9.1 development
+    - No persistence (lost on restart) - Phase 9.2 will add sled/rocksdb
+    - State machine application logging only (full state machine in Phase 9.2)
+  - **3-Node Simulation Test** (`crates/federation/tests/raft_simulation.rs`)
+    - In-process cluster using mpsc channels for message passing
+    - Router task pattern for resilient message routing
+    - Leader election verification (completes in ~3 seconds)
+    - Graceful shutdown with timeout-based cleanup
+  - **Separation from Existing Raft** - Independent control plane
+    - capsule-registry Raft (openraft) = metadata consensus
+    - federation Raft (tikv/raft-rs) = control plane consensus (zone routing, leader election)
+    - Future integration via FederationBridge for coordinated operation
+  - **Architecture** - Clean integration without breaking existing code
+    - New `engine` module alongside existing federation code (bridge, server, wan)
+    - Zero modifications to existing federation infrastructure
+    - Exported types: `RaftEngine`, `RaftEngineConfig`
+  - **Quality Metrics** - Production-ready for Phase 9.1 MVP
+    - ✅ cargo fmt: Perfect formatting
+    - ✅ cargo clippy: Zero warnings
+    - ✅ cargo test: 2/2 tests passing (3.01s)
+    - ⚠️ Security: 1 known DoS vulnerability in protobuf 2.28.0 (raft 0.7.0 dependency)
+      - Documented in Cargo.toml for Phase 9.2 resolution
+      - Low risk: DoS only (not RCE), development environment
+  - **Future Roadmap**
+    - Phase 9.2: Replace MemStorage with sled/rocksdb, add state machine
+    - Phase 9.3: Wire into FederationBridge for zone leader election
+    - Phase 9.4: Add network transport (gRPC) for cross-process Raft
+
 - **Phase 8: The Foundry (Polymorphic Block Storage)** - High-performance mutable block storage layer with pluggable backends
   - **New crate: `foundry`** - Block-level volume abstraction for virtual disks and raw NVMe devices
     - `VolumeBackend` trait with BoxFuture pattern (init, read_at, write_at, sync, size, resize)

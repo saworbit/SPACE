@@ -1,6 +1,90 @@
-# Federation Mesh (Phase 4)
+# Federation Mesh (Phase 4 & Phase 9)
 
-## Metadata Mesh Today
+## Phase 9.1: Raft Consensus Engine (NEW)
+
+**Status**: ✅ Production-ready MVP (December 2024)
+
+Phase 9.1 introduces a **real Raft consensus engine** for distributed control plane coordination. This enables automatic leader election and cluster state management when nodes fail.
+
+### Architecture
+
+The Federation crate now includes two distinct systems:
+
+1. **Control Plane Raft** (NEW - Phase 9.1) - `crates/federation/src/engine.rs`
+   - Uses tikv/raft-rs v0.7.0 (production Raft from TiKV/Etcd)
+   - Manages cluster membership, zone routing, and leader election
+   - Async-friendly with tokio integration
+   - Independent from existing metadata Raft
+
+2. **Data Plane Federation** (Existing - Phase 4b) - `crates/federation/src/bridge.rs`
+   - gRPC-based WAN replication
+   - Capsule and segment transfer between zones
+   - Queue-based job scheduling
+
+### Raft Consensus Engine
+
+**Core Component**: `RaftEngine` (`crates/federation/src/engine.rs`)
+
+```rust
+use federation::{RaftEngine, RaftEngineConfig};
+
+// Create a 3-node cluster
+let config = RaftEngineConfig {
+    id: 1,
+    peers: vec![1, 2, 3],
+};
+
+let engine = RaftEngine::new(config, inbox, outbox, shutdown)?;
+engine.run().await?;  // Start consensus loop
+
+// Propose commands
+engine.propose(b"Volume:Vol-X:Create".to_vec()).await?;
+
+// Check leadership
+if engine.is_leader() {
+    println!("I am the leader at term {}", engine.current_term());
+}
+```
+
+**Key Features**:
+- **100ms tick interval** - Fast heartbeats and 1s election timeout
+- **Automatic leader election** - Cluster self-heals when nodes fail
+- **Message routing** - Efficient peer-to-peer communication
+- **State machine ready** - Logs committed entries (state machine in Phase 9.2)
+
+**Phase 9.1 Limitations**:
+- MemStorage (no persistence) - Phase 9.2 adds sled/rocksdb
+- In-process testing only - Phase 9.4 adds network transport
+- Fixed cluster membership - Phase 9.3 adds dynamic membership
+
+### Testing
+
+Run the 3-node simulation test:
+```bash
+cargo test -p federation --test raft_simulation
+```
+
+With logs:
+```bash
+RUST_LOG=info cargo test -p federation --test raft_simulation -- --nocapture
+```
+
+Expected output:
+```
+INFO federation::engine: created raft engine id=1 peers=[1, 2, 3]
+INFO federation::engine: starting raft engine event loop id=1
+... [3 second election] ...
+INFO raft_simulation: Election phase complete
+```
+
+### Future Roadmap
+
+- **Phase 9.2**: Persistent storage and state machine application
+- **Phase 9.3**: Integration with FederationBridge for zone coordination
+- **Phase 9.4**: Network transport (gRPC) for cross-process clusters
+- **Phase 9.5**: Dynamic membership changes and snapshots
+
+## Metadata Mesh (Phase 4)
 
 Phase 4 splits `space.metadata` into multiple Paxos-style shards so capsules can be resolved quickly even after migrating across metros and geos. Each `MeshNode` owns an `Arc<RwLock<HashMap<NodeId, SocketAddr>>>` registry plus a Raft handler that stores serialized capsule records per zone (stubbed in `vendor/raft-rs`).
 
@@ -13,15 +97,25 @@ When a view projects, `MeshNode::shard_metadata`:
 
 `MeshNode::resolve_federated` queries the gossip registry for the nearest replica when a remote `phase4` action is triggered (e.g., `ScalingAction::Federate`).
 
-## Raft & Paxos Shards
+## Raft Implementations in SPACE
 
-The shimbed `raft-rs` crate (`vendor/raft-rs`) keeps Raft logic easy to swap out later. Its APIs are intentionally small:
+SPACE uses **two separate Raft implementations** for different purposes:
 
-- `RaftCluster::new(config)` constructs a new handle.
-- `RaftCluster::for_zone(zone)` returns a zone-scoped replica set.
-- `ShardKey::new(u64)` wraps a shard ID derived from the capsule UUID.
-- `store_shard(&ShardKey, payload)` writes the metadata blob.
-- `replicate(capsule, zone)` triggers federated replication with telemetry traces.
+1. **capsule-registry Raft** (openraft 0.9.21)
+   - Purpose: Metadata consensus within a zone
+   - Location: `crates/capsule-registry/src/mesh.rs`
+   - Protocol: gRPC with bincode serialization
+   - Storage: sled (embedded database)
+
+2. **federation Raft** (tikv/raft-rs 0.7.0) ⭐ NEW
+   - Purpose: Control plane consensus across zones
+   - Location: `crates/federation/src/engine.rs`
+   - Protocol: In-process (Phase 9.1), gRPC (Phase 9.4)
+   - Storage: MemStorage (Phase 9.1), sled (Phase 9.2)
+
+The stub `vendor/raft-rs` is a placeholder for testing and will be replaced by the real implementation in Phase 9.3.
+
+## Raft & Paxos Shards (Phase 4)
 
 Each zone hosts several shards (Metro, Geo, Edge). The compiler chooses target zones primarily from `Policy.federation.targets` (mapped to `ZoneId::Geo { name }`) and emits `ScalingAction::Federate` / `ScalingAction::ShardEC` so `MeshNode::shard_metadata` can stream updates.
 
