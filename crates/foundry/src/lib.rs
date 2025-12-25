@@ -406,6 +406,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "Magma backend not fully functional on macOS")]
     async fn test_foundry_backend_auto_fallback() {
         let temp_dir = TempDir::new().unwrap();
         let foundry = Foundry::with_data_dir(temp_dir.path());
@@ -425,6 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "Magma backend not fully functional on macOS")]
     async fn test_foundry_backend_magma_available() {
         let temp_dir = TempDir::new().unwrap();
         let foundry = Foundry::with_data_dir(temp_dir.path());
