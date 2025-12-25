@@ -1,0 +1,32 @@
+name: MSRV Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Monday at 2am UTC
+    - cron: '0 2 * * 1'
+
+jobs:
+  msrv:
+    name: Minimum Supported Rust Version (1.78)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust 1.78
+        uses: dtolnay/rust-toolchain@1.78
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check with MSRV
+        run: cargo check --workspace --all-targets
+
+      - name: Test with MSRV
+        run: cargo test --workspace -- --test-threads=2

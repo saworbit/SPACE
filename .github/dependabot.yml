@@ -1,10 +1,11 @@
 version: 2
 updates:
+  # Cargo dependencies
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "monthly"
-      day: "sunday"
+      interval: "weekly"  # Changed from monthly for better security
+      day: "monday"
       time: "03:00"
     labels:
       - "security"
@@ -12,8 +13,9 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10  # Increased from 5 for weekly updates
     groups:
+      # Critical security dependencies
       crypto-stack:
         patterns:
           - "aes*"
@@ -22,13 +24,43 @@ updates:
           - "poly1305"
           - "subtle"
           - "zeroize"
+          - "blake3"
+          - "sha2"
+          - "hmac"
+          - "pqcrypto-*"
+      # Infrastructure dependencies
       infra:
         patterns:
           - "tokio"
           - "tracing*"
           - "axum"
           - "tower*"
+          - "futures"
+      # Serialization dependencies
+      serde-stack:
+        patterns:
+          - "serde*"
+          - "bincode"
+      # Compression dependencies
+      compression:
+        patterns:
+          - "lz4*"
+          - "zstd"
     ignore:
       - dependency-name: "windows-sys"
         update-types:
+          - "version-update:semver-patch"
           - "version-update:semver-minor"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+    labels:
+      - "ci"
+      - "dependencies"
+    commit-message:
+      prefix: "ci"

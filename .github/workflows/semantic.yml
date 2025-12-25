@@ -32,4 +32,5 @@ jobs:
             ci
             chore
             revert
+            deps
           requireScope: false

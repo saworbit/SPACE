@@ -1,0 +1,73 @@
+name: Cross-Platform Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sunday at 2am UTC
+    - cron: '0 2 * * 0'
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            protoc-install: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          - os: macos-latest
+            protoc-install: brew install protobuf
+          - os: windows-latest
+            protoc-install: choco install protoc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protobuf compiler
+        run: ${{ matrix.protoc-install }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      - name: Run tests
+        run: cargo test --workspace -- --test-threads=2
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Test release build
+        run: cargo test --workspace --release -- --test-threads=1
+
+  # Test on different architectures (ARM, etc.)
+  cross-arch:
+    name: Test ARM64 (Ubuntu)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for ARM64
+        uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: aarch64
+          distro: ubuntu_latest
+          install: |
+            apt-get update
+            apt-get install -y curl build-essential protobuf-compiler
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          run: |
+            . "$HOME/.cargo/env"
+            cargo build --workspace --verbose
+            cargo test --workspace -- --test-threads=1

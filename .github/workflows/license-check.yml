@@ -1,0 +1,90 @@
+name: License Compliance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Monday at 3am UTC
+    - cron: '0 3 * * 1'
+
+jobs:
+  license-check:
+    name: Check License Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check licenses
+        run: cargo deny check licenses
+
+      - name: Generate license report
+        if: always()
+        run: |
+          echo "# License Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Allowed Licenses" >> $GITHUB_STEP_SUMMARY
+          echo "- MIT" >> $GITHUB_STEP_SUMMARY
+          echo "- Apache-2.0" >> $GITHUB_STEP_SUMMARY
+          echo "- BSD-*" >> $GITHUB_STEP_SUMMARY
+          echo "- ISC" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Dependency Licenses" >> $GITHUB_STEP_SUMMARY
+          cargo tree --prefix none --edges no-dev --format '{p} - {l}' | sort -u >> $GITHUB_STEP_SUMMARY
+
+  verify-project-licenses:
+    name: Verify Project License Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check LICENSE-MIT exists
+        run: |
+          if [ ! -f "LICENSE-MIT" ]; then
+            echo "ERROR: LICENSE-MIT file not found"
+            exit 1
+          fi
+
+      - name: Check LICENSE-APACHE exists
+        run: |
+          if [ ! -f "LICENSE-APACHE" ]; then
+            echo "ERROR: LICENSE-APACHE file not found"
+            exit 1
+          fi
+
+      - name: Verify Cargo.toml license field
+        run: |
+          if ! grep -q 'license = "MIT OR Apache-2.0"' Cargo.toml; then
+            echo "ERROR: Cargo.toml does not specify 'license = \"MIT OR Apache-2.0\"'"
+            exit 1
+          fi
+          echo "✅ License field in Cargo.toml is correct"
+
+      - name: Verify LICENSE-MIT content
+        run: |
+          if ! grep -q "MIT License" LICENSE-MIT; then
+            echo "ERROR: LICENSE-MIT does not contain MIT License text"
+            exit 1
+          fi
+          echo "✅ LICENSE-MIT contains MIT License text"
+
+      - name: Verify LICENSE-APACHE content
+        run: |
+          if ! grep -q "Apache License" LICENSE-APACHE; then
+            echo "ERROR: LICENSE-APACHE does not contain Apache License text"
+            exit 1
+          fi
+          echo "✅ LICENSE-APACHE contains Apache License text"
