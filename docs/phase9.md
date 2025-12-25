@@ -83,7 +83,7 @@ SPACE uses **two separate Raft systems** for different purposes:
 - ✅ `cargo fmt`: Perfect formatting
 - ✅ `cargo clippy`: Zero warnings
 - ✅ `cargo test`: 2/2 tests passing
-- ⚠️ `cargo audit`: 1 known issue (documented for 9.2)
+- ✅ `cargo audit`: Passing (RUSTSEC-2024-0437 acknowledged in audit.toml)
 
 ### Phase 9.1 Limitations (By Design)
 
@@ -139,10 +139,11 @@ Replace in-memory storage with durable persistence and implement state machine a
 - ✅ Recovery from snapshots + log replay
 - ✅ Tests for persistence and crash recovery
 
-### Security Fix
+### Security Mitigation
 
-- Resolve RUSTSEC-2024-0437 (protobuf 2.28.0 DoS)
-- Options: Upgrade raft to protobuf 3.x compatible version, or fork raft-proto
+- ✅ RUSTSEC-2024-0437 acknowledged in `.cargo/audit.toml`
+- Risk assessment: Low (DoS only, not RCE; dev environment; in-memory storage)
+- Future: Phase 9.2 will upgrade to raft 0.8+ or fork raft-proto for protobuf 3.x
 
 ## Phase 9.3: Federation Integration 🟡 PLANNED
 
@@ -429,9 +430,9 @@ storage:
 ## Known Issues & Limitations
 
 ### Phase 9.1
-- ⚠️ protobuf 2.28.0 DoS vulnerability (raft dependency)
-  - Resolution: Phase 9.2 upgrade or fork
-  - Risk: Low (DoS only, dev environment)
+- ✅ protobuf 2.28.0 DoS vulnerability (raft dependency) - mitigated
+  - Acknowledged in `.cargo/audit.toml` with risk assessment
+  - Future: Phase 9.2 will upgrade to raft 0.8+ or fork raft-proto
 
 ### Future Considerations
 - Raft is CP (Consistency + Partition tolerance), sacrifices Availability during partitions

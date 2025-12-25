@@ -40,11 +40,6 @@ members = [
 
 [patch.crates-io]
 rdma-sys = { path = "vendor/rdma-sys" }
-# NOTE: RUSTSEC-2024-0437 - raft 0.7.0 depends on protobuf 2.28.0 (vulnerable to DoS)
-# This will be addressed in Phase 9.2 by either:
-# 1. Upgrading to a newer raft version that supports protobuf 3.x, or
-# 2. Forking raft-proto to use protobuf 3.7.2+
-# Risk accepted for Phase 9.1 MVP: DoS vulnerability (not RCE), development environment only
 
 [workspace.package]
 version = "0.1.0"
