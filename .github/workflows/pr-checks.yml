@@ -1,0 +1,88 @@
+name: PR Checks
+
+# Consolidated fast checks for pull requests
+# Combines: ci, quality, and license-check to reduce parallel runs
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE*'
+      - '.gitignore'
+
+jobs:
+  fast-checks:
+    name: Fast Checks (fmt, clippy, test, docs, licenses)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      # Fast checks first (fail fast)
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # License compliance checks (fast)
+      - name: Verify LICENSE-MIT
+        run: |
+          [ -f "LICENSE-MIT" ] || { echo "❌ LICENSE-MIT missing"; exit 1; }
+          grep -q "MIT License" LICENSE-MIT || { echo "❌ LICENSE-MIT invalid"; exit 1; }
+
+      - name: Verify LICENSE-APACHE
+        run: |
+          [ -f "LICENSE-APACHE" ] || { echo "❌ LICENSE-APACHE missing"; exit 1; }
+          grep -q "Apache License" LICENSE-APACHE || { echo "❌ LICENSE-APACHE invalid"; exit 1; }
+
+      - name: Verify Cargo.toml license
+        run: |
+          grep -q 'license = "MIT OR Apache-2.0"' Cargo.toml || { echo "❌ Incorrect license field"; exit 1; }
+
+      # Documentation check
+      - name: Check docs compile
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --document-private-items
+
+      # Tests (run with limited parallelism)
+      - name: Run tests
+        run: cargo test --workspace -- --test-threads=2
+
+  quality:
+    name: Spell Check & Link Check
+    runs-on: ubuntu-latest
+    # Only run on PRs (not every push to main to save minutes)
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Spell check
+        uses: crate-ci/typos@master
+        with:
+          files: .
+        continue-on-error: true  # Don't fail on typos, just warn
+
+      - name: Link check
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --verbose --no-progress './**/*.md' './**/*.html'
+          fail: false  # Don't fail on broken links, just warn

@@ -6,43 +6,60 @@ This document describes SPACE's comprehensive CI/CD pipeline and automation stra
 
 SPACE uses a multi-layered CI/CD approach to ensure code quality, security, and reliability:
 
-- **Fast feedback** - Basic checks run quickly on every PR
-- **Comprehensive validation** - Deep security and quality checks
+- **Fast feedback** - Basic checks run quickly on every PR (~5-7 min)
+- **Comprehensive validation** - Deep security and quality checks (on main only)
 - **Automated maintenance** - Dependency updates and monitoring
 - **Cross-platform testing** - Verify compatibility across OS and architectures
 
+### 💰 CI Optimization for GitHub Free Tier
+
+To minimize CI minutes and parallel runs on the free tier:
+
+- ✅ **Consolidated workflows**: Combined ci.yml, quality.yml, license-check.yml → pr-checks.yml
+- ✅ **Strategic triggers**: Expensive checks (MSRV, cross-platform, security-audit) run on main only
+- ✅ **Path filters**: Skip runs when only docs/markdown change
+- ✅ **Scheduled checks**: MSRV, cross-platform, security-audit run weekly
+
+**Result**: Reduced PR runs from **7 parallel workflows** → **2 parallel workflows** (~70% reduction)
+
 ## 🔄 CI/CD Workflows
 
-### Core Workflows (Run on every push/PR)
+### Core Workflows (Run on PRs)
 
 | Workflow | Purpose | Duration | Runs On |
 |----------|---------|----------|---------|
-| **ci.yml** | Fast feedback (fmt, clippy, test) | ~3-5 min | Every push/PR |
-| **quality.yml** | Typos, links, doc compilation | ~2-3 min | Every push/PR |
+| **pr-checks.yml** | Fast feedback (fmt, clippy, test, docs, licenses) | ~5-7 min | Every PR (consolidated) |
 | **semantic.yml** | Validate PR titles (conventional commits) | ~30 sec | Every PR |
-| **license-check.yml** | Verify license compliance | ~2-3 min | Every push/PR |
+
+**Optimization**: Consolidated ci.yml, quality.yml, and license-check.yml into pr-checks.yml to reduce parallel runs from 4 → 1 workflow.
 
 ### Security Workflows
 
 | Workflow | Purpose | Duration | Runs On |
 |----------|---------|----------|---------|
-| **security-audit.yml** | Comprehensive security audit via xtask | ~10-15 min | Push/PR/Manual |
+| **security-audit.yml** | Comprehensive security audit via xtask | ~10-15 min | Push to main / Weekly / Manual |
 | **codeql.yml** | CodeQL security scanning | ~15-20 min | Push to main |
 | **fuzzing.yml** | Fuzz testing for crypto/compression | ~30-60 min | Scheduled |
+
+**Optimization**: Removed security-audit from PRs (runs on main only) to save ~10-15 min per PR.
 
 ### Quality & Performance
 
 | Workflow | Purpose | Duration | Runs On |
 |----------|---------|----------|---------|
 | **coverage.yml** | Code coverage reporting | ~10-15 min | Push to main |
-| **benchmark.yml** | Performance benchmarking | ~5-10 min | Push to main |
+| **benchmark.yml** | Performance benchmarking | ~5-10 min | Push to main (path filtered) |
+
+**Optimization**: Benchmark only runs when layout-engine changes.
 
 ### Compatibility Testing
 
 | Workflow | Purpose | Duration | Runs On |
 |----------|---------|----------|---------|
-| **cross-platform.yml** | Test on Linux/Windows/macOS/ARM | ~15-20 min | Push/PR/Weekly |
-| **msrv.yml** | Verify Rust 1.78+ compatibility | ~5-10 min | Push/PR/Weekly |
+| **cross-platform.yml** | Test on Linux/Windows/macOS/ARM | ~15-20 min | Push to main / Weekly / Manual |
+| **msrv.yml** | Verify Rust 1.78+ compatibility | ~5-10 min | Push to main / Weekly / Manual |
+
+**Optimization**: Removed cross-platform and MSRV from PRs (run on main + weekly) to save ~20-25 min per PR.
 
 ### Maintenance
 
@@ -168,18 +185,18 @@ cargo xtask audit
 
 ## 🎯 Workflow Triggers
 
-### On Every Push/PR
-- ci.yml
-- quality.yml
-- license-check.yml
-- msrv.yml
-- cross-platform.yml (PRs only)
+### On Every PR
+- pr-checks.yml (consolidated)
+- semantic.yml
 
 ### On Push to Main
+- pr-checks.yml
 - security-audit.yml
 - codeql.yml
 - coverage.yml
-- benchmark.yml
+- benchmark.yml (path filtered)
+- msrv.yml
+- cross-platform.yml
 
 ### Scheduled
 - dependency-drift.yml (weekly)

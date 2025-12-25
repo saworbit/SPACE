@@ -3,8 +3,10 @@ name: Security Audit
 on:
   push:
     branches:
-      - main
-  pull_request:
+      - main  # Only on main to save CI minutes (xtask audit is expensive)
+  schedule:
+    # Run weekly on Tuesday at 3am UTC
+    - cron: '0 3 * * 2'
   workflow_dispatch:
     inputs:
       toolchain:
