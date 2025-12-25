@@ -220,6 +220,19 @@ skip = [
     { crate = "clap@2.34.0", reason = "bindgen build-time dependency (rdma-sys); coexists with clap 4 runtime" },
     { crate = "hermit-abi@0.1.19", reason = "bindgen/atty build-time dependency (rdma-sys); coexists with hermit-abi 0.5" },
     { crate = "strsim@0.8.0", reason = "bindgen/clap2 build-time dependency (rdma-sys); coexists with strsim 0.11" },
+
+    # Phase 9.1: raft-proto 0.7.0 build-time dependencies (prost 0.11 vs 0.13)
+    # raft-proto uses old prost 0.11, while rest of project uses prost 0.13
+    # Will be resolved in Phase 9.2 by upgrading to raft 0.8+ or forking raft-proto
+    { crate = "fixedbitset@0.4.2", reason = "raft-proto build-time via prost-build 0.11" },
+    { crate = "multimap@0.8.3", reason = "raft-proto build-time via prost-build 0.11" },
+    { crate = "petgraph@0.6.5", reason = "raft-proto build-time via prost-build 0.11" },
+    { crate = "prettyplease@0.1.25", reason = "raft-proto build-time via prost-build 0.11" },
+    { crate = "prost@0.11.9", reason = "raft-proto runtime dependency (old version)" },
+    { crate = "prost-build@0.11.9", reason = "raft-proto build-time dependency (old version)" },
+    { crate = "prost-derive@0.11.9", reason = "raft-proto build-time dependency (old version)" },
+    { crate = "prost-types@0.11.9", reason = "raft-proto build-time dependency (old version)" },
+    { crate = "protobuf@2.28.0", reason = "raft 0.7.0 runtime dependency (see audit.toml RUSTSEC-2024-0437)" },
 ]
 
 [sources]
