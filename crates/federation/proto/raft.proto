@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package space.raft.v1;
+
+// RaftService handles Raft consensus protocol messages between nodes.
+// This is separate from FederationService which handles data plane operations.
+service RaftService {
+  // Send a Raft protocol message to a peer.
+  // Messages include: votes, heartbeats, append entries, snapshots, etc.
+  rpc SendMessage(RaftMessageRequest) returns (RaftMessageResponse);
+}
+
+// Request containing a Raft protocol message.
+message RaftMessageRequest {
+  // Serialized raft::eraftpb::Message using prost encoding.
+  // This contains all Raft protocol fields: from, to, term, msg_type, entries, etc.
+  bytes message = 1;
+}
+
+// Response to a Raft message.
+message RaftMessageResponse {
+  // Whether the message was successfully received and processed.
+  bool ok = 1;
+  // Error message if ok is false.
+  string error = 2;
+}

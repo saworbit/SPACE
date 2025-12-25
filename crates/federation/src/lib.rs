@@ -11,6 +11,8 @@ pub mod queue;
 pub mod rpc;
 pub mod server;
 pub mod state;
+pub mod storage;
+pub mod transport;
 pub mod wan;
 pub mod zones;
 
@@ -29,3 +31,5 @@ pub use bridge::{Bridge, FederationBridge, FederationResult};
 pub use engine::{RaftEngine, RaftEngineConfig};
 pub use server::FederationServiceImpl;
 pub use server::{serve, serve_from_paths};
+pub use storage::SledStorage;
+pub use transport::{start_raft_server, PeerRegistry, RaftServiceImpl, RaftTransportClient};

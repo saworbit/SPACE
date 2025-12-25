@@ -92,8 +92,8 @@ async fn test_three_node_election() {
             peers: (1..=NUM_NODES).collect(),
         };
 
-        // Create the Raft engine
-        let engine = RaftEngine::new(config, engine_rx, outbox_tx, shutdown_rx)
+        // Create the Raft engine with in-memory storage
+        let engine = RaftEngine::new_memory(config, engine_rx, outbox_tx, shutdown_rx)
             .expect("failed to create raft engine");
 
         // Spawn the engine task

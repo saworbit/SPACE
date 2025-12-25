@@ -2,12 +2,15 @@ use crate::rpc::{
     federation_service_server::FederationService, CapsuleMetadata, HelloRequest, HelloResponse,
     RegisterAck, SegmentChunk, TransferAck,
 };
+use crate::transport::RaftServiceImpl;
 use anyhow::{Context, Result};
 use capsule_registry::CapsuleRegistry;
 use common::{Capsule, CapsuleId, ContentHash, Policy, SegmentId};
 use nvram_sim::NvramLog;
+use raft::prelude::Message;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
@@ -233,4 +236,57 @@ pub async fn serve_from_paths(
         NvramLog::open(nvram_path).with_context(|| format!("open nvram at {}", nvram_path))?,
     );
     serve(addr, registry, nvram, expected_secret).await
+}
+
+/// Serve both FederationService and RaftService on the same port.
+///
+/// This is the production entry point that runs both the data plane
+/// (FederationService for segment transfer) and control plane
+/// (RaftService for consensus messages) on a single gRPC server.
+///
+/// # Arguments
+/// - `addr`: The address to bind to
+/// - `registry`: Capsule metadata registry
+/// - `nvram`: NVRAM log for segments
+/// - `expected_secret`: Optional authentication secret for FederationService
+/// - `raft_inbox`: Channel to send received Raft messages to the RaftEngine
+///
+/// # Example
+/// ```ignore
+/// let (raft_inbox_tx, raft_inbox_rx) = mpsc::channel(100);
+/// let registry = Arc::new(CapsuleRegistry::open("./registry")?);
+/// let nvram = Arc::new(NvramLog::open("./nvram")?);
+///
+/// serve_with_raft(
+///     "127.0.0.1:4422".parse()?,
+///     registry,
+///     nvram,
+///     None,
+///     raft_inbox_tx,
+/// ).await?;
+/// ```
+pub async fn serve_with_raft(
+    addr: SocketAddr,
+    registry: Arc<CapsuleRegistry>,
+    nvram: Arc<NvramLog>,
+    expected_secret: Option<String>,
+    raft_inbox: mpsc::Sender<Message>,
+) -> Result<()> {
+    let federation_service = FederationServiceImpl::new(registry, nvram, expected_secret);
+    let raft_service = RaftServiceImpl::new(raft_inbox);
+
+    info!(addr = %addr, "starting dual gRPC server (FederationService + RaftService)");
+
+    tonic::transport::Server::builder()
+        .add_service(
+            crate::rpc::federation_service_server::FederationServiceServer::new(federation_service),
+        )
+        .add_service(crate::rpc::raft_service_server::RaftServiceServer::new(
+            raft_service,
+        ))
+        .serve(addr)
+        .await
+        .context("serve dual gRPC server")?;
+
+    Ok(())
 }

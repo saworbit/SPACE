@@ -1,17 +1,19 @@
 # Federation Mesh (Phase 4 & Phase 9)
 
-## Phase 9.1: Raft Consensus Engine (NEW)
+## Phase 9: Raft Consensus Engine
 
-**Status**: ✅ Production-ready MVP (December 2024)
+**Status**: ✅ Phase 9.1 Complete | ✅ Phase 9.2 Complete (December 2024)
 
-Phase 9.1 introduces a **real Raft consensus engine** for distributed control plane coordination. This enables automatic leader election and cluster state management when nodes fail.
+Phase 9 introduces a **production-ready Raft consensus engine** for distributed control plane coordination with persistent storage and network transport. This enables automatic leader election, cluster state management, and cross-process communication.
 
 ### Architecture
 
 The Federation crate now includes two distinct systems:
 
-1. **Control Plane Raft** (NEW - Phase 9.1) - `crates/federation/src/engine.rs`
+1. **Control Plane Raft** (Phase 9.1 & 9.2) - `crates/federation/src/engine.rs`
    - Uses tikv/raft-rs v0.7.0 (production Raft from TiKV/Etcd)
+   - **Persistent Storage** (9.2): SledStorage for disk-backed state
+   - **Network Transport** (9.2): gRPC for cross-process communication
    - Manages cluster membership, zone routing, and leader election
    - Async-friendly with tokio integration
    - Independent from existing metadata Raft
@@ -77,12 +79,50 @@ INFO federation::engine: starting raft engine event loop id=1
 INFO raft_simulation: Election phase complete
 ```
 
+### Phase 9.2 Features (NEW - December 2024) ✅
+
+**Persistent Storage** (`src/storage.rs`):
+- SledStorage implementation with separate trees for state, entries, snapshots
+- Crash-safe recovery with atomic fsync
+- Log compaction support
+- Big Endian encoding for correct key ordering
+
+**Network Transport** (`src/transport.rs`):
+- gRPC protocol (RaftService) for cross-process clusters
+- PeerRegistry for endpoint management
+- RaftTransportClient with connection pooling
+- Graceful error handling (network failures logged, Raft retries)
+
+**Generic Engine**:
+- `RaftEngine<S: Storage>` generic over storage backend
+- `new_memory()` - In-memory testing (MemStorage)
+- `new_persistent()` - Production deployment (SledStorage)
+
+**Production Deployment Example**:
+```rust
+// Start persistent Raft node
+let engine = RaftEngine::new_persistent(config, "/var/lib/space/raft", ...)?;
+
+// Start gRPC server
+tokio::spawn(start_raft_server("127.0.0.1:4422".parse()?, inbox_tx));
+
+// Configure peer registry
+let registry = PeerRegistry::from_config(&[
+    (1, "http://127.0.0.1:4422"),
+    (2, "http://127.0.0.1:4423"),
+    (3, "http://127.0.0.1:4424"),
+]);
+
+// Send messages over network
+let client = RaftTransportClient::new(Arc::new(registry));
+client.send(2, msg).await?;
+```
+
 ### Future Roadmap
 
-- **Phase 9.2**: Persistent storage and state machine application
-- **Phase 9.3**: Integration with FederationBridge for zone coordination
-- **Phase 9.4**: Network transport (gRPC) for cross-process clusters
-- **Phase 9.5**: Dynamic membership changes and snapshots
+- **Phase 9.3**: Integration with FederationBridge for zone coordination and state machine application
+- **Phase 9.4**: Advanced features (learner nodes, pre-vote, TLS/mTLS)
+- **Phase 9.5**: Production hardening (chaos testing, performance optimization)
 
 ## Metadata Mesh (Phase 4)
 

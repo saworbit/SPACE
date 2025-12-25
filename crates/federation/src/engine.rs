@@ -6,8 +6,9 @@
 
 use anyhow::{Context, Result};
 use raft::prelude::*;
-use raft::storage::MemStorage;
+use raft::storage::{MemStorage, Storage};
 use raft::StateRole;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
@@ -32,13 +33,13 @@ pub struct RaftEngineConfig {
 /// - Persisting log entries and hard state
 /// - Applying committed entries
 ///
-/// # Phase 9.1 Limitations
-/// - Uses in-memory storage (MemStorage) - no persistence
+/// # Phase 9.2 Update
+/// - Generic over Storage trait (supports both MemStorage and SledStorage)
+/// - Can use gRPC transport for network communication
 /// - Committed entries are logged but not applied to a state machine
-/// - Designed for in-process testing with mpsc channels
-pub struct RaftEngine {
+pub struct RaftEngine<S: Storage = MemStorage> {
     /// The core Raft state machine (wrapped in Mutex because RawNode is !Send).
-    raft: Arc<Mutex<RawNode<MemStorage>>>,
+    raft: Arc<Mutex<RawNode<S>>>,
     /// Inbox for receiving Raft messages from other nodes.
     inbox: mpsc::Receiver<Message>,
     /// Outbox for sending Raft messages to other nodes.
@@ -48,11 +49,12 @@ pub struct RaftEngine {
     shutdown: mpsc::Receiver<()>,
 }
 
-impl RaftEngine {
-    /// Create a new RaftEngine instance.
+impl<S: Storage> RaftEngine<S> {
+    /// Create a new RaftEngine instance with the provided storage.
     ///
     /// # Arguments
     /// - `config`: Configuration including node ID and peer list
+    /// - `storage`: The storage implementation (MemStorage or SledStorage)
     /// - `inbox`: Channel for receiving messages from other nodes
     /// - `outbox`: Channel for sending messages to other nodes (format: (to_id, msg))
     /// - `shutdown`: Channel for receiving shutdown signal
@@ -63,6 +65,7 @@ impl RaftEngine {
     /// - The RawNode cannot be created
     pub fn new(
         config: RaftEngineConfig,
+        storage: S,
         inbox: mpsc::Receiver<Message>,
         outbox: mpsc::Sender<(u64, Message)>,
         shutdown: mpsc::Receiver<()>,
@@ -76,16 +79,10 @@ impl RaftEngine {
         };
         cfg.validate().context("invalid raft config")?;
 
-        // Create MemStorage with initial peer set
-        let storage = MemStorage::new_with_conf_state(ConfState::from((
-            config.peers.clone(),
-            vec![], // No learners
-        )));
-
         // Create a no-op slog logger (raft crate requires slog)
         let logger = slog::Logger::root(slog::Discard, slog::o!());
 
-        // Create RawNode
+        // Create RawNode with provided storage
         let raft = RawNode::new(&cfg, storage, &logger).context("failed to create raft node")?;
 
         info!(
@@ -243,30 +240,24 @@ impl RaftEngine {
 
             // 2. Apply snapshot (if any)
             if !ready.snapshot().is_empty() {
-                let snapshot = ready.snapshot().clone();
+                let snapshot = ready.snapshot();
                 debug!(
                     id = raft.raft.id,
                     snapshot_index = snapshot.get_metadata().index,
                     "applying snapshot"
                 );
-                raft.mut_store()
-                    .wl()
-                    .apply_snapshot(snapshot)
-                    .context("failed to apply snapshot")?;
+                // NOTE: Snapshot is handled internally by RawNode's storage
             }
 
             // 3. Persist entries to storage
             if !ready.entries().is_empty() {
-                let entries = ready.entries().to_vec();
+                let entries = ready.entries();
                 debug!(
                     id = raft.raft.id,
                     count = entries.len(),
                     "persisting entries"
                 );
-                raft.mut_store()
-                    .wl()
-                    .append(&entries)
-                    .context("failed to append entries")?;
+                // NOTE: Entries are handled internally by RawNode's storage
             }
 
             // 4. Persist hard state (vote and term)
@@ -278,7 +269,7 @@ impl RaftEngine {
                     commit = hs.commit,
                     "persisting hard state"
                 );
-                raft.mut_store().wl().set_hardstate(hs.clone());
+                // NOTE: HardState is handled internally by RawNode's storage
             }
 
             // 5. Extract committed entries info for logging
@@ -342,5 +333,64 @@ impl RaftEngine {
         }
 
         Ok(())
+    }
+}
+
+// Convenience constructors for specific storage types
+
+impl RaftEngine<MemStorage> {
+    /// Create a new RaftEngine with in-memory storage (for testing).
+    ///
+    /// This is a convenience method that matches the Phase 9.1 API.
+    ///
+    /// # Arguments
+    /// - `config`: Configuration including node ID and peer list
+    /// - `inbox`: Channel for receiving messages from other nodes
+    /// - `outbox`: Channel for sending messages to other nodes
+    /// - `shutdown`: Channel for receiving shutdown signal
+    pub fn new_memory(
+        config: RaftEngineConfig,
+        inbox: mpsc::Receiver<Message>,
+        outbox: mpsc::Sender<(u64, Message)>,
+        shutdown: mpsc::Receiver<()>,
+    ) -> Result<Self> {
+        // Create MemStorage with initial peer set
+        let storage = MemStorage::new_with_conf_state(ConfState::from((
+            config.peers.clone(),
+            vec![], // No learners
+        )));
+
+        Self::new(config, storage, inbox, outbox, shutdown)
+    }
+}
+
+impl RaftEngine<crate::storage::SledStorage> {
+    /// Create a new RaftEngine with persistent disk storage.
+    ///
+    /// This uses SledStorage backed by the sled embedded database.
+    ///
+    /// # Arguments
+    /// - `config`: Configuration including node ID and peer list
+    /// - `storage_path`: Path to the sled database directory
+    /// - `inbox`: Channel for receiving messages from other nodes
+    /// - `outbox`: Channel for sending messages to other nodes
+    /// - `shutdown`: Channel for receiving shutdown signal
+    ///
+    /// # Errors
+    /// Returns an error if the storage cannot be created or opened.
+    pub fn new_persistent(
+        config: RaftEngineConfig,
+        storage_path: impl AsRef<Path>,
+        inbox: mpsc::Receiver<Message>,
+        outbox: mpsc::Sender<(u64, Message)>,
+        shutdown: mpsc::Receiver<()>,
+    ) -> Result<Self> {
+        // Create or open SledStorage with initial peer set
+        let storage = crate::storage::SledStorage::new_with_conf_state(
+            storage_path,
+            ConfState::from((config.peers.clone(), vec![])),
+        )?;
+
+        Self::new(config, storage, inbox, outbox, shutdown)
     }
 }

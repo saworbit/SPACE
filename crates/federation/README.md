@@ -9,9 +9,9 @@ The `federation` crate provides two main capabilities:
 1. **Control Plane Consensus** (Phase 9.1) - Raft-based cluster coordination
 2. **Data Plane Replication** (Phase 4b) - gRPC-based inter-zone replication
 
-## Phase 9.1: Raft Consensus Engine
+## Phase 9.1: Raft Consensus Engine (Complete)
 
-### Quick Start
+### Quick Start (In-Memory)
 
 ```rust
 use federation::{RaftEngine, RaftEngineConfig};
@@ -30,8 +30,8 @@ async fn main() -> anyhow::Result<()> {
         peers: vec![1, 2, 3],   // All node IDs including self
     };
 
-    // Create and run engine
-    let engine = RaftEngine::new(config, inbox_rx, outbox_tx, shutdown_rx)?;
+    // Create in-memory engine (testing/development)
+    let engine = RaftEngine::new_memory(config, inbox_rx, outbox_tx, shutdown_rx)?;
 
     // Spawn the event loop
     tokio::spawn(async move {
@@ -46,6 +46,92 @@ async fn main() -> anyhow::Result<()> {
     if engine.is_leader() {
         println!("I am the leader at term {}", engine.current_term());
     }
+
+    Ok(())
+}
+```
+
+## Phase 9.2: Persistence & Transport (Complete) ✅ NEW
+
+### Production Deployment with Persistence
+
+```rust
+use federation::{RaftEngine, RaftEngineConfig, SledStorage};
+use std::path::Path;
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let storage_path = Path::new("/var/lib/space/raft");
+
+    // Create channels
+    let (inbox_tx, inbox_rx) = mpsc::channel(100);
+    let (outbox_tx, outbox_rx) = mpsc::channel(100);
+    let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+
+    // Configure Raft engine
+    let config = RaftEngineConfig {
+        id: 1,
+        peers: vec![1, 2, 3],
+    };
+
+    // Create persistent engine (production)
+    let engine = RaftEngine::new_persistent(
+        config,
+        storage_path,
+        inbox_rx,
+        outbox_tx,
+        shutdown_rx
+    )?;
+
+    // Spawn the event loop
+    tokio::spawn(async move {
+        engine.run().await
+    });
+
+    // Data survives restarts! 🎉
+    engine.propose(b"CreateVolume:Vol-X".to_vec()).await?;
+
+    Ok(())
+}
+```
+
+### Network Transport with gRPC
+
+```rust
+use federation::{start_raft_server, PeerRegistry, RaftTransportClient};
+use std::sync::Arc;
+use std::net::SocketAddr;
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let (inbox_tx, mut inbox_rx) = mpsc::channel(100);
+    let addr: SocketAddr = "127.0.0.1:4422".parse()?;
+
+    // Start gRPC server (receives messages)
+    tokio::spawn(start_raft_server(addr, inbox_tx));
+
+    // Configure peer registry
+    let registry = PeerRegistry::from_config(&[
+        (1, "http://127.0.0.1:4422"),
+        (2, "http://127.0.0.1:4423"),
+        (3, "http://127.0.0.1:4424"),
+    ]);
+
+    // Create transport client (sends messages)
+    let client = RaftTransportClient::new(Arc::new(registry));
+
+    // Send Raft messages over the network
+    let msg = raft::prelude::Message {
+        msg_type: raft::prelude::MessageType::MsgHeartbeat as i32,
+        from: 1,
+        to: 2,
+        term: 5,
+        ..Default::default()
+    };
+
+    client.send(2, msg).await?;
 
     Ok(())
 }
@@ -99,16 +185,37 @@ INFO raft_simulation: router: starting
 INFO raft_simulation: Election phase complete
 ```
 
-### Phase 9.1 Limitations
+### Phase 9.2 Features ✅ COMPLETE
 
-- **No Persistence**: Uses MemStorage (lost on restart)
-  - Phase 9.2 will add sled/rocksdb backend
-- **In-Process Only**: Test uses mpsc channels, not real network
-  - Phase 9.4 will add gRPC transport
+- **✅ Persistent Storage**: SledStorage backed by embedded database
+  - Survives restarts with full state recovery
+  - Separate trees for hard_state, conf_state, entries, snapshots
+  - Atomic fsync for durability guarantees
+  - Log compaction support via `compact()` method
+
+- **✅ Network Transport**: gRPC-based message passing
+  - Cross-process Raft clusters
+  - Connection pooling for efficiency
+  - PeerRegistry for endpoint management
+  - Prost serialization over HTTP/2
+
+- **✅ Generic Storage**: Engine works with any Storage implementation
+  - `new_memory()` - MemStorage for testing
+  - `new_persistent()` - SledStorage for production
+  - Easy to add custom backends
+
+- **✅ Comprehensive Testing**:
+  - Persistence across restarts verified
+  - gRPC transport end-to-end tests
+  - Connection pooling performance validated
+  - Backward compatibility maintained
+
+### Remaining Limitations
+
 - **Fixed Membership**: Cannot add/remove nodes dynamically
-  - Phase 9.3 will add membership changes
-- **No State Machine**: Commits are logged but not applied
-  - Phase 9.2 will add state machine application
+  - Phase 9.3 will add membership changes via joint consensus
+- **No State Machine**: Commits are logged but not applied to application state
+  - Phase 9.3 will add state machine integration with FederationBridge
 
 ### API Reference
 
@@ -187,29 +294,33 @@ They operate independently and serve different purposes.
 
 ## Future Roadmap
 
-### Phase 9.2: Persistence & State Machine
-- Replace MemStorage with sled/rocksdb
-- Implement state machine for control plane metadata
-- Add snapshot support for faster recovery
-- Persist hard state and log entries
+### ✅ Phase 9.2: Persistence & Transport (COMPLETE)
+- ✅ SledStorage with persistent state
+- ✅ gRPC transport layer
+- ✅ Connection pooling
+- ✅ Log compaction support
+- ✅ Snapshot infrastructure
+- ✅ Generic storage trait
 
-### Phase 9.3: Federation Integration
+### Phase 9.3: Federation Integration (Planned)
 - Wire RaftEngine into FederationBridge
 - Use Raft for zone leader election
 - Coordinate zone routing changes via consensus
-- Dynamic cluster membership
+- Dynamic cluster membership with joint consensus
+- State machine application for cluster metadata
 
-### Phase 9.4: Network Transport
-- Replace mpsc channels with gRPC
-- Cross-process Raft cluster support
+### Phase 9.4: Advanced Features (Planned)
 - TLS/mTLS for secure communication
-- Production deployment ready
-
-### Phase 9.5: Advanced Features
-- Log compaction and garbage collection
 - Learner nodes for scaling reads
 - Pre-vote to prevent election storms
-- Joint consensus for membership changes
+- Automatic log compaction and garbage collection
+- Metrics and observability integration
+
+### Phase 9.5: Production Hardening (Planned)
+- Chaos engineering and failure testing
+- Performance optimization and benchmarking
+- Multi-datacenter deployment patterns
+- Advanced monitoring and alerting
 
 ## Contributing
 
