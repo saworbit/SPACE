@@ -23,8 +23,8 @@ async fn test_raft_persistence_across_restarts() {
 
     // Phase 1: Create engine, propose an entry, then shutdown
     {
-        let (inbox_tx, inbox_rx) = mpsc::channel(100);
-        let (outbox_tx, mut outbox_rx) = mpsc::channel(100);
+        let (_inbox_tx, inbox_rx) = mpsc::channel(100);
+        let (outbox_tx, outbox_rx) = mpsc::channel(100);
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let config = RaftEngineConfig {
@@ -245,7 +245,7 @@ fn test_storage_entries_max_size() {
 
     // Should get at least 1 entry (first entry always included)
     // and likely 3 entries total (~3KB)
-    assert!(limited.len() >= 1 && limited.len() <= 4);
+    assert!(!limited.is_empty() && limited.len() <= 4);
 
     println!(
         "✓ max_size parameter limits entries correctly (got {} entries)",
