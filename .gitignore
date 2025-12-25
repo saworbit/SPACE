@@ -2,7 +2,7 @@
 /target/
 /fuzz/target/
 /fuzz/corpus/
-Cargo.lock
+# Cargo.lock is committed for reproducible builds (this is an application, not a library)
 
 # SPACE runtime files
 *.nvram
