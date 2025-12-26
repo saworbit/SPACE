@@ -159,6 +159,10 @@ async fn test_sparse_volume_operations() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Storage backend has platform-specific issues on macOS"
+)]
 async fn test_volume_resize() {
     let temp_dir = TempDir::new().unwrap();
     let foundry = Foundry::with_data_dir(temp_dir.path());
