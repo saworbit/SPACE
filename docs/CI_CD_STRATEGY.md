@@ -57,7 +57,7 @@ To minimize CI minutes and parallel runs on the free tier:
 | Workflow | Purpose | Duration | Runs On |
 |----------|---------|----------|---------|
 | **cross-platform.yml** | Test on Linux/Windows/macOS | ~15-20 min | Push to main / Weekly / Manual |
-| **msrv.yml** | Verify Rust 1.78+ compatibility | ~5-10 min | Push to main / Weekly / Manual |
+| **msrv.yml** | Verify Rust 1.83+ compatibility | ~5-10 min | Push to main / Weekly / Manual |
 
 **Optimization**:
 - Removed cross-platform and MSRV from PRs (run on main + weekly) to save ~20-25 min per PR

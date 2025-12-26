@@ -2,7 +2,7 @@
 # SPACE CORE – Production image < 180 MB, zero-trust, health-checked
 # Build:  docker build -f containerization/Dockerfile -t space-core:latest .
 # ─────────────────────────────────────────────────────────────────────
-FROM rust:1.78-bookworm AS builder
+FROM rust:1.83-bookworm AS builder
 WORKDIR /build
 # Cache deps forever
 COPY Cargo.toml Cargo.lock ./

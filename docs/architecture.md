@@ -282,7 +282,8 @@ async fn health_agent_loop() {
 | Tiering            | Heat counter, metadata move         | none             |
 
 ---
-## 9.1 Phase 4: Protocol Views & Federation
+
+## 9.1 Phase 4: Protocol Views & Federation
 
 Phase 4 is the bridge between the capsule control plane and the external protocol surfaces. Capsules continue to flow through `capsule-registry` and the pipeline, and the `phase4` feature enables a simulation-first “View” layer:
 
@@ -344,7 +345,7 @@ Feature parity is guaranteed: if an accelerator is absent, the CPU path runs the
 
 ## 13  Getting started (developer sandbox)
 
-*Requirements:* Linux host, Rust 1.78+, Docker 25+, `kubectl`, 16 GB RAM.
+*Requirements:* Linux host, Rust 1.83+, Docker 25+, `kubectl`, 16 GB RAM.
 
 ```bash
 # Bootstrap dev sandbox

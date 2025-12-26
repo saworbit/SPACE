@@ -9,7 +9,7 @@
 ## Prerequisites
 
 ```bash
-# Rust 1.78+
+# Rust 1.83+
 rustup update
 
 # Build the project
