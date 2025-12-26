@@ -478,6 +478,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Sled database has file locking issues on macOS"
+    )]
     fn test_persistence_across_restarts() {
         let temp = TempDir::new().unwrap();
         let conf_state = ConfState::from((vec![1, 2, 3], vec![]));
