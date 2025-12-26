@@ -131,6 +131,8 @@ impl BlockView {
         if block_size == 0 {
             bail!("Block size must be > 0");
         }
+        // MSRV: is_multiple_of() is unstable in Rust 1.83, use modulo instead
+        #[allow(clippy::manual_is_multiple_of)]
         if size % block_size != 0 {
             bail!("Volume size must be a multiple of block size");
         }
