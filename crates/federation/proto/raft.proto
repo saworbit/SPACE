@@ -24,3 +24,35 @@ message RaftMessageResponse {
   // Error message if ok is false.
   string error = 2;
 }
+
+// Commands for cluster state machine operations
+message Command {
+  oneof payload {
+    RegisterNode register_node = 1;
+    CreateVolume create_volume = 2;
+    DeleteVolume delete_volume = 3;
+    MoveReplica move_replica = 4;
+  }
+}
+
+message RegisterNode {
+  uint64 node_id = 1;
+  string address = 2;
+  uint64 capacity_bytes = 3;
+}
+
+message CreateVolume {
+  string volume_id = 1;
+  uint64 size_bytes = 2;
+  uint32 replication_factor = 3;
+}
+
+message DeleteVolume {
+  string volume_id = 1;
+}
+
+message MoveReplica {
+  string volume_id = 1;
+  uint64 from_node = 2;
+  uint64 to_node = 3;
+}

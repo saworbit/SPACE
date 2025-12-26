@@ -114,8 +114,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Added inline documentation for all public APIs
     - Example usage patterns for production deployment
   - **Future Roadmap**
-    - Phase 9.3: Federation Integration - Wire into FederationBridge for zone coordination
     - Phase 9.4: Advanced Features - Log compaction, learner nodes, pre-vote, joint consensus
+
+- **Phase 9.3: The Hive Mind (Global State Machine)** - Deterministic cluster registry for topology management
+  - **Command Schema** (`crates/federation/proto/raft.proto` - extended)
+    - `Command` message with oneof payload (RegisterNode, CreateVolume, DeleteVolume, MoveReplica)
+    - `RegisterNode` - Add nodes to cluster (id, address, capacity_bytes)
+    - `CreateVolume` - Create volumes with replica placement (id, size, replication_factor)
+    - `DeleteVolume` - Remove volumes from cluster
+    - `MoveReplica` - Migrate replicas between nodes (volume_id, from_node, to_node)
+    - Protobuf serialization for schema evolution and cross-language compatibility
+  - **Registry State Machine** (`crates/federation/src/registry.rs` - 201 lines)
+    - `ClusterState` - HashMap-based cluster topology (nodes, volumes, last_applied_index)
+    - `NodeMetadata` - Node information (id, address, capacity, status: Active/Draining/Dead)
+    - `VolumeMetadata` - Volume information (id, size, replicas chain [Primary, R1, R2])
+    - `Registry` - Thread-safe state machine with Arc<RwLock<ClusterState>>
+    - **Deterministic Application**: `apply(index, data)` - Same command sequence = identical state on all nodes
+    - **Idempotency**: Re-applying commands at same index is a no-op (already applied check)
+    - **Snapshotting**: `take_snapshot()` / `restore_snapshot()` using bincode for fast Rust serialization
+    - Simple placement strategy: First N available nodes (Phase 10 will add intelligent LayoutEngine)
+    - Query methods: `get_state()` returns full cluster snapshot for readers
+  - **Command Builders** (`crates/federation/src/registry.rs` - helpers)
+    - `build_register_node_cmd()` - Constructs RegisterNode command bytes
+    - `build_create_volume_cmd()` - Constructs CreateVolume command bytes
+    - `build_delete_volume_cmd()` - Constructs DeleteVolume command bytes
+    - `build_move_replica_cmd()` - Constructs MoveReplica command bytes
+    - Prost encoding to Vec<u8> for Raft log submission
+  - **RaftEngine Integration** (`crates/federation/src/engine.rs` - modified)
+    - Added `registry: Option<Arc<Registry>>` field to RaftEngine struct
+    - Updated all constructors (`new`, `new_memory`, `new_persistent`) to accept optional registry
+    - Modified `handle_ready()` to apply committed entries to registry (replaced TODO at line 324)
+    - Backward compatible: Existing tests work with `None` for registry parameter
+    - Extract committed entries with full data (index, term, data bytes)
+    - Apply loop calls `registry.apply(index, &data)` with error logging on failure
+  - **Module Exports** (`crates/federation/src/lib.rs` - updated)
+    - New `pub mod registry` declaration
+    - Public exports: Registry, ClusterState, NodeMetadata, VolumeMetadata, NodeStatus
+    - Public exports: build_register_node_cmd, build_create_volume_cmd, build_delete_volume_cmd, build_move_replica_cmd
+  - **Comprehensive Testing** (`crates/federation/tests/registry_test.rs` - 161 lines)
+    - `test_registry_transitions` - State transitions (register node, create volume)
+    - `test_registry_idempotency` - Re-applying same index is ignored
+    - `test_registry_snapshot_restore` - Snapshot/restore round-trip correctness
+    - `test_registry_delete_volume` - Volume deletion workflow
+    - `test_registry_move_replica` - Replica migration between nodes
+    - `test_registry_volume_placement` - Under-replication scenario handling
+    - All tests handle HashMap non-determinism (don't assume iteration order)
+  - **Backward Compatibility**
+    - Updated existing tests (`persistence_test.rs`, `raft_simulation.rs`) to pass `None` for registry
+    - No breaking changes to existing federation APIs
+    - Registry is optional during Phase 9.3 → 9.4 transition
+  - **Quality Metrics** - Production-ready state machine
+    - ✅ cargo fmt: Perfect formatting
+    - ✅ cargo clippy: Zero warnings
+    - ✅ cargo test: All tests passing (27 total: 6 registry + 21 existing)
+    - ✅ cargo build: Clean compilation with proto generation
+    - ✅ Determinism: State transitions verified across multiple test runs
+    - ✅ Thread safety: RwLock ensures concurrent read correctness
+  - **Architecture Notes**
+    - Separation of concerns: `state.rs` (WAN replication state) vs `registry.rs` (cluster state)
+    - Control plane commands in `raft.proto`, data plane operations in `federation.proto`
+    - Bincode for snapshots (fast, Rust-native), Protobuf for commands (schema evolution)
+    - Ready for Phase 9.4 integration with FederationBridge and HTTP Control API
+  - **Future Roadmap**
+    - Phase 9.4: Control API - HTTP endpoints to query/modify cluster state
+    - Phase 10: Layout Engine - Intelligent replica placement (capacity, zones, failure domains)
+    - Phase 11: Failure Detection - Heartbeat monitoring, automatic rebalancing
 
 - **Phase 8: The Foundry (Polymorphic Block Storage)** - High-performance mutable block storage layer with pluggable backends
   - **New crate: `foundry`** - Block-level volume abstraction for virtual disks and raw NVMe devices

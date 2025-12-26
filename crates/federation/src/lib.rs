@@ -8,6 +8,7 @@
 pub mod bridge;
 pub mod engine;
 pub mod queue;
+pub mod registry;
 pub mod rpc;
 pub mod server;
 pub mod state;
@@ -29,6 +30,10 @@ pub struct ZoneConfig {
 
 pub use bridge::{Bridge, FederationBridge, FederationResult};
 pub use engine::{RaftEngine, RaftEngineConfig};
+pub use registry::{
+    build_create_volume_cmd, build_delete_volume_cmd, build_move_replica_cmd,
+    build_register_node_cmd, ClusterState, NodeMetadata, NodeStatus, Registry, VolumeMetadata,
+};
 pub use server::FederationServiceImpl;
 pub use server::{serve, serve_from_paths};
 pub use storage::SledStorage;

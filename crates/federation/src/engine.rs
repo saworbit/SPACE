@@ -47,6 +47,8 @@ pub struct RaftEngine<S: Storage = MemStorage> {
     outbox: mpsc::Sender<(u64, Message)>,
     /// Shutdown signal channel.
     shutdown: mpsc::Receiver<()>,
+    /// Optional registry for applying state machine commands (Phase 9.3)
+    registry: Option<Arc<crate::registry::Registry>>,
 }
 
 impl<S: Storage> RaftEngine<S> {
@@ -58,6 +60,7 @@ impl<S: Storage> RaftEngine<S> {
     /// - `inbox`: Channel for receiving messages from other nodes
     /// - `outbox`: Channel for sending messages to other nodes (format: (to_id, msg))
     /// - `shutdown`: Channel for receiving shutdown signal
+    /// - `registry`: Optional registry for applying state machine commands
     ///
     /// # Errors
     /// Returns an error if:
@@ -69,6 +72,7 @@ impl<S: Storage> RaftEngine<S> {
         inbox: mpsc::Receiver<Message>,
         outbox: mpsc::Sender<(u64, Message)>,
         shutdown: mpsc::Receiver<()>,
+        registry: Option<Arc<crate::registry::Registry>>,
     ) -> Result<Self> {
         // Create Raft config with conservative timings
         let cfg = Config {
@@ -96,6 +100,7 @@ impl<S: Storage> RaftEngine<S> {
             inbox,
             outbox,
             shutdown,
+            registry,
         })
     }
 
@@ -272,7 +277,7 @@ impl<S: Storage> RaftEngine<S> {
                 // NOTE: HardState is handled internally by RawNode's storage
             }
 
-            // 5. Extract committed entries info for logging
+            // 5. Extract committed entries info for logging and application
             let committed_info: Vec<_> = ready
                 .committed_entries()
                 .iter()
@@ -283,6 +288,7 @@ impl<S: Storage> RaftEngine<S> {
                         Some((
                             entry.index,
                             entry.term,
+                            entry.data.clone(),
                             entry.data.len(),
                             String::from_utf8_lossy(&entry.data).into_owned(),
                         ))
@@ -310,9 +316,9 @@ impl<S: Storage> RaftEngine<S> {
             }
         }
 
-        // Log committed entries
+        // Log and apply committed entries
         let node_id = self.id();
-        for (index, term, bytes, payload) in committed_info {
+        for (index, term, data, bytes, payload) in committed_info {
             info!(
                 id = node_id,
                 index = index,
@@ -321,7 +327,18 @@ impl<S: Storage> RaftEngine<S> {
                 payload = %payload,
                 "committed entry"
             );
-            // TODO Phase 9.2: Apply to state machine
+
+            // Apply to state machine (Phase 9.3)
+            if let Some(ref registry) = self.registry {
+                if let Err(e) = registry.apply(index, &data) {
+                    error!(
+                        id = node_id,
+                        index = index,
+                        error = %e,
+                        "failed to apply entry to registry"
+                    );
+                }
+            }
         }
 
         // Send light ready messages
@@ -348,11 +365,13 @@ impl RaftEngine<MemStorage> {
     /// - `inbox`: Channel for receiving messages from other nodes
     /// - `outbox`: Channel for sending messages to other nodes
     /// - `shutdown`: Channel for receiving shutdown signal
+    /// - `registry`: Optional registry for applying state machine commands
     pub fn new_memory(
         config: RaftEngineConfig,
         inbox: mpsc::Receiver<Message>,
         outbox: mpsc::Sender<(u64, Message)>,
         shutdown: mpsc::Receiver<()>,
+        registry: Option<Arc<crate::registry::Registry>>,
     ) -> Result<Self> {
         // Create MemStorage with initial peer set
         let storage = MemStorage::new_with_conf_state(ConfState::from((
@@ -360,7 +379,7 @@ impl RaftEngine<MemStorage> {
             vec![], // No learners
         )));
 
-        Self::new(config, storage, inbox, outbox, shutdown)
+        Self::new(config, storage, inbox, outbox, shutdown, registry)
     }
 }
 
@@ -375,6 +394,7 @@ impl RaftEngine<crate::storage::SledStorage> {
     /// - `inbox`: Channel for receiving messages from other nodes
     /// - `outbox`: Channel for sending messages to other nodes
     /// - `shutdown`: Channel for receiving shutdown signal
+    /// - `registry`: Optional registry for applying state machine commands
     ///
     /// # Errors
     /// Returns an error if the storage cannot be created or opened.
@@ -384,6 +404,7 @@ impl RaftEngine<crate::storage::SledStorage> {
         inbox: mpsc::Receiver<Message>,
         outbox: mpsc::Sender<(u64, Message)>,
         shutdown: mpsc::Receiver<()>,
+        registry: Option<Arc<crate::registry::Registry>>,
     ) -> Result<Self> {
         // Create or open SledStorage with initial peer set
         let storage = crate::storage::SledStorage::new_with_conf_state(
@@ -391,6 +412,6 @@ impl RaftEngine<crate::storage::SledStorage> {
             ConfState::from((config.peers.clone(), vec![])),
         )?;
 
-        Self::new(config, storage, inbox, outbox, shutdown)
+        Self::new(config, storage, inbox, outbox, shutdown, registry)
     }
 }

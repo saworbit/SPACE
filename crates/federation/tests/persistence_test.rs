@@ -32,9 +32,15 @@ async fn test_raft_persistence_across_restarts() {
             peers: peers.clone(),
         };
 
-        let engine =
-            RaftEngine::new_persistent(config, &storage_path, inbox_rx, outbox_tx, shutdown_rx)
-                .expect("failed to create raft engine");
+        let engine = RaftEngine::new_persistent(
+            config,
+            &storage_path,
+            inbox_rx,
+            outbox_tx,
+            shutdown_rx,
+            None,
+        )
+        .expect("failed to create raft engine");
 
         // Spawn engine
         let engine_handle = tokio::spawn(async move { engine.run().await });
@@ -86,9 +92,15 @@ async fn test_raft_persistence_across_restarts() {
         };
 
         // This should successfully load the persisted state
-        let _engine =
-            RaftEngine::new_persistent(config, &storage_path, inbox_rx, outbox_tx, shutdown_rx)
-                .expect("failed to create raft engine with persisted storage");
+        let _engine = RaftEngine::new_persistent(
+            config,
+            &storage_path,
+            inbox_rx,
+            outbox_tx,
+            shutdown_rx,
+            None,
+        )
+        .expect("failed to create raft engine with persisted storage");
 
         println!("✓ Successfully created engine from persisted storage");
     }

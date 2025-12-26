@@ -87,6 +87,73 @@ A: Phase 9.2 (December 2024) transforms the Raft engine from an in-memory protot
 
 This means you can now run a 3-node Raft cluster with each node on a separate machine, and the cluster state survives restarts. If a node crashes and restarts, it recovers its full Raft state from disk and rejoins the cluster automatically.
 
+Q: What does Phase 9.3 add to the Raft implementation?
+A: Phase 9.3 (December 2024) adds the **Global Registry** - a deterministic state machine that maintains the cluster's "memory" of what exists where:
+
+**Cluster Topology**: I now maintain a consistent view of:
+  - Which nodes are in the cluster (id, address, capacity, status: Active/Draining/Dead)
+  - Which volumes exist (id, size, replica placement chain)
+  - Where each volume's replicas are located
+
+**Deterministic State Machine**: Every node applies the same sequence of commands from the Raft log:
+  - RegisterNode: Add nodes to the cluster
+  - CreateVolume: Create volumes with replica placement
+  - DeleteVolume: Remove volumes from the cluster
+  - MoveReplica: Migrate replicas between nodes for rebalancing
+
+**Idempotent Application**: If a node restarts and replays the Raft log, it can safely re-apply already-processed commands. The registry detects duplicate indices and ignores them.
+
+**Snapshotting**: As the Raft log grows, I can serialize the entire registry state to disk (using bincode) and truncate old log entries. This prevents unbounded growth and speeds up recovery after restarts.
+
+**Backward Compatible**: The registry is optional - existing code continues working without modification. You can enable it by passing `Some(registry)` to the RaftEngine constructor.
+
+This transforms Raft from just a consensus protocol into a functional **cluster brain** that answers critical questions: "Where is Volume X?" "Which node is the Primary?" "Is Node Y alive?" The foundation is now ready for Phase 9.4's HTTP Control API.
+
+Q: How do I use the Registry in my Raft cluster?
+A: Here's an example of creating a Raft cluster with the Global Registry:
+
+```rust
+use federation::{RaftEngine, Registry, build_register_node_cmd,
+                 build_create_volume_cmd};
+use std::sync::Arc;
+
+// 1. Create the shared registry (all nodes in the cluster use the same logical registry)
+let registry = Arc::new(Registry::new());
+
+// 2. Create persistent engine with registry
+let engine = RaftEngine::new_persistent(
+    config,
+    "/var/lib/space/raft",
+    inbox_rx,
+    outbox_tx,
+    shutdown_rx,
+    Some(registry.clone())  // Enable registry
+)?;
+
+// 3. Propose commands to the cluster (only the leader can propose)
+if engine.is_leader() {
+    // Register this node
+    let cmd = build_register_node_cmd(1, "127.0.0.1:4422", 1024*1024*1024);
+    engine.propose(cmd).await?;
+
+    // Create a volume with 3 replicas
+    let cmd = build_create_volume_cmd("vol-prod-1", 100*1024*1024*1024, 3);
+    engine.propose(cmd).await?;
+}
+
+// 4. Query the cluster state (any node can read)
+let state = registry.get_state();
+println!("Nodes in cluster: {}", state.nodes.len());
+println!("Volumes: {}", state.volumes.len());
+
+if let Some(vol) = state.volumes.get("vol-prod-1") {
+    println!("Volume size: {} GB", vol.size / 1024 / 1024 / 1024);
+    println!("Replicas on nodes: {:?}", vol.replicas);
+}
+```
+
+Commands proposed on the leader are replicated via Raft to all followers. Once committed, every node applies the command to its local registry, ensuring all nodes have an identical view of the cluster state. This is the foundation for automatic failover, rebalancing, and coordinated volume management.
+
 Q: How do I deploy a production Raft cluster with Phase 9.2?
 A: Here's a complete example of deploying a persistent, networked Raft cluster:
 
