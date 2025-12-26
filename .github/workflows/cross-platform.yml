@@ -49,24 +49,6 @@ jobs:
       - name: Test release build
         run: cargo test --workspace --release -- --test-threads=1
 
-  # Test on different architectures (ARM, etc.)
-  cross-arch:
-    name: Test ARM64 (Ubuntu)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build for ARM64
-        uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: ubuntu_latest
-          install: |
-            apt-get update
-            apt-get install -y curl build-essential protobuf-compiler
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          run: |
-            . "$HOME/.cargo/env"
-            cargo build --workspace --verbose
-            cargo test --workspace -- --test-threads=1
+  # ARM64 testing removed due to excessive CI time (30-60+ minutes under emulation)
+  # Run ARM tests manually when needed or use native ARM runners (paid tier)
+  # To test ARM64: Use workflow_dispatch or run locally on ARM hardware
