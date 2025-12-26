@@ -11,6 +11,11 @@ permissions:
   pull-requests: read
   statuses: write
 
+# Cancel outdated runs when PR is updated
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   main:
     name: Validate PR Title

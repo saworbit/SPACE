@@ -16,6 +16,11 @@ on:
   schedule:
     - cron: '0 2 * * *' # Daily deep scan
 
+# Cancel outdated runs when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fuzz:
     runs-on: ubuntu-latest

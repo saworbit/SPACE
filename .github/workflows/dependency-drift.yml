@@ -5,6 +5,11 @@ on:
     - cron: "0 5 * * *"
   workflow_dispatch:
 
+# Cancel outdated runs when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   drift:
     runs-on: ubuntu-latest

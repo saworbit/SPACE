@@ -8,6 +8,11 @@ on:
     - cron: '0 2 * * 1'
   workflow_dispatch:  # Allow manual trigger
 
+# Cancel outdated runs when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   msrv:
     name: Minimum Supported Rust Version (1.78)

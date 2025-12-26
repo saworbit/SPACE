@@ -6,6 +6,11 @@ on:
   # Only run coverage on main branch to avoid duplicate test execution.
   # PRs run tests via ci.yml workflow.
 
+# Cancel outdated runs when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
