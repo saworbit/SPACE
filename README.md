@@ -693,11 +693,13 @@ docker compose build --no-cache
 
 | Requirement | Version/Details |
 |:-----------:|:---------------:|
-| 🐧 **OS** | Linux, macOS, or Windows |
-| 🦀 **Rust** | 1.78+ |
+| 🐧 **OS** | Linux or Windows (macOS not supported¹) |
+| 🦀 **Rust** | 1.83+ |
 | 💾 **Disk** | 2GB free space |
 
 </div>
+
+> ¹ **macOS Platform Status**: macOS is not currently supported due to systematic storage backend data integrity issues. All foundry storage tests fail on macOS with data corruption (reading zeros instead of written data). Root cause appears to be platform-specific incompatibilities with sparse file handling and direct I/O operations. Future macOS support would require significant platform-specific storage layer work.
 
 ### 🔨 Build
 

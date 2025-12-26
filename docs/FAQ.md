@@ -190,6 +190,20 @@ Bash
 docker compose -f containerization/docker-compose.yml up -d
 This allows you to test S3 uploads, deduplication ratios, and policy configurations locally.
 
+Q: Which operating systems are supported?
+A: I currently support **Linux and Windows**. macOS is not supported due to systematic storage backend incompatibilities.
+
+**Why macOS doesn't work:** All of my foundry storage backend tests fail on macOS with data corruption issues - specifically, data written to disk is read back as zeros instead of the expected content. This appears to be related to platform-specific differences in how macOS handles sparse files and direct I/O operations compared to Linux and Windows. The issue affects all core storage operations: the Legacy backend, Magma backend, snapshots, and recovery systems.
+
+**What this means:** While SPACE will compile and run on macOS, the storage layer is fundamentally broken. Any data written would be silently corrupted, making macOS unsuitable for development or production use.
+
+**Future support:** Adding macOS support would require significant platform-specific engineering work to understand and work around macOS's file I/O behavior. This is a known issue tracked in the project, but is not currently prioritized.
+
+**Recommended platforms:**
+- **Linux:** Fully supported, primary development platform
+- **Windows:** Fully supported, tested in CI
+- **macOS:** Not supported - do not use
+
 6. Volumes & Snapshots (Phase 8)
 Q: What is the Foundry, and how does it relate to capsules?
 A: The Foundry is my high-performance mutable block storage layer (Phase 8). While capsules are immutable content-addressed storage, Foundry provides traditional volumes (like virtual disks) with random read/write access. It bridges two worlds:
