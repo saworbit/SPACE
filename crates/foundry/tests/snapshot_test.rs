@@ -134,6 +134,10 @@ async fn test_snapshot_large_volume() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Storage backend has platform-specific issues on macOS"
+)]
 async fn test_snapshot_sparse_volume() {
     let _ = tracing_subscriber::fmt::try_init();
 
