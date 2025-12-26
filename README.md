@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
+[![CI](https://github.com/saworbit/SPACE/actions/workflows/pr-checks.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/pr-checks.yml)
 
 ### *One capsule. Infinite views.*
 **The future of storage starts with a single primitive that breaks down protocol silos.**
