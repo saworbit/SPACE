@@ -131,7 +131,7 @@ impl BlockView {
         if block_size == 0 {
             bail!("Block size must be > 0");
         }
-        if !size.is_multiple_of(block_size) {
+        if size % block_size != 0 {
             bail!("Volume size must be a multiple of block size");
         }
         if size > usize::MAX as u64 {
