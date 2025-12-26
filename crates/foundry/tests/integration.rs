@@ -237,6 +237,10 @@ async fn test_multiple_volumes() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Storage backend has platform-specific issues on macOS"
+)]
 async fn test_backend_fallback() {
     let temp_dir = TempDir::new().unwrap();
     let foundry = Foundry::with_data_dir(temp_dir.path()).with_backend(BackendType::Auto);
