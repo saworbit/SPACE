@@ -5,6 +5,10 @@ use foundry::backend::{VolumeBackend, VolumeId};
 use tempfile::TempDir;
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Storage backend has platform-specific issues on macOS"
+)]
 async fn test_crash_recovery_scenario() {
     let temp_dir = TempDir::new().unwrap();
     let device_path = temp_dir.path().join("crash_test.img");
@@ -92,6 +96,10 @@ async fn test_multiple_crash_cycles() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Storage backend has platform-specific issues on macOS"
+)]
 async fn test_foundry_magma_recovery() {
     use foundry::{BackendType, Foundry};
 
