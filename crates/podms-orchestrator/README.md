@@ -9,14 +9,16 @@ The PODMS Orchestrator provides the coordination layer that wires together all m
 - **Gossip Layer**: Epidemic state propagation for metadata and events
 - **Mesh Networking**: P2P connectivity and data replication
 - **Scaling Agent**: Autonomous execution of scaling actions
-- **Reconciler**: Self-driving control loop for volume management (Phase 9.4)
+- **Reconciler**: Self-driving control loop for volume management (Phase 9.4+)
+  - Volume creation and deletion (Phase 9.4)
+  - Snapshot-based volume hydration (Phase 9.6)
 - **Telemetry Bus**: Event-driven coordination across components
 
 ## Components
 
-### Reconciler (Phase 9.4)
+### Reconciler (Phase 9.4+)
 
-The **Reconciler** is the "Nervous System" that connects the Federation Registry (Brain) with the Foundry storage engine (Muscle). It implements a continuous control loop that ensures local storage state matches the desired global state.
+The **Reconciler** is the "Nervous System" that connects the Federation Registry (Brain) with the Foundry storage engine (Muscle). It implements a continuous control loop that ensures local storage state matches the desired global state, including automatic volume hydration from snapshots (Phase 9.6).
 
 #### Architecture
 
@@ -52,8 +54,12 @@ The reconciler runs a continuous loop (default: every 5 seconds) that:
 
 ```rust
 use std::sync::Arc;
+use capsule_registry::CapsuleRegistry;
+use capsule_registry::pipeline::WritePipeline;
 use foundry::Foundry;
+use foundry::snapshot::SnapshotEngine;
 use federation::Registry;
+use nvram_sim::NvramLog;
 use podms_orchestrator::Reconciler;
 
 #[tokio::main]
@@ -61,10 +67,17 @@ async fn main() -> anyhow::Result<()> {
     // Setup components
     let foundry = Arc::new(Foundry::new());
     let registry = Arc::new(Registry::new());
+
+    // Setup snapshot engine for hydration (Phase 9.6)
+    let capsule_registry = CapsuleRegistry::new();
+    let nvram = NvramLog::open("data/nvram.log")?;
+    let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+    let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
+
     let node_id = 1;
 
-    // Create reconciler
-    let reconciler = Reconciler::new(node_id, foundry, registry)
+    // Create reconciler with snapshot engine
+    let reconciler = Reconciler::new(node_id, foundry, registry, snapshot_engine)
         .with_interval(std::time::Duration::from_secs(10)); // Optional custom interval
 
     // Run continuously in background
@@ -81,6 +94,10 @@ async fn main() -> anyhow::Result<()> {
 #### Features
 
 - **Self-Driving**: Automatically creates volumes when they appear in Registry
+- **Volume Hydration** (Phase 9.6): Automatically restores volumes from snapshots
+  - Detects `source_capsule_id` in volume metadata
+  - Calls SnapshotEngine to restore data from capsule registry
+  - Handles failures gracefully with automatic cleanup
 - **Self-Healing**: Automatically removes zombie volumes not in Registry
 - **Graceful Recovery**: Never crashes - logs errors and continues
 - **Thread-Safe**: Uses Arc/RwLock for concurrent operation
@@ -159,11 +176,19 @@ RUST_LOG=info cargo test -p podms-orchestrator --test reconciler_test
 - **Foundry Engine**: Local storage backend via `list_volumes()`, `create_volume()`, `delete_volume()`
 - **Logging**: Structured logging via `tracing` for observability
 
+## Phase History
+
+- **Phase 9.4** ✅: Node Reconciliation - Self-driving volume creation/deletion
+- **Phase 9.5** ✅: Placement Scheduler - Intelligent node selection
+- **Phase 9.6** ✅: Volume Hydration - Snapshot-based volume restoration
+  - Automatic hydration from `source_capsule_id`
+  - Cleanup on failure (idempotent retry)
+  - Integration with SnapshotEngine
+
 ## Future Roadmap
 
-- **Phase 9.5**: Replication Chain Reconciliation - Connect Primary to Replica
-- **Phase 9.6**: Volume Resize Reconciliation - Detect and fix size drift
 - **Phase 9.7**: Health Checks - Monitor volume health and report to Registry
+- **Phase 10+**: Advanced Features - Progress tracking, incremental hydration, cross-zone restore
 
 ## License
 

@@ -61,9 +61,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use common::CapsuleId;
 use foundry::backend::VolumeId;
+use foundry::snapshot::SnapshotEngine;
 use foundry::{BackendType, Foundry};
 use tracing::{error, info, instrument, warn};
+use uuid::Uuid;
 
 use federation::Registry;
 
@@ -79,6 +82,8 @@ pub struct Reconciler {
     foundry: Arc<Foundry>,
     /// Global registry (Raft-backed)
     registry: Arc<Registry>,
+    /// Snapshot engine for volume hydration
+    snapshot_engine: Arc<SnapshotEngine>,
     /// Reconciliation interval
     interval: Duration,
 }
@@ -91,15 +96,22 @@ impl Reconciler {
     /// - `node_id`: The ID of this node (must match ID in Federation Registry)
     /// - `foundry`: The local Foundry storage engine
     /// - `registry`: The global Federation Registry
+    /// - `snapshot_engine`: The snapshot engine for volume hydration
     ///
     /// # Default Configuration
     ///
     /// - Reconciliation interval: 5 seconds
-    pub fn new(node_id: u64, foundry: Arc<Foundry>, registry: Arc<Registry>) -> Self {
+    pub fn new(
+        node_id: u64,
+        foundry: Arc<Foundry>,
+        registry: Arc<Registry>,
+        snapshot_engine: Arc<SnapshotEngine>,
+    ) -> Self {
         Self {
             node_id,
             foundry,
             registry,
+            snapshot_engine,
             interval: Duration::from_secs(5),
         }
     }
@@ -161,8 +173,10 @@ impl Reconciler {
     /// 3. Get actual state from Foundry
     /// 4. Create missing volumes
     /// 5. Delete zombie volumes
+    ///
+    /// This method is public to enable integration testing.
     #[instrument(skip(self))]
-    async fn reconcile_step(&self) -> Result<()> {
+    pub async fn reconcile_step(&self) -> Result<()> {
         // 1. Get Desired State from Raft
         let cluster_state = self.registry.get_state();
 
@@ -191,13 +205,53 @@ impl Reconciler {
                     volume_id = %vol_id,
                     size_bytes = meta.size,
                     replicas = ?meta.replicas,
+                    source_capsule_id = ?meta.source_capsule_id,
                     "Reconciler: Creating missing volume"
                 );
 
-                // Create volume with Auto backend selection
+                // A. Create the empty shell
                 self.foundry
                     .create_volume(vol_id, meta.size, Some(BackendType::Auto))
                     .await?;
+
+                // B. Hydrate if source exists
+                if let Some(capsule_id_str) = &meta.source_capsule_id {
+                    info!(
+                        volume_id = %vol_id,
+                        capsule_id = %capsule_id_str,
+                        "Reconciler: Hydrating volume from capsule"
+                    );
+
+                    // Parse the capsule ID (UUID format)
+                    let uuid = Uuid::parse_str(capsule_id_str).map_err(|e| {
+                        anyhow::anyhow!("Invalid Capsule ID '{}': {}", capsule_id_str, e)
+                    })?;
+                    let capsule_id = CapsuleId::from_uuid(uuid);
+
+                    // Get the volume handle for hydration
+                    let vol = self.foundry.get_volume(vol_id).await?;
+
+                    // Restore snapshot data into the new volume
+                    if let Err(e) = self
+                        .snapshot_engine
+                        .restore_snapshot(vol_id, capsule_id, vol)
+                        .await
+                    {
+                        error!(
+                            volume_id = %vol_id,
+                            error = %e,
+                            "Hydration failed. Deleting partial volume for retry."
+                        );
+                        // Cleanup to force retry next loop
+                        self.foundry.delete_volume(vol_id).await.ok();
+                        return Err(e.into());
+                    }
+
+                    info!(
+                        volume_id = %vol_id,
+                        "Reconciler: Hydration complete"
+                    );
+                }
 
                 info!(volume_id = %vol_id, "Reconciler: Successfully created volume");
             }
@@ -238,13 +292,22 @@ impl Reconciler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capsule_registry::pipeline::WritePipeline;
 
     #[test]
     fn test_reconciler_construction() {
+        use capsule_registry::CapsuleRegistry;
+        use nvram_sim::NvramLog;
+
         let foundry = Arc::new(Foundry::new());
         let registry = Arc::new(Registry::new());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let capsule_registry = CapsuleRegistry::new();
+        let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
+        let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+        let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
 
-        let reconciler = Reconciler::new(1, foundry, registry);
+        let reconciler = Reconciler::new(1, foundry, registry, snapshot_engine);
 
         assert_eq!(reconciler.node_id, 1);
         assert_eq!(reconciler.interval, Duration::from_secs(5));
@@ -252,11 +315,19 @@ mod tests {
 
     #[test]
     fn test_reconciler_with_custom_interval() {
+        use capsule_registry::CapsuleRegistry;
+        use nvram_sim::NvramLog;
+
         let foundry = Arc::new(Foundry::new());
         let registry = Arc::new(Registry::new());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let capsule_registry = CapsuleRegistry::new();
+        let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
+        let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+        let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
 
-        let reconciler =
-            Reconciler::new(1, foundry, registry).with_interval(Duration::from_secs(10));
+        let reconciler = Reconciler::new(1, foundry, registry, snapshot_engine)
+            .with_interval(Duration::from_secs(10));
 
         assert_eq!(reconciler.interval, Duration::from_secs(10));
     }

@@ -190,10 +190,12 @@ use podms_orchestrator::Reconciler;
 // Setup components
 let foundry = Arc::new(Foundry::new());
 let registry = Arc::new(Registry::new());
+let pipeline = Arc::new(WritePipeline::new(data_dir, 1024*1024));
+let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
 let node_id = 1;
 
 // Create reconciler
-let reconciler = Reconciler::new(node_id, foundry, registry)
+let reconciler = Reconciler::new(node_id, foundry, registry, snapshot_engine)
     .with_interval(std::time::Duration::from_secs(10));
 
 // Run in background - now the system is self-driving!

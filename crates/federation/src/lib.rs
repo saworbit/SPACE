@@ -32,8 +32,9 @@ pub struct ZoneConfig {
 pub use bridge::{Bridge, FederationBridge, FederationResult};
 pub use engine::{RaftEngine, RaftEngineConfig};
 pub use registry::{
-    build_create_volume_cmd, build_delete_volume_cmd, build_move_replica_cmd,
-    build_register_node_cmd, ClusterState, NodeMetadata, NodeStatus, Registry, VolumeMetadata,
+    build_create_volume_cmd, build_create_volume_cmd_with_source, build_delete_volume_cmd,
+    build_move_replica_cmd, build_register_node_cmd, ClusterState, NodeMetadata, NodeStatus,
+    Registry, VolumeMetadata,
 };
 pub use scheduler::{PlacementRequirements, Scheduler};
 pub use server::FederationServiceImpl;

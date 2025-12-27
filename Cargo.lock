@@ -4703,6 +4703,7 @@ name = "podms-orchestrator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "capsule-registry",
  "common",
  "encryption",
@@ -4721,6 +4722,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
+ "uuid",
 ]
 
 [[package]]

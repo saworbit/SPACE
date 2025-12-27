@@ -41,6 +41,8 @@ pub struct VolumeMetadata {
     /// The Raft Group ID responsible for this volume (Data Plane replication)
     /// In simple federation, this list defines the Chain: [Primary, Replica1, Replica2]
     pub replicas: Vec<u64>,
+    /// Phase 9.6: Optional source snapshot to hydrate from
+    pub source_capsule_id: Option<String>,
 }
 
 /// The State Machine wrapper ensuring thread safety.
@@ -112,6 +114,7 @@ impl Registry {
                         id: req.volume_id,
                         size: req.size_bytes,
                         replicas,
+                        source_capsule_id: req.source_capsule_id.clone(),
                     },
                 );
             }
@@ -172,6 +175,7 @@ impl Default for Registry {
 /// - `size`: Size in bytes
 /// - `replication_factor`: Number of replicas
 /// - `replicas`: Pre-selected node IDs (Phase 9.5+)
+/// - `source_capsule_id`: Optional source snapshot to hydrate from (Phase 9.6+)
 ///
 /// NOTE: For Phase 9.5+, the `replicas` should be selected by the Scheduler
 /// on the Leader before proposing. This ensures deterministic replay.
@@ -181,6 +185,24 @@ pub fn build_create_volume_cmd(
     replication_factor: u32,
     replicas: Vec<u64>,
 ) -> Vec<u8> {
+    build_create_volume_cmd_with_source(id, size, replication_factor, replicas, None)
+}
+
+/// Build a CreateVolume command with optional source capsule for hydration
+///
+/// # Arguments
+/// - `id`: Volume identifier
+/// - `size`: Size in bytes
+/// - `replication_factor`: Number of replicas
+/// - `replicas`: Pre-selected node IDs (Phase 9.5+)
+/// - `source_capsule_id`: Optional source snapshot to hydrate from (Phase 9.6+)
+pub fn build_create_volume_cmd_with_source(
+    id: &str,
+    size: u64,
+    replication_factor: u32,
+    replicas: Vec<u64>,
+    source_capsule_id: Option<String>,
+) -> Vec<u8> {
     use prost::Message;
 
     let cmd = rpc::Command {
@@ -189,6 +211,7 @@ pub fn build_create_volume_cmd(
             size_bytes: size,
             replication_factor,
             replicas,
+            source_capsule_id,
         })),
     };
     cmd.encode_to_vec()

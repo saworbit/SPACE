@@ -49,6 +49,8 @@ message CreateVolume {
   // This list is baked into the command by the Leader to ensure
   // deterministic replay on all followers
   repeated uint64 replicas = 4;
+  // Phase 9.6: Optional source snapshot to hydrate from
+  optional string source_capsule_id = 5;
 }
 
 message DeleteVolume {

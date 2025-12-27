@@ -250,6 +250,7 @@ impl<S: Storage> RaftEngine<S> {
                     size_bytes: size,
                     replication_factor: replicas,
                     replicas: selected_nodes, // BAKE IT IN
+                    source_capsule_id: None,
                 },
             )),
         };

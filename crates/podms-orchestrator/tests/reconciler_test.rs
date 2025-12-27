@@ -8,8 +8,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use capsule_registry::CapsuleRegistry;
+use capsule_registry::pipeline::WritePipeline;
 use foundry::backend::VolumeId;
+use foundry::snapshot::SnapshotEngine;
 use foundry::Foundry;
+use nvram_sim::NvramLog;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -61,8 +65,12 @@ async fn test_reconciliation_creates_volume() {
         node_id
     );
 
-    // 6. Create reconciler
-    let reconciler = Reconciler::new(node_id, foundry.clone(), registry.clone());
+    // 6. Create reconciler with SnapshotEngine
+    let capsule_registry = CapsuleRegistry::new();
+    let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
+    let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+    let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
+    let reconciler = Reconciler::new(node_id, foundry.clone(), registry.clone(), snapshot_engine);
 
     // 7. Spawn reconciler in background
     // The reconciler runs indefinitely, so we spawn it as a background task.
@@ -137,8 +145,12 @@ async fn test_reconciliation_deletes_zombie_volume() {
         "Zombie volume should not be assigned to this node in registry"
     );
 
-    // 6. Start reconciler
-    let reconciler = Reconciler::new(node_id, foundry.clone(), registry.clone());
+    // 6. Start reconciler with SnapshotEngine
+    let capsule_registry = CapsuleRegistry::new();
+    let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
+    let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+    let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
+    let reconciler = Reconciler::new(node_id, foundry.clone(), registry.clone(), snapshot_engine);
     tokio::spawn(async move {
         reconciler.run().await;
     });
@@ -197,8 +209,17 @@ async fn test_reconciliation_with_multiple_volumes() {
         "Volume 2 should be assigned to node 1"
     );
 
-    // Start reconciler for node 1
-    let reconciler = Reconciler::new(node_id_1, foundry.clone(), registry.clone());
+    // Start reconciler for node 1 with SnapshotEngine
+    let capsule_registry = CapsuleRegistry::new();
+    let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
+    let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+    let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
+    let reconciler = Reconciler::new(
+        node_id_1,
+        foundry.clone(),
+        registry.clone(),
+        snapshot_engine,
+    );
     tokio::spawn(async move {
         reconciler.run().await;
     });
