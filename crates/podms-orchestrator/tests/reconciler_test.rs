@@ -45,7 +45,7 @@ async fn test_reconciliation_creates_volume() {
     let vol_id_str = vol_id_uuid.to_string();
     let size_bytes = 10 * 1024 * 1024; // 10 MB
 
-    let create_cmd = build_create_volume_cmd(&vol_id_str, size_bytes, 1);
+    let create_cmd = build_create_volume_cmd(&vol_id_str, size_bytes, 1, vec![1]);
     registry.apply(2, &create_cmd).unwrap();
 
     // 5. Verify volume was assigned to node 1
@@ -178,12 +178,12 @@ async fn test_reconciliation_with_multiple_volumes() {
     // Create two volumes - both will be assigned to node 1 (only node available)
     let vol_1_id = VolumeId::new();
     let vol_1_str = vol_1_id.to_string();
-    let create_cmd_1 = build_create_volume_cmd(&vol_1_str, 10 * 1024 * 1024, 1);
+    let create_cmd_1 = build_create_volume_cmd(&vol_1_str, 10 * 1024 * 1024, 1, vec![1]);
     registry.apply(2, &create_cmd_1).unwrap();
 
     let vol_2_id = VolumeId::new();
     let vol_2_str = vol_2_id.to_string();
-    let create_cmd_2 = build_create_volume_cmd(&vol_2_str, 20 * 1024 * 1024, 1);
+    let create_cmd_2 = build_create_volume_cmd(&vol_2_str, 20 * 1024 * 1024, 1, vec![1]);
     registry.apply(3, &create_cmd_2).unwrap();
 
     // Verify both volumes are assigned to node 1
