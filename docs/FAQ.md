@@ -211,6 +211,60 @@ tokio::spawn(async move {
 
 This completes the "Self-Driving" storage vision: You issue high-level commands via Raft consensus, and the distributed system automatically converges to match that desired state. No manual node-by-node configuration required!
 
+Q: How does Phase 9.5 improve volume placement? (The Architect)
+A: Phase 9.5 (December 2024) replaces the naive "first N nodes" placement with an **intelligent constraint-based scheduler** called "The Architect":
+
+**The Problem with Naive Placement**: In Phase 9.3-9.4, when you created a volume, I would simply place replicas on the first N nodes in the cluster:
+  - Node 1 gets all the data (hotspot!)
+  - Dead/Draining nodes might be selected
+  - No capacity checks (nodes might be full)
+  - No rack awareness (all replicas in same failure domain)
+
+**The Intelligent Scheduler** (Phase 9.5): Now I use a three-phase constraint solver:
+  - **Phase 1 (Filters)**: Hard constraints eliminate invalid nodes
+    - Node status must be Active (not Dead/Draining)
+    - Node capacity must be >= volume size
+    - Future: Zone/rack requirements, hardware constraints
+  - **Phase 2 (Weighers)**: Score remaining nodes
+    - Currently: Deterministic sort by node ID (for test reproducibility)
+    - Future: Score by free space, load, distance from client
+  - **Phase 3 (Selection)**: Pick top N scored nodes
+
+**Smart Leader / Deterministic Follower Pattern**: This is the key architectural innovation:
+  - The **Leader** runs the expensive scheduler *before* proposing
+  - Selected nodes are **baked into** the CreateVolume command
+  - **Followers** deterministically replay using the pre-selected nodes
+  - The **Raft log** becomes the single source of truth for placement
+  - Keeps the state machine simple while enabling sophisticated placement logic
+
+**New API** - High-level volume creation with intelligent placement:
+```rust
+use federation::{RaftEngine, Registry};
+
+// The new API - scheduler runs automatically!
+engine.propose_create_volume(
+    "vol-prod-1".to_string(),
+    100 * 1024 * 1024 * 1024,  // 100 GB
+    3                           // 3 replicas
+).await?;
+
+// Behind the scenes:
+// 1. Get cluster state snapshot
+// 2. Run scheduler (filter + weigh + select)
+// 3. Build command with selected nodes
+// 4. Propose to Raft
+// 5. All nodes apply deterministically
+```
+
+**Future Enhancements** (Phase 10+):
+  - **Free Space Tracking**: Track `available_bytes` (not just total capacity)
+  - **Topology Awareness**: Rack/zone anti-affinity to spread replicas
+  - **Load Balancing**: Consider IOPS, bandwidth, CPU usage
+  - **Hardware Constraints**: Match SSD/HDD requirements
+  - **User Policies**: Custom placement rules per volume
+
+This ensures volumes are placed intelligently, avoiding hotspots and respecting resource constraints, while maintaining the determinism required by Raft consensus!
+
 Q: How do I deploy a production Raft cluster with Phase 9.2?
 A: Here's a complete example of deploying a persistent, networked Raft cluster:
 

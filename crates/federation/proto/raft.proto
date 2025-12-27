@@ -45,6 +45,10 @@ message CreateVolume {
   string volume_id = 1;
   uint64 size_bytes = 2;
   uint32 replication_factor = 3;
+  // Phase 9.5: The exact nodes decided by the Leader's Scheduler
+  // This list is baked into the command by the Leader to ensure
+  // deterministic replay on all followers
+  repeated uint64 replicas = 4;
 }
 
 message DeleteVolume {

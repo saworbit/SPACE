@@ -18,8 +18,8 @@ fn test_registry_transitions() {
     let cmd1 = build_register_node_cmd(1, "127.0.0.1:4422", 1024 * 1024 * 1024);
     registry.apply(1, &cmd1).unwrap();
 
-    // Create volume
-    let cmd2 = build_create_volume_cmd("vol-test-1", 1024 * 1024 * 100, 3);
+    // Create volume (Phase 9.5: include pre-selected replicas)
+    let cmd2 = build_create_volume_cmd("vol-test-1", 1024 * 1024 * 100, 3, vec![1]);
     registry.apply(2, &cmd2).unwrap();
 
     // Assert state
@@ -65,7 +65,7 @@ fn test_registry_snapshot_restore() {
     // Build state
     let cmd1 = build_register_node_cmd(1, "addr1", 1000);
     let cmd2 = build_register_node_cmd(2, "addr2", 2000);
-    let cmd3 = build_create_volume_cmd("vol-1", 500, 2);
+    let cmd3 = build_create_volume_cmd("vol-1", 500, 2, vec![1, 2]);
 
     registry1.apply(1, &cmd1).unwrap();
     registry1.apply(2, &cmd2).unwrap();
@@ -99,7 +99,7 @@ fn test_registry_delete_volume() {
     registry.apply(2, &cmd2).unwrap();
 
     // Create volume
-    let cmd3 = build_create_volume_cmd("vol-to-delete", 500, 2);
+    let cmd3 = build_create_volume_cmd("vol-to-delete", 500, 2, vec![1, 2]);
     registry.apply(3, &cmd3).unwrap();
 
     // Verify volume exists
@@ -133,7 +133,7 @@ fn test_registry_move_replica() {
 
     // Create volume with 2 replicas
     registry
-        .apply(4, &build_create_volume_cmd("vol-move", 500, 2))
+        .apply(4, &build_create_volume_cmd("vol-move", 500, 2, vec![1, 2]))
         .unwrap();
 
     // Verify initial replica placement and get the actual replicas
@@ -172,9 +172,12 @@ fn test_registry_volume_placement() {
         .apply(2, &build_register_node_cmd(2, "node2", 2000))
         .unwrap();
 
-    // Try to create volume with replication factor 3 (not enough nodes)
+    // Try to create volume with replication factor 3 (but only provide 2 replicas)
     registry
-        .apply(3, &build_create_volume_cmd("vol-under-replicated", 500, 3))
+        .apply(
+            3,
+            &build_create_volume_cmd("vol-under-replicated", 500, 3, vec![1, 2]),
+        )
         .unwrap();
 
     // Volume should be created with only 2 replicas (warning logged)

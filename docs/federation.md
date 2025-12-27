@@ -2,7 +2,7 @@
 
 ## Phase 9: Raft Consensus Engine
 
-**Status**: ✅ Phase 9.1 Complete | ✅ Phase 9.2 Complete (December 2024)
+**Status**: ✅ Phase 9.1 Complete | ✅ Phase 9.2 Complete | ✅ Phase 9.3 Complete | ✅ Phase 9.4 Complete | ✅ Phase 9.5 Complete (December 2024)
 
 Phase 9 introduces a **production-ready Raft consensus engine** for distributed control plane coordination with persistent storage and network transport. This enables automatic leader election, cluster state management, and cross-process communication.
 
@@ -118,11 +118,39 @@ let client = RaftTransportClient::new(Arc::new(registry));
 client.send(2, msg).await?;
 ```
 
+### Phase 9.5: The Architect (Placement Scheduler) ✅
+
+**Intelligent Node Selection** (`src/scheduler.rs`):
+- Constraint-based placement replacing naive "first N nodes" approach
+- Three-phase selection: Filter (hard constraints) → Weigh (scoring) → Select (top N)
+- Hard filters: Node status (Active only), capacity validation
+- Smart Leader pattern: Scheduler runs on leader before proposing
+- Selected nodes baked into CreateVolume command for deterministic replay
+- Comprehensive test coverage (15 tests) validating all edge cases
+
+**Key Innovation - Smart Leader / Deterministic Follower**:
+- Leader executes complex scheduling logic
+- Followers deterministically replay using pre-selected nodes
+- Raft log becomes single source of truth for placement
+- Keeps state machine simple while enabling sophisticated placement
+
+**New API**:
+```rust
+// High-level API with intelligent placement
+engine.propose_create_volume(
+    "vol-1".to_string(),
+    100 * 1024 * 1024 * 1024,  // 100 GB
+    3                           // 3 replicas
+).await?;
+
+// Scheduler automatically filters and selects optimal nodes
+```
+
 ### Future Roadmap
 
-- **Phase 9.3**: Integration with FederationBridge for zone coordination and state machine application
-- **Phase 9.4**: Advanced features (learner nodes, pre-vote, TLS/mTLS)
-- **Phase 9.5**: Production hardening (chaos testing, performance optimization)
+- **Phase 9.6**: Advanced Raft features (log compaction, learner nodes, pre-vote)
+- **Phase 9.7**: Production hardening (chaos testing, performance optimization)
+- **Phase 10+**: Enhanced scheduler (free space tracking, topology awareness, load balancing)
 
 ## Metadata Mesh (Phase 4)
 

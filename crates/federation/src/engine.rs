@@ -4,7 +4,7 @@
 //! using tikv/raft-rs with in-memory storage. Future phases will add
 //! persistence, snapshots, and integration with the federation bridge.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use raft::prelude::*;
 use raft::storage::{MemStorage, Storage};
 use raft::StateRole;
@@ -170,6 +170,92 @@ impl<S: Storage> RaftEngine<S> {
         debug!(id = raft.raft.id, bytes = data_len, "proposed entry");
 
         Ok(())
+    }
+
+    /// Propose a CreateVolume command with intelligent scheduling (Phase 9.5).
+    ///
+    /// This method implements the "Smart Leader / Deterministic Follower" pattern:
+    /// 1. Leader runs the Scheduler to select optimal nodes
+    /// 2. Selected nodes are baked into the CreateVolume command
+    /// 3. Command is proposed to Raft log
+    /// 4. All followers replay deterministically using the pre-selected nodes
+    ///
+    /// This keeps the state machine simple and ensures all nodes converge
+    /// to the same state.
+    ///
+    /// # Arguments
+    /// - `vol_id`: Volume identifier
+    /// - `size`: Volume size in bytes
+    /// - `replicas`: Number of replicas
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - No registry is attached to this engine
+    /// - Scheduler cannot find sufficient nodes
+    /// - Proposal fails
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use federation::{RaftEngine, RaftEngineConfig};
+    /// # use federation::Registry;
+    /// # use std::sync::Arc;
+    /// # async fn example(engine: RaftEngine) -> anyhow::Result<()> {
+    /// // Propose a 10 GB volume with 3 replicas
+    /// engine.propose_create_volume(
+    ///     "vol-1".to_string(),
+    ///     10 * 1024 * 1024 * 1024,
+    ///     3
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn propose_create_volume(
+        &self,
+        vol_id: String,
+        size: u64,
+        replicas: u32,
+    ) -> Result<()> {
+        use prost::Message;
+
+        // 1. Get cluster state snapshot from the registry
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| anyhow!("No registry attached to RaftEngine"))?;
+
+        let state = registry.get_state();
+
+        // 2. Run the Scheduler to select optimal nodes
+        let requirements = crate::scheduler::PlacementRequirements {
+            size_bytes: size,
+            replication_factor: replicas,
+            required_tags: std::collections::HashMap::new(),
+        };
+
+        let selected_nodes = crate::scheduler::Scheduler::select_nodes(&state, &requirements)?;
+
+        info!(
+            volume_id = %vol_id,
+            size_gb = size / (1024 * 1024 * 1024),
+            replication_factor = replicas,
+            selected_nodes = ?selected_nodes,
+            "proposing create volume with scheduled placement"
+        );
+
+        // 3. Build the command with pre-selected nodes
+        let cmd = crate::rpc::Command {
+            payload: Some(crate::rpc::command::Payload::CreateVolume(
+                crate::rpc::CreateVolume {
+                    volume_id: vol_id,
+                    size_bytes: size,
+                    replication_factor: replicas,
+                    replicas: selected_nodes, // BAKE IT IN
+                },
+            )),
+        };
+
+        // 4. Propose to Raft
+        self.propose(cmd.encode_to_vec()).await
     }
 
     /// Check if this node is currently the leader.

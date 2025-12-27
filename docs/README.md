@@ -36,6 +36,7 @@
   - Phase 9.2: Persistence & Transport ✅
   - Phase 9.3: Global Registry State Machine ✅
   - Phase 9.4: Node Reconciliation (Self-Driving) ✅
+  - Phase 9.5: The Architect (Placement Scheduler) ✅
 - [Federation Mesh](federation.md)
 - [Protocol Views Guide](protocol_views.md)
 - [Simulations Guide](SIMULATIONS.md)

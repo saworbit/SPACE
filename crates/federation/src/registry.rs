@@ -88,21 +88,22 @@ impl Registry {
             }
             Some(rpc::command::Payload::CreateVolume(req)) => {
                 info!(
-                    "Apply: Create Volume {} ({} GB)",
+                    "Apply: Create Volume {} ({} GB) with replicas {:?}",
                     req.volume_id,
-                    req.size_bytes / 1024 / 1024 / 1024
+                    req.size_bytes / 1024 / 1024 / 1024,
+                    req.replicas
                 );
-                // Simple placement strategy: First N available nodes
-                // Real implementation would use the LayoutEngine here.
-                let replicas: Vec<u64> = state
-                    .nodes
-                    .keys()
-                    .take(req.replication_factor as usize)
-                    .cloned()
-                    .collect();
+                // Phase 9.5: Use the replicas baked into the command by the Leader's Scheduler
+                // This ensures determinism - we no longer calculate placement here.
+                // The log is the single source of truth.
+                let replicas = req.replicas.clone();
 
                 if replicas.len() < req.replication_factor as usize {
-                    warn!("Not enough nodes for requested replication factor");
+                    warn!(
+                        "Replica count mismatch: got {}, expected {}",
+                        replicas.len(),
+                        req.replication_factor
+                    );
                 }
 
                 state.volumes.insert(
@@ -165,7 +166,21 @@ impl Default for Registry {
 // Helper functions to construct commands
 
 /// Build a CreateVolume command
-pub fn build_create_volume_cmd(id: &str, size: u64, replication_factor: u32) -> Vec<u8> {
+///
+/// # Arguments
+/// - `id`: Volume identifier
+/// - `size`: Size in bytes
+/// - `replication_factor`: Number of replicas
+/// - `replicas`: Pre-selected node IDs (Phase 9.5+)
+///
+/// NOTE: For Phase 9.5+, the `replicas` should be selected by the Scheduler
+/// on the Leader before proposing. This ensures deterministic replay.
+pub fn build_create_volume_cmd(
+    id: &str,
+    size: u64,
+    replication_factor: u32,
+    replicas: Vec<u64>,
+) -> Vec<u8> {
     use prost::Message;
 
     let cmd = rpc::Command {
@@ -173,6 +188,7 @@ pub fn build_create_volume_cmd(id: &str, size: u64, replication_factor: u32) -> 
             volume_id: id.to_string(),
             size_bytes: size,
             replication_factor,
+            replicas,
         })),
     };
     cmd.encode_to_vec()
