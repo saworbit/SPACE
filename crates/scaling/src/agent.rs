@@ -11,6 +11,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps};
+#[cfg(feature = "phase4")]
+use common::podms::ZoneId;
 use common::traits::CapsuleCatalog;
 use common::{Capsule, CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, Segment};
 use encryption::keymanager::KeyManager;
