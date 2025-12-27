@@ -37,16 +37,26 @@
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
+//! use capsule_registry::CapsuleRegistry;
+//! use capsule_registry::pipeline::WritePipeline;
 //! use foundry::Foundry;
+//! use foundry::snapshot::SnapshotEngine;
 //! use federation::Registry;
+//! use nvram_sim::NvramLog;
 //! use podms_orchestrator::Reconciler;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let foundry = Arc::new(Foundry::new());
 //! let registry = Arc::new(Registry::new());
-//! let node_id = 1;
 //!
-//! let reconciler = Reconciler::new(node_id, foundry, registry);
+//! // Setup snapshot engine for hydration
+//! let capsule_registry = CapsuleRegistry::new();
+//! let nvram = NvramLog::open("data/nvram.log")?;
+//! let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+//! let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
+//!
+//! let node_id = 1;
+//! let reconciler = Reconciler::new(node_id, foundry, registry, snapshot_engine);
 //!
 //! // Run continuously in background
 //! tokio::spawn(async move {
@@ -123,13 +133,21 @@ impl Reconciler {
     /// ```rust,no_run
     /// use std::time::Duration;
     /// # use std::sync::Arc;
+    /// # use capsule_registry::CapsuleRegistry;
+    /// # use capsule_registry::pipeline::WritePipeline;
     /// # use foundry::Foundry;
+    /// # use foundry::snapshot::SnapshotEngine;
     /// # use federation::Registry;
+    /// # use nvram_sim::NvramLog;
     /// # use podms_orchestrator::Reconciler;
     /// # let foundry = Arc::new(Foundry::new());
     /// # let registry = Arc::new(Registry::new());
+    /// # let capsule_registry = CapsuleRegistry::new();
+    /// # let nvram = NvramLog::open("data/nvram.log").unwrap();
+    /// # let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
+    /// # let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
     ///
-    /// let reconciler = Reconciler::new(1, foundry, registry)
+    /// let reconciler = Reconciler::new(1, foundry, registry, snapshot_engine)
     ///     .with_interval(Duration::from_secs(10));
     /// ```
     pub fn with_interval(mut self, interval: Duration) -> Self {
@@ -210,8 +228,14 @@ impl Reconciler {
                 );
 
                 // A. Create the empty shell
+                // Use Legacy backend if hydrating (may need resize support)
+                let backend = if meta.source_capsule_id.is_some() {
+                    BackendType::Legacy
+                } else {
+                    BackendType::Auto
+                };
                 self.foundry
-                    .create_volume(vol_id, meta.size, Some(BackendType::Auto))
+                    .create_volume(vol_id, meta.size, Some(backend))
                     .await?;
 
                 // B. Hydrate if source exists
@@ -299,10 +323,10 @@ mod tests {
         use capsule_registry::CapsuleRegistry;
         use nvram_sim::NvramLog;
 
-        let foundry = Arc::new(Foundry::new());
-        let registry = Arc::new(Registry::new());
         let temp_dir = tempfile::tempdir().unwrap();
-        let capsule_registry = CapsuleRegistry::new();
+        let foundry = Arc::new(Foundry::with_data_dir(temp_dir.path()));
+        let registry = Arc::new(Registry::new());
+        let capsule_registry = CapsuleRegistry::open(temp_dir.path().join("space.db")).unwrap();
         let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
         let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
         let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
@@ -318,10 +342,10 @@ mod tests {
         use capsule_registry::CapsuleRegistry;
         use nvram_sim::NvramLog;
 
-        let foundry = Arc::new(Foundry::new());
-        let registry = Arc::new(Registry::new());
         let temp_dir = tempfile::tempdir().unwrap();
-        let capsule_registry = CapsuleRegistry::new();
+        let foundry = Arc::new(Foundry::with_data_dir(temp_dir.path()));
+        let registry = Arc::new(Registry::new());
+        let capsule_registry = CapsuleRegistry::open(temp_dir.path().join("space.db")).unwrap();
         let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
         let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
         let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));

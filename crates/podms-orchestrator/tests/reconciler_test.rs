@@ -66,7 +66,7 @@ async fn test_reconciliation_creates_volume() {
     );
 
     // 6. Create reconciler with SnapshotEngine
-    let capsule_registry = CapsuleRegistry::new();
+    let capsule_registry = CapsuleRegistry::open(temp_dir.path().join("space.db")).unwrap();
     let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
     let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
     let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
@@ -146,7 +146,7 @@ async fn test_reconciliation_deletes_zombie_volume() {
     );
 
     // 6. Start reconciler with SnapshotEngine
-    let capsule_registry = CapsuleRegistry::new();
+    let capsule_registry = CapsuleRegistry::open(temp_dir.path().join("space.db")).unwrap();
     let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
     let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
     let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
@@ -210,7 +210,7 @@ async fn test_reconciliation_with_multiple_volumes() {
     );
 
     // Start reconciler for node 1 with SnapshotEngine
-    let capsule_registry = CapsuleRegistry::new();
+    let capsule_registry = CapsuleRegistry::open(temp_dir.path().join("space.db")).unwrap();
     let nvram = NvramLog::open(temp_dir.path().join("nvram.log")).unwrap();
     let pipeline = Arc::new(WritePipeline::new(capsule_registry, nvram));
     let snapshot_engine = Arc::new(SnapshotEngine::new(pipeline));
