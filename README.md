@@ -29,9 +29,9 @@
 
 **🔬 Current Focus:** Core storage primitives + distributed consensus (Phase 9)
 
-**✅ Working (Beta/Alpha):** Basic capsule storage • Compression • Deduplication • Encryption • S3 API • Raft consensus • Global registry
+**✅ Working (Beta/Alpha):** Basic capsule storage • Compression • Deduplication • Encryption • S3 API • Raft consensus • Global registry • Self-driving reconciliation
 
-**🧪 Experimental:** Multi-node mesh • Replication • Protocol views • Federation • Self-driving reconciliation
+**🧪 Experimental:** Multi-node mesh • Replication • Protocol views • Federation
 
 [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [📊 Feature Status](#-feature--capability-status)
 
@@ -169,6 +169,7 @@
 | **Raft Control Plane (Phase 9.1)** | 🟡 Alpha | tikv/raft-rs consensus engine with async tokio integration | - |
 | **Persistent Raft Storage (Phase 9.2)** | 🟡 Alpha | SledStorage for durability, gRPC transport for multi-node clusters | - |
 | **Global Registry (Phase 9.3)** | 🟡 Alpha | Deterministic state machine for cluster topology (nodes, volumes, replicas) | - |
+| **Node Reconciliation (Phase 9.4)** | 🟡 Alpha | Level-triggered control loop converges local Foundry state to match global Registry; self-driving volume creation/deletion | - |
 | **Federated Metadata Sharding (Phase 4)** | 🟠 Experimental | Policy-driven federation/sharding hooks + Phase 4b gRPC bridge | `phase4` |
 
 ### Monitoring & Operations

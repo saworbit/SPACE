@@ -31,7 +31,11 @@
 - [Phase 3 Mesh Overview](phase3.md)
 - [Phase 4 Views & Federation](phase4.md)
 - [Phase 5 WASM Transforms](phase5.md)
-- **[Phase 9.1 Federation Control Plane (Raft Consensus)](federation.md)** ⭐ NEW
+- **[Phase 9 Federation Control Plane (Complete)](phase9.md)** ⭐ NEW
+  - Phase 9.1: Raft Consensus Engine ✅
+  - Phase 9.2: Persistence & Transport ✅
+  - Phase 9.3: Global Registry State Machine ✅
+  - Phase 9.4: Node Reconciliation (Self-Driving) ✅
 - [Federation Mesh](federation.md)
 - [Protocol Views Guide](protocol_views.md)
 - [Simulations Guide](SIMULATIONS.md)
