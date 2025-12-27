@@ -8,8 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use capsule_registry::CapsuleRegistry;
 use capsule_registry::pipeline::WritePipeline;
+use capsule_registry::CapsuleRegistry;
 use foundry::backend::VolumeId;
 use foundry::snapshot::SnapshotEngine;
 use foundry::Foundry;
