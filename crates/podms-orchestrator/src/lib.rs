@@ -87,9 +87,11 @@ use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
 mod config;
+mod reconciler;
 mod runtime;
 
 pub use config::OrchestratorConfig;
+pub use reconciler::Reconciler;
 pub use runtime::OrchestratorRuntime;
 
 /// The main orchestrator that coordinates all multi-node subsystems.

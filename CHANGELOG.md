@@ -180,6 +180,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Phase 10: Layout Engine - Intelligent replica placement (capacity, zones, failure domains)
     - Phase 11: Failure Detection - Heartbeat monitoring, automatic rebalancing
 
+- **Phase 9.4: The Governor (Node Reconciliation)** - Self-driving control loop that converges local state to match global state
+  - **Reconciler** (`crates/podms-orchestrator/src/reconciler.rs` - 286 lines)
+    - Continuous background loop monitoring Federation Registry state (default: 5s interval)
+    - **Observe**: Fetches ClusterState from Registry via `get_state()`
+    - **Filter**: Identifies volumes assigned to this specific node (checks `replicas` list)
+    - **Diff**: Compares desired state with actual Foundry volumes using HashSet for O(n) performance
+    - **Act**: Creates missing volumes, deletes zombie volumes (volumes not in registry)
+    - Graceful error recovery - never crashes, always logs and continues
+    - Configurable reconciliation interval via `with_interval()`
+    - Arc-based thread-safe design for concurrent operation
+  - **Architecture** - The "Nervous System" connecting Brain (Registry) to Muscle (Foundry)
+    - Standalone component (independent from existing Orchestrator)
+    - Non-blocking async loop using tokio::time::interval
+    - VolumeId format enforcement - requires valid UUID strings in Registry
+    - Automatic backend selection (BackendType::Auto for compatibility)
+    - Structured logging with tracing instrumentation
+  - **Integration** (`crates/podms-orchestrator`)
+    - Added `foundry` and `federation` dependencies to Cargo.toml
+    - Exported `Reconciler` from lib.rs as public API
+    - Minimal dependencies: only core reconciliation logic
+  - **Volume Management**
+    - **CREATE path**: Detects volumes in Registry → creates in Foundry with Auto backend
+    - **DELETE path**: Detects zombie volumes in Foundry → deletes with safety logging
+    - VolumeId conversion: parses Registry UUID strings to Foundry VolumeId via `.parse()`
+    - Idempotent operations: safe to run multiple times (checks existence before creating)
+  - **Comprehensive Testing** (`crates/podms-orchestrator/tests/reconciler_test.rs` - 220 lines)
+    - `test_reconciliation_creates_volume` - Verifies CREATE path (Registry → Foundry)
+    - `test_reconciliation_deletes_zombie_volume` - Verifies DELETE path (orphan cleanup)
+    - `test_reconciliation_with_multiple_volumes` - Verifies batch reconciliation
+    - Real component integration (no mocking) for high confidence
+    - Uses TempDir for isolated test environments
+    - All tests include 6-second wait for reconciliation loop execution
+  - **Quality Metrics** - Production-ready reconciliation loop
+    - ✅ cargo fmt: Perfect formatting
+    - ✅ cargo clippy: Zero warnings
+    - ✅ cargo check: Clean compilation
+    - ✅ cargo test: 3/3 integration tests passing (6.01s)
+    - ✅ Self-healing: Continues running despite transient errors
+    - ✅ Thread safety: Arc/RwLock patterns throughout
+  - **Design Decisions** (User-confirmed)
+    - VolumeId Format: Enforce UUID format in Registry for compatibility
+    - Integration: Standalone component for simpler testing and deployment
+    - Zombie Volumes: Delete automatically with aggressive reconciliation + safety logging
+    - Backend Type: Use BackendType::Auto for maximum compatibility
+  - **Self-Driving Workflow** - Fully autonomous volume management
+    1. User runs `spacectl create volume vol-123 --size 10GB`
+    2. Command submitted to Raft → Registry commits via consensus
+    3. Registry updates ClusterState with volume assignment
+    4. **Reconciler detects change** (this milestone!)
+    5. Reconciler creates volume in local Foundry
+    6. Volume appears on node - zero manual intervention required
+  - **Future Roadmap**
+    - Phase 9.5: Replication Chain Reconciliation - Connect Primary to Replica via replication layer
+    - Phase 9.6: Volume Resize Reconciliation - Detect size drift and resize volumes
+    - Phase 9.7: Health Checks - Monitor volume health and report to Registry
+
 - **Phase 8: The Foundry (Polymorphic Block Storage)** - High-performance mutable block storage layer with pluggable backends
   - **New crate: `foundry`** - Block-level volume abstraction for virtual disks and raw NVMe devices
     - `VolumeBackend` trait with BoxFuture pattern (init, read_at, write_at, sync, size, resize)

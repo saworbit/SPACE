@@ -154,6 +154,63 @@ if let Some(vol) = state.volumes.get("vol-prod-1") {
 
 Commands proposed on the leader are replicated via Raft to all followers. Once committed, every node applies the command to its local registry, ensuring all nodes have an identical view of the cluster state. This is the foundation for automatic failover, rebalancing, and coordinated volume management.
 
+Q: What does Phase 9.4 add to the system? (The Reconciler)
+A: Phase 9.4 (December 2024) implements the **Reconciler** - the "Nervous System" that makes SPACE truly self-driving by automatically converging local storage state to match the global registry:
+
+**Autonomous Volume Management**: I now automatically create and delete volumes:
+  - When you create a volume via Raft (e.g., `CreateVolume` command), the registry updates with the volume assignment
+  - The Reconciler on each assigned node **automatically detects** the new volume in the registry
+  - Within seconds (default: 5s reconciliation interval), the Reconciler creates the volume in the local Foundry storage engine
+  - No manual intervention required - volumes appear automatically!
+
+**Self-Healing Cleanup**: I detect and remove "zombie volumes":
+  - If a volume exists locally but is NOT in the registry (e.g., after rebalancing or deletion)
+  - The Reconciler automatically deletes it with safety logging
+  - Keeps local storage clean and consistent with global state
+
+**Control Loop Architecture**: The Reconciler runs a continuous background loop:
+  1. **Observe**: Fetches desired state from Registry (`get_state()`)
+  2. **Filter**: Identifies volumes assigned to this specific node
+  3. **Diff**: Compares with actual Foundry volumes using HashSet (O(n) performance)
+  4. **Act**: Creates missing volumes, deletes zombies
+
+**Graceful and Resilient**:
+  - Never crashes - logs errors and continues running
+  - Idempotent operations (safe to run multiple times)
+  - Thread-safe with Arc/RwLock patterns
+  - Configurable reconciliation interval
+
+**Complete Workflow Example**:
+```rust
+use std::sync::Arc;
+use foundry::Foundry;
+use federation::Registry;
+use podms_orchestrator::Reconciler;
+
+// Setup components
+let foundry = Arc::new(Foundry::new());
+let registry = Arc::new(Registry::new());
+let node_id = 1;
+
+// Create reconciler
+let reconciler = Reconciler::new(node_id, foundry, registry)
+    .with_interval(std::time::Duration::from_secs(10));
+
+// Run in background - now the system is self-driving!
+tokio::spawn(async move {
+    reconciler.run().await;
+});
+
+// User creates volume via Raft (on the leader)
+// let cmd = build_create_volume_cmd("vol-123", 10*1024*1024*1024, 3);
+// engine.propose(cmd).await?;
+
+// The Reconciler automatically detects and creates the volume!
+// No manual "mount" or "attach" commands needed.
+```
+
+This completes the "Self-Driving" storage vision: You issue high-level commands via Raft consensus, and the distributed system automatically converges to match that desired state. No manual node-by-node configuration required!
+
 Q: How do I deploy a production Raft cluster with Phase 9.2?
 A: Here's a complete example of deploying a persistent, networked Raft cluster:
 

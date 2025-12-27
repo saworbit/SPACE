@@ -29,9 +29,9 @@
 
 **🔬 Current Focus:** Core storage primitives + distributed consensus (Phase 9)
 
-**✅ Working (Beta/Alpha):** Basic capsule storage • Compression • Deduplication • Encryption • S3 API • Raft consensus
+**✅ Working (Beta/Alpha):** Basic capsule storage • Compression • Deduplication • Encryption • S3 API • Raft consensus • Global registry
 
-**🧪 Experimental:** Multi-node mesh • Replication • Protocol views • Federation • Global registry
+**🧪 Experimental:** Multi-node mesh • Replication • Protocol views • Federation • Self-driving reconciliation
 
 [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🎬 Demo](#-quick-demo) • [📊 Feature Status](#-feature--capability-status)
 

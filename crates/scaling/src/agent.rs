@@ -10,7 +10,7 @@
 //! telemetry events into concrete ScalingActions based on declarative policies.
 
 use anyhow::{anyhow, Context, Result};
-use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps, ZoneId};
+use common::podms::{NodeId, SwarmBehavior, Telemetry, TransformOps};
 use common::traits::CapsuleCatalog;
 use common::{Capsule, CapsuleId, CompressionPolicy, EncryptionPolicy, Policy, Segment};
 use encryption::keymanager::KeyManager;
