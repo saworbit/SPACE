@@ -143,6 +143,26 @@ client.send(2, msg).await?;
 - Raft log becomes single source of truth for placement
 - Keeps state machine simple while enabling sophisticated placement
 
+**Pending Allocations (Double-Spend Prevention)**:
+The Smart Leader pattern requires protection against concurrent proposals that could over-provision nodes. The `PendingAllocations` tracker (`src/registry.rs`) solves this:
+
+```rust
+// Lifecycle of a pending allocation:
+// 1. Leader calls Scheduler::select_nodes_with_pending() which accounts for in-flight proposals
+// 2. Before proposing, leader registers pending allocation
+pending.register(volume_id, size, selected_nodes);
+
+// 3. Command goes through Raft consensus
+engine.propose(cmd).await?;
+
+// 4. On commit, Registry::apply() automatically releases the allocation
+// 5. If proposal fails, leader explicitly releases: pending.release(&volume_id)
+```
+
+- **TTL-based expiration**: Abandoned proposals expire after 30 seconds
+- **Thread-safe**: `Mutex<HashMap>` for concurrent access
+- **Query support**: `pending_size_for_node(id)` for scheduler capacity calculation
+
 **New API**:
 ```rust
 // High-level API with intelligent placement

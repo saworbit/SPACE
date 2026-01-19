@@ -237,13 +237,15 @@ impl<S: PersistentStorage> RaftEngine<S> {
     /// Propose a CreateVolume command with intelligent scheduling (Phase 9.5).
     ///
     /// This method implements the "Smart Leader / Deterministic Follower" pattern:
-    /// 1. Leader runs the Scheduler to select optimal nodes
-    /// 2. Selected nodes are baked into the CreateVolume command
-    /// 3. Command is proposed to Raft log
-    /// 4. All followers replay deterministically using the pre-selected nodes
+    /// 1. Leader runs the Scheduler to select optimal nodes (accounting for pending allocations)
+    /// 2. Register pending allocation to prevent double-spend race condition
+    /// 3. Selected nodes are baked into the CreateVolume command
+    /// 4. Command is proposed to Raft log
+    /// 5. All followers replay deterministically using the pre-selected nodes
+    /// 6. Pending allocation is released when command is committed
     ///
     /// This keeps the state machine simple and ensures all nodes converge
-    /// to the same state.
+    /// to the same state while preventing over-provisioning from concurrent requests.
     ///
     /// # Arguments
     /// - `vol_id`: Volume identifier
@@ -253,8 +255,15 @@ impl<S: PersistentStorage> RaftEngine<S> {
     /// # Errors
     /// Returns an error if:
     /// - No registry is attached to this engine
-    /// - Scheduler cannot find sufficient nodes
+    /// - Scheduler cannot find sufficient nodes (including pending allocations)
     /// - Proposal fails
+    ///
+    /// # Concurrency Safety
+    /// This method uses pending allocations tracking to prevent the "Smart Leader"
+    /// double-spend race condition. When two concurrent requests arrive:
+    /// - Request A registers pending allocation, selects nodes, proposes
+    /// - Request B sees Request A's pending allocation, selects different nodes or fails
+    /// - Both requests are processed correctly without over-provisioning
     ///
     /// # Example
     /// ```no_run
@@ -279,46 +288,62 @@ impl<S: PersistentStorage> RaftEngine<S> {
     ) -> Result<()> {
         use prost::Message;
 
-        // 1. Get cluster state snapshot from the registry
+        // 1. Get cluster state snapshot and pending allocations from the registry
         let registry = self
             .registry
             .as_ref()
             .ok_or_else(|| anyhow!("No registry attached to RaftEngine"))?;
 
         let state = registry.get_state();
+        let pending = registry.pending_allocations();
 
-        // 2. Run the Scheduler to select optimal nodes
+        // 2. Run the Scheduler to select optimal nodes (accounting for pending allocations)
+        // This prevents the "Smart Leader" double-spend race condition
         let requirements = crate::scheduler::PlacementRequirements {
             size_bytes: size,
             replication_factor: replicas,
             required_tags: std::collections::HashMap::new(),
         };
 
-        let selected_nodes = crate::scheduler::Scheduler::select_nodes(&state, &requirements)?;
+        let selected_nodes =
+            crate::scheduler::Scheduler::select_nodes_with_pending(&state, &requirements, pending)?;
+
+        // 3. Register pending allocation BEFORE proposing
+        // This ensures subsequent concurrent requests see this allocation
+        pending.register(vol_id.clone(), size, selected_nodes.clone());
 
         info!(
             volume_id = %vol_id,
             size_gb = size / (1024 * 1024 * 1024),
             replication_factor = replicas,
             selected_nodes = ?selected_nodes,
-            "proposing create volume with scheduled placement"
+            "proposing create volume with scheduled placement (pending-aware)"
         );
 
-        // 3. Build the command with pre-selected nodes
+        // 4. Build the command with pre-selected nodes
         let cmd = crate::rpc::Command {
             payload: Some(crate::rpc::command::Payload::CreateVolume(
                 crate::rpc::CreateVolume {
-                    volume_id: vol_id,
+                    volume_id: vol_id.clone(),
                     size_bytes: size,
                     replication_factor: replicas,
-                    replicas: selected_nodes, // BAKE IT IN
+                    replicas: selected_nodes,
                     source_capsule_id: None,
                 },
             )),
         };
 
-        // 4. Propose to Raft
-        self.propose(cmd.encode_to_vec()).await
+        // 5. Propose to Raft
+        // Note: Pending allocation will be released in Registry::apply() when committed
+        // If proposal fails, the pending allocation will eventually expire (TTL: 30s)
+        let result = self.propose(cmd.encode_to_vec()).await;
+
+        // If proposal fails immediately, release the pending allocation
+        if result.is_err() {
+            pending.release(&vol_id);
+        }
+
+        result
     }
 
     /// Check if this node is currently the leader.

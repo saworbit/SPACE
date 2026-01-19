@@ -646,6 +646,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Underlying `ibv_modify_qp` C-function is not thread-safe for same Queue Pair state transitions
   - Marked function as `unsafe fn` with `# Safety` documentation requiring exclusive `qp` access
   - Callers must now acknowledge thread-safety requirements at call site
+- **High Severity:** Smart Leader double-spend race condition in `propose_create_volume` (`crates/federation/src/engine.rs`)
+  - Two concurrent volume creation requests could read same ClusterState, both select same node, over-provision
+  - Added `PendingAllocations` tracker in `registry.rs` to track in-flight proposals before Raft commit
+  - `Scheduler::select_nodes_with_pending()` now accounts for pending allocations when calculating available capacity
+  - Pending allocations automatically released when command is committed via `Registry::apply()`
+  - TTL-based expiration (30 seconds) for abandoned proposals prevents memory leaks
+  - 4 new tests validating pending allocation behavior and concurrent request handling
 - **High Severity:** TOCTOU race condition in `ReplicationState` (`crates/federation/src/state.rs`)
   - Added atomic `try_mark_synced()` using sled's `compare_and_swap` to prevent duplicate replication work
   - Added `unmark_synced()` for error recovery when replication fails after claiming

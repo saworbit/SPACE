@@ -8,8 +8,9 @@ use anyhow::{anyhow, Result};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use tracing::{info, warn};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 /// Represents the topology of the entire cluster.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -45,21 +46,168 @@ pub struct VolumeMetadata {
     pub source_capsule_id: Option<String>,
 }
 
+/// Tracks a pending resource allocation that has been proposed but not yet committed.
+///
+/// This prevents the "Smart Leader" double-spend race condition where two concurrent
+/// proposals could both see the same available capacity and over-provision a node.
+#[derive(Debug, Clone)]
+pub struct PendingAllocation {
+    /// The volume ID being created
+    pub volume_id: String,
+    /// Size being allocated on each node
+    pub size_bytes: u64,
+    /// Node IDs that have pending allocations for this volume
+    pub node_ids: Vec<u64>,
+    /// When this allocation was created (for expiration)
+    pub created_at: Instant,
+}
+
+/// Default TTL for pending allocations (30 seconds)
+/// If a proposal hasn't been committed within this time, the allocation expires.
+const PENDING_ALLOCATION_TTL: Duration = Duration::from_secs(30);
+
+/// Tracks all pending allocations on the leader.
+///
+/// This is a leader-only structure that prevents the double-spend race condition
+/// in the "Smart Leader" pattern. When the leader proposes a volume creation,
+/// it registers a pending allocation. The scheduler then accounts for these
+/// pending allocations when selecting nodes for subsequent proposals.
+///
+/// ## Thread Safety
+/// Uses a Mutex because allocations are typically short-lived and concurrent
+/// access should be infrequent (only during propose operations on the leader).
+///
+/// ## Lifecycle
+/// 1. `register()` - Called before proposing CreateVolume
+/// 2. `release()` - Called when command is committed (in `apply()`)
+/// 3. `cleanup_expired()` - Called periodically to remove stale allocations
+#[derive(Debug, Default)]
+pub struct PendingAllocations {
+    /// Map from volume_id to pending allocation
+    allocations: Mutex<HashMap<String, PendingAllocation>>,
+}
+
+impl PendingAllocations {
+    pub fn new() -> Self {
+        Self {
+            allocations: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register a pending allocation for a volume being proposed.
+    ///
+    /// # Arguments
+    /// - `volume_id`: The volume being created
+    /// - `size_bytes`: Size of the volume
+    /// - `node_ids`: Nodes selected for this volume
+    pub fn register(&self, volume_id: String, size_bytes: u64, node_ids: Vec<u64>) {
+        let mut allocs = self.allocations.lock().unwrap();
+
+        // Clean up expired allocations while we have the lock
+        let now = Instant::now();
+        allocs.retain(|_, alloc| now.duration_since(alloc.created_at) < PENDING_ALLOCATION_TTL);
+
+        debug!(
+            volume_id = %volume_id,
+            size_bytes = size_bytes,
+            node_ids = ?node_ids,
+            "registering pending allocation"
+        );
+
+        allocs.insert(
+            volume_id.clone(),
+            PendingAllocation {
+                volume_id,
+                size_bytes,
+                node_ids,
+                created_at: now,
+            },
+        );
+    }
+
+    /// Release a pending allocation when a command is committed.
+    ///
+    /// # Arguments
+    /// - `volume_id`: The volume that was committed
+    pub fn release(&self, volume_id: &str) {
+        let mut allocs = self.allocations.lock().unwrap();
+        if allocs.remove(volume_id).is_some() {
+            debug!(volume_id = %volume_id, "released pending allocation");
+        }
+    }
+
+    /// Get the total pending allocation size for a specific node.
+    ///
+    /// This is used by the scheduler to account for in-flight proposals
+    /// when calculating available capacity.
+    pub fn pending_size_for_node(&self, node_id: u64) -> u64 {
+        let allocs = self.allocations.lock().unwrap();
+        let now = Instant::now();
+
+        allocs
+            .values()
+            .filter(|alloc| {
+                // Only count non-expired allocations
+                now.duration_since(alloc.created_at) < PENDING_ALLOCATION_TTL
+                    && alloc.node_ids.contains(&node_id)
+            })
+            .map(|alloc| alloc.size_bytes)
+            .sum()
+    }
+
+    /// Check if a volume has a pending allocation.
+    pub fn has_pending(&self, volume_id: &str) -> bool {
+        let allocs = self.allocations.lock().unwrap();
+        allocs.contains_key(volume_id)
+    }
+
+    /// Get all pending allocations (for debugging/monitoring).
+    pub fn get_all(&self) -> Vec<PendingAllocation> {
+        let allocs = self.allocations.lock().unwrap();
+        allocs.values().cloned().collect()
+    }
+
+    /// Clean up expired allocations.
+    pub fn cleanup_expired(&self) {
+        let mut allocs = self.allocations.lock().unwrap();
+        let now = Instant::now();
+        let before = allocs.len();
+        allocs.retain(|_, alloc| now.duration_since(alloc.created_at) < PENDING_ALLOCATION_TTL);
+        let removed = before - allocs.len();
+        if removed > 0 {
+            debug!(removed = removed, "cleaned up expired pending allocations");
+        }
+    }
+}
+
 /// The State Machine wrapper ensuring thread safety.
 pub struct Registry {
     state: Arc<RwLock<ClusterState>>,
+    /// Tracks pending allocations for in-flight proposals (leader-only).
+    ///
+    /// This prevents the "Smart Leader" double-spend race condition where
+    /// concurrent proposals could over-provision nodes.
+    pending_allocations: Arc<PendingAllocations>,
 }
 
 impl Registry {
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(ClusterState::default())),
+            pending_allocations: Arc::new(PendingAllocations::new()),
         }
     }
 
     /// Returns a snapshot of the current state (for Readers)
     pub fn get_state(&self) -> ClusterState {
         self.state.read().unwrap().clone()
+    }
+
+    /// Returns a reference to the pending allocations tracker.
+    ///
+    /// Used by the scheduler to account for in-flight proposals.
+    pub fn pending_allocations(&self) -> &PendingAllocations {
+        &self.pending_allocations
     }
 
     /// Applies a committed Raft entry to the state machine.
@@ -107,6 +255,9 @@ impl Registry {
                         req.replication_factor
                     );
                 }
+
+                // Release the pending allocation now that it's committed
+                self.pending_allocations.release(&req.volume_id);
 
                 state.volumes.insert(
                     req.volume_id.clone(),
