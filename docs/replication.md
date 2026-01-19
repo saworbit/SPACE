@@ -398,10 +398,13 @@ export RUST_LOG=scaling::replication=debug,capsule_registry=debug
    - Group multiple segments into single fsync
    - 10x latency improvement for bulk replication
 
-3. **RDMA Support**
+3. **RDMA Support** (`crates/scaling/src/transport/rdma.rs`)
    - Replace TCP with RDMA verbs
    - Zero-copy network transfer
    - Sub-millisecond latency
+   - **Safety Note**: `connect_qp()` is marked `unsafe` - callers must ensure exclusive
+     access to the Queue Pair during state transitions (RESET → INIT → RTR → RTS)
+   - Underlying `ibv_modify_qp` C-function is not thread-safe for concurrent QP access
 
 4. **Erasure Coding**
    - Geo-replicated sharding with EC (n+k)
@@ -422,5 +425,5 @@ export RUST_LOG=scaling::replication=debug,capsule_registry=debug
 
 ---
 
-**Last Updated:** 2025-11-30
+**Last Updated:** 2026-01-19
 **Status:** Production-ready (Step 2 complete)

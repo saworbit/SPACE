@@ -93,10 +93,19 @@ INFO raft_simulation: Election phase complete
 - RaftTransportClient with connection pooling
 - Graceful error handling (network failures logged, Raft retries)
 
-**Generic Engine**:
-- `RaftEngine<S: Storage>` generic over storage backend
+**Generic Engine** (`src/engine.rs`):
+- `RaftEngine<S: PersistentStorage>` generic over storage backend
 - `new_memory()` - In-memory testing (MemStorage)
 - `new_persistent()` - Production deployment (SledStorage)
+- `PersistentStorage` trait for explicit crash-safe persistence
+
+**Crash Safety** - Ready handling follows tikv/raft-rs recommended order:
+1. Persist entries to stable storage (BEFORE advance)
+2. Persist hard state to stable storage (BEFORE advance)
+3. Apply snapshot if present (BEFORE advance)
+4. Call `advance()` (signals persistence complete)
+5. Send messages to peers (async, Raft handles duplicates on crash recovery)
+6. Apply committed entries to state machine
 
 **Production Deployment Example**:
 ```rust
@@ -200,11 +209,22 @@ The CLI command `spacectl project` feeds this telemetry event and receives `Scal
 
 ## Payload Replication (Phase 4b WAN Bridge)
 
-The mesh/Raft sharding path above covers **metadata**. For development-grade, end-to-end “Zone A write → Zone B read” validation, SPACE also provides a Phase 4b WAN bridge:
+The mesh/Raft sharding path above covers **metadata**. For development-grade, end-to-end "Zone A write → Zone B read" validation, SPACE also provides a Phase 4b WAN bridge:
 
 - `crates/federation::Bridge` enqueues per-zone replication jobs based on `policy.federation.targets`.
 - `crates/federation::FederationService` (gRPC) receives segments + capsule metadata over HTTP/2.
 - `spacectl zone add` manages remote endpoints; `spacectl federation serve` runs the receiver.
+
+### Replication State (`src/state.rs`)
+
+The `ReplicationState` tracks which capsules have been synced to which zones using sled's persistent storage.
+
+**Atomic Operations**:
+- `try_mark_synced(capsule_id, zone)` - Atomically claims a replication job using `compare_and_swap`
+- `unmark_synced(capsule_id, zone)` - Releases claim on failure for retry
+- `is_synced(capsule_id, zone)` - Check-only (used for early-exit optimization)
+
+**Concurrency Safety**: The atomic `try_mark_synced` prevents TOCTOU race conditions where multiple threads could simultaneously see `is_synced() == false` and perform duplicate replication work.
 
 For a minimal two-zone mock, see `scripts/test_federation_mock.sh`.
 

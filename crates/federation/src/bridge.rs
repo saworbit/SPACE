@@ -175,11 +175,20 @@ impl Bridge {
             .get(&job.target_zone)
             .with_context(|| format!("unknown zone {}", job.target_zone))?;
 
-        if self.state.is_synced(job.capsule_id, &job.target_zone)? {
+        // Atomically try to claim this replication job.
+        // This prevents TOCTOU race where two threads both see is_synced=false
+        // and proceed to duplicate replication work.
+        if self
+            .state
+            .try_mark_synced(job.capsule_id, &job.target_zone)?
+        {
+            // Already synced by another thread - skip
             return Ok(());
         }
 
-        self.transfer
+        // We successfully claimed this job - proceed with replication
+        let result = self
+            .transfer
             .replicate_capsule(
                 job.capsule_id,
                 self.local_registry.as_ref(),
@@ -188,10 +197,22 @@ impl Bridge {
                 zone,
                 job.priority.clone(),
             )
-            .await?;
+            .await;
 
-        self.state.mark_synced(job.capsule_id, &job.target_zone)?;
-        Ok(())
+        if let Err(ref e) = result {
+            // Replication failed - unmark so job can be retried
+            warn!(
+                capsule = %job.capsule_id.as_uuid(),
+                zone = %job.target_zone,
+                error = %e,
+                "replication failed, unmarking for retry"
+            );
+            if let Err(unmark_err) = self.state.unmark_synced(job.capsule_id, &job.target_zone) {
+                warn!(error = %unmark_err, "failed to unmark synced state");
+            }
+        }
+
+        result
     }
 
     pub async fn run_polling(&self, interval: Duration) -> Result<()> {

@@ -636,6 +636,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `thiserror` 1.0.69 → 2.0.17 (major: backward-compatible rewrite with improved diagnostics)
 
 ### Fixed
+- **Critical Severity:** Raft event loop race condition in `RaftEngine` (`crates/federation/src/engine.rs`)
+  - `advance()` was called before persistence, risking data loss on crash
+  - Added `PersistentStorage` trait for explicit entry/hard state persistence
+  - Fixed ordering: persist → advance → send messages (crash-safe)
+  - Implemented trait for both `MemStorage` and `SledStorage`
+- **Medium Severity:** Unsafe concurrency in RDMA transport (`crates/scaling/src/transport/rdma.rs`)
+  - `connect_qp` took `&self` but modified raw pointer `*mut ibv_qp`, allowing concurrent access
+  - Underlying `ibv_modify_qp` C-function is not thread-safe for same Queue Pair state transitions
+  - Marked function as `unsafe fn` with `# Safety` documentation requiring exclusive `qp` access
+  - Callers must now acknowledge thread-safety requirements at call site
+- **High Severity:** TOCTOU race condition in `ReplicationState` (`crates/federation/src/state.rs`)
+  - Added atomic `try_mark_synced()` using sled's `compare_and_swap` to prevent duplicate replication work
+  - Added `unmark_synced()` for error recovery when replication fails after claiming
+  - Updated `FederationBridge::process_job()` to use atomic claim-before-replicate pattern
 - **Critical:** Inbound replication data discard issue - segments now properly validated, decrypted, deduplicated, and persisted
 - **BatchQueue OOM guard:** Async batching now tracks pending bytes and flushes when either count or byte thresholds are reached, preventing memory blowouts from few large items (`docs/specs/PERFORMANCE_FIX_BATCH_QUEUE_OOM.md`).
 - Compilation errors in `ScalingAgent` due to missing generic parameters

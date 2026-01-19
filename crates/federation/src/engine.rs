@@ -12,7 +12,57 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+/// Trait for storage implementations that support explicit persistence.
+///
+/// This trait extends the read-only `Storage` trait with mutation methods
+/// needed for crash-safe Raft operation. Entries and hard state MUST be
+/// persisted to stable storage before calling `RawNode::advance()`.
+pub trait PersistentStorage: Storage {
+    /// Persist log entries to stable storage.
+    fn persist_entries(&mut self, entries: &[Entry]) -> Result<()>;
+
+    /// Persist hard state (term, vote, commit) to stable storage.
+    fn persist_hardstate(&mut self, hs: &HardState) -> Result<()>;
+
+    /// Apply a snapshot to stable storage.
+    fn apply_snapshot_to_storage(&mut self, snapshot: &Snapshot) -> Result<()>;
+}
+
+impl PersistentStorage for MemStorage {
+    fn persist_entries(&mut self, entries: &[Entry]) -> Result<()> {
+        // MemStorage uses interior mutability via RwLock
+        self.wl()
+            .append(entries)
+            .context("failed to append entries to MemStorage")
+    }
+
+    fn persist_hardstate(&mut self, hs: &HardState) -> Result<()> {
+        self.wl().set_hardstate(hs.clone());
+        Ok(())
+    }
+
+    fn apply_snapshot_to_storage(&mut self, snapshot: &Snapshot) -> Result<()> {
+        self.wl()
+            .apply_snapshot(snapshot.clone())
+            .context("failed to apply snapshot to MemStorage")
+    }
+}
+
+impl PersistentStorage for crate::storage::SledStorage {
+    fn persist_entries(&mut self, entries: &[Entry]) -> Result<()> {
+        self.append(entries)
+    }
+
+    fn persist_hardstate(&mut self, hs: &HardState) -> Result<()> {
+        self.set_hardstate(hs.clone())
+    }
+
+    fn apply_snapshot_to_storage(&mut self, snapshot: &Snapshot) -> Result<()> {
+        self.apply_snapshot(snapshot.clone())
+    }
+}
 
 /// Configuration for RaftEngine.
 #[derive(Debug, Clone)]
@@ -37,7 +87,19 @@ pub struct RaftEngineConfig {
 /// - Generic over Storage trait (supports both MemStorage and SledStorage)
 /// - Can use gRPC transport for network communication
 /// - Committed entries are logged but not applied to a state machine
-pub struct RaftEngine<S: Storage = MemStorage> {
+///
+/// # Crash Safety
+/// The engine follows the tikv/raft-rs recommended Ready handling order:
+/// 1. Persist entries to stable storage
+/// 2. Persist hard state to stable storage
+/// 3. Apply snapshot (if any)
+/// 4. Advance Raft state (signals persistence complete)
+/// 5. Send messages to peers
+/// 6. Apply committed entries to state machine
+///
+/// This ordering ensures that if a crash occurs at any point, the node
+/// can recover to a consistent state on restart.
+pub struct RaftEngine<S: PersistentStorage = MemStorage> {
     /// The core Raft state machine (wrapped in Mutex because RawNode is !Send).
     raft: Arc<Mutex<RawNode<S>>>,
     /// Inbox for receiving Raft messages from other nodes.
@@ -51,7 +113,7 @@ pub struct RaftEngine<S: Storage = MemStorage> {
     registry: Option<Arc<crate::registry::Registry>>,
 }
 
-impl<S: Storage> RaftEngine<S> {
+impl<S: PersistentStorage> RaftEngine<S> {
     /// Create a new RaftEngine instance with the provided storage.
     ///
     /// # Arguments
@@ -305,19 +367,27 @@ impl<S: Storage> RaftEngine<S> {
 
     /// Process the ready state from Raft.
     ///
-    /// This is the core of the Raft engine. It handles:
-    /// 1. Sending messages to peers
-    /// 2. Applying snapshots
-    /// 3. Persisting log entries
-    /// 4. Persisting hard state (vote, term)
-    /// 5. Processing committed entries
-    /// 6. Advancing Raft state
+    /// This is the core of the Raft engine. It handles Ready state in the
+    /// crash-safe order required by tikv/raft-rs:
+    ///
+    /// 1. Persist entries to stable storage (BEFORE advance)
+    /// 2. Persist hard state to stable storage (BEFORE advance)
+    /// 3. Apply snapshot if present (BEFORE advance)
+    /// 4. Advance Raft state (signals persistence complete)
+    /// 5. Send messages to peers (can fail/retry, Raft handles duplicates)
+    /// 6. Apply committed entries to state machine
+    ///
+    /// # Critical: Ordering Guarantees
+    /// - Persistence MUST complete before `advance()` is called
+    /// - If we crash after `advance()` but before sending messages, Raft
+    ///   will resend on recovery (the protocol handles duplicates)
+    /// - Committed entries are applied after advance to ensure they're durable
     ///
     /// # Critical: Mutex Management
     /// This function carefully manages the mutex to avoid holding it
     /// across await points, which would cause runtime panics.
     async fn handle_ready(&mut self) -> Result<()> {
-        // Extract ready state and messages in a non-async block
+        // Phase 1: Extract ready state and persist (synchronous, holding lock)
         let (messages, light_messages, committed_info) = {
             let mut raft = self.raft.lock().expect("raft mutex poisoned");
 
@@ -326,45 +396,63 @@ impl<S: Storage> RaftEngine<S> {
             }
 
             let mut ready = raft.ready();
+            let node_id = raft.raft.id;
 
-            // 1. Extract messages to send
-            let messages = ready.take_messages();
-
-            // 2. Apply snapshot (if any)
-            if !ready.snapshot().is_empty() {
-                let snapshot = ready.snapshot();
-                debug!(
-                    id = raft.raft.id,
-                    snapshot_index = snapshot.get_metadata().index,
-                    "applying snapshot"
-                );
-                // NOTE: Snapshot is handled internally by RawNode's storage
-            }
-
-            // 3. Persist entries to storage
+            // 1. Persist entries to stable storage FIRST (crash safety)
             if !ready.entries().is_empty() {
                 let entries = ready.entries();
                 debug!(
-                    id = raft.raft.id,
+                    id = node_id,
                     count = entries.len(),
-                    "persisting entries"
+                    first_index = entries.first().map(|e| e.index),
+                    last_index = entries.last().map(|e| e.index),
+                    "persisting entries to stable storage"
                 );
-                // NOTE: Entries are handled internally by RawNode's storage
+
+                // CRITICAL: Actually persist entries before advance!
+                if let Err(e) = raft.mut_store().persist_entries(entries) {
+                    error!(id = node_id, error = %e, "failed to persist entries");
+                    return Err(e);
+                }
             }
 
-            // 4. Persist hard state (vote and term)
+            // 2. Persist hard state BEFORE advance (crash safety)
             if let Some(hs) = ready.hs() {
                 debug!(
-                    id = raft.raft.id,
+                    id = node_id,
                     term = hs.term,
                     vote = hs.vote,
                     commit = hs.commit,
-                    "persisting hard state"
+                    "persisting hard state to stable storage"
                 );
-                // NOTE: HardState is handled internally by RawNode's storage
+
+                // CRITICAL: Actually persist hard state before advance!
+                if let Err(e) = raft.mut_store().persist_hardstate(hs) {
+                    error!(id = node_id, error = %e, "failed to persist hard state");
+                    return Err(e);
+                }
             }
 
-            // 5. Extract committed entries info for logging and application
+            // 3. Apply snapshot BEFORE advance (if present)
+            if !ready.snapshot().is_empty() {
+                let snapshot = ready.snapshot();
+                debug!(
+                    id = node_id,
+                    snapshot_index = snapshot.get_metadata().index,
+                    snapshot_term = snapshot.get_metadata().term,
+                    "applying snapshot to stable storage"
+                );
+
+                if let Err(e) = raft.mut_store().apply_snapshot_to_storage(snapshot) {
+                    error!(id = node_id, error = %e, "failed to apply snapshot");
+                    return Err(e);
+                }
+            }
+
+            // 4. Extract messages to send (before advance consumes ready)
+            let messages = ready.take_messages();
+
+            // 5. Extract committed entries info for later application
             let committed_info: Vec<_> = ready
                 .committed_entries()
                 .iter()
@@ -383,27 +471,31 @@ impl<S: Storage> RaftEngine<S> {
                 })
                 .collect();
 
-            // 6. Advance Raft state
+            // 6. ADVANCE: Signal to Raft that persistence is complete
+            // This MUST happen AFTER entries/hard_state are persisted!
             let mut light_rd = raft.advance(ready);
 
             // 7. Extract light ready messages
             let light_messages = light_rd.take_messages();
 
-            // 8. Advance apply
+            // 8. Advance apply index
             raft.advance_apply();
 
             (messages, light_messages, committed_info)
-        }; // Lock is dropped here
+        }; // Lock is dropped here - now safe to do async work
 
-        // Now send messages without holding the lock
+        // Phase 2: Send messages (async, without lock)
+        // If we crash here, Raft will resend these messages on recovery.
+        // The protocol is designed to handle duplicate messages safely.
         for msg in messages {
             let to = msg.to;
             if let Err(e) = self.outbox.send((to, msg)).await {
-                error!("failed to send raft message to node {}: {}", to, e);
+                // Log but don't fail - Raft will retry on next tick
+                warn!(to = to, error = %e, "failed to send raft message, will retry");
             }
         }
 
-        // Log and apply committed entries
+        // Phase 3: Apply committed entries to state machine
         let node_id = self.id();
         for (index, term, data, bytes, payload) in committed_info {
             info!(
@@ -412,7 +504,7 @@ impl<S: Storage> RaftEngine<S> {
                 term = term,
                 bytes = bytes,
                 payload = %payload,
-                "committed entry"
+                "applying committed entry"
             );
 
             // Apply to state machine (Phase 9.3)
@@ -424,15 +516,17 @@ impl<S: Storage> RaftEngine<S> {
                         error = %e,
                         "failed to apply entry to registry"
                     );
+                    // Note: We don't return error here because the entry IS committed.
+                    // The state machine application failure is a separate concern.
                 }
             }
         }
 
-        // Send light ready messages
+        // Phase 4: Send light ready messages
         for msg in light_messages {
             let to = msg.to;
             if let Err(e) = self.outbox.send((to, msg)).await {
-                error!("failed to send raft message to node {}: {}", to, e);
+                warn!(to = to, error = %e, "failed to send light raft message, will retry");
             }
         }
 

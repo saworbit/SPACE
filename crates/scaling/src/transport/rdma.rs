@@ -40,74 +40,79 @@ impl RdmaTransport {
     }
 
     /// Transition a QP from RESET -> INIT -> RTR -> RTS using remote handshake data.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that `qp` is not accessed concurrently by other threads
+    /// during this state transition. The underlying `ibv_modify_qp` C-function is
+    /// not thread-safe for the same Queue Pair, and concurrent state transitions
+    /// (RESET -> INIT -> RTR -> RTS) will cause undefined behavior.
     #[allow(dead_code)]
-    pub(crate) fn connect_qp(
+    pub(crate) unsafe fn connect_qp(
         &self,
         qp: *mut ibv_qp,
         remote: RdmaHandshake,
         local_psn: u32,
     ) -> Result<()> {
-        unsafe {
-            // RESET -> INIT
-            let mut init_attr: ibv_qp_attr = std::mem::zeroed();
-            init_attr.qp_state = ibv_qp_state::IBV_QPS_INIT;
-            init_attr.pkey_index = 0;
-            init_attr.port_num = 1;
-            init_attr.qp_access_flags =
-                (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ) as i32;
+        // RESET -> INIT
+        let mut init_attr: ibv_qp_attr = std::mem::zeroed();
+        init_attr.qp_state = ibv_qp_state::IBV_QPS_INIT;
+        init_attr.pkey_index = 0;
+        init_attr.port_num = 1;
+        init_attr.qp_access_flags =
+            (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ) as i32;
 
-            ibv_modify_qp(
-                qp,
-                &mut init_attr,
-                (IBV_QP_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS()) as i32,
-            )
-            .to_result()?;
+        ibv_modify_qp(
+            qp,
+            &mut init_attr,
+            (IBV_QP_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS()) as i32,
+        )
+        .to_result()?;
 
-            // INIT -> RTR
-            let ah_attr = self.create_ah(remote.lid, remote.gid)?;
-            let mut rtr_attr: ibv_qp_attr = std::mem::zeroed();
-            rtr_attr.qp_state = ibv_qp_state::IBV_QPS_RTR;
-            rtr_attr.path_mtu = IBV_MTU_1024; // conservative default
-            rtr_attr.dest_qp_num = remote.qpn;
-            rtr_attr.rq_psn = remote.psn;
-            rtr_attr.ah_attr = ah_attr;
-            rtr_attr.max_dest_rd_atomic = 1;
-            rtr_attr.min_rnr_timer = 12;
+        // INIT -> RTR
+        let ah_attr = self.create_ah(remote.lid, remote.gid)?;
+        let mut rtr_attr: ibv_qp_attr = std::mem::zeroed();
+        rtr_attr.qp_state = ibv_qp_state::IBV_QPS_RTR;
+        rtr_attr.path_mtu = IBV_MTU_1024; // conservative default
+        rtr_attr.dest_qp_num = remote.qpn;
+        rtr_attr.rq_psn = remote.psn;
+        rtr_attr.ah_attr = ah_attr;
+        rtr_attr.max_dest_rd_atomic = 1;
+        rtr_attr.min_rnr_timer = 12;
 
-            ibv_modify_qp(
-                qp,
-                &mut rtr_attr,
-                (IBV_QP_QP_STATE
-                    | IBV_QP_AV
-                    | IBV_QP_PATH_MTU
-                    | IBV_QP_DEST_QPN
-                    | IBV_QP_RQ_PSN
-                    | IBV_QP_MAX_DEST_RD_ATOMIC()
-                    | IBV_QP_MIN_RNR_TIMER()) as i32,
-            )
-            .to_result()?;
+        ibv_modify_qp(
+            qp,
+            &mut rtr_attr,
+            (IBV_QP_QP_STATE
+                | IBV_QP_AV
+                | IBV_QP_PATH_MTU
+                | IBV_QP_DEST_QPN
+                | IBV_QP_RQ_PSN
+                | IBV_QP_MAX_DEST_RD_ATOMIC()
+                | IBV_QP_MIN_RNR_TIMER()) as i32,
+        )
+        .to_result()?;
 
-            // RTR -> RTS
-            let mut rts_attr: ibv_qp_attr = std::mem::zeroed();
-            rts_attr.qp_state = ibv_qp_state::IBV_QPS_RTS;
-            rts_attr.sq_psn = local_psn;
-            rts_attr.timeout = 14; // ~1.024us * 2^timeout
-            rts_attr.retry_cnt = 7;
-            rts_attr.rnr_retry = 7;
-            rts_attr.max_rd_atomic = 1;
+        // RTR -> RTS
+        let mut rts_attr: ibv_qp_attr = std::mem::zeroed();
+        rts_attr.qp_state = ibv_qp_state::IBV_QPS_RTS;
+        rts_attr.sq_psn = local_psn;
+        rts_attr.timeout = 14; // ~1.024us * 2^timeout
+        rts_attr.retry_cnt = 7;
+        rts_attr.rnr_retry = 7;
+        rts_attr.max_rd_atomic = 1;
 
-            ibv_modify_qp(
-                qp,
-                &mut rts_attr,
-                (IBV_QP_QP_STATE
-                    | IBV_QP_SQ_PSN
-                    | IBV_QP_TIMEOUT
-                    | IBV_QP_RETRY_CNT()
-                    | IBV_QP_RNR_RETRY()
-                    | IBV_QP_MAX_RD_ATOMIC()) as i32,
-            )
-            .to_result()?;
-        }
+        ibv_modify_qp(
+            qp,
+            &mut rts_attr,
+            (IBV_QP_QP_STATE
+                | IBV_QP_SQ_PSN
+                | IBV_QP_TIMEOUT
+                | IBV_QP_RETRY_CNT()
+                | IBV_QP_RNR_RETRY()
+                | IBV_QP_MAX_RD_ATOMIC()) as i32,
+        )
+        .to_result()?;
 
         Ok(())
     }

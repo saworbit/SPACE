@@ -16,7 +16,9 @@
   #[derive(Serialize, Deserialize)]
   struct RdmaHandshake { qpn: u32, psn: u32, lid: u16, gid: [u8; 16] }
   ```
-- `RdmaTransport::connect_qp`:
+- `RdmaTransport::connect_qp` (marked `unsafe`):
+  - **Safety**: Caller must ensure exclusive access to `qp` during state transitions.
+    The underlying `ibv_modify_qp` C-function is not thread-safe for concurrent QP access.
   - INIT: set `qp_state=INIT`, `port_num=1`, `qp_access_flags=IBV_ACCESS_REMOTE_WRITE|LOCAL_WRITE`.
   - RTR: set `dest_qp_num=remote.qpn`, `rq_psn=remote.psn`, `path_mtu=4096`, attach AH from `{lid,gid}`.
   - RTS: set `sq_psn=local_psn`, `timeout=14`, `retry_cnt=7`, `rnr_retry=7`.
