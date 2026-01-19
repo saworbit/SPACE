@@ -51,7 +51,7 @@ license = "MIT OR Apache-2.0"
 # Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)
 uuid = { version = "^1.18.1", features = ["v4", "serde"] } # 2025-11-03 sw: deterministic object IDs for registry state
 anyhow = { version = "^1.0.100" } # 2025-11-03 sw: ergonomic error context, low risk per audit log
-thiserror = { version = "^1.0.69" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
+thiserror = { version = "^2.0.17" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
 tokio = { version = "^1.48.0", features = ["full"] } # 2025-11-03 sw: async runtime staple, reviewed for LTS support
 futures = { version = "^0.3.31" } # 2025-11-03 sw: combinators align with tokio 1.48, no unsafe diff
 num_cpus = { version = "^1.17.0" } # 2025-11-03 sw: worker sizing, perf only
@@ -85,7 +85,7 @@ poly1305 = { version = "=0.8.0" } # 2025-11-03 sw: MAC verification, constant-ti
 cpufeatures = { version = "=0.2.17" } # 2025-11-03 sw: runtime AES capability detection
 subtle = { version = "=2.6.1" } # 2025-11-03 sw: constant-time comparisons for key/tweak handling
 hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for key derivation
-sha2 = { version = "=0.10.8" } # 2025-11-04 sw: Hash core for HKDF extractor
+sha2 = { version = "=0.10.9" } # 2025-11-04 sw: Hash core for HKDF extractor
 
 # Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
 axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework

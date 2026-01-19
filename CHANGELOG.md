@@ -631,6 +631,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated Cargo.toml dependencies for scaling crate
 - Updated mirror_segment documentation and call sites to the replication-frame signature
 - Added ISC and MPL-2.0 to allowed licenses in deny.toml (both OSI-approved and FSF Free/Libre)
+- **Dependencies** - Updated workspace dependencies:
+  - `sha2` 0.10.8 → 0.10.9 (patch: maintenance update)
+  - `thiserror` 1.0.69 → 2.0.17 (major: backward-compatible rewrite with improved diagnostics)
 
 ### Fixed
 - **Critical:** Inbound replication data discard issue - segments now properly validated, decrypted, deduplicated, and persisted

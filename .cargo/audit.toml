@@ -24,4 +24,11 @@ ignore = [
     "RUSTSEC-2024-0437",  # protobuf 2.28.0 DoS (via raft 0.7.0 → raft-proto)
                           # Risk: Low (DoS only, not RCE; dev environment; in-memory storage)
                           # Mitigation: Phase 9.2 will upgrade to raft 0.8+ or fork raft-proto
+    # Transitive dependency advisories (no immediate fix available)
+    "RUSTSEC-2026-0001",  # rkyv 0.7.45 UB on OOM (transitive via rust_decimal -> openraft)
+                          # Risk: Low (only triggers on allocation failure; no user-controlled path)
+                          # Mitigation: Upgrade when rkyv 0.7.46+ or rust_decimal update available
+    "RUSTSEC-2025-0141",  # bincode unmaintained (warning; gossip-layer wire format)
+    "RUSTSEC-2026-0002",  # lru IterMut unsoundness (transitive via leptos_router and gossip-layer)
+                          # Risk: Low (we don't use IterMut; cache reads only)
 ]
