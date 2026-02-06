@@ -262,7 +262,7 @@ impl InMemoryCatalog {
 
 impl CapsuleCatalog for InMemoryCatalog {
     fn allocate_segment(&self) -> Result<SegmentId> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let seg = SegmentId(inner.next_segment);
         inner.next_segment += 1;
         Ok(seg)
@@ -286,7 +286,7 @@ impl CapsuleCatalog for InMemoryCatalog {
         segments: Vec<SegmentId>,
         stats: &DedupStats,
     ) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let capsule = Capsule {
             id,
             size,
@@ -311,16 +311,16 @@ impl CapsuleCatalog for InMemoryCatalog {
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        self.inner.lock().unwrap().content.get(hash).copied()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).content.get(hash).copied()
     }
 
     fn register_content(&self, hash: ContentHash, segment: SegmentId) -> Result<()> {
-        self.inner.lock().unwrap().content.insert(hash, segment);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).content.insert(hash, segment);
         Ok(())
     }
 
     fn deregister_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = inner.content.get(hash) {
             if *existing == segment {
                 inner.content.remove(hash);

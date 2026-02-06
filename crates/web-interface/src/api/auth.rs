@@ -94,8 +94,24 @@ fn jwt_secret() -> Result<Vec<u8>, ApiError> {
         }
     }
 
+    // In debug builds, generate a random ephemeral secret and warn loudly.
+    // This avoids a hardcoded default that could be exploited if debug builds leak.
     if cfg!(debug_assertions) {
-        return Ok(b"dev-secret".to_vec());
+        warn!("JWT secret not configured; using random ephemeral secret (debug build only). Set JWT_SECRET for stable tokens.");
+        let mut secret = vec![0u8; 32];
+        // Use system randomness; fall back to timestamp-based seed if unavailable.
+        if let Ok(bytes) = std::fs::read("/dev/urandom").map(|b| b.into_iter().take(32).collect::<Vec<_>>()) {
+            if bytes.len() == 32 { secret = bytes; }
+        } else {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            std::time::SystemTime::now().hash(&mut h);
+            std::process::id().hash(&mut h);
+            let hash = h.finish().to_le_bytes();
+            secret[..8].copy_from_slice(&hash);
+        }
+        return Ok(secret);
     }
 
     Err(ApiError::unauthorized(
@@ -113,8 +129,11 @@ fn try_dev_override(token: &str) -> Option<Claims> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    let god =
-        std::env::var("SPACE_DEV_GOD_TOKEN").unwrap_or_else(|_| "space-god-token".to_string());
+    // Require SPACE_DEV_GOD_TOKEN to be explicitly set — no hardcoded default.
+    let god = match std::env::var("SPACE_DEV_GOD_TOKEN") {
+        Ok(val) if !val.is_empty() => val,
+        _ => return None,
+    };
     if token == god {
         return Some(Claims {
             sub: "god".to_string(),

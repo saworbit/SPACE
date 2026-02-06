@@ -83,7 +83,7 @@ impl StorageTransaction for InMemoryTransaction {
 
     fn commit(self) -> BoxFuture<'static, Result<()>> {
         Box::pin(async move {
-            let mut guard = self.inner.lock().expect("in-memory backend mutex poisoned");
+            let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             for (segment, data) in self.staged_segments {
                 guard.segments.insert(segment, data);
             }
@@ -110,7 +110,7 @@ impl StorageBackend for InMemoryBackend {
         let inner = Arc::clone(&self.inner);
         let payload = data.to_vec();
         Box::pin(async move {
-            let mut guard = inner.lock().expect("in-memory backend mutex poisoned");
+            let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
             guard.segments.insert(segment, payload);
             Ok(())
         })
@@ -119,7 +119,7 @@ impl StorageBackend for InMemoryBackend {
     fn read(&self, segment: SegmentId) -> BoxFuture<'_, Result<Vec<u8>>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            let guard = inner.lock().expect("in-memory backend mutex poisoned");
+            let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
             guard
                 .segments
                 .get(&segment)
@@ -131,7 +131,7 @@ impl StorageBackend for InMemoryBackend {
     fn metadata(&self, segment: SegmentId) -> BoxFuture<'_, Result<Segment>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            let guard = inner.lock().expect("in-memory backend mutex poisoned");
+            let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
             guard
                 .metadata
                 .get(&segment)
@@ -143,7 +143,7 @@ impl StorageBackend for InMemoryBackend {
     fn delete<'a>(&'a mut self, segment: SegmentId) -> BoxFuture<'a, Result<()>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            let mut guard = inner.lock().expect("in-memory backend mutex poisoned");
+            let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
             guard.segments.remove(&segment);
             guard.metadata.remove(&segment);
             Ok(())
@@ -153,7 +153,7 @@ impl StorageBackend for InMemoryBackend {
     fn segment_ids(&self) -> BoxFuture<'_, Result<Vec<SegmentId>>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            let guard = inner.lock().expect("in-memory backend mutex poisoned");
+            let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
             Ok(guard.metadata.keys().copied().collect())
         })
     }

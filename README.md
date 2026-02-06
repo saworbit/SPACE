@@ -88,7 +88,7 @@
 | **CLI Tools (spacectl)** | 🟡 Alpha | Basic commands work, UX rough | - |
 | **Write Pipeline** | 🟢 Beta | Sync pipeline solid, async experimental | `pipeline_async` |
 | **Read Pipeline** | 🟢 Beta | Decompression/decryption works | - |
-| **Error Handling** | 🟡 Alpha | Basic errors, needs polish | - |
+| **Error Handling** | 🟡 Alpha | Mutex recovery, descriptive panics, path validation | - |
 
 ### Compression & Deduplication
 
@@ -114,7 +114,7 @@
 | **Key Rotation** | 🟡 Alpha | Version tracking, limited testing | - |
 | **Counting Bloom Filters** | 🟡 Alpha | Registry screening works | `advanced-security` |
 | **Audit Log** | 🟡 Alpha | BLAKE3 chaining, TSA hooks stubbed | `advanced-security` |
-| **SPIFFE/mTLS Gateway** | 🟠 Experimental | Basic eBPF hooks, needs validation | `advanced-security` |
+| **SPIFFE/mTLS Gateway** | 🟠 Experimental | eBPF hooks with poison-safe RwLock | `advanced-security` |
 | **Post-Quantum Crypto** | 🟠 Experimental | Kyber hybrid toggle, untested | `advanced-security` |
 
 ### Block Storage (Phase 8: The Foundry)
@@ -159,7 +159,7 @@
 | **PODMS Scaling** | 🟠 Experimental | Types/telemetry exist, limited integration | `podms` |
 | **Mesh Networking** | 🟠 Experimental | Basic peer discovery works | `podms` |
 | **Gossip Protocol** | 🟠 Experimental | libp2p-based, early stage | `podms` |
-| **Metro-Sync Replication** | 🟠 Experimental | TCP-based POC, RDMA mocked | `podms` |
+| **Metro-Sync Replication** | 🟠 Experimental | TCP-based POC, RDMA mocked, 16 MiB frame limit, TLS-ready | `podms` |
 | **Async Replication** | 🟠 Experimental | Batch queue exists, needs testing | `podms` |
 | **Policy Compiler** | 🟡 Alpha | Telemetry → actions works | `podms` |
 | **Scaling Agents** | 🟠 Experimental | Basic agent loop, minimal coverage | `podms` |
@@ -199,7 +199,7 @@
 - Production-grade error recovery
 - Comprehensive logging and observability
 - Performance optimization and benchmarking
-- Security hardening and penetration testing
+- Full penetration testing and third-party security audit
 - Multi-node stability and failover
 - Data migration tools
 - Backup and restore
@@ -212,9 +212,17 @@
 - Many features are proofs-of-concept
 - APIs will change without notice
 - Performance not optimized
-- Security features need auditing
+- Security features need third-party auditing
 - Multi-node features are experimental
 - Vendor stubs are placeholders
+
+**✅ Recently Hardened:**
+- Path traversal protection on all object API endpoints
+- Hardcoded dev secrets eliminated (random ephemeral keys in debug builds)
+- Deserialization size limits on replication frames (16 MiB cap)
+- Mutex poisoning recovery across 6 crates (graceful degradation)
+- TLS configuration infrastructure for inter-node transport
+- Lock contention reduction in replication crypto path
 
 ---
 
@@ -365,7 +373,7 @@ SPACE includes an early-stage web interface for visualizing mesh topology and ba
 - ⚡ **Leptos frontend** - reactive UI framework (optional, feature-gated)
 
 **Limitations:**
-- Security not hardened - development use only
+- Security partially hardened (path traversal fixed, dev secrets removed) but not audited - development use only
 - Limited error handling and validation
 - UX rough and incomplete
 - Not tested with real traffic loads
@@ -1048,7 +1056,7 @@ cargo test --features advanced-security -- --nocapture
 - JWT guard with RBAC (`admin`, `editor`, `viewer`); `system/health` stays public for probes; set `JWT_SECRET` or `GOSSIP_SIGNING_KEY`.
 - Streaming multipart uploads replace base64 for `POST /api/v1/data/objects`; downloads support `GET|HEAD`.
 - See `docs/SPACE_CONTROL_PLANE_API.md` and `docs/WEB_INTERFACE.md` for usage examples.
-- Dev auth helpers: `scripts/dev_auth.sh` mints HS256 tokens (default secret `dev-secret`); debug builds accept `Authorization: Bearer space-god-token` for quick local testing (override with `SPACE_DEV_GOD_TOKEN`).
+- Dev auth helpers: `scripts/dev_auth.sh` mints HS256 tokens; debug builds use a random ephemeral JWT secret (set `JWT_SECRET` to override). The god-token shortcut requires `SPACE_DEV_GOD_TOKEN` to be explicitly set as an env var (no hardcoded default).
 
 ### 🔧 Full-feature linting (LibTorch)
 
@@ -1151,6 +1159,11 @@ Result: Dedup WORKS! 🎉
 | 🔑 **Key Derivation** | BLAKE3-KDF | Cryptographic |
 | 🔄 **Key Rotation** | Version tracking | Zero downtime |
 | 🧹 **Memory Safety** | Zeroization | Secure |
+| 🛡️ **Path Traversal** | Null/backslash/`..` rejection | Hardened |
+| 🔓 **No Hardcoded Secrets** | Random ephemeral keys | Hardened |
+| 📦 **Frame Size Limits** | 16 MiB deserialization cap | DoS-resistant |
+| 🔄 **Mutex Recovery** | `unwrap_or_else` poisoning | Resilient |
+| 🔒 **TLS Infrastructure** | mTLS env-based config | Ready |
 
 </div>
 

@@ -101,7 +101,7 @@ impl PendingAllocations {
     /// - `size_bytes`: Size of the volume
     /// - `node_ids`: Nodes selected for this volume
     pub fn register(&self, volume_id: String, size_bytes: u64, node_ids: Vec<u64>) {
-        let mut allocs = self.allocations.lock().unwrap();
+        let mut allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
 
         // Clean up expired allocations while we have the lock
         let now = Instant::now();
@@ -130,7 +130,7 @@ impl PendingAllocations {
     /// # Arguments
     /// - `volume_id`: The volume that was committed
     pub fn release(&self, volume_id: &str) {
-        let mut allocs = self.allocations.lock().unwrap();
+        let mut allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
         if allocs.remove(volume_id).is_some() {
             debug!(volume_id = %volume_id, "released pending allocation");
         }
@@ -141,7 +141,7 @@ impl PendingAllocations {
     /// This is used by the scheduler to account for in-flight proposals
     /// when calculating available capacity.
     pub fn pending_size_for_node(&self, node_id: u64) -> u64 {
-        let allocs = self.allocations.lock().unwrap();
+        let allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
 
         allocs
@@ -157,19 +157,19 @@ impl PendingAllocations {
 
     /// Check if a volume has a pending allocation.
     pub fn has_pending(&self, volume_id: &str) -> bool {
-        let allocs = self.allocations.lock().unwrap();
+        let allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
         allocs.contains_key(volume_id)
     }
 
     /// Get all pending allocations (for debugging/monitoring).
     pub fn get_all(&self) -> Vec<PendingAllocation> {
-        let allocs = self.allocations.lock().unwrap();
+        let allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
         allocs.values().cloned().collect()
     }
 
     /// Clean up expired allocations.
     pub fn cleanup_expired(&self) {
-        let mut allocs = self.allocations.lock().unwrap();
+        let mut allocs = self.allocations.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let before = allocs.len();
         allocs.retain(|_, alloc| now.duration_since(alloc.created_at) < PENDING_ALLOCATION_TTL);
@@ -200,7 +200,7 @@ impl Registry {
 
     /// Returns a snapshot of the current state (for Readers)
     pub fn get_state(&self) -> ClusterState {
-        self.state.read().unwrap().clone()
+        self.state.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Returns a reference to the pending allocations tracker.
@@ -216,7 +216,7 @@ impl Registry {
         let cmd =
             rpc::Command::decode(data).map_err(|e| anyhow!("Failed to decode command: {}", e))?;
 
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
 
         // Idempotency check (simple version)
         if index <= state.last_applied_index {
@@ -293,7 +293,7 @@ impl Registry {
 
     /// Serializes the entire state for Raft Snapshotting.
     pub fn take_snapshot(&self) -> Result<Vec<u8>> {
-        let state = self.state.read().unwrap();
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         // Use bincode for internal state snapshotting (faster/smaller than protobuf for full dumps)
         bincode::serialize(&*state).map_err(|e| anyhow!(e))
     }
@@ -301,7 +301,7 @@ impl Registry {
     /// Restores state from a snapshot.
     pub fn restore_snapshot(&self, data: &[u8]) -> Result<()> {
         let new_state: ClusterState = bincode::deserialize(data)?;
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         *state = new_state;
         info!(
             "Restored Registry State. Index: {}",

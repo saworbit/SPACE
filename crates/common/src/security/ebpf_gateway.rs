@@ -99,7 +99,7 @@ impl EbpfGateway {
     where
         I: IntoIterator<Item = String>,
     {
-        let mut guard = self.allowed.write().unwrap();
+        let mut guard = self.allowed.write().unwrap_or_else(|e| e.into_inner());
         guard.clear();
         guard.extend(ids);
     }
@@ -138,7 +138,7 @@ impl MtlsLayer {
             .to_str()
             .map_err(|_| MtlsRejection::invalid_identity())?;
 
-        let allowed = self.allowed.read().unwrap();
+        let allowed = self.allowed.read().unwrap_or_else(|e| e.into_inner());
         if !allowed.is_empty() && !allowed.contains(spiffe) {
             return Err(MtlsRejection::unauthorized(spiffe));
         }

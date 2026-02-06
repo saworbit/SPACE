@@ -393,6 +393,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Progress tracking and status reporting
     - Hydration from read-only snapshots (immutable source guarantee)
 
+### Security
+
+- **Path traversal hardening** (`crates/web-interface/src/api/handlers/data.rs`)
+  - `normalize_path()` now returns `Result<String, ApiError>` and rejects null bytes, backslashes, and `..` path components
+  - Prevents arbitrary file access via crafted object key paths in upload, download, and HEAD handlers
+- **Hardcoded secret elimination** (`crates/web-interface/src/api/auth.rs`, `crates/podms-orchestrator/src/config.rs`)
+  - JWT fallback secret `b"dev-secret"` replaced with random ephemeral key (debug builds only) + warning log
+  - God-token `"space-god-token"` removed; now requires explicit `SPACE_DEV_GOD_TOKEN` env var in debug builds
+  - Default signing key `vec![0u8; 32]` replaced with random 256-bit generation via OS entropy
+- **Deserialization size limits** (`crates/scaling/src/replication.rs`)
+  - Added `MAX_FRAME_SIZE` constant (16 MiB) with pre-deserialization size check to prevent OOM DoS via oversized replication frames
+- **Mutex poisoning recovery** (6 crates: federation, protocol-s3, storage, pipeline, ebpf_gateway, crypto_profiles)
+  - Replaced `.lock().unwrap()` / `.read().unwrap()` / `.write().unwrap()` with `.unwrap_or_else(|e| e.into_inner())` to recover gracefully from poisoned locks instead of propagating panics
+  - ML-KEM key manager uses `.map_err()` to surface poisoning as anyhow errors instead of panicking
+- **TLS transport infrastructure** (`crates/scaling/src/transport.rs`)
+  - Added `TlsConfig` struct with env-based loading (`SPACE_TLS_CA_CERT`, `SPACE_TLS_CERT`, `SPACE_TLS_KEY`)
+  - `ConnectionManager::with_tls()` constructor for mTLS-enabled inter-node connections
+  - Warning log emitted when TLS is not configured for transport connections
+
+### Changed
+
+- **Lock contention reduction** (`crates/scaling/src/replication.rs`)
+  - Key acquisition now drops the write lock before MAC verification and decryption, reducing contention during replication processing
+  - Eliminated double-clone in unencrypted replication path
+- **Improved expect/panic messages** (3 crates: common/bloom_dedup, common/audit_log, capsule-registry)
+  - Descriptive messages for all `expect()` calls to aid production debugging
+- **Static content-type detection** (`crates/protocol-s3/src/lib.rs`)
+  - `detect_content_type()` now returns `&'static str` instead of `String`, avoiding per-call heap allocation
+  - Added MIME types for XML, CSS, JavaScript, and PDF
+- **Pre-allocated collections** (`crates/capsule-registry/src/lib.rs`)
+  - `collect_capsules_paginated()` uses `Vec::with_capacity(page_size)` to reduce reallocations
+- **Foundry cleanup annotations** (`crates/foundry/src/lib.rs`)
+  - Improved FIXME annotations with post-1.0 timeline markers and descriptive log messages
+
 - **Phase 8: The Foundry (Polymorphic Block Storage)** - High-performance mutable block storage layer with pluggable backends
   - **New crate: `foundry`** - Block-level volume abstraction for virtual disks and raw NVMe devices
     - `VolumeBackend` trait with BoxFuture pattern (init, read_at, write_at, sync, size, resize)

@@ -64,13 +64,13 @@ impl DedupOptimizer for BloomFilterWrapper {
     fn record_insertion(&self, hash: &ContentHash) {
         self.inner
             .insert(hash.as_str().as_bytes())
-            .expect("bloom insert");
+            .expect("bloom filter insertion failed: bucket index out of range");
     }
 
     fn record_removal(&self, hash: &ContentHash) {
         self.inner
             .remove(hash.as_str().as_bytes())
-            .expect("bloom remove");
+            .expect("bloom filter removal failed: bucket index out of range");
     }
 }
 

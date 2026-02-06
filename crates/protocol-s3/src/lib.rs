@@ -128,10 +128,10 @@ impl S3View {
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
-            content_type: detect_content_type(key),
+            content_type: detect_content_type(key).to_string(),
         };
 
-        self.key_map.write().unwrap().insert(full_key, mapping);
+        self.key_map.write().unwrap_or_else(|e| e.into_inner()).insert(full_key, mapping);
 
         Ok(capsule_id)
     }
@@ -147,7 +147,7 @@ impl S3View {
         let mapping = self
             .key_map
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&full_key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))?;
@@ -174,7 +174,7 @@ impl S3View {
 
         self.key_map
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&full_key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))
@@ -187,7 +187,7 @@ impl S3View {
         Ok(self
             .key_map
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(_, v)| v.clone())
@@ -211,19 +211,29 @@ impl S3View {
     }
 }
 
-/// Simple content-type detection based on file extension
-fn detect_content_type(key: &str) -> String {
+/// Simple content-type detection based on file extension.
+///
+/// Returns a static string to avoid per-call allocations in the hot path.
+fn detect_content_type(key: &str) -> &'static str {
     if key.ends_with(".txt") {
-        "text/plain".to_string()
+        "text/plain"
     } else if key.ends_with(".json") {
-        "application/json".to_string()
+        "application/json"
     } else if key.ends_with(".html") {
-        "text/html".to_string()
+        "text/html"
     } else if key.ends_with(".jpg") || key.ends_with(".jpeg") {
-        "image/jpeg".to_string()
+        "image/jpeg"
     } else if key.ends_with(".png") {
-        "image/png".to_string()
+        "image/png"
+    } else if key.ends_with(".xml") {
+        "application/xml"
+    } else if key.ends_with(".css") {
+        "text/css"
+    } else if key.ends_with(".js") {
+        "application/javascript"
+    } else if key.ends_with(".pdf") {
+        "application/pdf"
     } else {
-        "application/octet-stream".to_string()
+        "application/octet-stream"
     }
 }

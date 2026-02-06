@@ -158,7 +158,7 @@ pub async fn upload_object(
     let path = path_field
         .or(file_name)
         .ok_or_else(|| ApiError::bad_request("missing path or filename"))?;
-    let normalized_path = normalize_path(&path);
+    let normalized_path = normalize_path(&path)?;
     let hash = hasher.finalize().to_hex().to_string();
     let uploaded_at = current_unix_time();
 
@@ -223,7 +223,7 @@ pub async fn download_object(
         &[UserRole::Viewer, UserRole::Editor, UserRole::Admin],
     )?;
 
-    let path = normalize_path(&key);
+    let path = normalize_path(&key)?;
     let files = state.files.read().await;
     let file = files
         .get(&path)
@@ -259,7 +259,7 @@ pub async fn head_object(
         &[UserRole::Viewer, UserRole::Editor, UserRole::Admin],
     )?;
 
-    let path = normalize_path(&key);
+    let path = normalize_path(&key)?;
     let files = state.files.read().await;
     let file = files
         .get(&path)
@@ -274,12 +274,38 @@ pub async fn head_object(
         .map_err(|err| ApiError::internal(err.to_string()))
 }
 
-fn normalize_path(path: &str) -> String {
-    if path.starts_with('/') {
+/// Normalize and validate a user-provided path, preventing traversal attacks.
+///
+/// Rejects paths containing `..` components, null bytes, or backslash sequences
+/// that could escape the virtual namespace.
+fn normalize_path(path: &str) -> Result<String, ApiError> {
+    // Reject null bytes
+    if path.contains('\0') {
+        return Err(ApiError::bad_request("path contains null bytes"));
+    }
+
+    // Reject backslash (Windows-style path separator)
+    if path.contains('\\') {
+        return Err(ApiError::bad_request("path contains invalid characters"));
+    }
+
+    // Normalize to start with /
+    let normalized = if path.starts_with('/') {
         path.to_string()
     } else {
         format!("/{}", path)
+    };
+
+    // Reject any path component that is ".." to prevent directory traversal
+    for component in normalized.split('/') {
+        if component == ".." {
+            return Err(ApiError::bad_request(
+                "path traversal (.. components) is not allowed",
+            ));
+        }
     }
+
+    Ok(normalized)
 }
 
 fn current_unix_time() -> u64 {

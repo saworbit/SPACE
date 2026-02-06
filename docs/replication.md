@@ -63,11 +63,12 @@ The replication protocol uses length-prefixed bincode frames:
 ```
 
 **Frame Structure:**
-- **Length**: 4-byte unsigned integer (little-endian), max 16MB
+- **Length**: 4-byte unsigned integer (little-endian), max 16 MiB (enforced by `MAX_FRAME_SIZE`)
 - **ReplicationFrame** (bincode):
   - `segment_id: SegmentId` - Unique segment identifier
   - `metadata: EncryptionMetadata` - Includes key_version, tweak_nonce, integrity_tag
   - `encrypted_data: Vec<u8>` - XTS-AES-256 ciphertext (typically 4MB)
+- **Size validation**: Frames exceeding `MAX_FRAME_SIZE` (16 MiB) are rejected *before* deserialization to prevent OOM DoS attacks
 
 ## Security Guarantees
 
@@ -178,7 +179,7 @@ match catalog.lookup_content(&content_hash) {
 **Optimization:**
 - Zero-copy buffer management via `bytes` crate
 - Async I/O with tokio runtime
-- Lock minimization (drop guards early)
+- Lock minimization: key manager write lock is acquired and dropped *before* MAC verification and decryption, reducing contention during concurrent replication
 - Batch fsync (planned)
 
 ### Latency
@@ -203,6 +204,13 @@ match catalog.lookup_content(&content_hash) {
 1. **Shared Network**: Metro-sync requires <10ms RTT (same datacenter)
 2. **Synchronized Keys**: All nodes must share master key or TPM config
 3. **Port 12345**: Open for mesh listener (configurable)
+4. **TLS (recommended)**: Configure mTLS for inter-node transport:
+   ```bash
+   export SPACE_TLS_CA_CERT=/path/to/ca.pem
+   export SPACE_TLS_CERT=/path/to/node.pem
+   export SPACE_TLS_KEY=/path/to/node-key.pem
+   ```
+   A warning is logged when TLS is not configured.
 
 ### Docker Compose Example
 
@@ -425,5 +433,5 @@ export RUST_LOG=scaling::replication=debug,capsule_registry=debug
 
 ---
 
-**Last Updated:** 2026-01-19
-**Status:** Production-ready (Step 2 complete)
+**Last Updated:** 2026-02-06
+**Status:** Production-ready (Step 2 complete, security hardened)

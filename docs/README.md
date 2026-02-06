@@ -11,7 +11,14 @@
 - [Autonomous Tiering (Phase 6)](guides/TIERING.md)
 - [Multi-Node Quickstart](MULTI_NODE_QUICKSTART.md)
 - [Mesh Cluster (Phase 3)](guides/MESH_CLUSTER.md)
+- [Foundry Block Storage (Phase 8)](guides/FOUNDRY.md)
 - Golden Path Verification: `scripts/test_golden_path.sh`
+
+## Security
+- [Security Policy & Hardening](../SECURITY.md) - Reporting, hardening summary, known limitations
+- [Encryption Implementation](implementation/ENCRYPTION_IMPLEMENTATION.md) - XTS-AES-256 + BLAKE3-MAC details
+- [Replication Security](replication.md#security-guarantees) - MAC validation, key management, frame size limits
+- [Dependency Security](dependency-security.md) - Audit process and tiering
 
 ## Implementation
 - [Dedup Implementation](implementation/DEDUP_IMPLEMENTATION.md)

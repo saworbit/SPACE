@@ -83,8 +83,18 @@ impl ReplicationFrame {
         Ok(buf)
     }
 
-    /// Deserialize frame from bytes
+    /// Maximum allowed frame payload size (16 MiB: 4 MiB segment + metadata overhead).
+    const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+
+    /// Deserialize frame from bytes, rejecting payloads above the size limit.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() > Self::MAX_FRAME_SIZE {
+            return Err(anyhow!(
+                "frame payload ({} bytes) exceeds maximum allowed size ({} bytes)",
+                data.len(),
+                Self::MAX_FRAME_SIZE
+            ));
+        }
         bincode::deserialize(data).map_err(|e| anyhow!("failed to deserialize frame: {}", e))
     }
 }
@@ -333,11 +343,15 @@ impl<C: ContentStore> ReplicationHandler<C> {
                 .key_version
                 .ok_or_else(|| anyhow!("missing key version in metadata"))?;
 
-            let mut key_manager = self.key_manager.write().await;
-            let capsule_key_pair = key_manager
-                .get_key(key_version)
-                .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?
-                .clone();
+            // Acquire the key and release the write lock immediately to avoid holding it
+            // during the expensive MAC verification and decryption operations.
+            let capsule_key_pair = {
+                let mut key_manager = self.key_manager.write().await;
+                key_manager
+                    .get_key(key_version)
+                    .map_err(|e| anyhow!("failed to get key {}: {}", key_version, e))?
+                    .clone()
+            }; // Write lock released here — decryption proceeds without contention
 
             if metadata.has_integrity_tag() {
                 if let Err(e) = verify_mac(
@@ -387,15 +401,16 @@ impl<C: ContentStore> ReplicationHandler<C> {
                 "decryption successful"
             );
 
-            drop(key_manager);
-
-            (plaintext, ciphertext.clone())
+            (plaintext, ciphertext)
         } else {
             debug!(
                 segment_id = segment_id.0,
                 "processing unencrypted replication frame"
             );
-            (ciphertext.clone(), ciphertext.clone())
+            // Unencrypted: plaintext and stored payload are the same data.
+            // Clone once for plaintext, consume original as stored payload.
+            let plaintext = ciphertext.clone();
+            (plaintext, ciphertext)
         };
 
         // Step 3: Compute content hash for deduplication

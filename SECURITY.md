@@ -11,3 +11,37 @@ We aim to acknowledge reports within 48 hours and provide a fix timeline within
 ## Supported Versions
 
 Only the latest `main` branch receives security updates.
+
+## Security Hardening Summary
+
+The following security measures are implemented in the current codebase:
+
+### Input Validation
+- **Path traversal protection**: All object API endpoints (`upload`, `download`, `HEAD`) reject null bytes, backslashes, and `..` path components before any filesystem operations.
+- **Deserialization size limits**: Replication frames are capped at 16 MiB before `bincode::deserialize` is called, preventing out-of-memory denial-of-service attacks.
+
+### Secret Management
+- **No hardcoded secrets**: JWT signing keys use random ephemeral generation in debug builds with a warning log. The dev god-token requires the `SPACE_DEV_GOD_TOKEN` environment variable to be explicitly set.
+- **Signing key entropy**: Default orchestrator signing keys use OS-provided entropy (`/dev/urandom` on Linux) instead of zeroed byte arrays.
+- **Master key isolation**: Production master keys are loaded from `SPACE_MASTER_KEY` (env) or `SPACE_MASTER_KEY_FILE` (file path), never hardcoded.
+
+### Resilience
+- **Mutex poisoning recovery**: Locks across 6 crates use `unwrap_or_else(|e| e.into_inner())` to recover data from poisoned mutexes rather than propagating panics through the system.
+- **Descriptive panic messages**: All remaining `expect()` calls include context about what operation failed and suggested remediation.
+
+### Transport Security
+- **TLS configuration**: `TlsConfig` struct supports env-based mTLS configuration (`SPACE_TLS_CA_CERT`, `SPACE_TLS_CERT`, `SPACE_TLS_KEY`) for inter-node transport. A warning is logged when TLS is not configured.
+- **Integrity verification**: All replicated segments include BLAKE3-MAC tags verified using constant-time comparison.
+
+### Encryption
+- **XTS-AES-256**: Per-segment encryption with deterministic tweaks preserving deduplication.
+- **BLAKE3-MAC**: Keyed integrity tags on every segment, validated on read.
+- **Key rotation**: Version-tracked key derivation with BLAKE3-KDF.
+- **Memory zeroization**: Keys are zeroized on drop via the `zeroize` crate.
+- **Post-quantum readiness**: Optional ML-KEM/Kyber hybrid key wrapping (`advanced-security` feature).
+
+### Known Limitations
+- TLS stream wrapping is infrastructure-only (config + env loading); actual `tokio-rustls` integration is pending.
+- Security features have not been professionally audited. Do not use in production without an independent review.
+- The eBPF/SPIFFE gateway is experimental and needs validation.
+- Post-quantum crypto (Kyber hybrid) is untested in production scenarios.

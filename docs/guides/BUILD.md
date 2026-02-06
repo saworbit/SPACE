@@ -48,17 +48,31 @@ cargo build --release --features phase4
 ### Dev Authentication (Phase D)
 
 ```bash
-# Mint a dev token (HS256, defaults to dev-secret)
-./scripts/dev_auth.sh > .token
+# Mint a dev token (HS256)
+# Debug builds generate a random ephemeral JWT secret on startup.
+# Set JWT_SECRET explicitly if you need a stable token across restarts:
+JWT_SECRET=my-dev-secret ./scripts/dev_auth.sh > .token
 
-# Run the web server with the matching secret
-JWT_SECRET=dev-secret cargo run -p web-interface
+# Run the web server with a matching secret
+JWT_SECRET=my-dev-secret cargo run -p web-interface
 
 # Export for spacectl or curl
 export SPACE_AUTH_TOKEN=$(cat .token)
 ```
-- Debug builds also accept `Authorization: Bearer space-god-token` (override with `SPACE_DEV_GOD_TOKEN`) for quick local testing.
+
+**God-token shortcut (debug builds only):**
+```bash
+# The god-token is NOT enabled by default. You must explicitly set:
+export SPACE_DEV_GOD_TOKEN=my-local-token
+
+# Then use it as a Bearer token:
+curl -H "Authorization: Bearer my-local-token" http://localhost:3000/api/v1/...
 ```
+
+> **Security note:** No hardcoded secrets exist in the codebase. JWT signing
+> keys default to random ephemeral values in debug builds. Set `JWT_SECRET`
+> for stable tokens. The god-token requires `SPACE_DEV_GOD_TOKEN` to be
+> explicitly configured.
 
 ## What Gets Built
 

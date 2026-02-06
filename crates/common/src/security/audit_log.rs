@@ -44,7 +44,7 @@ impl AuditLogger {
                 .create(true)
                 .append(true)
                 .open(path)
-                .expect("Failed to open audit log file");
+                .expect("failed to open audit log file; check path and permissions");
 
             while let Some(event) = rx.recv().await {
                 if let Ok(json) = serde_json::to_string(&event) {

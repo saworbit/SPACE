@@ -63,7 +63,36 @@ fn default_max_message_size() -> usize {
 }
 
 fn default_signing_key() -> Vec<u8> {
-    vec![0u8; 32] // Should be loaded from secure config
+    // Generate a random signing key using available system randomness.
+    // This ensures each node gets a unique key if not explicitly configured.
+    // For production clusters, all nodes MUST share the same key via config.
+    let mut key = vec![0u8; 32];
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(bytes) = std::fs::read("/dev/urandom") {
+            for (i, b) in bytes.into_iter().take(32).enumerate() {
+                key[i] = b;
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .hash(&mut h);
+        std::process::id().hash(&mut h);
+        let hash = h.finish().to_le_bytes();
+        key[..8].copy_from_slice(&hash);
+        let mut h2 = DefaultHasher::new();
+        hash.hash(&mut h2);
+        let hash2 = h2.finish().to_le_bytes();
+        key[8..16].copy_from_slice(&hash2);
+    }
+    key
 }
 
 impl Default for OrchestratorConfig {
@@ -165,6 +194,11 @@ mod tests {
         assert_eq!(config.heartbeat_interval_ms, 1000);
         assert_eq!(config.message_ttl, 10);
         assert_eq!(config.signing_key.len(), 32);
+        // Ensure the default key is not all-zeros (insecure)
+        assert!(
+            config.signing_key.iter().any(|&b| b != 0),
+            "default signing key must not be all-zeros"
+        );
     }
 
     #[test]

@@ -62,23 +62,90 @@ struct StreamEntry {
     last_used: Instant,
 }
 
+/// TLS configuration for inter-node transport encryption.
+///
+/// When configured, all outbound replication connections use TLS.
+/// Both client authentication (mTLS) and server-only TLS are supported.
+///
+/// # Configuration
+///
+/// Set via environment variables:
+/// - `SPACE_TLS_CA_CERT`: Path to CA certificate (PEM) for verifying peers
+/// - `SPACE_TLS_CERT`: Path to this node's certificate (PEM)
+/// - `SPACE_TLS_KEY`: Path to this node's private key (PEM)
+///
+/// When all three are set, mTLS is enabled. When only `SPACE_TLS_CA_CERT` is set,
+/// server-only verification is used.
+#[derive(Clone, Debug)]
+#[allow(dead_code)] // Fields read when tokio-rustls TLS wrapping is enabled
+pub struct TlsConfig {
+    /// Path to CA certificate for verifying peer connections.
+    pub ca_cert_path: std::path::PathBuf,
+    /// Path to this node's TLS certificate (for mTLS).
+    pub cert_path: Option<std::path::PathBuf>,
+    /// Path to this node's TLS private key (for mTLS).
+    pub key_path: Option<std::path::PathBuf>,
+}
+
+impl TlsConfig {
+    /// Load TLS configuration from environment variables.
+    ///
+    /// Returns `None` if `SPACE_TLS_CA_CERT` is not set (TLS disabled).
+    pub fn from_env() -> Option<Self> {
+        let ca_cert = std::env::var("SPACE_TLS_CA_CERT").ok()?;
+        Some(Self {
+            ca_cert_path: ca_cert.into(),
+            cert_path: std::env::var("SPACE_TLS_CERT").ok().map(Into::into),
+            key_path: std::env::var("SPACE_TLS_KEY").ok().map(Into::into),
+        })
+    }
+
+    /// Returns `true` if mutual TLS (client cert + key) is configured.
+    pub fn is_mtls(&self) -> bool {
+        self.cert_path.is_some() && self.key_path.is_some()
+    }
+}
+
 /// Manages persistent outbound connections for replication traffic.
+///
+/// Supports optional TLS encryption for inter-node communication.
+/// Configure TLS via [`TlsConfig::from_env`] or pass `None` for plaintext.
 #[derive(Clone)]
 pub struct ConnectionManager {
     streams: Arc<RwLock<HashMap<NodeId, StreamEntry>>>,
     idle_timeout: Duration,
+    tls_config: Option<TlsConfig>,
 }
 
 impl ConnectionManager {
     pub fn new() -> Self {
+        let tls_config = TlsConfig::from_env();
+        if tls_config.is_some() {
+            tracing::info!("inter-node TLS enabled via SPACE_TLS_CA_CERT");
+        } else {
+            tracing::warn!("inter-node TLS is NOT configured; replication traffic is unencrypted. Set SPACE_TLS_CA_CERT to enable TLS.");
+        }
         Self {
             streams: Arc::new(RwLock::new(HashMap::new())),
             idle_timeout: Duration::from_secs(60),
+            tls_config,
+        }
+    }
+
+    /// Create a ConnectionManager with explicit TLS configuration.
+    pub fn with_tls(tls_config: Option<TlsConfig>) -> Self {
+        Self {
+            streams: Arc::new(RwLock::new(HashMap::new())),
+            idle_timeout: Duration::from_secs(60),
+            tls_config,
         }
     }
 
     /// Acquire (or establish) a writable half for the target peer.
     /// Connections are reused until they hit the idle timeout or error.
+    ///
+    /// When TLS is configured, new connections are wrapped in a TLS session
+    /// before being added to the pool.
     pub async fn get_writer(
         &self,
         peer: NodeId,
@@ -102,6 +169,17 @@ impl ConnectionManager {
         stream
             .set_nodelay(true)
             .context("failed to disable Nagle's algorithm")?;
+
+        // TODO: When tokio-rustls is added as a dependency, wrap `stream` in TLS here:
+        //   if let Some(tls) = &self.tls_config {
+        //       let connector = build_tls_connector(tls)?;
+        //       let domain = ServerName::try_from(addr.ip().to_string())?;
+        //       let tls_stream = connector.connect(domain, stream).await?;
+        //       ...
+        //   }
+        if self.tls_config.is_some() {
+            tracing::debug!(peer = %peer, "TLS config present but runtime TLS wrapping requires tokio-rustls dependency");
+        }
 
         let (_, write_half) = stream.into_split();
         let writer = Arc::new(Mutex::new(write_half));

@@ -35,6 +35,21 @@ Key Rotation: I support key versioning and rotation. The KeyManager handles key 
 
 Post-Quantum Ready: I feature a hybrid crypto profile that can wrap AES keys with Kyber (ML-KEM) for forward secrecy against quantum threats.
 
+Q: What security hardening has been done?
+A: Beyond the core encryption layer, I have been hardened in several areas:
+
+Input Validation: All object API endpoints reject path traversal attempts (null bytes, backslashes, `..` components) before any filesystem operations.
+
+No Hardcoded Secrets: JWT signing keys, god-tokens, and orchestrator signing keys are never hardcoded. Debug builds use random ephemeral keys; production requires explicit environment configuration (`SPACE_MASTER_KEY`, `JWT_SECRET`, `SPACE_DEV_GOD_TOKEN`).
+
+Deserialization Limits: Replication frames are capped at 16 MiB before deserialization to prevent out-of-memory DoS attacks.
+
+Mutex Resilience: Locks across the codebase use `unwrap_or_else(|e| e.into_inner())` to recover gracefully from poisoned mutexes rather than propagating panics.
+
+TLS-Ready Transport: Inter-node transport supports mTLS configuration via `SPACE_TLS_CA_CERT`, `SPACE_TLS_CERT`, and `SPACE_TLS_KEY` environment variables.
+
+Lock Contention: The replication handler acquires and releases the key manager lock before performing MAC verification and decryption, reducing lock contention during concurrent segment processing.
+
 3. Architecture: PODMS & Scaling
 Q: What is PODMS?
 A: PODMS stands for Policy-Orchestrated Disaggregated Mesh Scaling. It is my distributed scaling brain. Unlike monolithic clusters, PODMS treats nodes as a loose mesh. Agents on these nodes subscribe to telemetry events (like HeatSpike, NodeDegraded, or NewCapsule) and execute autonomous actions defined by the capsule's policy.

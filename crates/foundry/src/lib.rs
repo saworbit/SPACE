@@ -246,8 +246,9 @@ impl Foundry {
             .remove(&id)
             .ok_or(FoundryError::VolumeNotFound(id))?;
 
-        // TODO: Cleanup backend storage
-        tracing::info!(volume_id = ?id, "Deleted volume (backend cleanup not implemented)");
+        // FIXME(post-1.0): Implement backend storage cleanup (segment deletion, space reclamation).
+        // Currently volume metadata is removed but underlying segments remain until GC runs.
+        tracing::info!(volume_id = ?id, "deleted volume metadata; backend segments will be reclaimed by GC");
 
         Ok(())
     }

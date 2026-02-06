@@ -59,6 +59,14 @@ Pull requests lacking the artefacts above will be blocked until they comply.
 - Reject PRs that introduce prohibited licenses or push the transitive dependency count beyond 50 without an approved waiver.
 - Triage Dependabot PRs monthly (configurable via `.github/dependabot.yml`); do not merge without full audit artefacts.
 
+## Secure Coding Practices
+- **No hardcoded secrets.** Never commit API keys, tokens, or signing keys. Use environment variables or file-based providers. Debug fallbacks must use random ephemeral values.
+- **Validate all external input.** Object key paths must reject null bytes, backslashes, and `..` traversal components. Deserialize untrusted data only after size-limit checks.
+- **Prefer poison-safe locks.** Use `.unwrap_or_else(|e| e.into_inner())` for `Mutex`/`RwLock` instead of `.unwrap()` to avoid cascading panics from poisoned locks. Use `.map_err()` when the caller can surface the error.
+- **Minimize lock scope.** Acquire keys or shared state, clone, and drop the lock guard before performing expensive operations (encryption, MAC verification, I/O).
+- **Descriptive expect messages.** Every `expect()` call must describe what operation failed and suggest remediation (e.g., `"failed to open audit log; check path and permissions"`).
+- **Use `&'static str` for fixed strings.** Functions returning a fixed set of strings (like MIME type detection) should return `&'static str` to avoid per-call heap allocations.
+
 ## Fuzz & Side-channel Checks
 - After modifying cryptography or compression, run `cargo fuzz run encrypt_roundtrip` to smoke-test the fuzz harness.
 - Avoid data-dependent branching or early returns on sensitive comparisons; rely on helpers wired with `subtle::ConstantTimeEq`.

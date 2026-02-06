@@ -343,7 +343,7 @@ pub struct CapsuleRegistry {
 
 impl CapsuleRegistry {
     pub fn new() -> Self {
-        Self::open("space.db").expect("Failed to open registry DB")
+        Self::open("space.db").expect("failed to open registry DB at 'space.db'; check disk permissions and available space")
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -373,7 +373,7 @@ impl CapsuleRegistry {
         }
 
         let mut cursor: Option<CapsuleId> = None;
-        let mut capsules = Vec::new();
+        let mut capsules = Vec::with_capacity(page_size);
 
         loop {
             let page = self.store.list_capsules(page_size, cursor)?;
