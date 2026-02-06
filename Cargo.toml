@@ -52,7 +52,7 @@ license = "MIT OR Apache-2.0"
 uuid = { version = "^1.18.1", features = ["v4", "serde"] } # 2025-11-03 sw: deterministic object IDs for registry state
 anyhow = { version = "^1.0.100" } # 2025-11-03 sw: ergonomic error context, low risk per audit log
 thiserror = { version = "^2.0.17" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
-tokio = { version = "^1.48.0", features = ["full"] } # 2025-11-03 sw: async runtime staple, reviewed for LTS support
+tokio = { version = "^1.49.0", features = ["full"] } # 2025-11-03 sw: async runtime staple, reviewed for LTS support
 futures = { version = "^0.3.31" } # 2025-11-03 sw: combinators align with tokio 1.48, no unsafe diff
 num_cpus = { version = "^1.17.0" } # 2025-11-03 sw: worker sizing, perf only
 tracing = { version = "^0.1.41", features = ["std", "attributes"] } # 2025-11-03 sw: observability spine
@@ -88,7 +88,7 @@ hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for ke
 sha2 = { version = "=0.10.9" } # 2025-11-04 sw: Hash core for HKDF extractor
 
 # Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
-axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
+axum = { version = "^0.8.8", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
 tower-http = { version = "^0.6.8", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
 libp2p-core = { version = "=0.41.3" } # 2025-11-16 sw: libp2p core transport traits
 libp2p-identity = { version = "=0.2.13", default-features = false, features = ["peerid", "ed25519", "rand"] } # 2025-11-16 sw: PeerId + key material
@@ -109,7 +109,7 @@ leptos_axum = { version = "=0.6.15" } # 2025-11-16 sw: Leptos integration with A
 wasm-bindgen = { version = "^0.2.91" } # 2025-11-16 sw: Wasm interop
 gloo = { version = "=0.11.0" } # 2025-11-16 sw: Browser utilities for Wasm
 web-sys = { version = "^0.3.68", features = ["WebSocket", "MessageEvent", "CloseEvent"] } # 2025-11-16 sw: Web APIs
-tower = { version = "=0.4.13", features = ["util"] } # 2025-11-16 sw: Service abstractions
+tower = { version = "=0.5.2", features = ["util"] } # 2025-11-16 sw: Service abstractions
 
 raft-rs = { path = "vendor/raft-rs", version = "0.7.0" }
 spdk-rs = { path = "vendor/spdk-rs", version = "0.1.0" }
