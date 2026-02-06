@@ -1396,6 +1396,7 @@ SPACE is a **single-developer research project** exploring novel storage archite
 | 🎨 [UI Mockup Walkthrough](docs/guides/UI_MOCKUP.md) | Launch the Orbit command interface concept |
 | 🔨 [Build Guide](docs/guides/BUILD.md) | Compilation and testing |
 | [Streaming Reads & Pagination](docs/guides/STREAMING_READS.md) | Zero-copy capsule reads + cursor listings |
+| 🔒 [Dependency Security Policy](docs/dependency-security.md) | Tiered pinning, audit workflow, supply-chain hygiene |
 
 </div>
 

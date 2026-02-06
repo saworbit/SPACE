@@ -444,6 +444,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `bytes` 1.11.0 → 1.11.1 — fixes RUSTSEC-2026-0007 (integer overflow in `BytesMut::reserve`)
 - `time` 0.3.44 → 0.3.47 — fixes RUSTSEC-2026-0009 (DoS via stack exhaustion)
+- `blake3` 1.8.2 → 1.8.3 — patch update via crypto-stack Dependabot group (#17)
+- `toml` 0.8.23 → 0.9.11+spec-1.1.0 — TOML spec 1.1 support (#16)
+- `fuser` 0.12.0 → 0.16.0 — FUSE library update (#15)
+- `aya` 0.11.0 → 0.13.1 — eBPF loader update, `Bpf::load_file` API compatible (#18, replaces #9)
+- `cargo_metadata` 0.18.1 → 0.23.1 — workspace graph inspection; adapted xtask for `PackageName`/`FeatureName` newtype wrappers (#19, replaces #11)
+- **Rejected:** `bincode` 3.0.0 — deliberately broken protest crate (`compile_error!`); Dependabot PR #7 closed
+- **Rejected:** `serde_json` 1.0.149 — suspicious replacement of `ryu` with unknown `zmij` dependency; bundled with bincode 3.0 in serde-stack group
+- **Deferred:** axum 0.7 → 0.8 — requires coordinated migration of leptos 0.6→0.8, utoipa-swagger-ui 8→9, tower 0.4→0.5; PR #13 closed with migration notes
+- **Deferred:** libp2p-core / libp2p-yamux — individual bumps cause diamond dependency conflicts; requires coordinated ecosystem-wide update; PRs #8, #10 closed
+- **Closed stale:** thiserror ^1→^2 — already applied on main; PR #4 closed
 
 - **Phase 8: The Foundry (Polymorphic Block Storage)** - High-performance mutable block storage layer with pluggable backends
   - **New crate: `foundry`** - Block-level volume abstraction for virtual disks and raw NVMe devices

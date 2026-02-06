@@ -80,6 +80,11 @@ To minimize CI minutes and parallel runs on the free tier:
   - `infra` - Infrastructure (tokio, axum, tracing)
   - `serde-stack` - Serialization dependencies
   - `compression` - Compression libraries (lz4, zstd)
+- **Ignored**:
+  - `bincode >=3.0.0` - Protest/squatter crate (not a real release)
+  - `libp2p-*` major bumps - Must be coordinated as a set (see [dependency-security.md](dependency-security.md#known-ecosystem-constraints))
+  - `windows-sys` patch/minor - Frequent churn, low risk
+- **Triage Policy**: See [dependency-security.md](dependency-security.md#dependabot-triage-policy)
 
 ### GitHub Actions
 - **Schedule**: Weekly on Monday @ 4am UTC
@@ -171,10 +176,11 @@ cargo xtask audit
 
 ### For Maintainers
 
-1. **Review Dependabot PRs**:
-   - Check grouped PRs for crypto/infra changes
-   - Verify tests pass
-   - Review breaking changes
+1. **Review Dependabot PRs** (see [triage policy](dependency-security.md#dependabot-triage-policy)):
+   - Green CI + patch bump: merge after quick review
+   - Major bumps: check for breaking API changes, create manual migration branch if needed
+   - Ecosystem-coupled crates (libp2p, axum+leptos): coordinate as a single migration
+   - Verify crate legitimacy (check `lib.rs`, transitive dep diffs)
 
 2. **Monitor security workflows**:
    - Address `cargo audit` warnings immediately

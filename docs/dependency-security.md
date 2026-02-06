@@ -74,6 +74,24 @@ Record tier assignments inside PR descriptions and keep the table up to date whe
 
 Questions or proposals for new dependencies should be raised via GitHub Discussions under **Security & Dependencies** with a link to this policy.
 
+## Dependabot Triage Policy
+
+Dependabot PRs (configured in `.github/dependabot.yml`) are triaged according to these rules:
+
+1. **Green CI → merge immediately** if the update is a patch bump within the same tier policy (exact pin → exact pin, caret → caret).
+2. **Major version bumps** require manual code review and migration. Dependabot cannot handle breaking API changes — close the PR and open a manual migration branch.
+3. **Grouped crates with ecosystem coupling** (e.g., the libp2p stack) must be bumped as a coordinated set. Individual bumps cause diamond dependency conflicts where traits from different crate versions are incompatible. Close individual PRs and coordinate a single migration PR.
+4. **Verify crate legitimacy** before merging. Supply-chain attacks via protest/squatter crates (e.g., `bincode 3.0.0` which contains only `compile_error!`) and suspicious dependency substitutions (e.g., `serde_json` replacing `ryu` with unknown `zmij`) must be rejected. Check `lib.rs`, transitive dependency diffs, and crate author history.
+5. **Stale PRs** (changes already on main) should be closed promptly.
+
+### Known Ecosystem Constraints
+
+| Group | Constraint | Last Reviewed |
+|-------|-----------|---------------|
+| **libp2p** | `libp2p-core`, `libp2p-yamux`, `libp2p-tcp`, `libp2p-noise`, `libp2p-swarm`, `libp2p-gossipsub` must all target the same `libp2p-core` major version | 2026-02 |
+| **axum** | `axum` major bumps require simultaneous `tower`, `leptos_axum`, `utoipa-swagger-ui`, and `axum-test` migration | 2026-02 |
+| **serde-stack** | `bincode` 3.x is a protest crate — pin `bincode` to `=1.x` via Dependabot ignore or version constraint | 2026-02 |
+
 ## Ecosystem Strategy: `sled` Maintenance
 
 **Status:** Critical / Frozen  

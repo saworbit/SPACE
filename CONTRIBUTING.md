@@ -57,7 +57,17 @@ Pull requests lacking the artefacts above will be blocked until they comply.
 - Validate dependency tiering and ensure comments follow the `YYYY-MM-DD <initials>` format.
 - Confirm CI `security-audit` workflow succeeded and review the posted summaries.
 - Reject PRs that introduce prohibited licenses or push the transitive dependency count beyond 50 without an approved waiver.
-- Triage Dependabot PRs monthly (configurable via `.github/dependabot.yml`); do not merge without full audit artefacts.
+- Triage Dependabot PRs weekly (configurable via `.github/dependabot.yml`); do not merge without full audit artefacts.
+
+## Dependabot Triage
+
+When triaging Dependabot PRs, follow the policy in [`docs/dependency-security.md`](docs/dependency-security.md#dependabot-triage-policy):
+
+1. **Green CI, patch bump** — merge directly after a quick review.
+2. **Major version bumps** — check for breaking API changes. Dependabot cannot fix code; create a manual migration branch if needed.
+3. **Ecosystem-coupled crates** (libp2p, axum+leptos+tower) — close individual PRs and coordinate a single migration.
+4. **Verify crate legitimacy** — check `lib.rs` for protest/squatter crates and inspect transitive dependency diffs for supply-chain substitutions.
+5. **Stale PRs** (changes already on main) — close promptly.
 
 ## Secure Coding Practices
 - **No hardcoded secrets.** Never commit API keys, tokens, or signing keys. Use environment variables or file-based providers. Debug fallbacks must use random ephemeral values.
