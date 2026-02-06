@@ -22,7 +22,7 @@ libc = "0.2"
 serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-fuser = { version = "0.12", optional = true }
+fuser = { version = "0.16", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
