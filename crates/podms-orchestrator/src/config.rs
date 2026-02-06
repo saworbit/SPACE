@@ -69,10 +69,9 @@ fn default_signing_key() -> Vec<u8> {
     let mut key = vec![0u8; 32];
     #[cfg(target_os = "linux")]
     {
-        if let Ok(bytes) = std::fs::read("/dev/urandom") {
-            for (i, b) in bytes.into_iter().take(32).enumerate() {
-                key[i] = b;
-            }
+        use std::io::Read;
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            let _ = f.read_exact(&mut key);
         }
     }
     #[cfg(not(target_os = "linux"))]
