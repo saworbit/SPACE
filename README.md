@@ -3,7 +3,7 @@
 # 🚀 SPACE
 ### Storage Platform for Adaptive Computational Ecosystems
 
-[![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/saworbit/SPACE/actions/workflows/pr-checks.yml/badge.svg)](https://github.com/saworbit/SPACE/actions/workflows/pr-checks.yml)
@@ -706,7 +706,7 @@ docker compose build --no-cache
 | Requirement | Version/Details |
 |:-----------:|:---------------:|
 | 🐧 **OS** | Linux or Windows (macOS not supported¹) |
-| 🦀 **Rust** | 1.83+ |
+| 🦀 **Rust** | 1.88+ |
 | 💾 **Disk** | 2GB free space |
 
 </div>

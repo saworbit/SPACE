@@ -426,6 +426,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `collect_capsules_paginated()` uses `Vec::with_capacity(page_size)` to reduce reallocations
 - **Foundry cleanup annotations** (`crates/foundry/src/lib.rs`)
   - Improved FIXME annotations with post-1.0 timeline markers and descriptive log messages
+- **MSRV raised** from 1.83 to 1.88
+  - Required by `time 0.3.47` security fix (RUSTSEC-2026-0009) which depends on `time-core 0.1.8` using Rust edition 2024
+  - CI workflow `.github/workflows/msrv.yml` updated accordingly
+
+### Fixed
+
+- **CI hang from infinite `/dev/urandom` read** (`crates/podms-orchestrator/src/config.rs`)
+  - `std::fs::read("/dev/urandom")` tried to read the entire file (infinite stream), blocking forever on Linux CI
+  - Replaced with `File::open` + `read_exact` to read exactly 32 bytes
+- **Clippy dead_code warnings** (`crates/scaling/src/transport.rs`)
+  - Added `#[allow(dead_code)]` annotations on `TlsConfig::is_mtls` and `ConnectionManager::with_tls` (infrastructure for future tokio-rustls integration)
+- **Rustfmt version compatibility** (5 files)
+  - Reformatted with rustfmt 1.93.0 to match CI toolchain (previously formatted with 1.90.0)
+
+### Dependencies
+
+- `bytes` 1.11.0 → 1.11.1 — fixes RUSTSEC-2026-0007 (integer overflow in `BytesMut::reserve`)
+- `time` 0.3.44 → 0.3.47 — fixes RUSTSEC-2026-0009 (DoS via stack exhaustion)
 
 - **Phase 8: The Foundry (Polymorphic Block Storage)** - High-performance mutable block storage layer with pluggable backends
   - **New crate: `foundry`** - Block-level volume abstraction for virtual disks and raw NVMe devices
