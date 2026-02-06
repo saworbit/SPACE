@@ -131,7 +131,10 @@ impl S3View {
             content_type: detect_content_type(key).to_string(),
         };
 
-        self.key_map.write().unwrap_or_else(|e| e.into_inner()).insert(full_key, mapping);
+        self.key_map
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(full_key, mapping);
 
         Ok(capsule_id)
     }

@@ -88,7 +88,10 @@ impl MlkemKeyManager {
         if profile != CryptoProfile::HybridKyber {
             return Ok(None);
         }
-        let state = self.state.lock().map_err(|_| anyhow!("ML-KEM key manager mutex poisoned"))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ML-KEM key manager mutex poisoned"))?;
         let (shared, ciphertext) = mlkem768::encapsulate(&state.public);
         Ok(Some(derive_material(
             base_key,
@@ -117,7 +120,10 @@ impl MlkemKeyManager {
         let cipher = Ciphertext::from_bytes(&bytes)
             .map_err(|err| anyhow!("invalid ML-KEM ciphertext: {err:?}"))?;
 
-        let state = self.state.lock().map_err(|_| anyhow!("ML-KEM key manager mutex poisoned"))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ML-KEM key manager mutex poisoned"))?;
         let shared = mlkem768::decapsulate(&cipher, &state.secret);
         Ok(Some(derive_material(
             base_key,

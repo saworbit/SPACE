@@ -100,8 +100,12 @@ fn jwt_secret() -> Result<Vec<u8>, ApiError> {
         warn!("JWT secret not configured; using random ephemeral secret (debug build only). Set JWT_SECRET for stable tokens.");
         let mut secret = vec![0u8; 32];
         // Use system randomness; fall back to timestamp-based seed if unavailable.
-        if let Ok(bytes) = std::fs::read("/dev/urandom").map(|b| b.into_iter().take(32).collect::<Vec<_>>()) {
-            if bytes.len() == 32 { secret = bytes; }
+        if let Ok(bytes) =
+            std::fs::read("/dev/urandom").map(|b| b.into_iter().take(32).collect::<Vec<_>>())
+        {
+            if bytes.len() == 32 {
+                secret = bytes;
+            }
         } else {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};

@@ -311,11 +311,20 @@ impl CapsuleCatalog for InMemoryCatalog {
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).content.get(hash).copied()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .content
+            .get(hash)
+            .copied()
     }
 
     fn register_content(&self, hash: ContentHash, segment: SegmentId) -> Result<()> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).content.insert(hash, segment);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .content
+            .insert(hash, segment);
         Ok(())
     }
 

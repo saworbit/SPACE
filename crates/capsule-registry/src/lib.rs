@@ -343,7 +343,9 @@ pub struct CapsuleRegistry {
 
 impl CapsuleRegistry {
     pub fn new() -> Self {
-        Self::open("space.db").expect("failed to open registry DB at 'space.db'; check disk permissions and available space")
+        Self::open("space.db").expect(
+            "failed to open registry DB at 'space.db'; check disk permissions and available space",
+        )
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
