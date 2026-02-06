@@ -295,24 +295,25 @@ fn validate_feature_allowlist() -> Result<()> {
             continue;
         };
 
-        if let Some(allowed_features) = allowlist.get(&pkg.name) {
+        if let Some(allowed_features) = allowlist.get(pkg.name.as_ref()) {
             let unexpected: Vec<String> = node
                 .features
                 .iter()
                 .filter_map(|feature| {
-                    if feature == "default" || feature.starts_with("dep:") {
+                    let s: &str = feature.as_ref();
+                    if s == "default" || s.starts_with("dep:") {
                         return None;
                     }
-                    if allowed_features.contains(feature) {
+                    if allowed_features.contains(s) {
                         None
                     } else {
-                        Some(feature.clone())
+                        Some(s.to_string())
                     }
                 })
                 .collect();
 
             if !unexpected.is_empty() {
-                violations.push((pkg.name.clone(), unexpected));
+                violations.push((pkg.name.to_string(), unexpected));
             }
         }
     }
@@ -330,9 +331,7 @@ fn validate_feature_allowlist() -> Result<()> {
 
 fn load_feature_allowlist() -> Result<HashMap<String, BTreeSet<String>>> {
     let manifest = fs::read_to_string("Cargo.toml").context("failed to read Cargo.toml")?;
-    let doc = manifest
-        .parse::<toml::Value>()
-        .context("failed to parse Cargo.toml")?;
+    let doc: toml::Value = toml::from_str(&manifest).context("failed to parse Cargo.toml")?;
 
     let allow = doc
         .get("workspace")
@@ -362,9 +361,7 @@ fn load_feature_allowlist() -> Result<HashMap<String, BTreeSet<String>>> {
 
 fn load_version_pins() -> Result<BTreeMap<String, String>> {
     let manifest = fs::read_to_string("Cargo.toml").context("failed to read Cargo.toml")?;
-    let doc = manifest
-        .parse::<toml::Value>()
-        .context("failed to parse Cargo.toml")?;
+    let doc: toml::Value = toml::from_str(&manifest).context("failed to parse Cargo.toml")?;
     let deps = doc
         .get("workspace")
         .and_then(|w| w.get("dependencies"))
