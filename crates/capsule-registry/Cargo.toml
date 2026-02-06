@@ -47,7 +47,7 @@ pipeline = { path = "../pipeline", optional = true }
 scaling = { path = "../scaling", optional = true }
 sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation mode support
 async-trait = "0.1"
-tokio-util = { version = "^0.7.11", features = ["io"] }
+tokio-util = { version = "^0.7.18", features = ["io"] }
 async-stream = "0.3"
 
 # Phase 3: distributed consensus (Raft)
