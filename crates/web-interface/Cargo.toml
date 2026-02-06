@@ -49,7 +49,7 @@ prometheus.workspace = true
 bytes.workspace = true
 uuid.workspace = true
 hex.workspace = true
-blake3 = "1.5"
+blake3 = "1.8"
 base64 = "0.22"
 
 # Frontend (Leptos)
