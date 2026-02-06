@@ -87,6 +87,7 @@ pub struct TlsConfig {
     pub key_path: Option<std::path::PathBuf>,
 }
 
+#[allow(dead_code)] // Infrastructure for tokio-rustls integration
 impl TlsConfig {
     /// Load TLS configuration from environment variables.
     ///
@@ -133,6 +134,7 @@ impl ConnectionManager {
     }
 
     /// Create a ConnectionManager with explicit TLS configuration.
+    #[allow(dead_code)] // Public API for callers that configure TLS externally
     pub fn with_tls(tls_config: Option<TlsConfig>) -> Self {
         Self {
             streams: Arc::new(RwLock::new(HashMap::new())),
