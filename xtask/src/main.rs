@@ -330,9 +330,7 @@ fn validate_feature_allowlist() -> Result<()> {
 
 fn load_feature_allowlist() -> Result<HashMap<String, BTreeSet<String>>> {
     let manifest = fs::read_to_string("Cargo.toml").context("failed to read Cargo.toml")?;
-    let doc = manifest
-        .parse::<toml::Value>()
-        .context("failed to parse Cargo.toml")?;
+    let doc: toml::Value = toml::from_str(&manifest).context("failed to parse Cargo.toml")?;
 
     let allow = doc
         .get("workspace")
@@ -362,9 +360,7 @@ fn load_feature_allowlist() -> Result<HashMap<String, BTreeSet<String>>> {
 
 fn load_version_pins() -> Result<BTreeMap<String, String>> {
     let manifest = fs::read_to_string("Cargo.toml").context("failed to read Cargo.toml")?;
-    let doc = manifest
-        .parse::<toml::Value>()
-        .context("failed to parse Cargo.toml")?;
+    let doc: toml::Value = toml::from_str(&manifest).context("failed to parse Cargo.toml")?;
     let deps = doc
         .get("workspace")
         .and_then(|w| w.get("dependencies"))
