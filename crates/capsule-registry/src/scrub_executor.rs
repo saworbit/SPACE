@@ -464,7 +464,7 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
 mod tests {
     use super::*;
     use common::scrub::ScrubConfig;
-    use common::traits::{StorageBackend as _, StorageTransaction as _};
+    use common::traits::StorageTransaction as _;
     use common::{ContentHash, Segment, SegmentId};
     use futures::future::BoxFuture;
     use storage::InMemoryBackend;
