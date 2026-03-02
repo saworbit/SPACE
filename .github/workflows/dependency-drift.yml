@@ -47,7 +47,7 @@ jobs:
             from pathlib import Path
             data = Path("target/xtask/drift-report.json").read_bytes()
             print(base64.b64encode(data).decode())
-PY
+          PY
           )
           echo "report_b64=$report" >> "$GITHUB_OUTPUT"
 
