@@ -89,6 +89,27 @@ impl ScrubResult {
     }
 }
 
+/// Observable state of the background scrub task.
+///
+/// Published via a `tokio::sync::watch` channel by
+/// [`ScrubExecutor::spawn_background`] so monitoring consumers can track
+/// state changes without polling — analogous to TrueNAS's scrub state machine
+/// (WAITING → SCANNING → FINISHED/CANCELED).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScrubState {
+    /// No scrub cycle is currently running.
+    Idle,
+    /// A scrub cycle is actively running.
+    Running(ScrubKind),
+    /// The most recent cycle completed.  `errors` counts **definitive**
+    /// integrity failures only (`MetadataMismatch`, `MacMismatch`,
+    /// `ContentCorrupted`); transient `ReadError`s are excluded so this
+    /// field is suitable for alerting thresholds.  Persists until the next
+    /// cycle's `Running` replaces it (never immediately overwritten by
+    /// `Idle`).
+    Completed { kind: ScrubKind, errors: usize },
+}
+
 /// Aggregate report from a scrub cycle.
 ///
 /// Marked `#[non_exhaustive]` so that new diagnostic counters can be added
@@ -114,6 +135,22 @@ pub struct ScrubReport {
     pub errors: Vec<ScrubResult>,
     pub duration: Duration,
     pub kind: ScrubKind,
+    /// MAC verification failures (encrypted segments whose integrity tag did
+    /// not match). Subset of `errors`.
+    #[serde(default)]
+    pub mac_failures: usize,
+    /// Content hash mismatches (unencrypted segments with detected bit-rot).
+    /// Subset of `errors`.
+    #[serde(default)]
+    pub content_failures: usize,
+    /// Read I/O errors — transient failures that prevent verification.
+    /// Subset of `errors`.
+    #[serde(default)]
+    pub read_errors: usize,
+    /// Byte-length mismatches between stored data and the `len` field in
+    /// segment metadata (truncation, missing data). Subset of `errors`.
+    #[serde(default)]
+    pub metadata_failures: usize,
 }
 
 /// Whether a scrub cycle is light (length-only) or deep (content verification).
@@ -333,6 +370,28 @@ mod tests {
         assert!(report.errors.is_empty());
         assert_eq!(report.duration, Duration::ZERO);
         assert_eq!(report.kind, ScrubKind::Light);
+        assert_eq!(report.mac_failures, 0);
+        assert_eq!(report.content_failures, 0);
+        assert_eq!(report.read_errors, 0);
+        assert_eq!(report.metadata_failures, 0);
+    }
+
+    #[test]
+    fn scrub_state_transitions() {
+        assert_eq!(ScrubState::Idle, ScrubState::Idle);
+        assert_ne!(ScrubState::Idle, ScrubState::Running(ScrubKind::Light));
+
+        let completed = ScrubState::Completed {
+            kind: ScrubKind::Deep,
+            errors: 2,
+        };
+        assert_ne!(completed, ScrubState::Idle);
+        if let ScrubState::Completed { kind, errors } = completed {
+            assert_eq!(kind, ScrubKind::Deep);
+            assert_eq!(errors, 2);
+        } else {
+            panic!("expected Completed");
+        }
     }
 
     #[test]

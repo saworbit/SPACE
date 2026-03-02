@@ -9,21 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ScrubState` observable state machine** (`crates/common/src/scrub.rs`)
+  - `ScrubState` enum: `Idle | Running(ScrubKind) | Completed { kind, errors }` — published via `tokio::sync::watch` so any consumer can observe scrub transitions without polling; mirrors TrueNAS's WAITING → SCANNING → FINISHED/CANCELED state model
+  - `ScrubReport` error-type breakdown: `metadata_failures`, `mac_failures`, `content_failures`, `read_errors` serde-defaulted fields — operators now distinguish length mismatches (`MetadataMismatch`), bit-rot (`ContentCorrupted`), tampering/key-drift (`MacMismatch`), and transient I/O faults (`ReadError`) directly from the report without iterating the error vec; mirrors TrueNAS's per-error-type vdev taxonomy
+  - `Completed.errors` counts only definitive integrity failures (`MetadataMismatch + MacMismatch + ContentCorrupted`); transient `ReadError`s are excluded so the field is suitable for alerting thresholds. `Completed` persists as the watch channel value until the next cycle's `Running` replaces it (not immediately overwritten by `Idle`), guaranteeing a consumer sampling between cycles always sees the last outcome
+
 - **Background Scrub Executor** (`crates/capsule-registry/src/scrub_executor.rs`)
   - `ScrubExecutor<B: StorageBackend>` drives the `common::scrub` types into a running integrity check
   - `scrub_cycle(config, kind)` — single pass returning a `ScrubReport`; respects `max_segments_per_cycle` and `inter_segment_delay` to avoid starving foreground I/O
-  - `spawn_background(backend, config, key_manager)` — continuous Tokio task alternating light/deep cycles on schedule
+  - `spawn_background(backend, config, key_manager)` — returns `(JoinHandle<()>, watch::Receiver<ScrubState>)`; continuous Tokio task alternating light/deep cycles on schedule with observable state transitions
   - Deep scrub applies the strongest check available per segment: BLAKE3-MAC (`encryption::verify_mac`) for encrypted segments; BLAKE3 content-hash recompute for unencrypted; segments with no stored hash/tag recorded as `Ok` (stable condition, nothing to compare)
   - `ScrubResult::Skipped` for transient conditions (e.g. no key manager); skipped segments are not recorded in the schedule and are retried next cycle
-  - `ScrubReport` is `#[non_exhaustive]`; new counters `segments_skipped` and `segments_recorded` (both serde-defaulted for backward compat); `ScrubResult::should_record_schedule()` distinguishes definitive from transient outcomes; `segments_recorded` exposes how many schedule timestamps were actually advanced, letting external monitors detect all-transient cycles
-  - 10 executor unit tests covering: healthy pass, bitrot detection, length mismatch, schedule throttling, cycle cap, skip semantics, stable-Ok for legacy encrypted segments (+ 17 scheduler tests in `common::scrub`)
+  - `ScrubReport` is `#[non_exhaustive]`; counters `segments_skipped`, `segments_recorded`, `metadata_failures`, `mac_failures`, `content_failures`, `read_errors` (all serde-defaulted); `ScrubResult::should_record_schedule()` distinguishes definitive from transient outcomes
+  - 12 executor unit tests covering: healthy pass, bitrot detection, length mismatch, schedule throttling, cycle cap, skip semantics, stable-Ok for legacy encrypted segments (+ 19 scheduler tests in `common::scrub`)
 
 - **Background Scrub Scheduler** (`crates/common/src/scrub.rs`)
   - Two-level scrubbing: light (metadata) and deep (content hash / MAC verification)
   - `ScrubConfig` with configurable intervals, per-cycle segment limits, and inter-segment delays
   - `ScrubSchedule` tracks per-segment scrub history via `BTreeMap<SegmentId, Instant>`
   - `ScrubResult` enum covers metadata mismatch, content corruption, MAC failure, and read errors
-  - `ScrubReport` aggregates cycle results with duration and error counts
+  - `ScrubReport` aggregates cycle results with duration, error vec, and per-type breakdown counters
   - Deep scrub implicitly records a light-scrub timestamp to avoid redundant work
 
 - **`Segment` and `SegmentId` now derive `Default`** (`crates/common/src/lib.rs`)
@@ -79,6 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (pulling `keccak` 0.2.0-rc.2) to address RustSec findings
 
 ### Changed
+
+- **`ScrubExecutor::spawn_background` signature** (`crates/capsule-registry/src/scrub_executor.rs`)
+  - Return type changed from `JoinHandle<()>` to `(JoinHandle<()>, watch::Receiver<ScrubState>)`; callers receive a live channel that transitions `Idle → Running(kind) → Completed { kind, errors }` — no polling required. `Completed` persists until the next cycle's `Running` replaces it (not immediately overwritten by `Idle`), guaranteeing any consumer sampling between cycles sees the last outcome. `Completed.errors` counts only definitive integrity failures (`MetadataMismatch`, `MacMismatch`, `ContentCorrupted`); transient `ReadError`s are excluded
+  - Deep-scrub CPU work (`BLAKE3` content-hash recompute and `XTS-MAC` verification over up to 4 MiB segments) now runs in `tokio::task::spawn_blocking`; frees async-executor worker threads for I/O while crypto runs on a dedicated OS thread pool
+  - Warning log on error cycles now includes structured `metadata_failures`, `mac_failures`, `content_failures`, `read_errors` fields for machine-readable observability
 
 - **JWT auth middleware** (`crates/web-interface/src/api/auth.rs`)
   - Debug-build fallback now generates random ephemeral secrets instead of a

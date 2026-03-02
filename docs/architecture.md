@@ -298,26 +298,49 @@ The `common::scrub` module defines the two-level scrubbing model; `capsule-regis
 | **Light** | Segment byte-length matches metadata `len` field | 24 hours |
 | **Deep** | Re-read bytes + verify content hash or BLAKE3-MAC | 7 days |
 
-**Key types (common::scrub)**
+**Key types (`common::scrub`)**
 
 `ScrubConfig` controls intervals, per-cycle segment cap, and inter-segment delay. `ScrubSchedule` tracks per-segment scrub history so only stale segments are re-checked. Deep scrub implicitly records a light-scrub timestamp. `ScrubResult` covers six outcomes: `Ok`, `MetadataMismatch`, `ContentCorrupted`, `MacMismatch`, `ReadError`, and `Skipped` (transient).
 
-**Executor (capsule-registry::scrub_executor)**
+`ScrubState` is a state-machine enum published via `tokio::sync::watch` by `spawn_background`:
+
+```
+Idle  →  Running(ScrubKind)  →  Completed { kind, errors }
+                                 ↑ persists until next Running ↑
+```
+
+`Completed` is **not** immediately overwritten by `Idle`; it persists as the watch channel's current value until the next cycle's `Running` replaces it.  A consumer sampling between cycles always sees the outcome of the most-recent run regardless of scheduling jitter.  `Completed.errors` counts **definitive** integrity failures only (`MetadataMismatch`, `MacMismatch`, `ContentCorrupted`); transient `ReadError`s are excluded so the field is suitable for alerting thresholds.
+
+Monitoring consumers receive a `watch::Receiver<ScrubState>` and observe transitions without polling.
+
+`ScrubReport` carries the aggregate result of a cycle with a per-type error breakdown:
+
+| Field | Meaning |
+|-------|---------|
+| `metadata_failures` | Segments whose stored byte-length does not match the `len` field in metadata (truncation / missing data) |
+| `mac_failures` | Encrypted segments whose BLAKE3-MAC tag did not match (tampering / key-drift) |
+| `content_failures` | Unencrypted segments whose BLAKE3 content hash did not match (bit-rot) |
+| `read_errors` | Segments that could not be read — transient I/O failures excluded from `Completed.errors` |
+
+**Executor (`capsule-registry::scrub_executor`)**
 
 ```
 ScrubExecutor<B: StorageBackend>
-  |- scrub_cycle(config, ScrubKind) -> ScrubReport   // single pass
-  `- spawn_background(backend, config, key_manager)  // continuous Tokio task
+  |- scrub_cycle(config, ScrubKind) -> ScrubReport
+  `- spawn_background(backend, config, key_manager)
+       -> (JoinHandle<()>, watch::Receiver<ScrubState>)
 ```
 
 Deep scrub applies the strongest check available per segment:
-1. **Encrypted** (`encrypted == true`, `integrity_tag` set, key manager available) -- `encryption::verify_mac` (BLAKE3-MAC; detects bitrot and tampering)
-2. **Unencrypted** with `content_hash` -- re-computes `dedup::hash_content` and compares
-3. **No hash / no tag** -- recorded as `Ok` (stable condition; segment was written before checksumming was added)
+1. **Encrypted** (`encrypted == true`, `integrity_tag` set, key manager available) — `encryption::verify_mac` (BLAKE3-MAC; detects bitrot and tampering)
+2. **Unencrypted** with `content_hash` — re-computes `dedup::hash_content` and compares
+3. **No hash / no tag** — recorded as `Ok` (stable condition; segment was written before checksumming was added)
+
+CPU-intensive work (BLAKE3 hash recompute and MAC verification over up to 4 MiB segments) runs in `tokio::task::spawn_blocking`, keeping async-executor worker threads free for I/O.
 
 **Schedule recording** is gated on `ScrubResult::should_record_schedule()`: definitive outcomes (`Ok`, integrity failures) advance the timestamp; transient outcomes (`Skipped`, `ReadError`) leave it unchanged so the segment is retried next cycle.
 
-The background task yields `inter_segment_delay` between individual checks and logs a summary after each cycle.
+The background task yields `inter_segment_delay` between individual checks and logs a structured summary (including `metadata_failures`, `mac_failures`, `content_failures`, `read_errors`) after each cycle.  `Completed.errors` reflects only the three definitive failure types (`metadata_failures + mac_failures + content_failures`); `read_errors` is logged for observability but excluded from the alerting field.
 
 ### 9.3 QoS Admission Control
 

@@ -37,7 +37,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubResult, ScrubSchedule};
+use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubResult, ScrubSchedule, ScrubState};
 use common::traits::StorageBackend;
 use common::SegmentId;
 use encryption::policy::EncryptionMetadata;
@@ -141,6 +141,13 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         ?result,
                         "scrub: integrity issue detected"
                     );
+                    match &result {
+                        ScrubResult::MacMismatch { .. } => report.mac_failures += 1,
+                        ScrubResult::ContentCorrupted { .. } => report.content_failures += 1,
+                        ScrubResult::ReadError { .. } => report.read_errors += 1,
+                        ScrubResult::MetadataMismatch { .. } => report.metadata_failures += 1,
+                        _ => {}
+                    }
                     report.errors.push(result);
                 }
             }
@@ -228,110 +235,109 @@ impl<B: StorageBackend> ScrubExecutor<B> {
         }
 
         if meta.encrypted {
-            self.verify_encrypted_segment(seg_id, &stored, &meta)
-        } else {
-            self.verify_unencrypted_segment(seg_id, &stored, &meta)
-        }
-    }
-
-    fn verify_encrypted_segment(
-        &self,
-        seg_id: SegmentId,
-        stored: &[u8],
-        meta: &common::Segment,
-    ) -> ScrubResult {
-        let Some(integrity_tag) = meta.integrity_tag else {
-            // No MAC was ever stored  -  the segment was encrypted before MAC
-            // support was added. There is no integrity data to check against,
-            // and re-checking later won't help. Record as Ok (stable condition).
-            debug!(
-                segment_id = seg_id.0,
-                "scrub: encrypted segment has no integrity tag; nothing to verify"
-            );
-            return ScrubResult::Ok;
-        };
-
-        let Some(ref km) = self.key_manager else {
-            // MAC exists but we can't load the key right now  -  transient.
-            // Return Skipped so the schedule timestamp is NOT advanced and
-            // this segment will be retried at the next deep-scrub cycle.
-            return ScrubResult::Skipped {
-                reason: "no key manager available for MAC verification".into(),
+            // Fast synchronous checks before the CPU-intensive MAC verify.
+            let Some(integrity_tag) = meta.integrity_tag else {
+                // No MAC was ever stored — the segment was encrypted before
+                // MAC support was added. Stable condition: record as Ok.
+                debug!(
+                    segment_id = seg_id.0,
+                    "scrub: encrypted segment has no integrity tag; nothing to verify"
+                );
+                return ScrubResult::Ok;
             };
-        };
 
-        let key_version = match meta.key_version {
-            Some(v) => v,
-            None => {
-                warn!(
-                    segment_id = seg_id.0,
-                    "scrub: encrypted segment missing key_version"
-                );
-                return ScrubResult::MacMismatch { segment: seg_id };
-            }
-        };
+            let Some(ref km) = self.key_manager else {
+                // MAC exists but we can't load the key right now — transient.
+                return ScrubResult::Skipped {
+                    reason: "no key manager available for MAC verification".into(),
+                };
+            };
 
-        let tweak = match meta.tweak_nonce {
-            Some(t) => t,
-            None => {
-                warn!(
-                    segment_id = seg_id.0,
-                    "scrub: encrypted segment missing tweak_nonce"
-                );
-                return ScrubResult::MacMismatch { segment: seg_id };
-            }
-        };
-
-        // Clone the key material out of the lock so we don't hold it across
-        // the verify_mac call.
-        let key_pair = {
-            let mut guard = km.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.get_key(key_version) {
-                Ok(kp) => (*kp.key1(), *kp.key2()),
-                Err(err) => {
+            let key_version = match meta.key_version {
+                Some(v) => v,
+                None => {
                     warn!(
                         segment_id = seg_id.0,
-                        error = %err,
-                        "scrub: failed to retrieve key for MAC check"
+                        "scrub: encrypted segment missing key_version"
                     );
-                    return ScrubResult::ReadError {
-                        segment: seg_id,
-                        error: format!("key retrieval failed: {err}"),
-                    };
+                    return ScrubResult::MacMismatch { segment: seg_id };
                 }
-            }
-        };
+            };
 
-        let enc_meta = EncryptionMetadata {
-            encryption_version: meta.encryption_version,
-            key_version: Some(key_version),
-            tweak_nonce: Some(tweak),
-            integrity_tag: Some(integrity_tag),
-            ciphertext_len: Some(meta.len),
-            ..Default::default()
-        };
+            let tweak = match meta.tweak_nonce {
+                Some(t) => t,
+                None => {
+                    warn!(
+                        segment_id = seg_id.0,
+                        "scrub: encrypted segment missing tweak_nonce"
+                    );
+                    return ScrubResult::MacMismatch { segment: seg_id };
+                }
+            };
 
-        match verify_mac(stored, &enc_meta, &key_pair.0, &key_pair.1) {
-            Ok(()) => ScrubResult::Ok,
-            Err(_) => ScrubResult::MacMismatch { segment: seg_id },
-        }
-    }
+            // Extract key material while holding the lock (fast) so we don't
+            // hold it across the blocking verify_mac call below.
+            let key_pair = {
+                let mut guard = km.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.get_key(key_version) {
+                    Ok(kp) => (*kp.key1(), *kp.key2()),
+                    Err(err) => {
+                        warn!(
+                            segment_id = seg_id.0,
+                            error = %err,
+                            "scrub: failed to retrieve key for MAC check"
+                        );
+                        return ScrubResult::ReadError {
+                            segment: seg_id,
+                            error: format!("key retrieval failed: {err}"),
+                        };
+                    }
+                }
+            };
 
-    fn verify_unencrypted_segment(
-        &self,
-        seg_id: SegmentId,
-        stored: &[u8],
-        meta: &common::Segment,
-    ) -> ScrubResult {
-        let Some(ref expected_hash) = meta.content_hash else {
-            return ScrubResult::Ok;
-        };
+            let enc_meta = EncryptionMetadata {
+                encryption_version: meta.encryption_version,
+                key_version: Some(key_version),
+                tweak_nonce: Some(tweak),
+                integrity_tag: Some(integrity_tag),
+                ciphertext_len: Some(meta.len),
+                ..Default::default()
+            };
 
-        let actual_hash = hash_content(stored);
-        if actual_hash.as_str() == expected_hash.as_str() {
-            ScrubResult::Ok
+            // MAC verification is CPU-intensive (BLAKE3 over ciphertext).
+            // Run it on a blocking thread to avoid stalling async executors.
+            tokio::task::spawn_blocking(move || {
+                match verify_mac(&stored, &enc_meta, &key_pair.0, &key_pair.1) {
+                    Ok(()) => ScrubResult::Ok,
+                    Err(_) => ScrubResult::MacMismatch { segment: seg_id },
+                }
+            })
+            .await
+            .unwrap_or_else(|e| ScrubResult::ReadError {
+                segment: seg_id,
+                error: format!("MAC verify panicked: {e}"),
+            })
         } else {
-            ScrubResult::ContentCorrupted { segment: seg_id }
+            // Unencrypted: compare BLAKE3 content hash.
+            let Some(expected) = meta.content_hash.clone() else {
+                return ScrubResult::Ok;
+            };
+
+            // BLAKE3 over potentially large (4 MiB) segments is CPU-intensive.
+            // Run it on a blocking thread to avoid stalling async executors.
+            tokio::task::spawn_blocking(move || {
+                let actual = hash_content(&stored);
+                if actual.as_str() == expected.as_str() {
+                    ScrubResult::Ok
+                } else {
+                    ScrubResult::ContentCorrupted { segment: seg_id }
+                }
+            })
+            .await
+            .unwrap_or_else(|e| ScrubResult::ReadError {
+                segment: seg_id,
+                error: format!("hash verify panicked: {e}"),
+            })
         }
     }
 }
@@ -339,15 +345,38 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
     /// Spawn a background Tokio task that runs scrub cycles continuously.
     ///
-    /// The task alternates light and deep scrubs according to `config` and
-    /// logs summary reports after each cycle. It runs until the returned
-    /// `JoinHandle` is aborted or the runtime shuts down.
+    /// Returns a `(JoinHandle, watch::Receiver<ScrubState>)` pair.  The
+    /// receiver publishes state transitions so monitoring consumers can observe
+    /// progress without polling:
+    ///
+    /// ```text
+    /// Idle  →  Running(kind)  →  Completed { kind, errors }
+    ///                              ↑ persists until the next cycle starts ↑
+    /// ```
+    ///
+    /// `Completed.errors` counts **definitive** integrity failures only
+    /// (`MetadataMismatch`, `MacMismatch`, `ContentCorrupted`).  Transient
+    /// `ReadError`s are excluded so the field is suitable for alerting
+    /// thresholds.
+    ///
+    /// The `Completed` state is **not** immediately overwritten by `Idle`; it
+    /// persists until the next cycle's `Running` replaces it.  This guarantees
+    /// that a consumer polling the channel at any point between cycles will
+    /// observe the outcome of the most recent run, regardless of scheduling
+    /// jitter.
+    ///
+    /// Abort the `JoinHandle` (or let the runtime shut down) to stop the task.
     pub fn spawn_background(
         backend: B,
         config: ScrubConfig,
         key_manager: Option<Arc<Mutex<KeyManager>>>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Receiver<ScrubState>,
+    ) {
+        let (state_tx, state_rx) = tokio::sync::watch::channel(ScrubState::Idle);
+
+        let handle = tokio::spawn(async move {
             let mut executor = match key_manager {
                 Some(km) => ScrubExecutor::with_key_manager(backend, km),
                 None => ScrubExecutor::new(backend),
@@ -373,7 +402,16 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                     continue;
                 };
 
+                let _ = state_tx.send(ScrubState::Running(kind));
                 let report = executor.scrub_cycle(&config, kind).await;
+                // Only definitive integrity failures (not transient ReadErrors)
+                // so the field is suitable for alerting thresholds.
+                let _ = state_tx.send(ScrubState::Completed {
+                    kind,
+                    errors: report.mac_failures
+                        + report.content_failures
+                        + report.metadata_failures,
+                });
 
                 if report.errors.is_empty() {
                     info!(
@@ -387,6 +425,10 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                         kind = ?kind,
                         segments_checked = report.segments_checked,
                         error_count = report.errors.len(),
+                        mac_failures = report.mac_failures,
+                        content_failures = report.content_failures,
+                        metadata_failures = report.metadata_failures,
+                        read_errors = report.read_errors,
                         duration_ms = report.duration.as_millis(),
                         "scrub cycle: integrity issues detected"
                     );
@@ -406,8 +448,15 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                 {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
+
+                // NOTE: we do NOT send Idle here.  Completed persists as the
+                // channel's current value until the next cycle's Running
+                // overwrites it, ensuring consumers can always read the
+                // outcome of the most-recent run without a TOCTOU gap.
             }
-        })
+        });
+
+        (handle, state_rx)
     }
 }
 
@@ -415,9 +464,60 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
 mod tests {
     use super::*;
     use common::scrub::ScrubConfig;
-    use common::traits::StorageTransaction as _;
+    use common::traits::{StorageBackend as _, StorageTransaction as _};
     use common::{ContentHash, Segment, SegmentId};
+    use futures::future::BoxFuture;
     use storage::InMemoryBackend;
+
+    // ── FailReadBackend ──────────────────────────────────────────────────────
+    //
+    // A thin wrapper over `InMemoryBackend` that returns an error for any
+    // `read()` call on a specified set of segment IDs.  Used to inject
+    // transient I/O failures into tests without touching the real backend.
+
+    #[derive(Clone)]
+    struct FailReadBackend {
+        inner: InMemoryBackend,
+        fail_ids: std::collections::HashSet<SegmentId>,
+    }
+
+    impl common::traits::StorageBackend for FailReadBackend {
+        type Transaction = <InMemoryBackend as common::traits::StorageBackend>::Transaction;
+
+        fn append<'a>(
+            &'a mut self,
+            segment: SegmentId,
+            data: &'a [u8],
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            self.inner.append(segment, data)
+        }
+
+        fn read(&self, segment: SegmentId) -> BoxFuture<'_, anyhow::Result<Vec<u8>>> {
+            if self.fail_ids.contains(&segment) {
+                Box::pin(
+                    async move { anyhow::bail!("injected read failure for segment {}", segment.0) },
+                )
+            } else {
+                self.inner.read(segment)
+            }
+        }
+
+        fn metadata(&self, segment: SegmentId) -> BoxFuture<'_, anyhow::Result<common::Segment>> {
+            self.inner.metadata(segment)
+        }
+
+        fn delete<'a>(&'a mut self, segment: SegmentId) -> BoxFuture<'a, anyhow::Result<()>> {
+            self.inner.delete(segment)
+        }
+
+        fn segment_ids(&self) -> BoxFuture<'_, anyhow::Result<Vec<SegmentId>>> {
+            self.inner.segment_ids()
+        }
+
+        fn begin_txn(&mut self) -> BoxFuture<'_, anyhow::Result<Self::Transaction>> {
+            self.inner.begin_txn()
+        }
+    }
 
     /// Write a segment (data + metadata) to the backend via a transaction.
     async fn write_segment(
@@ -717,5 +817,130 @@ mod tests {
             second.segments_checked, 0,
             "stable-Ok segment must not be re-checked immediately"
         );
+    }
+
+    // -- spawn_background state channel ------------------------------------------
+
+    /// Verify that `spawn_background` emits `Running` then `Completed` and
+    /// that `Completed` persists as the channel value (not immediately
+    /// overwritten by `Idle`).
+    #[tokio::test]
+    async fn spawn_background_state_channel_observability() {
+        let mut backend = InMemoryBackend::new();
+        let data = b"state channel test segment";
+        let hash = hash_content(data);
+        write_segment(&mut backend, 1, data, Some(hash), None).await;
+
+        // Both intervals set far in the future so that exactly one cycle fires
+        // immediately (next_deep == now at startup → Deep is chosen first),
+        // then the background task sleeps for 7200 s.  This prevents the
+        // InMemoryBackend's synchronous-disguised-as-async reads from starving
+        // the current-thread executor with a zero-interval spin loop.
+        let config = ScrubConfig {
+            light_interval: Duration::from_secs(7200),
+            deep_interval: Duration::from_secs(7200),
+            max_segments_per_cycle: 64,
+            inter_segment_delay: Duration::ZERO,
+        };
+
+        let (handle, mut state_rx) = ScrubExecutor::spawn_background(backend, config, None);
+
+        // Wait until we observe Completed.  The loop handles the case where the
+        // background task is so fast that Running and Completed have already
+        // fired by the time changed() is first called — watch::changed() will
+        // fire on the *next* value change from the last-seen mark, so looping
+        // on changed() + borrow() is the correct pattern.
+        let (observed_kind, observed_errors) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    state_rx.changed().await.expect("background task alive");
+                    if let ScrubState::Completed { kind, errors } = *state_rx.borrow() {
+                        return (kind, errors);
+                    }
+                }
+            })
+            .await
+            .expect("should observe ScrubState::Completed within 5 seconds");
+
+        // The background loop checks next_deep before next_light, and both
+        // start at Instant::now(), so the first (and only) cycle is always Deep.
+        assert_eq!(observed_kind, ScrubKind::Deep);
+        assert_eq!(
+            observed_errors, 0,
+            "healthy segment should report zero integrity errors in Completed"
+        );
+
+        // Abort the background task and verify Completed persists — it must
+        // not have been immediately overwritten by Idle.
+        handle.abort();
+        let _ = handle.await;
+
+        assert!(
+            matches!(*state_rx.borrow(), ScrubState::Completed { .. }),
+            "Completed state must persist between cycles, not be overwritten by Idle"
+        );
+    }
+
+    /// Verify that `Completed.errors` counts only definitive failures
+    /// (`MetadataMismatch`, `MacMismatch`, `ContentCorrupted`) and excludes
+    /// transient `ReadError`s.
+    ///
+    /// Setup:
+    /// - Segment 1: corrupted bytes (hash mismatch) → `ContentCorrupted` (counted)
+    /// - Segment 2: read injected to fail via `FailReadBackend` → `ReadError` (excluded)
+    ///
+    /// Expected: `Completed.errors == 1`, not 2.
+    #[tokio::test]
+    async fn spawn_background_completed_errors_excludes_read_errors() {
+        let mut inner = InMemoryBackend::new();
+
+        // Segment 1: ContentCorrupted → definitive failure (must be counted).
+        let original = b"original content data";
+        let hash = hash_content(original);
+        let corrupted = b"corrupted content dat"; // same length, different bytes
+        write_segment(&mut inner, 1, corrupted, Some(hash), None).await;
+
+        // Segment 2: stored correctly so metadata succeeds, but read will be
+        // intercepted → ReadError (must NOT be counted in Completed.errors).
+        let good_data = b"good data for segment two";
+        let good_hash = hash_content(good_data);
+        write_segment(&mut inner, 2, good_data, Some(good_hash), None).await;
+
+        let backend = FailReadBackend {
+            inner,
+            fail_ids: [SegmentId(2)].into_iter().collect(),
+        };
+
+        // Long re-cycle intervals: exactly one deep cycle fires at startup
+        // (next_deep == now), then the task sleeps for 7200 s.  This avoids
+        // the ZERO-interval spin that would let a second cycle overwrite
+        // Completed in the watch channel before the test can observe it.
+        let config = ScrubConfig {
+            light_interval: Duration::from_secs(7200),
+            deep_interval: Duration::from_secs(7200),
+            max_segments_per_cycle: 64,
+            inter_segment_delay: Duration::ZERO,
+        };
+
+        let (handle, mut state_rx) = ScrubExecutor::spawn_background(backend, config, None);
+
+        let (_, errors) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                state_rx.changed().await.expect("background task alive");
+                if let ScrubState::Completed { kind, errors } = *state_rx.borrow() {
+                    return (kind, errors);
+                }
+            }
+        })
+        .await
+        .expect("should observe ScrubState::Completed within 5 seconds");
+
+        assert_eq!(
+            errors, 1,
+            "ContentCorrupted is definitive (counted); ReadError is transient (excluded)"
+        );
+
+        handle.abort();
+        let _ = handle.await;
     }
 }
