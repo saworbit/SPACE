@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`XtsEncryptor::verify_mac` no-op** (`crates/pipeline/src/lib.rs`)
   - `verify_mac` unconditionally returned `Ok(())`; now performs real
     BLAKE3-MAC computation and constant-time comparison via `subtle::ConstantTimeEq`
+- **Cargo audit advisories**
+  - Updated `wasmtime`/`wasmtime-wasi` to 24.0.6 and `sha3` to 0.11.0-rc.8
+    (pulling `keccak` 0.2.0-rc.2) to address RustSec findings
 
 ### Changed
 
