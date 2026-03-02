@@ -289,16 +289,35 @@ Key types:
 - `ErasureProfile` — k (data shards), m (parity shards), algorithm identifier.
 - `ShardId` / `ShardIdSet` / `ShardIdMap` — typed shard-safe APIs.
 
-### 9.2 Background Scrub Scheduler
+### 9.2 Background Scrub Scheduler & Executor
 
-The `common::scrub` module provides a two-level scrubbing model for detecting silent data corruption:
+The `common::scrub` module defines the two-level scrubbing model; `capsule-registry::scrub_executor` provides the running engine that drives it.
 
 | Level | Checks | Frequency (default) |
 |-------|--------|---------------------|
-| **Light** | Segment metadata (size, existence) | 24 hours |
-| **Deep** | Re-read data + verify content hash / MAC | 7 days |
+| **Light** | Segment byte-length matches metadata `len` field | 24 hours |
+| **Deep** | Re-read bytes + verify content hash or BLAKE3-MAC | 7 days |
 
-`ScrubSchedule` tracks per-segment scrub history so only stale segments are re-checked. Deep scrub implicitly records a light-scrub timestamp.
+**Key types (common::scrub)**
+
+`ScrubConfig` controls intervals, per-cycle segment cap, and inter-segment delay. `ScrubSchedule` tracks per-segment scrub history so only stale segments are re-checked. Deep scrub implicitly records a light-scrub timestamp. `ScrubResult` covers six outcomes: `Ok`, `MetadataMismatch`, `ContentCorrupted`, `MacMismatch`, `ReadError`, and `Skipped` (transient).
+
+**Executor (capsule-registry::scrub_executor)**
+
+```
+ScrubExecutor<B: StorageBackend>
+  |- scrub_cycle(config, ScrubKind) -> ScrubReport   // single pass
+  `- spawn_background(backend, config, key_manager)  // continuous Tokio task
+```
+
+Deep scrub applies the strongest check available per segment:
+1. **Encrypted** (`encrypted == true`, `integrity_tag` set, key manager available) -- `encryption::verify_mac` (BLAKE3-MAC; detects bitrot and tampering)
+2. **Unencrypted** with `content_hash` -- re-computes `dedup::hash_content` and compares
+3. **No hash / no tag** -- recorded as `Ok` (stable condition; segment was written before checksumming was added)
+
+**Schedule recording** is gated on `ScrubResult::should_record_schedule()`: definitive outcomes (`Ok`, integrity failures) advance the timestamp; transient outcomes (`Skipped`, `ReadError`) leave it unchanged so the segment is retried next cycle.
+
+The background task yields `inter_segment_delay` between individual checks and logs a summary after each cycle.
 
 ### 9.3 QoS Admission Control
 

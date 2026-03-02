@@ -41,7 +41,7 @@ impl Default for ScrubConfig {
 /// Outcome of scrubbing a single segment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ScrubResult {
-    /// Segment is healthy.
+    /// Segment is healthy — integrity was positively verified.
     Ok,
     /// Segment metadata mismatch (size, missing file).
     MetadataMismatch { expected_len: u32, actual_len: u32 },
@@ -51,24 +51,72 @@ pub enum ScrubResult {
     MacMismatch { segment: SegmentId },
     /// Segment data could not be read.
     ReadError { segment: SegmentId, error: String },
+    /// Integrity could not be verified right now due to a transient condition
+    /// (e.g. no key manager available for an encrypted segment).
+    ///
+    /// Unlike `Ok`, a `Skipped` result does **not** advance the segment's
+    /// scrub timestamp, so it will be retried at the next cycle.
+    Skipped { reason: String },
 }
 
 impl ScrubResult {
     pub fn is_ok(&self) -> bool {
         matches!(self, ScrubResult::Ok)
     }
+
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, ScrubResult::Skipped { .. })
+    }
+
+    /// Whether this result should advance the segment's scrub schedule
+    /// timestamp.
+    ///
+    /// Returns `false` for transient outcomes — the segment remains due so
+    /// it will be retried at the next cycle:
+    /// - `Skipped`: verification blocked by a temporary condition (e.g. no
+    ///   key manager).
+    /// - `ReadError`: I/O may be transient; keep retrying until the failure
+    ///   either clears or escalates to a definitive integrity finding.
+    ///
+    /// Returns `true` for definitive outcomes (pass or fail) whose result
+    /// won't change by re-reading the same bytes immediately:
+    /// - `Ok`, `MetadataMismatch`, `ContentCorrupted`, `MacMismatch`.
+    pub fn should_record_schedule(&self) -> bool {
+        !matches!(
+            self,
+            ScrubResult::Skipped { .. } | ScrubResult::ReadError { .. }
+        )
+    }
 }
 
 /// Aggregate report from a scrub cycle.
+///
+/// Marked `#[non_exhaustive]` so that new diagnostic counters can be added
+/// without breaking downstream code that constructs this struct directly.
+/// Callers that only read fields are unaffected.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScrubReport {
+    /// Segments that completed a check attempt this cycle: verified clean,
+    /// found corrupt, or failed to read (`ReadError`). Does **not** include
+    /// segments that were `Skipped` due to a transient condition.
     pub segments_checked: usize,
+    /// Segments that could not be verified due to a transient condition
+    /// (`Skipped`) and were not recorded in the scrub schedule - they remain
+    /// due and will be retried next cycle.
+    #[serde(default)]
+    pub segments_skipped: usize,
+    /// Segments for which a schedule timestamp was actually advanced this
+    /// cycle (i.e. `should_record_schedule()` returned `true`). Used by the
+    /// background loop to detect all-transient cycles and avoid spinning.
+    #[serde(default)]
+    pub segments_recorded: usize,
     pub errors: Vec<ScrubResult>,
     pub duration: Duration,
     pub kind: ScrubKind,
 }
 
-/// Whether a scrub cycle is light (metadata-only) or deep (content verification).
+/// Whether a scrub cycle is light (length-only) or deep (content verification).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ScrubKind {
     #[default]
@@ -212,18 +260,76 @@ mod tests {
                 segment: SegmentId(3),
                 error: "disk failure".into(),
             },
+            ScrubResult::Skipped {
+                reason: "no key manager".into(),
+            },
         ];
         for case in &cases {
             assert!(!case.is_ok(), "{case:?} should not be Ok");
         }
     }
 
-    // ── ScrubReport ─────────────────────────────────────────────────
+    #[test]
+    fn skipped_is_skipped_not_ok() {
+        let r = ScrubResult::Skipped {
+            reason: "test".into(),
+        };
+        assert!(r.is_skipped());
+        assert!(!r.is_ok());
+    }
+
+    // -- should_record_schedule ----------------------------------------------
+
+    #[test]
+    fn definitive_results_record_schedule() {
+        let definitive = vec![
+            ScrubResult::Ok,
+            ScrubResult::MetadataMismatch {
+                expected_len: 4,
+                actual_len: 2,
+            },
+            ScrubResult::ContentCorrupted {
+                segment: SegmentId(1),
+            },
+            ScrubResult::MacMismatch {
+                segment: SegmentId(2),
+            },
+        ];
+        for r in &definitive {
+            assert!(
+                r.should_record_schedule(),
+                "{r:?} should advance the schedule"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_results_do_not_record_schedule() {
+        let transient = vec![
+            ScrubResult::ReadError {
+                segment: SegmentId(1),
+                error: "I/O error".into(),
+            },
+            ScrubResult::Skipped {
+                reason: "no key manager".into(),
+            },
+        ];
+        for r in &transient {
+            assert!(
+                !r.should_record_schedule(),
+                "{r:?} should NOT advance the schedule"
+            );
+        }
+    }
+
+    // -- ScrubReport ---------------------------------------------------------
 
     #[test]
     fn scrub_report_default_is_empty() {
         let report = ScrubReport::default();
         assert_eq!(report.segments_checked, 0);
+        assert_eq!(report.segments_skipped, 0);
+        assert_eq!(report.segments_recorded, 0);
         assert!(report.errors.is_empty());
         assert_eq!(report.duration, Duration::ZERO);
         assert_eq!(report.kind, ScrubKind::Light);

@@ -32,7 +32,9 @@ pub use stub::StorageStub;
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub struct SegmentId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -97,7 +99,7 @@ pub struct Capsule {
     pub deduped_bytes: u64, // How many bytes were deduplicated
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Segment {
     pub id: SegmentId,
     pub offset: u64,

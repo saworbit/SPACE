@@ -29,6 +29,7 @@ pub mod gc;
 pub mod pipeline;
 #[cfg(feature = "podms")]
 pub mod runtime;
+pub mod scrub_executor;
 
 pub use error::{CompressionError, DedupError, PipelineError};
 #[cfg(feature = "podms")]

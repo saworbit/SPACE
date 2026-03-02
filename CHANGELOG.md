@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Background Scrub Executor** (`crates/capsule-registry/src/scrub_executor.rs`)
+  - `ScrubExecutor<B: StorageBackend>` drives the `common::scrub` types into a running integrity check
+  - `scrub_cycle(config, kind)` — single pass returning a `ScrubReport`; respects `max_segments_per_cycle` and `inter_segment_delay` to avoid starving foreground I/O
+  - `spawn_background(backend, config, key_manager)` — continuous Tokio task alternating light/deep cycles on schedule
+  - Deep scrub applies the strongest check available per segment: BLAKE3-MAC (`encryption::verify_mac`) for encrypted segments; BLAKE3 content-hash recompute for unencrypted; segments with no stored hash/tag recorded as `Ok` (stable condition, nothing to compare)
+  - `ScrubResult::Skipped` for transient conditions (e.g. no key manager); skipped segments are not recorded in the schedule and are retried next cycle
+  - `ScrubReport` is `#[non_exhaustive]`; new counters `segments_skipped` and `segments_recorded` (both serde-defaulted for backward compat); `ScrubResult::should_record_schedule()` distinguishes definitive from transient outcomes; `segments_recorded` exposes how many schedule timestamps were actually advanced, letting external monitors detect all-transient cycles
+  - 10 executor unit tests covering: healthy pass, bitrot detection, length mismatch, schedule throttling, cycle cap, skip semantics, stable-Ok for legacy encrypted segments (+ 17 scheduler tests in `common::scrub`)
+
 - **Background Scrub Scheduler** (`crates/common/src/scrub.rs`)
   - Two-level scrubbing: light (metadata) and deep (content hash / MAC verification)
   - `ScrubConfig` with configurable intervals, per-cycle segment limits, and inter-segment delays
@@ -16,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ScrubResult` enum covers metadata mismatch, content corruption, MAC failure, and read errors
   - `ScrubReport` aggregates cycle results with duration and error counts
   - Deep scrub implicitly records a light-scrub timestamp to avoid redundant work
+
+- **`Segment` and `SegmentId` now derive `Default`** (`crates/common/src/lib.rs`)
+  - All fields have sensible zero-values; simplifies test construction and future struct-update syntax
 
 - **Erasure Coding Trait & Types** (`crates/common/src/erasure.rs`)
   - `ErasureCode` trait with `encode`, `decode`, and `minimum_to_decode` methods
