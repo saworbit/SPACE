@@ -43,12 +43,12 @@ jobs:
         id: drift_json
         run: |
           report=$(python3 - <<'PY'
-import base64
-from pathlib import Path
-data = Path("target/xtask/drift-report.json").read_bytes()
-print(base64.b64encode(data).decode())
+            import base64
+            from pathlib import Path
+            data = Path("target/xtask/drift-report.json").read_bytes()
+            print(base64.b64encode(data).decode())
 PY
-)
+          )
           echo "report_b64=$report" >> "$GITHUB_OUTPUT"
 
       - name: Open or update drift issue
