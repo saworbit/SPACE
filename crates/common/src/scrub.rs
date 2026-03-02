@@ -91,9 +91,9 @@ impl ScrubResult {
 
 /// Observable state of the background scrub task.
 ///
-/// Published via a `tokio::sync::watch` channel by
-/// [`ScrubExecutor::spawn_background`] so monitoring consumers can track
-/// state changes without polling — analogous to TrueNAS's scrub state machine
+/// Published via a `tokio::sync::watch` channel by the scrub executor's
+/// `spawn_background` task so monitoring consumers can track state changes
+/// without polling — analogous to TrueNAS's scrub state machine
 /// (WAITING → SCANNING → FINISHED/CANCELED).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScrubState {
