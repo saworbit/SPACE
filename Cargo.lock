@@ -1966,7 +1966,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "cipher",
- "cpufeatures 0.2.17",
+ "cpufeatures 0.3.0",
  "hex",
  "hmac",
  "poly1305",
