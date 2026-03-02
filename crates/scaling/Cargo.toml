@@ -9,7 +9,7 @@ publish = false
 [features]
 default = []
 phase4 = ["dep:raft-rs"]
-rdma = []
+rdma = ["dep:rdma-sys"]
 
 [dependencies]
 tokio = { workspace = true, features = ["full"] }
@@ -40,9 +40,7 @@ compression = { path = "../compression" }
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-uring = "0.4"
 libc = "0.2"
-
-[target.'cfg(all(target_os = "linux", feature = "rdma"))'.dependencies]
-rdma-sys = "0.3"
+rdma-sys = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tracing-test = { workspace = true }

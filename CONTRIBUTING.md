@@ -13,6 +13,24 @@ SPACE is dual-licensed under **MIT OR Apache 2.0**. This means:
 
 See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for the full license texts.
 
+## Developer Certificate of Origin (DCO)
+
+All commits must carry a `Signed-off-by` line certifying the
+[Developer Certificate of Origin](https://developercertificate.org/). This is
+enforced by CI.
+
+Add the sign-off automatically with:
+
+```bash
+git commit -s -m "feat(storage): add zero-copy read path"
+```
+
+If you forget, amend your most recent commit:
+
+```bash
+git commit --amend -s --no-edit
+```
+
 ## Getting Started
 - Install the latest stable Rust toolchain (`rustup default stable`).
 - Run `cargo xtask audit` before opening a pull request to execute formatting, checks, and security tooling in one pass.

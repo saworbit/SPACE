@@ -1,0 +1,45 @@
+name: Stale Issues & PRs
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    name: Close stale issues and PRs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          # Issues: 90 days stale, 14 days grace
+          days-before-stale: 90
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-issue-message: >
+            This issue has been inactive for 90 days and is marked as stale.
+            It will be closed in 14 days unless there is new activity.
+            If this is still relevant, please comment or remove the stale label.
+          close-issue-message: >
+            Closed due to inactivity. Feel free to reopen if this is still relevant.
+
+          # PRs: 60 days stale, 14 days grace
+          days-before-pr-stale: 60
+          days-before-pr-close: 14
+          stale-pr-label: stale
+          stale-pr-message: >
+            This PR has been inactive for 60 days and is marked as stale.
+            It will be closed in 14 days unless there is new activity.
+          close-pr-message: >
+            Closed due to inactivity. Feel free to reopen with updated changes.
+
+          # Exempt important items from stale management
+          exempt-issue-labels: security,pinned,in-progress
+          exempt-pr-labels: security,pinned,in-progress
+
+          # Process limits
+          operations-per-run: 60

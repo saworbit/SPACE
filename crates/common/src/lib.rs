@@ -1,3 +1,15 @@
+//! Shared types, policies, and traits for the SPACE storage platform.
+//!
+//! This crate contains the foundational types used across all SPACE
+//! subsystems:
+//!
+//! - **Core types**: `CapsuleId`, `SegmentId`, `Capsule`, `Segment`, `ContentHash`
+//! - **Policy**: `Policy`, `EncryptionPolicy`, `CompressionPolicy`, and related types
+//! - **Traits**: `Compressor`, `Encryptor`, `Deduper`, `StorageBackend`, etc.
+//! - **Erasure coding**: `ErasureCode` trait, `ErasureProfile`, shard types
+//! - **Scrub scheduler**: `ScrubConfig`, `ScrubSchedule`, `ScrubResult`
+//! - **QoS admission control**: `QosScheduler`, `IoClass`, `QosPermit`
+
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use uuid::Uuid;
@@ -5,7 +17,10 @@ use uuid::Uuid;
 #[cfg(feature = "advanced-security")]
 pub mod security;
 
+pub mod erasure;
 pub mod policy;
+pub mod qos;
+pub mod scrub;
 pub mod stub;
 pub mod traits;
 pub use policy::{
@@ -17,7 +32,7 @@ pub use stub::StorageStub;
 
 pub const SEGMENT_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SegmentId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

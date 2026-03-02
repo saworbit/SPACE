@@ -41,6 +41,15 @@ Full-stack web application:
 
 **Location**: `crates/web-interface/`
 
+## Prometheus Metrics
+
+The web interface registers the following counters/gauges in the Prometheus registry:
+- `space_api_requests_total` - Total API requests handled (includes public endpoints).
+- `space_ws_messages_total` - Total WebSocket messages broadcast.
+- `space_connected_peers` - Current connected gossip peers.
+- `space_gossip_sent_total` - Total gossip messages sent.
+- `space_files_stored_total` - Total files stored via the API.
+
 ## Key Features
 
 ### Real-Time Mesh Topology Visualization
@@ -137,10 +146,37 @@ cargo run -p web-interface --bin web-server
 
 ### REST Endpoints
 
-#### GET /health
-Health check endpoint.
+#### GET /api/v1/system/health
+Deep health check endpoint with per-subsystem checks.
 
-**Response**: `200 OK` with "OK" text.
+**Response**: `200 OK`
+```json
+{
+  "data": {
+    "status": "ok",
+    "uptime_ms": 12345,
+    "checks": [
+      {
+        "id": "GOSSIP_OK",
+        "severity": "ok",
+        "message": "Gossip layer connected to 3 peers"
+      }
+    ]
+  }
+}
+```
+
+**Health Check IDs:**
+| ID | Severity | Condition |
+|----|----------|-----------|
+| `GOSSIP_OK` | `ok` | Gossip peers connected and reachable |
+| `GOSSIP_NO_PEERS` | `warn` | No peers connected; standalone mode |
+| `GOSSIP_PEERS_DEGRADED` | `warn` | Some peers offline within the heartbeat window |
+| `GOSSIP_NO_MESSAGES` | `warn` | No gossip messages sent since startup (>30s) |
+| `GOSSIP_UNREACHABLE` | `error` | Gossip layer returned an error |
+| `METRICS_EMPTY` | `warn` | Prometheus registry has no metrics registered |
+
+**Status derivation:** `error` if any check is `error`, else `warn` if any check is `warn`, else `ok`.
 
 #### GET /api/peers
 Get all known peers with gossip metrics.
@@ -264,6 +300,15 @@ Broadcast a custom gossip message.
 Get Prometheus-compatible metrics.
 
 **Response**: Text format Prometheus metrics.
+
+**Registered metrics:**
+| Metric | Type | Description |
+|--------|------|-------------|
+| `api_requests_total` | Counter | Total API requests handled |
+| `ws_messages_total` | Counter | Total WebSocket messages broadcast |
+| `connected_peers` | Gauge | Current connected peer count |
+| `gossip_sent_total` | Counter | Total gossip messages sent |
+| `files_stored_total` | Counter | Total files stored via the API |
 
 ### WebSocket Endpoints
 

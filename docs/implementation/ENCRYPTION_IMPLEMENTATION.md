@@ -361,6 +361,19 @@ pub struct Segment {
 }
 ```
 
+```rust
+// In common/src/traits.rs
+#[derive(Debug, Clone, Default)]
+pub struct DecryptContext {
+    pub encryption_version: Option<u16>,
+    pub key_version: Option<u32>,
+    pub tweak_nonce: Option<[u8; 16]>,
+    pub integrity_tag: Option<[u8; 16]>,
+    pub ciphertext_len: Option<u32>,
+    pub content_hash: Option<[u8; 32]>,
+}
+```
+
 ### 2. Pipeline Integration
 ```rust
 // In capsule-registry/src/pipeline.rs
@@ -407,8 +420,9 @@ pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<
             let key_version = km.current_version();
             let key_pair = km.get_key(key_version)?;
             
-            // Derive tweak from content hash (deterministic!)
-            let tweak = derive_tweak_from_hash(content_hash.as_str().as_bytes());
+            // Derive tweak from content hash bytes (deterministic!)
+            // If you store ContentHash as hex, decode to 32 bytes first.
+            let tweak = derive_tweak_from_hash(content_hash_bytes);
             
             // Encrypt
             let (ciphertext, mut enc_meta) = encrypt_segment(
@@ -457,26 +471,12 @@ pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
         
         // 2. Verify MAC + Decrypt (if encrypted)
         let decrypted_data = if segment.encrypted {
-            let km = self.key_manager.as_ref()
-                .ok_or_else(|| anyhow::anyhow!("No key manager"))?;
-            let mut km = km.lock().unwrap();
-            let key_pair = km.get_key(segment.key_version.unwrap())?;
-            
-            // Build metadata
-            let enc_meta = EncryptionMetadata {
-                encryption_version: segment.encryption_version,
-                key_version: segment.key_version,
-                tweak_nonce: segment.tweak_nonce,
-                integrity_tag: segment.integrity_tag,
-                ciphertext_len: Some(raw_data.len() as u32),
-            };
-            
-            // Verify MAC first (detect tampering)
-            verify_mac(&raw_data, &enc_meta, 
-                      key_pair.key1(), key_pair.key2())?;
-            
-            // Decrypt
-            decrypt_segment(&raw_data, key_pair, &enc_meta)?
+            // Build a DecryptContext from Segment metadata
+            let ctx = DecryptContext::from_segment(&segment);
+
+            // Decrypt verifies MAC first and uses the stored tweak;
+            // if tweak_nonce is missing, it can fall back to content_hash.
+            encryptor.decrypt(&raw_data, &capsule.policy.encryption, *seg_id, &ctx)?
         } else {
             raw_data
         };
@@ -550,7 +550,7 @@ cargo test -p capsule-registry
 cargo test --workspace
 ```
 
-**Test Coverage:** 53 passing tests
+**Test Coverage:** 72+ passing tests (encryption crate + pipeline encryption tests)
 
 ---
 

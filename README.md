@@ -177,10 +177,12 @@
 | Feature | Status | Notes | Build Flag |
 |:--------|:------:|:------|:-----------|
 | **Web Interface** | 🟠 Experimental | Basic dashboard, limited features | - |
-| **Prometheus Metrics** | 🟡 Alpha | Basic metrics exposed | - |
+| **Prometheus Metrics** | 🟡 Alpha | 5 registered counters/gauges, `/api/metrics` endpoint | - |
 | **WebSocket Updates** | 🟠 Experimental | Live topology updates prototype | - |
 | **Tracing/Logging** | 🟡 Alpha | Basic tracing implemented | - |
-| **Health Checks** | 🟡 Alpha | Basic health endpoints | - |
+| **Health Checks** | 🟡 Alpha | Deep per-subsystem checks with severity classification | - |
+| **Background Scrub** | 🟡 Alpha | Two-level (light/deep) integrity verification scheduler | - |
+| **QoS Admission Control** | 🟡 Alpha | Per-class semaphore scheduling (client/recovery/background) | - |
 
 ### Simulation & Testing
 
@@ -190,7 +192,7 @@
 | **NVMe-oF Simulation** | 🟡 Alpha | Native NVMe/TCP with fallback | - |
 | **Docker Compose Setup** | 🟡 Alpha | 3-node mesh environment | - |
 | **Integration Tests** | 🟡 Alpha | Basic coverage, needs expansion | - |
-| **Unit Tests** | 🟡 Alpha | ~70-80% coverage, gaps exist | - |
+| **Unit Tests** | 🟡 Alpha | 419 tests passing across workspace | - |
 | **Benchmarks** | 🟠 Experimental | Limited performance tests | - |
 
 ### Key Gaps & Limitations
@@ -393,7 +395,7 @@ BIND_ADDR=0.0.0.0:8080 GOSSIP_FANOUT=12 cargo run -p web-interface --bin web-ser
 
 ### 📚 API Endpoints
 
-- `GET /health` - Health check
+- `GET /api/v1/system/health` - Deep health check with per-subsystem severity
 - `GET /api/peers` - List all peers with gossip metrics
 - `GET /api/gossip/stats` - Gossip protocol statistics
 - `POST /api/upload` - Upload file to mesh
@@ -1251,7 +1253,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 - 📋 Metro-sync replication
 - 📋 Autonomous tiering (hot/cold) + rehydrate
 - 📋 Policy compiler
-- 📋 Erasure coding (6+2)
+- 🟡 Erasure coding trait & types (6+2 RS default profile, pluggable algorithms)
 - 📋 Hardware offload (DPU/GPU)
 - 📋 Confidential compute enclaves
 

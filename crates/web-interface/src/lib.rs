@@ -43,7 +43,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root_handler))
         .route("/health", get(health_check))
-        .nest("/api", api::router())
+        .nest("/api", api::router(state.clone()))
         .nest("/ws", ws::routes())
         .merge(api::docs::swagger_routes())
         .layer(cors)

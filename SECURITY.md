@@ -2,11 +2,32 @@
 
 ## Reporting a Vulnerability
 
-Use GitHub's private vulnerability reporting feature or email
-security@adaptive-storage.dev.
+**Do not file a public issue for security vulnerabilities.**
+
+Use GitHub's [private vulnerability reporting](https://github.com/saworbit/space/security/advisories/new)
+or email security@adaptive-storage.dev.
 
 We aim to acknowledge reports within 48 hours and provide a fix timeline within
 7 days.
+
+## Severity Classification & Response
+
+| Severity | Examples | Embargo | Target Fix |
+|----------|---------|---------|------------|
+| **Critical** | Remote code execution, key material leak, auth bypass | Up to 90 days | 72 hours |
+| **High** | Privilege escalation, data corruption, crypto weakness | Up to 60 days | 7 days |
+| **Medium** | Denial of service, information disclosure | Up to 30 days | 14 days |
+| **Low** | Minor info leak, hardening gap | No embargo | Next release |
+
+## Embargo Policy
+
+For Critical and High severity issues:
+
+1. Fixes are developed in a private branch (not pushed to `main` until disclosure).
+2. The reporter is consulted on the Coordinated Release Date (CRD).
+3. Maximum embargo period is 90 days from acknowledgment.
+4. Disclosure dates avoid Fridays and public holidays.
+5. Once the fix is released, a security advisory is published with CVE (if applicable).
 
 ## Supported Versions
 

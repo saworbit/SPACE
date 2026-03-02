@@ -322,3 +322,109 @@ fn length_header(size: u64) -> HeaderValue {
 fn etag_header(hash: &str) -> HeaderValue {
     HeaderValue::from_str(hash).unwrap_or_else(|_| HeaderValue::from_static("unknown"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── normalize_path ────────────────────────────────────────────
+
+    #[test]
+    fn normalize_path_simple() {
+        assert_eq!(
+            normalize_path("data/myfile.txt").unwrap(),
+            "/data/myfile.txt"
+        );
+    }
+
+    #[test]
+    fn normalize_path_already_rooted() {
+        assert_eq!(
+            normalize_path("/data/myfile.txt").unwrap(),
+            "/data/myfile.txt"
+        );
+    }
+
+    #[test]
+    fn normalize_path_rejects_traversal() {
+        let err = normalize_path("../etc/passwd").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("path traversal"), "got: {msg}");
+    }
+
+    #[test]
+    fn normalize_path_rejects_traversal_mid_path() {
+        let err = normalize_path("/data/../../../etc/passwd").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("path traversal"), "got: {msg}");
+    }
+
+    #[test]
+    fn normalize_path_rejects_null_bytes() {
+        let err = normalize_path("/data/file\0.txt").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("null bytes"), "got: {msg}");
+    }
+
+    #[test]
+    fn normalize_path_rejects_backslash() {
+        let err = normalize_path("data\\file.txt").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("invalid characters"), "got: {msg}");
+    }
+
+    #[test]
+    fn normalize_path_allows_single_dot() {
+        // Single dot is a valid path component (current dir)
+        assert!(normalize_path("/data/./file.txt").is_ok());
+    }
+
+    #[test]
+    fn normalize_path_deep_nesting() {
+        assert_eq!(
+            normalize_path("a/b/c/d/e/f.txt").unwrap(),
+            "/a/b/c/d/e/f.txt"
+        );
+    }
+
+    #[test]
+    fn normalize_path_root_only() {
+        assert_eq!(normalize_path("/").unwrap(), "/");
+    }
+
+    #[test]
+    fn normalize_path_empty_string() {
+        assert_eq!(normalize_path("").unwrap(), "/");
+    }
+
+    // ── length_header ─────────────────────────────────────────────
+
+    #[test]
+    fn length_header_valid_size() {
+        let hdr = length_header(12345);
+        assert_eq!(hdr.to_str().unwrap(), "12345");
+    }
+
+    #[test]
+    fn length_header_zero() {
+        let hdr = length_header(0);
+        assert_eq!(hdr.to_str().unwrap(), "0");
+    }
+
+    // ── etag_header ───────────────────────────────────────────────
+
+    #[test]
+    fn etag_header_valid_hash() {
+        let hash = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9";
+        let hdr = etag_header(hash);
+        assert_eq!(hdr.to_str().unwrap(), hash);
+    }
+
+    // ── current_unix_time ─────────────────────────────────────────
+
+    #[test]
+    fn current_unix_time_nonzero() {
+        let t = current_unix_time();
+        assert!(t > 1_700_000_000, "timestamp should be recent, got: {t}");
+    }
+}

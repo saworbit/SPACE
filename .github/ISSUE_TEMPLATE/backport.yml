@@ -1,0 +1,36 @@
+name: Backport Request
+description: Request a fix be backported to a release branch
+title: "[BACKPORT] "
+labels: [backport]
+body:
+  - type: input
+    attributes:
+      label: Original PR / commit
+      description: Link to the PR or commit SHA that should be backported.
+      placeholder: "https://github.com/saworbit/space/pull/42 or abc1234"
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Target release branch
+      description: Which release branch should receive this backport?
+      placeholder: "release/v0.1.x"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Reason
+      options:
+        - Security fix
+        - Critical bug fix
+        - Data corruption fix
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Why is this backport necessary? Does it cherry-pick cleanly?

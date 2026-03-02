@@ -5,6 +5,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::Stream;
+use hex;
 
 use crate::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
@@ -140,6 +141,44 @@ pub trait Deduper: Send + Sync {
     fn stats(&self) -> DedupStats;
 }
 
+/// Per-segment context needed for decryption and MAC verification.
+///
+/// Populated from the persisted `Segment` metadata on the read path.
+#[derive(Debug, Clone, Default)]
+pub struct DecryptContext {
+    pub encryption_version: Option<u16>,
+    pub key_version: Option<u32>,
+    pub tweak_nonce: Option<[u8; 16]>,
+    pub integrity_tag: Option<[u8; 16]>,
+    pub ciphertext_len: Option<u32>,
+    pub content_hash: Option<[u8; 32]>,
+}
+
+impl DecryptContext {
+    /// Build from a stored [`crate::Segment`].
+    pub fn from_segment(seg: &crate::Segment) -> Self {
+        let content_hash = seg.content_hash.as_ref().and_then(|hash| {
+            hex::decode(hash.as_str()).ok().and_then(|bytes| {
+                if bytes.len() == 32 {
+                    let mut out = [0u8; 32];
+                    out.copy_from_slice(&bytes);
+                    Some(out)
+                } else {
+                    None
+                }
+            })
+        });
+        Self {
+            encryption_version: seg.encryption_version,
+            key_version: seg.key_version,
+            tweak_nonce: seg.tweak_nonce,
+            integrity_tag: seg.integrity_tag,
+            ciphertext_len: seg.encrypted.then_some(seg.len),
+            content_hash,
+        }
+    }
+}
+
 /// Trait implemented by encryption engines.
 pub trait Encryptor: Send + Sync {
     fn encrypt(
@@ -154,11 +193,13 @@ pub trait Encryptor: Send + Sync {
         data: &[u8],
         policy: &EncryptionPolicy,
         segment: SegmentId,
+        ctx: &DecryptContext,
     ) -> Result<Vec<u8>>;
 
-    fn compute_mac(&self, data: &[u8], segment: SegmentId) -> Result<Vec<u8>>;
+    fn compute_mac(&self, data: &[u8], segment: SegmentId, ctx: &DecryptContext)
+        -> Result<Vec<u8>>;
 
-    fn verify_mac(&self, data: &[u8], mac: &[u8], segment: SegmentId) -> Result<()>;
+    fn verify_mac(&self, data: &[u8], segment: SegmentId, ctx: &DecryptContext) -> Result<()>;
 }
 
 /// Transaction object returned by storage backends.

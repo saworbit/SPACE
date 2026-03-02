@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Background Scrub Scheduler** (`crates/common/src/scrub.rs`)
+  - Two-level scrubbing: light (metadata) and deep (content hash / MAC verification)
+  - `ScrubConfig` with configurable intervals, per-cycle segment limits, and inter-segment delays
+  - `ScrubSchedule` tracks per-segment scrub history via `BTreeMap<SegmentId, Instant>`
+  - `ScrubResult` enum covers metadata mismatch, content corruption, MAC failure, and read errors
+  - `ScrubReport` aggregates cycle results with duration and error counts
+  - Deep scrub implicitly records a light-scrub timestamp to avoid redundant work
+
+- **Erasure Coding Trait & Types** (`crates/common/src/erasure.rs`)
+  - `ErasureCode` trait with `encode`, `decode`, and `minimum_to_decode` methods
+  - Supports pluggable algorithms: Reed-Solomon, ISA-L, LRC (locally repairable codes)
+  - `ErasureProfile` stores k (data shards), m (parity shards), algorithm identifier
+  - Default profile: 6+2 Reed-Solomon (~1.33× overhead)
+  - Typed `ShardId`, `ShardIdSet`, and `ShardIdMap` for shard-safe APIs
+  - `ErasureError` with five variants covering shard and codec failures
+
+- **QoS Admission Control** (`crates/common/src/qos.rs`)
+  - mClock-style scheduling with per-class semaphore concurrency ceilings
+  - Three IO classes: `Client` (64), `Recovery` (16), `Background` (8)
+  - `QosScheduler` with async `acquire` (blocking) and `try_acquire` (non-blocking) paths
+  - RAII `QosPermit` releases the semaphore slot on drop
+  - `QosConfig` and `IoClass` are fully serializable for runtime configuration
+
+- **Deep Health Checks** (`crates/web-interface/src/api/handlers/system.rs`)
+  - `GET /api/v1/system/health` now runs real subsystem health checks
+  - Per-check severity classification: `ok`, `warn`, `error`
+  - Health IDs: `GOSSIP_OK`, `GOSSIP_NO_PEERS`, `GOSSIP_UNREACHABLE`
+  - Overall status derived from worst severity (error > warn > ok)
+  - `HealthCheck` and `HealthStatus` models with OpenAPI schema support
+
+- **Prometheus Metrics Registration** (`crates/web-interface/src/state.rs`)
+  - Five metrics registered with the Prometheus `Registry`:
+    - `api_requests_total` (IntCounter)
+    - `ws_messages_total` (IntCounter)
+    - `connected_peers` (IntGauge)
+    - `gossip_sent_total` (IntCounter)
+    - `files_stored_total` (IntCounter)
+  - `GET /api/metrics` endpoint exports all metrics in Prometheus text format
+  - Counters increment in respective command handlers (broadcast, store, connect)
+
+### Fixed
+
+- **Compression `compressed_size` bug** (`crates/compression/src/lib.rs`)
+  - `compressed_size` was incorrectly set to the original size; now correctly
+    set to `output.len()` so compression ratio calculations are accurate
+
+- **`XtsEncryptor::decrypt` placeholder** (`crates/pipeline/src/lib.rs`)
+  - `decrypt` was returning ciphertext unchanged; now constructs a
+    `DecryptContext` from segment metadata and performs real XTS-AES-256 decryption
+
+- **`XtsEncryptor::verify_mac` no-op** (`crates/pipeline/src/lib.rs`)
+  - `verify_mac` unconditionally returned `Ok(())`; now performs real
+    BLAKE3-MAC computation and constant-time comparison via `subtle::ConstantTimeEq`
+
+### Changed
+
+- **JWT auth middleware** (`crates/web-interface/src/api/auth.rs`)
+  - Debug-build fallback now generates random ephemeral secrets instead of a
+    hardcoded default; loudly warns via `tracing` to set `JWT_SECRET`
+  - `SPACE_DEV_GOD_TOKEN` dev override requires an explicit env var (no default)
+
+### Tests
+
+- **83 new tests** across 7 files, bringing the workspace total to 419 passing tests:
+  - `compression` — 16 tests: compressed_size regression, adaptive paths, ratio calculations
+  - `pipeline` — 19 tests: XTS encrypt/decrypt roundtrip, MAC compute/verify, NoopEncryptor, full pipeline
+  - `common/scrub` — 12 tests: config defaults, result variants, report accumulation, schedule behaviour
+  - `common/erasure` — 14 tests: profile construction, overhead ratios, serde, error Display, ShardId
+  - `common/qos` — 10 tests: config defaults, permit tracking, saturation, serde, error Display
+  - `web-interface/state` — 12 tests: metrics registration, counter increments, peer management
+  - `web-interface/api` — 10 tests: deep health checks, mock gossip handlers, severity derivation
+
 - **Phase 9.1: Federation Control Plane (Raft Consensus)** - Distributed consensus for cluster coordination
   - **Raft Consensus Engine** (`crates/federation/src/engine.rs`) - Production-ready Raft implementation
     - Uses tikv/raft-rs v0.7.0 (industry-standard Raft from TiKV/Etcd ecosystem)

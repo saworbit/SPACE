@@ -74,7 +74,7 @@ pub use key_provider::{
 pub use keymanager::{KeyManager, XtsKeyPair};
 pub use mac::{compute_mac, verify_mac, MAC_TAG_SIZE};
 pub use policy::{EncryptionMetadata, EncryptionPolicy, EncryptionStats};
-pub use xts::{decrypt_segment, derive_tweak_from_hash, encrypt_segment};
+pub use xts::{decrypt, decrypt_segment, derive_tweak_from_hash, encrypt, encrypt_segment};
 
 // Version information
 /// Encryption crate version

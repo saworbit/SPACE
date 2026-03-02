@@ -1,0 +1,36 @@
+name: Backport
+
+# When a PR merged to main is labeled "backport:<branch>", automatically
+# create a cherry-pick PR targeting that branch.
+#
+# Usage: add a label like "backport:release/v0.1.x" to a merged PR.
+
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backport:
+    name: Create backport PR
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(toJSON(github.event.pull_request.labels.*.name), 'backport:')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create backport PRs
+        uses: korthout/backport-action@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          label_pattern: "backport:(.+)"
+          pull_description: |
+            Backport of #${pull_number} to `${target_branch}`.
+
+            Original: ${pull_title}

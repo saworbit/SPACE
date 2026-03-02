@@ -5,8 +5,8 @@ use async_stream::try_stream;
 use bytes::Bytes;
 use common::{
     traits::{
-        CapsuleCatalog, Compressor, DataStream, DedupStats, Deduper, EncryptionSummary, Encryptor,
-        Keyring, PolicyEvaluator, StorageBackend, StorageTransaction,
+        CapsuleCatalog, Compressor, DataStream, DecryptContext, DedupStats, Deduper,
+        EncryptionSummary, Encryptor, Keyring, PolicyEvaluator, StorageBackend, StorageTransaction,
     },
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
     SegmentId,
@@ -20,7 +20,8 @@ use storage::{InMemoryBackend, NvramBackend};
 use tracing::instrument;
 
 use encryption::{
-    compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE, KeyManager,
+    compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE,
+    EncryptionMetadata, KeyManager,
 };
 use layout_engine::LayoutEngine;
 #[cfg(feature = "phase5")]
@@ -55,15 +56,21 @@ impl Encryptor for NoopEncryptor {
         data: &[u8],
         _policy: &EncryptionPolicy,
         _segment: SegmentId,
+        _ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
         Ok(data.to_vec())
     }
 
-    fn compute_mac(&self, _data: &[u8], _segment: SegmentId) -> Result<Vec<u8>> {
+    fn compute_mac(
+        &self,
+        _data: &[u8],
+        _segment: SegmentId,
+        _ctx: &DecryptContext,
+    ) -> Result<Vec<u8>> {
         Ok(Vec::new())
     }
 
-    fn verify_mac(&self, _data: &[u8], _mac: &[u8], _segment: SegmentId) -> Result<()> {
+    fn verify_mac(&self, _data: &[u8], _segment: SegmentId, _ctx: &DecryptContext) -> Result<()> {
         Ok(())
     }
 }
@@ -90,6 +97,35 @@ impl XtsEncryptor {
             .context("failed to load XTS key")?
             .clone();
         Ok((key_version, key_pair))
+    }
+
+    fn resolve_tweak(&self, ctx: &DecryptContext) -> Result<[u8; 16]> {
+        ctx.tweak_nonce
+            .or_else(|| ctx.content_hash.map(|hash| derive_tweak_from_hash(&hash)))
+            .ok_or_else(|| anyhow!("missing tweak nonce or content hash for decryption"))
+    }
+
+    fn build_mac_metadata(
+        &self,
+        ctx: &DecryptContext,
+        ciphertext_len: u32,
+        integrity_tag: Option<[u8; 16]>,
+        policy: Option<&EncryptionPolicy>,
+    ) -> Result<(EncryptionMetadata, encryption::XtsKeyPair)> {
+        let tweak = self.resolve_tweak(ctx)?;
+        let (key_version, key_pair) = self.acquire_key(ctx.key_version)?;
+        let encryption_version = ctx
+            .encryption_version
+            .or_else(|| policy.and_then(|p| p.is_enabled().then_some(1)));
+        let metadata = EncryptionMetadata {
+            encryption_version,
+            key_version: Some(key_version),
+            wrapped_segment_key: None,
+            tweak_nonce: Some(tweak),
+            integrity_tag,
+            ciphertext_len: Some(ciphertext_len),
+        };
+        Ok((metadata, key_pair))
     }
 }
 
@@ -144,18 +180,39 @@ impl Encryptor for XtsEncryptor {
     fn decrypt(
         &self,
         data: &[u8],
-        _policy: &EncryptionPolicy,
+        policy: &EncryptionPolicy,
         _segment: SegmentId,
+        ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
-        // Decryption requires persisted metadata. Placeholder implementation returns ciphertext.
-        Ok(data.to_vec())
+        let ciphertext_len = ctx.ciphertext_len.unwrap_or(data.len() as u32);
+        let (metadata, key_pair) =
+            self.build_mac_metadata(ctx, ciphertext_len, ctx.integrity_tag, Some(policy))?;
+        encryption::verify_mac(data, &metadata, key_pair.key1(), key_pair.key2())
+            .context("MAC verification failed")?;
+
+        let tweak = metadata
+            .tweak_nonce
+            .ok_or_else(|| anyhow!("missing tweak nonce for decryption"))?;
+        encryption::decrypt(data, &key_pair, &tweak).context("XTS-AES-256 decryption failed")
     }
 
-    fn compute_mac(&self, data: &[u8], _segment: SegmentId) -> Result<Vec<u8>> {
-        Ok(blake3::hash(data).as_bytes().to_vec())
+    fn compute_mac(
+        &self,
+        data: &[u8],
+        _segment: SegmentId,
+        ctx: &DecryptContext,
+    ) -> Result<Vec<u8>> {
+        let (metadata, key_pair) = self.build_mac_metadata(ctx, data.len() as u32, None, None)?;
+        let tag = encryption::compute_mac(data, &metadata, key_pair.key1(), key_pair.key2())
+            .context("failed to compute MAC")?;
+        Ok(tag.to_vec())
     }
 
-    fn verify_mac(&self, _data: &[u8], _mac: &[u8], _segment: SegmentId) -> Result<()> {
+    fn verify_mac(&self, data: &[u8], _segment: SegmentId, ctx: &DecryptContext) -> Result<()> {
+        let (metadata, key_pair) =
+            self.build_mac_metadata(ctx, data.len() as u32, ctx.integrity_tag, None)?;
+        encryption::verify_mac(data, &metadata, key_pair.key1(), key_pair.key2())
+            .context("MAC verification failed")?;
         Ok(())
     }
 }
@@ -394,8 +451,9 @@ where
             let raw = self.storage.read(*seg_id).await?;
 
             let decrypted = if metadata.encrypted {
+                let ctx = DecryptContext::from_segment(&metadata);
                 self.encryptor
-                    .decrypt(&raw, &capsule.policy.encryption, *seg_id)?
+                    .decrypt(&raw, &capsule.policy.encryption, *seg_id, &ctx)?
             } else {
                 raw
             };
@@ -821,8 +879,9 @@ where
                     .map_err(|e| anyhow!("Failed to read segment {:?}: {}", seg_id, e))?;
 
                 let decrypted = if metadata.encrypted {
+                    let ctx = DecryptContext::from_segment(&metadata);
                     encryptor_stream
-                        .decrypt(&raw, &encryption_policy, seg_id)
+                        .decrypt(&raw, &encryption_policy, seg_id, &ctx)
                         .map_err(|e| anyhow!("Decryption failed for segment {:?}: {}", seg_id, e))?
                 } else {
                     raw
@@ -929,8 +988,9 @@ where
 
             let raw = self.storage.read(*seg_id).await?;
             let decrypted = if metadata.encrypted {
+                let ctx = DecryptContext::from_segment(&metadata);
                 self.encryptor
-                    .decrypt(&raw, &capsule.policy.encryption, *seg_id)?
+                    .decrypt(&raw, &capsule.policy.encryption, *seg_id, &ctx)?
             } else {
                 raw
             };
@@ -1202,4 +1262,752 @@ pub fn pipeline_with_nvram_xts<P: AsRef<std::path::Path>>(
         Some(KeyManagerKeyring::new(key_manager)),
         InMemoryCatalog::default(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::traits::DecryptContext;
+    use encryption::keymanager::MASTER_KEY_SIZE;
+    use std::borrow::Cow;
+    use std::sync::{Arc, Mutex};
+
+    fn make_xts_encryptor() -> XtsEncryptor {
+        let master = [42u8; MASTER_KEY_SIZE];
+        let manager = KeyManager::new(master);
+        XtsEncryptor::new(Arc::new(Mutex::new(manager)))
+    }
+
+    fn make_xts_encryptor_with_key(key_byte: u8) -> XtsEncryptor {
+        let master = [key_byte; MASTER_KEY_SIZE];
+        let manager = KeyManager::new(master);
+        XtsEncryptor::new(Arc::new(Mutex::new(manager)))
+    }
+
+    // ── XtsEncryptor encrypt / decrypt round-trip ────────────────────
+
+    #[test]
+    fn test_xts_encrypt_decrypt_roundtrip() {
+        let enc = make_xts_encryptor();
+        let plaintext = b"Hello, SPACE encryption roundtrip!".repeat(5);
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+
+        let (ciphertext, summary) = enc
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .expect("encrypt should succeed");
+
+        // Ciphertext should differ from plaintext
+        assert_ne!(ciphertext.as_slice(), plaintext.as_slice());
+        assert_eq!(ciphertext.len(), plaintext.len());
+
+        // Build a DecryptContext from the encryption summary
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: summary.integrity_tag,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        let decrypted = enc
+            .decrypt(&ciphertext, &policy, seg, &ctx)
+            .expect("decrypt should succeed");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_xts_encrypt_noop_when_policy_none() {
+        let enc = make_xts_encryptor();
+        let plaintext = b"No encryption please".to_vec();
+        let policy = EncryptionPolicy::Disabled;
+        let seg = SegmentId(1);
+
+        let (output, summary) = enc
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .expect("encrypt should succeed");
+
+        assert_eq!(
+            output, plaintext,
+            "policy None should return data unchanged"
+        );
+        assert_eq!(summary.algorithm, "none");
+    }
+
+    #[test]
+    fn test_xts_decrypt_missing_tweak_returns_error() {
+        let enc = make_xts_encryptor();
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+        let ctx = DecryptContext {
+            encryption_version: Some(1),
+            key_version: Some(1),
+            tweak_nonce: None, // Missing!
+            integrity_tag: None,
+            ciphertext_len: Some(0),
+            ..Default::default()
+        };
+
+        let result = enc.decrypt(b"some ciphertext data", &policy, seg, &ctx);
+        assert!(result.is_err(), "decrypt with missing tweak should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("tweak"),
+            "error should mention tweak, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_xts_encrypt_deterministic() {
+        let enc = make_xts_encryptor();
+        let plaintext = b"Deterministic encryption test!".repeat(3);
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(10);
+
+        let (ct1, _) = enc
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .unwrap();
+        let (ct2, _) = enc
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .unwrap();
+
+        assert_eq!(
+            ct1, ct2,
+            "same plaintext + same key → same ciphertext (dedup-preserving)"
+        );
+    }
+
+    #[test]
+    fn test_xts_different_keys_produce_different_ciphertext() {
+        let enc1 = make_xts_encryptor_with_key(1);
+        let enc2 = make_xts_encryptor_with_key(2);
+        let plaintext = b"Different key test data!".repeat(3);
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+
+        let (ct1, _) = enc1
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .unwrap();
+        let (ct2, _) = enc2
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .unwrap();
+
+        assert_ne!(
+            ct1, ct2,
+            "different keys should produce different ciphertext"
+        );
+    }
+
+    #[test]
+    fn test_xts_wrong_key_decrypt_fails() {
+        let enc1 = make_xts_encryptor_with_key(10);
+        let enc2 = make_xts_encryptor_with_key(20);
+        let plaintext = b"Wrong key decryption test!".repeat(3);
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+
+        let (ciphertext, summary) = enc1
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .unwrap();
+
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: summary.integrity_tag,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        // Decrypt with a different key should fail MAC verification
+        let result = enc2.decrypt(&ciphertext, &policy, seg, &ctx);
+        assert!(result.is_err(), "wrong key should fail decryption");
+    }
+
+    // ── DecryptContext construction ──────────────────────────────────
+
+    #[test]
+    fn test_decrypt_context_default() {
+        let ctx = DecryptContext::default();
+        assert!(ctx.encryption_version.is_none());
+        assert!(ctx.key_version.is_none());
+        assert!(ctx.tweak_nonce.is_none());
+        assert!(ctx.integrity_tag.is_none());
+        assert!(ctx.ciphertext_len.is_none());
+        assert!(ctx.content_hash.is_none());
+    }
+
+    #[test]
+    fn test_decrypt_context_from_segment() {
+        let tweak = [0xABu8; 16];
+        let tag = [0xCDu8; 16];
+        let content_hash = ContentHash::from_bytes(&[0x11u8; 32]);
+        let seg = Segment {
+            id: SegmentId(5),
+            offset: 0,
+            len: 1024,
+            plain_len: Some(1024),
+            compressed: false,
+            compression_algo: String::new(),
+            content_hash: Some(content_hash),
+            ref_count: 1,
+            deduplicated: false,
+            access_count: 0,
+            encryption_version: Some(1),
+            key_version: Some(3),
+            tweak_nonce: Some(tweak),
+            integrity_tag: Some(tag),
+            encrypted: true,
+            pq_ciphertext: None,
+            pq_nonce: None,
+        };
+
+        let ctx = DecryptContext::from_segment(&seg);
+        assert_eq!(ctx.encryption_version, Some(1));
+        assert_eq!(ctx.key_version, Some(3));
+        assert_eq!(ctx.tweak_nonce, Some(tweak));
+        assert_eq!(ctx.integrity_tag, Some(tag));
+        assert_eq!(ctx.ciphertext_len, Some(1024));
+        assert!(ctx.content_hash.is_some());
+    }
+
+    // ── MAC compute + verify ────────────────────────────────────────
+
+    #[test]
+    fn test_xts_compute_mac_produces_bytes() {
+        let enc = make_xts_encryptor();
+        let data = b"MAC test data 1234";
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+        let (ciphertext, summary) = enc.encrypt(Cow::Borrowed(data), &policy, seg).unwrap();
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: None,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+        let mac = enc.compute_mac(&ciphertext, seg, &ctx).unwrap();
+        assert_eq!(mac.len(), 16, "MAC tag should be 16 bytes");
+    }
+
+    #[test]
+    fn test_xts_verify_mac_valid() {
+        let enc = make_xts_encryptor();
+        let data = b"MAC verify test data";
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+        let (ciphertext, summary) = enc.encrypt(Cow::Borrowed(data), &policy, seg).unwrap();
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: summary.integrity_tag,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        enc.verify_mac(&ciphertext, seg, &ctx)
+            .expect("valid MAC should pass verification");
+    }
+
+    #[test]
+    fn test_xts_verify_mac_tampered_data() {
+        let enc = make_xts_encryptor();
+        let data = b"Original MAC data";
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+        let (mut ciphertext, summary) = enc.encrypt(Cow::Borrowed(data), &policy, seg).unwrap();
+        ciphertext[0] ^= 0xFF;
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: summary.integrity_tag,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        let result = enc.verify_mac(&ciphertext, seg, &ctx);
+        assert!(
+            result.is_err(),
+            "tampered data should fail MAC verification"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("MAC verification failed"),
+            "error should mention MAC failure, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_xts_verify_mac_tampered_tag() {
+        let enc = make_xts_encryptor();
+        let data = b"MAC tag tamper test";
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+        let (ciphertext, summary) = enc.encrypt(Cow::Borrowed(data), &policy, seg).unwrap();
+        let mut tag = summary.integrity_tag.unwrap();
+        tag[0] ^= 0xFF;
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: Some(tag),
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        let result = enc.verify_mac(&ciphertext, seg, &ctx);
+        assert!(result.is_err(), "tampered MAC tag should fail verification");
+    }
+
+    #[test]
+    fn test_xts_verify_mac_missing_tag() {
+        let enc = make_xts_encryptor();
+        let data = b"Missing MAC tag!";
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(1);
+        let (ciphertext, summary) = enc.encrypt(Cow::Borrowed(data), &policy, seg).unwrap();
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: None,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        let result = enc.verify_mac(&ciphertext, seg, &ctx);
+        assert!(result.is_err(), "missing MAC tag should fail verification");
+    }
+
+    #[test]
+    fn test_xts_mac_deterministic() {
+        let enc = make_xts_encryptor();
+        let data = b"Deterministic MAC test";
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let (ciphertext, summary) = enc
+            .encrypt(Cow::Borrowed(data), &policy, SegmentId(1))
+            .unwrap();
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: None,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+        let mac1 = enc.compute_mac(&ciphertext, SegmentId(1), &ctx).unwrap();
+        let mac2 = enc.compute_mac(&ciphertext, SegmentId(2), &ctx).unwrap();
+
+        // MAC does not include segment ID, so tags should match for identical inputs
+        assert_eq!(mac1, mac2, "MAC should be deterministic for the same data");
+    }
+
+    // ── Noop encryptor ──────────────────────────────────────────────
+
+    #[test]
+    fn test_noop_encrypt_returns_data_unchanged() {
+        let enc = NoopEncryptor;
+        let data = b"NoopEncryptor test";
+        let policy = EncryptionPolicy::Disabled;
+
+        let (output, summary) = enc
+            .encrypt(Cow::Borrowed(data), &policy, SegmentId(1))
+            .unwrap();
+        assert_eq!(output, data);
+        assert_eq!(summary.algorithm, "noop");
+    }
+
+    #[test]
+    fn test_noop_decrypt_returns_data_unchanged() {
+        let enc = NoopEncryptor;
+        let data = b"NoopEncryptor decrypt";
+        let ctx = DecryptContext::default();
+
+        let result = enc
+            .decrypt(data, &EncryptionPolicy::Disabled, SegmentId(1), &ctx)
+            .unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_noop_verify_mac_always_ok() {
+        let enc = NoopEncryptor;
+        let ctx = DecryptContext::default();
+        enc.verify_mac(b"any data", SegmentId(1), &ctx)
+            .expect("noop verify_mac should always succeed");
+    }
+
+    // ── Encrypt+MAC end-to-end ──────────────────────────────────────
+
+    #[test]
+    fn test_xts_full_encrypt_mac_verify_decrypt_roundtrip() {
+        let enc = make_xts_encryptor();
+        let plaintext = b"Full end-to-end roundtrip test!".repeat(4);
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+        let seg = SegmentId(99);
+
+        // 1) Encrypt
+        let (ciphertext, summary) = enc
+            .encrypt(Cow::Borrowed(&plaintext), &policy, seg)
+            .unwrap();
+
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: summary.integrity_tag,
+            ciphertext_len: Some(ciphertext.len() as u32),
+            ..Default::default()
+        };
+
+        // 2) Compute MAC on ciphertext
+        let mac = enc.compute_mac(&ciphertext, seg, &ctx).unwrap();
+        assert_eq!(mac.len(), 16);
+
+        // 3) Verify MAC
+        enc.verify_mac(&ciphertext, seg, &ctx)
+            .expect("MAC on freshly-encrypted data should verify");
+
+        // 4) Decrypt
+        let decrypted = enc.decrypt(&ciphertext, &policy, seg, &ctx).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    // ── XtsEncryptor::default ───────────────────────────────────────
+
+    #[test]
+    fn test_xts_encryptor_default_works() {
+        let enc = XtsEncryptor::default();
+        let plaintext = b"Default encryptor test".repeat(3);
+        let policy = EncryptionPolicy::XtsAes256 {
+            key_version: Some(1),
+        };
+
+        let (ct, summary) = enc
+            .encrypt(Cow::Borrowed(&plaintext), &policy, SegmentId(1))
+            .unwrap();
+
+        let ctx = DecryptContext {
+            encryption_version: summary.encryption_version,
+            key_version: summary.key_version,
+            tweak_nonce: summary.tweak_nonce,
+            integrity_tag: summary.integrity_tag,
+            ciphertext_len: Some(ct.len() as u32),
+            ..Default::default()
+        };
+
+        let decrypted = enc.decrypt(&ct, &policy, SegmentId(1), &ctx).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    // ── InMemoryCatalog ───────────────────────────────────────────────
+
+    #[test]
+    fn catalog_allocate_segment_increments() {
+        let catalog = InMemoryCatalog::new();
+        let s1 = catalog.allocate_segment().unwrap();
+        let s2 = catalog.allocate_segment().unwrap();
+        let s3 = catalog.allocate_segment().unwrap();
+        assert_eq!(s1.0, 0);
+        assert_eq!(s2.0, 1);
+        assert_eq!(s3.0, 2);
+    }
+
+    #[test]
+    fn catalog_create_and_lookup_capsule() {
+        use common::traits::DedupStats;
+        let catalog = InMemoryCatalog::new();
+        let id = CapsuleId(uuid::Uuid::new_v4());
+        let policy = Policy::default();
+        let stats = DedupStats::new();
+        catalog
+            .create_capsule(id, 100, &policy, vec![], &stats)
+            .unwrap();
+
+        let capsule = catalog.lookup_capsule(id).unwrap();
+        assert_eq!(capsule.id, id);
+        assert_eq!(capsule.size, 100);
+    }
+
+    #[test]
+    fn catalog_lookup_missing_capsule() {
+        let catalog = InMemoryCatalog::new();
+        let id = CapsuleId(uuid::Uuid::new_v4());
+        let result = catalog.lookup_capsule(id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn catalog_create_with_segments() {
+        use common::traits::DedupStats;
+        let catalog = InMemoryCatalog::new();
+        let id = CapsuleId(uuid::Uuid::new_v4());
+        let seg = catalog.allocate_segment().unwrap();
+        let policy = Policy::default();
+        let stats = DedupStats::new();
+        catalog
+            .create_capsule(id, 200, &policy, vec![seg], &stats)
+            .unwrap();
+
+        let capsule = catalog.lookup_capsule(id).unwrap();
+        assert!(capsule.segments.contains(&seg));
+    }
+
+    #[test]
+    fn catalog_delete_capsule() {
+        use common::traits::DedupStats;
+        let catalog = InMemoryCatalog::new();
+        let id = CapsuleId(uuid::Uuid::new_v4());
+        let policy = Policy::default();
+        let stats = DedupStats::new();
+        catalog
+            .create_capsule(id, 50, &policy, vec![], &stats)
+            .unwrap();
+        assert!(catalog.lookup_capsule(id).is_ok());
+
+        catalog.delete_capsule(id).unwrap();
+        assert!(catalog.lookup_capsule(id).is_err());
+    }
+
+    #[test]
+    fn catalog_content_dedup_mapping() {
+        let catalog = InMemoryCatalog::new();
+        let hash = ContentHash("abababababababababababababababab".to_string());
+        let seg = SegmentId(42);
+
+        // First time: no existing segment for this hash
+        let existing = catalog.lookup_content(&hash);
+        assert!(existing.is_none());
+
+        // Register content mapping
+        catalog.register_content(hash.clone(), seg).unwrap();
+
+        // Now should find it
+        let found = catalog.lookup_content(&hash);
+        assert_eq!(found, Some(seg));
+    }
+
+    // ── DefaultPolicyEvaluator ────────────────────────────────────────
+
+    #[test]
+    fn default_evaluator_returns_policy_compression() {
+        let eval = DefaultPolicyEvaluator;
+        let policy = Policy {
+            compression: CompressionPolicy::LZ4 { level: 1 },
+            ..Policy::default()
+        };
+        let result = eval.evaluate_compression(&policy, b"sample").unwrap();
+        match result {
+            CompressionPolicy::LZ4 { .. } => {}
+            other => panic!("expected LZ4, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_evaluator_returns_policy_dedupe() {
+        let eval = DefaultPolicyEvaluator;
+        let policy = Policy {
+            dedupe: true,
+            ..Policy::default()
+        };
+        assert!(eval.evaluate_dedup(&policy).unwrap());
+
+        let policy = Policy {
+            dedupe: false,
+            ..Policy::default()
+        };
+        assert!(!eval.evaluate_dedup(&policy).unwrap());
+    }
+
+    #[test]
+    fn default_evaluator_returns_policy_encryption() {
+        let eval = DefaultPolicyEvaluator;
+        let policy = Policy {
+            encryption: EncryptionPolicy::Disabled,
+            ..Policy::default()
+        };
+        let result = eval.evaluate_encryption(&policy).unwrap();
+        assert_eq!(result, EncryptionPolicy::Disabled);
+    }
+
+    // ── NullKeyring ───────────────────────────────────────────────────
+
+    #[test]
+    fn null_keyring_derive_returns_zeroes() {
+        let keyring = NullKeyring;
+        let key = keyring
+            .derive_key(CapsuleId(uuid::Uuid::nil()), SegmentId(0))
+            .unwrap();
+        assert_eq!(key, [0u8; 32]);
+    }
+
+    #[test]
+    fn null_keyring_rotate_succeeds() {
+        let mut keyring = NullKeyring;
+        keyring
+            .rotate_key(CapsuleId(uuid::Uuid::nil()))
+            .expect("rotate should succeed");
+    }
+
+    // ── KeyManagerKeyring ─────────────────────────────────────────────
+
+    #[test]
+    fn key_manager_keyring_derive_returns_key() {
+        let keyring = KeyManagerKeyring::default();
+        let key = keyring
+            .derive_key(CapsuleId(uuid::Uuid::new_v4()), SegmentId(0))
+            .unwrap();
+        // Should return a non-zero key (from key manager)
+        assert_eq!(key.len(), 32);
+    }
+
+    #[test]
+    fn key_manager_keyring_rotate() {
+        let mut keyring = KeyManagerKeyring::default();
+        keyring
+            .rotate_key(CapsuleId(uuid::Uuid::new_v4()))
+            .expect("rotate should succeed");
+    }
+
+    // ── PipelineBuilder ───────────────────────────────────────────────
+
+    #[test]
+    fn pipeline_builder_default_builds() {
+        let pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        assert_eq!(pipeline.stats().total_segments, 0);
+    }
+
+    #[test]
+    fn pipeline_builder_with_components() {
+        let pipeline = PipelineBuilder::new()
+            .with_compressor(Lz4ZstdCompressor)
+            .with_deduper(Blake3Deduper::default())
+            .with_encryptor(NoopEncryptor)
+            .with_storage(InMemoryBackend::default())
+            .with_evaluator(DefaultPolicyEvaluator)
+            .with_keyring(NullKeyring)
+            .with_catalog(InMemoryCatalog::new())
+            .build();
+        assert_eq!(pipeline.stats().total_segments, 0);
+    }
+
+    // ── Pipeline write + read round-trip ──────────────────────────────
+
+    #[tokio::test]
+    async fn pipeline_write_read_roundtrip() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let data = b"Hello, Pipeline roundtrip!";
+        let policy = Policy::default();
+
+        let id = pipeline.write_capsule(data, &policy).await.unwrap();
+        let output = pipeline.read_capsule(id).await.unwrap();
+        assert_eq!(output, data);
+    }
+
+    #[tokio::test]
+    async fn pipeline_write_multiple_capsules() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = Policy::default();
+
+        let id1 = pipeline
+            .write_capsule(b"capsule-one", &policy)
+            .await
+            .unwrap();
+        let id2 = pipeline
+            .write_capsule(b"capsule-two", &policy)
+            .await
+            .unwrap();
+        assert_ne!(id1, id2);
+
+        let data1 = pipeline.read_capsule(id1).await.unwrap();
+        let data2 = pipeline.read_capsule(id2).await.unwrap();
+        assert_eq!(data1, b"capsule-one");
+        assert_eq!(data2, b"capsule-two");
+    }
+
+    #[tokio::test]
+    async fn pipeline_read_nonexistent_capsule() {
+        let pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let fake_id = CapsuleId(uuid::Uuid::new_v4());
+        let result = pipeline.read_capsule(fake_id).await;
+        assert!(result.is_err());
+    }
+
+    // ── Pipeline delete ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pipeline_delete_capsule() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let data = b"delete me";
+        let policy = Policy::default();
+
+        let id = pipeline.write_capsule(data, &policy).await.unwrap();
+        assert!(pipeline.read_capsule(id).await.is_ok());
+
+        pipeline.delete_capsule(id).await.unwrap();
+        assert!(pipeline.read_capsule(id).await.is_err());
+    }
+
+    // ── Pipeline dedup stats ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pipeline_dedup_stats_after_writes() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = Policy {
+            dedupe: true,
+            ..Policy::default()
+        };
+
+        pipeline
+            .write_capsule(b"dedup-data", &policy)
+            .await
+            .unwrap();
+        let stats = pipeline.stats();
+        assert!(stats.total_segments > 0);
+    }
+
+    // ── Pipeline with compression ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn pipeline_compression_roundtrip() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = Policy {
+            compression: CompressionPolicy::LZ4 { level: 1 },
+            ..Policy::default()
+        };
+        let data = b"AAAA".repeat(1000); // highly compressible
+
+        let id = pipeline.write_capsule(&data, &policy).await.unwrap();
+        let output = pipeline.read_capsule(id).await.unwrap();
+        assert_eq!(output, data);
+    }
 }

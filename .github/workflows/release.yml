@@ -5,16 +5,34 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tests pass
+        run: cargo test --workspace -- --test-threads=2
+
+      - name: Build release binary
+        run: cargo build --release -p spacectl
+
       - uses: katyo/publish-crates@v2
         with:
           registry: crates.io
           token: ${{ secrets.CRATE_TOKEN }}
+
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:

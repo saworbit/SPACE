@@ -1,0 +1,51 @@
+name: Security Concern
+description: Report a non-critical security hardening issue (for vulnerabilities, use private reporting)
+title: "[SECURITY] "
+labels: [security]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **For actual vulnerabilities** (exploitable bugs, key leaks, auth bypass), please use
+        [GitHub private vulnerability reporting](https://github.com/saworbit/space/security/advisories/new)
+        or email security@adaptive-storage.dev instead of this template.
+
+        This template is for non-critical security improvements: hardening suggestions,
+        dependency advisories, missing input validation, etc.
+
+  - type: textarea
+    attributes:
+      label: Description
+      description: What security improvement or concern are you reporting?
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Area
+      options:
+        - Encryption / crypto
+        - Input validation
+        - Authentication / authorization
+        - Dependency advisory
+        - Transport / TLS
+        - Secret management
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Severity estimate
+      description: Your best estimate of impact.
+      options:
+        - Low (hardening, defense-in-depth)
+        - Medium (DoS, minor info disclosure)
+        - High (privilege escalation, data corruption)
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Suggested fix or mitigation
+      description: If you have a fix in mind, describe it here.

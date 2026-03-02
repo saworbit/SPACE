@@ -193,11 +193,12 @@ fn attempt_compress(
         CompressionPolicy::LZ4 { level } => {
             let level = adjusted_level(*level, "lz4")?;
             let compressed = compress_lz4(data, level)?;
+            let compressed_size = compressed.len();
             Ok((
                 compressed,
                 CompressionResult {
                     original_size: data.len(),
-                    compressed_size: data.len(),
+                    compressed_size,
                     compressed: true,
                     reused_original: false,
                     algorithm: format!("lz4:{level}"),
@@ -208,11 +209,12 @@ fn attempt_compress(
         CompressionPolicy::Zstd { level } => {
             let level = adjusted_level(*level, "zstd")?;
             let compressed = compress_zstd(data, level)?;
+            let compressed_size = compressed.len();
             Ok((
                 compressed,
                 CompressionResult {
                     original_size: data.len(),
-                    compressed_size: data.len(),
+                    compressed_size,
                     compressed: true,
                     reused_original: false,
                     algorithm: format!("zstd:{level}"),
@@ -460,5 +462,211 @@ mod tests {
         let (_view, result) = adaptive_compress(&data, &policy).unwrap();
         assert!(result.compressed);
         assert!(!result.reused_original);
+    }
+
+    // ── Bug-fix regression: compressed_size must reflect actual compressed bytes ──
+
+    #[test]
+    fn test_lz4_compressed_size_is_smaller_than_original() {
+        let data = b"AAAA".repeat(10_000); // highly compressible
+        let policy = CompressionPolicy::LZ4 { level: 4 };
+
+        let (_output, result) = attempt_compress(&data, &policy).unwrap();
+        assert!(result.compressed);
+        assert!(
+            result.compressed_size < result.original_size,
+            "compressed_size ({}) must be less than original_size ({}) for compressible data",
+            result.compressed_size,
+            result.original_size
+        );
+        // Also ensure ratio() is meaningful
+        assert!(
+            result.ratio() > 1.0,
+            "ratio should be > 1.0 for compressible data"
+        );
+    }
+
+    #[test]
+    fn test_zstd_compressed_size_is_smaller_than_original() {
+        let data = b"BBBB".repeat(10_000); // highly compressible
+        let policy = CompressionPolicy::Zstd { level: 3 };
+
+        let (_output, result) = attempt_compress(&data, &policy).unwrap();
+        assert!(result.compressed);
+        assert!(
+            result.compressed_size < result.original_size,
+            "compressed_size ({}) must be less than original_size ({}) for compressible data",
+            result.compressed_size,
+            result.original_size
+        );
+        assert!(result.ratio() > 1.0);
+    }
+
+    #[test]
+    fn test_compressed_size_matches_output_len() {
+        let data = b"Round trip size check ".repeat(500);
+
+        for policy in [
+            CompressionPolicy::LZ4 { level: 4 },
+            CompressionPolicy::Zstd { level: 3 },
+        ] {
+            let (output, result) = attempt_compress(&data, &policy).unwrap();
+            assert_eq!(
+                result.compressed_size,
+                output.len(),
+                "compressed_size must equal the actual output byte count for {:?}",
+                policy
+            );
+        }
+    }
+
+    #[test]
+    fn test_compression_none_reports_same_sizes() {
+        let data = b"Policy None test ".repeat(50);
+        let policy = CompressionPolicy::None;
+
+        let (_output, result) = attempt_compress(&data, &policy).unwrap();
+        assert!(!result.compressed);
+        assert!(result.reused_original);
+        assert_eq!(result.compressed_size, result.original_size);
+        assert_eq!(result.algorithm, "identity");
+    }
+
+    // ── Adaptive compress path coverage ──
+
+    #[test]
+    fn test_adaptive_compress_none_policy_returns_borrowed() {
+        let data = b"Some data payload".repeat(100);
+        let policy = CompressionPolicy::None;
+
+        let (output, result) = adaptive_compress(&data, &policy).unwrap();
+        assert!(!result.compressed);
+        assert!(result.reused_original);
+        // The output should be a borrowed reference (Cow::Borrowed)
+        assert!(matches!(output, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_adaptive_compress_ineffective_falls_back() {
+        // Build data that LZ4 cannot compress well (pseudo-random)
+        let data: Vec<u8> = (0..2048).map(|i| ((i * 7919 + 997) % 256) as u8).collect();
+        let policy = CompressionPolicy::LZ4 { level: 1 };
+
+        let (output, result) = adaptive_compress(&data, &policy).unwrap();
+        // If LZ4 can't beat identity, the result should report reused_original
+        if result.compressed_size >= result.original_size {
+            assert!(!result.compressed);
+            assert!(result.reused_original);
+            assert_eq!(result.algorithm, "identity");
+            assert!(matches!(output, Cow::Borrowed(_)));
+        }
+    }
+
+    // ── Level clamping ──
+
+    #[test]
+    fn test_adjusted_level_clamps_lz4() {
+        assert_eq!(adjusted_level(0, "lz4").unwrap(), 1); // below min
+        assert_eq!(adjusted_level(50, "lz4").unwrap(), 16); // above max
+        assert_eq!(adjusted_level(8, "lz4").unwrap(), 8); // in range
+    }
+
+    #[test]
+    fn test_adjusted_level_clamps_zstd() {
+        assert_eq!(adjusted_level(-10, "zstd").unwrap(), -5); // below min
+        assert_eq!(adjusted_level(30, "zstd").unwrap(), 22); // above max
+        assert_eq!(adjusted_level(6, "zstd").unwrap(), 6); // in range
+    }
+
+    // ── Compressor trait implementation ──
+
+    #[test]
+    fn test_lz4zstd_compressor_roundtrip_lz4() {
+        let compressor = Lz4ZstdCompressor::new();
+        let data = b"Compressor trait lz4 test ".repeat(300);
+        let policy = CompressionPolicy::LZ4 { level: 4 };
+
+        let (compressed, summary) = compressor.compress(&data, &policy).unwrap();
+        assert!(summary.compressed);
+
+        let decompressed = compressor
+            .decompress(&compressed, &summary.algorithm)
+            .unwrap();
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_lz4zstd_compressor_roundtrip_zstd() {
+        let compressor = Lz4ZstdCompressor::new();
+        let data = b"Compressor trait zstd test ".repeat(300);
+        let policy = CompressionPolicy::Zstd { level: 3 };
+
+        let (compressed, summary) = compressor.compress(&data, &policy).unwrap();
+        assert!(summary.compressed);
+
+        let decompressed = compressor
+            .decompress(&compressed, &summary.algorithm)
+            .unwrap();
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_lz4zstd_compressor_supports_algorithm() {
+        let c = Lz4ZstdCompressor::new();
+        assert!(c.supports_algorithm("identity"));
+        assert!(c.supports_algorithm("lz4:4"));
+        assert!(c.supports_algorithm("zstd:3"));
+        assert!(!c.supports_algorithm("brotli"));
+    }
+
+    #[test]
+    fn test_lz4zstd_compressor_decompress_identity() {
+        let c = Lz4ZstdCompressor::new();
+        let data = b"Identity round trip";
+        let result = c.decompress(data, "identity").unwrap();
+        assert_eq!(data.as_slice(), result.as_slice());
+    }
+
+    #[test]
+    fn test_lz4zstd_compressor_decompress_unsupported() {
+        let c = Lz4ZstdCompressor::new();
+        let result = c.decompress(b"data", "brotli");
+        assert!(result.is_err());
+    }
+
+    // ── Entropy helper ──
+
+    #[test]
+    fn test_entropy_constant_data() {
+        let data = vec![0xAA; 2048];
+        let entropy = estimate_entropy(&data);
+        assert!(
+            entropy < 0.01,
+            "constant data should have near-zero entropy, got {entropy}"
+        );
+    }
+
+    #[test]
+    fn test_entropy_empty() {
+        assert_eq!(estimate_entropy(&[]), 0.0);
+    }
+
+    // ── CompressionResult ratio edge cases ──
+
+    #[test]
+    fn test_compression_result_ratio_zero_compressed_size() {
+        let result = CompressionResult {
+            original_size: 100,
+            compressed_size: 0,
+            compressed: false,
+            reused_original: false,
+            algorithm: "test".into(),
+            reason: None,
+        };
+        assert_eq!(
+            result.ratio(),
+            1.0,
+            "zero compressed_size should return ratio 1.0"
+        );
     }
 }

@@ -1,0 +1,28 @@
+name: DCO Sign-off
+
+# Verify that all commits in a PR carry a Signed-off-by line,
+# certifying the Developer Certificate of Origin (https://developercertificate.org).
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: Verify DCO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dcoapp/app-token-action@v1
+        id: token
+        continue-on-error: true
+      - uses: tisonkun/actions-dco@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

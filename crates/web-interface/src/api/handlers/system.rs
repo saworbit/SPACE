@@ -11,7 +11,9 @@ use crate::api::{
     auth,
     errors::{ApiError, ApiResult},
     handlers::with_trace,
-    models::{ApiResponse, Claims, HealthStatus, Meta, RequestContext, SystemInfo, UserRole},
+    models::{
+        ApiResponse, Claims, HealthCheck, HealthStatus, Meta, RequestContext, SystemInfo, UserRole,
+    },
 };
 use crate::state::AppState;
 
@@ -33,13 +35,92 @@ pub async fn health(
     Extension(ctx): Extension<RequestContext>,
 ) -> ApiResult<HealthStatus> {
     let uptime_ms = state.start_time.elapsed().as_millis();
+    let checks = run_health_checks(&state).await;
+
+    let status = if checks.iter().any(|c| c.severity == "error") {
+        "error"
+    } else if checks.iter().any(|c| c.severity == "warn") {
+        "warn"
+    } else {
+        "ok"
+    };
+
     Ok(Json(ApiResponse::success(
         HealthStatus {
-            status: "ok".to_string(),
+            status: status.to_string(),
             uptime_ms,
+            checks,
         },
         Some(with_trace(Meta::default(), Some(&ctx))),
     )))
+}
+
+/// Run real subsystem health checks with severity-based status derivation.
+async fn run_health_checks(state: &AppState) -> Vec<HealthCheck> {
+    let mut checks = Vec::new();
+
+    // ── Gossip connectivity ─────────────────────────────────────
+    match state.gossip.get_peers().await {
+        Ok(peers) => {
+            if peers.is_empty() {
+                checks.push(HealthCheck {
+                    id: "GOSSIP_NO_PEERS".into(),
+                    severity: "warn".into(),
+                    message: "No gossip peers connected; node is operating in standalone mode"
+                        .into(),
+                });
+            } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let online = peers.iter().filter(|p| p.is_online(now, 30)).count();
+                if online < peers.len() {
+                    checks.push(HealthCheck {
+                        id: "GOSSIP_PEERS_DEGRADED".into(),
+                        severity: "warn".into(),
+                        message: format!("{}/{} gossip peers online", online, peers.len()),
+                    });
+                } else {
+                    checks.push(HealthCheck {
+                        id: "GOSSIP_OK".into(),
+                        severity: "ok".into(),
+                        message: format!("{} peers connected", peers.len()),
+                    });
+                }
+            }
+        }
+        Err(_) => {
+            checks.push(HealthCheck {
+                id: "GOSSIP_UNREACHABLE".into(),
+                severity: "error".into(),
+                message: "Failed to query gossip layer".into(),
+            });
+        }
+    }
+
+    // ── Gossip stats ────────────────────────────────────────────
+    if let Ok(stats) = state.gossip.get_stats().await {
+        if stats.messages_sent == 0 && state.start_time.elapsed().as_secs() > 30 {
+            checks.push(HealthCheck {
+                id: "GOSSIP_NO_MESSAGES".into(),
+                severity: "warn".into(),
+                message: "No gossip messages sent since startup (>30s)".into(),
+            });
+        }
+    }
+
+    // ── Metrics subsystem ───────────────────────────────────────
+    let families = state.metrics.gather();
+    if families.is_empty() {
+        checks.push(HealthCheck {
+            id: "METRICS_EMPTY".into(),
+            severity: "warn".into(),
+            message: "Prometheus registry has no metrics registered".into(),
+        });
+    }
+
+    checks
 }
 
 #[utoipa::path(
@@ -118,4 +199,53 @@ fn resolved_features() -> Vec<String> {
         "storage".to_string(),
         "control-plane".to_string(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // ── resolved_features ─────────────────────────────────────────
+
+    #[test]
+    fn resolved_features_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("SPACE_FEATURES");
+
+        let features = resolved_features();
+        assert_eq!(features, vec!["gossip", "storage", "control-plane"]);
+    }
+
+    #[test]
+    fn resolved_features_from_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("SPACE_FEATURES", "alpha,beta,gamma");
+
+        let features = resolved_features();
+        assert_eq!(features, vec!["alpha", "beta", "gamma"]);
+        std::env::remove_var("SPACE_FEATURES");
+    }
+
+    #[test]
+    fn resolved_features_trims_whitespace() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("SPACE_FEATURES", " a , b , c ");
+
+        let features = resolved_features();
+        assert_eq!(features, vec!["a", "b", "c"]);
+        std::env::remove_var("SPACE_FEATURES");
+    }
+
+    #[test]
+    fn resolved_features_skips_empty() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("SPACE_FEATURES", "a,,b,,");
+
+        let features = resolved_features();
+        assert_eq!(features, vec!["a", "b"]);
+        std::env::remove_var("SPACE_FEATURES");
+    }
 }

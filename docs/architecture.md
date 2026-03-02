@@ -281,9 +281,40 @@ async fn health_agent_loop() {
 | Snapshots & clones | Metadata redirect‑on‑write          | < 1 ms           |
 | Tiering            | Heat counter, metadata move         | none             |
 
+### 9.1 Erasure Coding
+
+The `common::erasure` module defines a pluggable `ErasureCode` trait with `encode`, `decode`, and `minimum_to_decode` methods. Implementations can provide Reed-Solomon, ISA-L (hardware-accelerated), or LRC (locally repairable codes). The default profile is 6+2 Reed-Solomon (~1.33× overhead).
+
+Key types:
+- `ErasureProfile` — k (data shards), m (parity shards), algorithm identifier.
+- `ShardId` / `ShardIdSet` / `ShardIdMap` — typed shard-safe APIs.
+
+### 9.2 Background Scrub Scheduler
+
+The `common::scrub` module provides a two-level scrubbing model for detecting silent data corruption:
+
+| Level | Checks | Frequency (default) |
+|-------|--------|---------------------|
+| **Light** | Segment metadata (size, existence) | 24 hours |
+| **Deep** | Re-read data + verify content hash / MAC | 7 days |
+
+`ScrubSchedule` tracks per-segment scrub history so only stale segments are re-checked. Deep scrub implicitly records a light-scrub timestamp.
+
+### 9.3 QoS Admission Control
+
+The `common::qos` module provides mClock-style scheduling with per-class semaphore concurrency ceilings:
+
+| IO Class | Default Limit | Purpose |
+|----------|---------------|---------|
+| `Client` | 64 | User-facing capsule reads and writes |
+| `Recovery` | 16 | Data recovery and replication (rebalance, backfill) |
+| `Background` | 8 | Maintenance (scrub, GC, tiering) |
+
+`QosScheduler` exposes async `acquire` (blocking) and `try_acquire` (non-blocking) paths. RAII `QosPermit` releases the semaphore slot on drop.
+
 ---
 
-## 9.1 Phase 4: Protocol Views & Federation
+## 9.4 Phase 4: Protocol Views & Federation
 
 Phase 4 is the bridge between the capsule control plane and the external protocol surfaces. Capsules continue to flow through `capsule-registry` and the pipeline, and the `phase4` feature enables a simulation-first “View” layer:
 

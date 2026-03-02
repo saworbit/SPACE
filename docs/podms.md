@@ -784,14 +784,14 @@ Pipeline falls back to single-node mode.
 
 ## Comparison to Prior Art
 
-### RADOS (Ceph)
+### Traditional Object Stores (RADOS-style)
 
 **Similarities:**
 - Object-level granularity
-- Placement rules (CRUSH vs. Policy)
+- Placement rules (CRUSH-like maps vs. Policy)
 
 **Differences:**
-- RADOS: Centralized monitor cluster
+- Traditional: Centralized monitor cluster
 - PODMS: Autonomous agent swarms
 
 ### CockroachDB

@@ -1,0 +1,73 @@
+# CODEOWNERS — Auto-assign reviewers based on file paths
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Map each subsystem to its maintainer(s) so PRs are automatically
+# routed for review.
+#
+# As the team grows, replace individual handles with @org/team slugs.
+
+# ── Global fallback ──────────────────────────────────────────────
+*                                       @saworbit
+
+# ── Core storage pipeline ────────────────────────────────────────
+crates/common/                          @saworbit
+crates/capsule-registry/                @saworbit
+crates/pipeline/                        @saworbit
+crates/storage/                         @saworbit
+crates/nvram-sim/                       @saworbit
+
+# ── Data services (encryption, compression, dedup) ───────────────
+crates/encryption/                      @saworbit
+crates/compression/                     @saworbit
+crates/dedup/                           @saworbit
+
+# ── Block storage (Foundry) ──────────────────────────────────────
+crates/foundry/                         @saworbit
+crates/tiering/                         @saworbit
+
+# ── Protocol views ───────────────────────────────────────────────
+crates/protocol-s3/                     @saworbit
+crates/protocol-nfs/                    @saworbit
+crates/protocol-block/                  @saworbit
+crates/protocol-nvme/                   @saworbit
+crates/protocol-fuse/                   @saworbit
+crates/protocol-csi/                    @saworbit
+
+# ── Distributed / multi-node (PODMS) ────────────────────────────
+crates/federation/                      @saworbit
+crates/scaling/                         @saworbit
+crates/mesh-core/                       @saworbit
+crates/gossip-layer/                    @saworbit
+crates/podms-orchestrator/              @saworbit
+
+# ── Compute & transform ─────────────────────────────────────────
+crates/transform-engine/                @saworbit
+crates/layout-engine/                   @saworbit
+
+# ── CLI & web ────────────────────────────────────────────────────
+crates/spacectl/                        @saworbit
+crates/web-interface/                   @saworbit
+
+# ── Simulations ──────────────────────────────────────────────────
+crates/sim-nvram/                       @saworbit
+crates/sim-nvmeof/                      @saworbit
+crates/sim-other/                       @saworbit
+
+# ── Vendor forks ─────────────────────────────────────────────────
+vendor/                                 @saworbit
+
+# ── Build, CI, and tooling ───────────────────────────────────────
+xtask/                                  @saworbit
+fuzz/                                   @saworbit
+.github/                                @saworbit
+Cargo.toml                              @saworbit
+Cargo.lock                              @saworbit
+deny.toml                               @saworbit
+
+# ── Security-sensitive files (require explicit review) ───────────
+SECURITY.md                             @saworbit
+crates/encryption/                      @saworbit
+docs/security/                          @saworbit
+
+# ── Documentation ────────────────────────────────────────────────
+docs/                                   @saworbit
