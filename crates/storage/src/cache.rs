@@ -148,7 +148,6 @@ impl ByteLruCache {
         let gen = self.generations.peek(id).copied().unwrap_or(0);
         self.generations.put(*id, gen + 1);
     }
-
 }
 
 // ── CachedBackend ─────────────────────────────────────────────────────────────
@@ -407,7 +406,10 @@ mod tests {
 
         write_seg(&mut cached, 1, b"original").await;
         let _ = cached.read(SegmentId(1)).await.unwrap();
-        assert!(cached.cached_bytes() > 0, "first read should populate cache");
+        assert!(
+            cached.cached_bytes() > 0,
+            "first read should populate cache"
+        );
 
         // Overwrite the segment — cache must be invalidated.
         write_seg(&mut cached, 1, b"updated!").await;
@@ -471,7 +473,10 @@ mod tests {
         // The generation is now 2 (invalidated twice: once manually, once by write_seg).
         // Any in-flight read that captured gen=0 or gen=1 would be rejected.
         let result = cached.read(SegmentId(1)).await.unwrap();
-        assert_eq!(result, b"v2", "must serve fresh data, not stale pre-write data");
+        assert_eq!(
+            result, b"v2",
+            "must serve fresh data, not stale pre-write data"
+        );
 
         // Second read must hit the cache and still return v2.
         let result2 = cached.read(SegmentId(1)).await.unwrap();
@@ -494,7 +499,9 @@ mod tests {
         };
         let mut txn = cached.begin_txn().await.unwrap();
         txn.append(SegmentId(1), b"updated").await.unwrap();
-        txn.set_segment_metadata(SegmentId(1), seg_new).await.unwrap();
+        txn.set_segment_metadata(SegmentId(1), seg_new)
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
 
         // Cache should have been invalidated at commit time.

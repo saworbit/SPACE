@@ -17,7 +17,7 @@ use tiering::{
 };
 
 mod cache;
-pub use cache::{CachedBackend, CacheInvalidatingTransaction};
+pub use cache::{CacheInvalidatingTransaction, CachedBackend};
 
 #[cfg(all(target_os = "linux", feature = "uring"))]
 mod uring;
