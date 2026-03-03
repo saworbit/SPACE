@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`CachedBackend<B>` — byte-bounded LRU read cache** (`crates/storage/src/cache.rs`)
+  - `CachedBackend<B: StorageBackend>` wraps any backend with a byte-bounded LRU read cache; cache cap is in bytes, not entry count, so a 256 MiB cache holds 256 MiB regardless of segment size
+  - Cache hit returns a clone of cached bytes; cache miss falls through to the inner backend and populates the cache (data + metadata fetched together)
+  - `CacheInvalidatingTransaction<T>` records touched segments and invalidates them on `commit()`; `append()` and `delete()` invalidate before forwarding so concurrent reads never see stale data
+  - Segments larger than `max_cache_bytes` are silently skipped to prevent a single oversized segment from evicting the entire working set
+  - `CachedBackend::cached_bytes()` and `max_cache_bytes()` expose live utilisation
+  - **TOCTOU race fixed**: per-segment invalidation generation counter prevents a write that races a cache-miss read from silently repopulating the cache with stale pre-write data; generation is captured under the lock before I/O and checked via `put_if_generation` after; any intervening `invalidate()` bumps the generation, causing the stale put to be rejected
+  - **Generation map partially bounded**: `put_if_generation` prunes the entry on success (handles the write→re-read cycle); deletes always call `invalidate()` (bump generation, not remove) — a concurrent in-flight read may have already fetched the segment bytes before the delete was visible, so removing the gen entry would reopen the stale-reinsert race; gen entries for permanently deleted segments accumulate at one per deletion per instance lifetime, bounded by the segment deletion rate
+  - `lru` workspace dependency added to `storage/Cargo.toml`
+  - 7 tests: cache hit on second read, byte-limit eviction, write invalidation, delete invalidation, oversized segment not cached, transaction commit invalidation, stale-read-not-repopulated-after-invalidation
+
+- **`StorageBackend::used_bytes()` trait method** (`crates/common/src/traits.rs`)
+  - Default implementation returns `Ok(0)`; backends override to report physical bytes on the storage medium (post-compression, post-encryption)
+  - `InMemoryBackend` sums data-vector lengths; `NvramBackend` delegates to `NvramLog::used_bytes()`
+  - Segments pending GC (`ref_count == 0`) are included — value reflects actual occupied storage, not only live data
+
+- **`NvramLog::compact()` — in-place log defragmentation** (`crates/nvram-sim/src/lib.rs`)
+  - Rewrites all live segments sequentially from offset 0, closing gaps left by deletes; truncates the file tail and atomically saves updated offsets
+  - Returns bytes reclaimed; exposed via `NvramBackend::compact()` as an inherent method (not part of `StorageBackend` trait)
+  - Crash-safe: a `.compacting` marker is written before the rewrite and detected by `open()`, which refuses to proceed rather than silently serving a partially-rewritten log
+
+- **`NvramLog` atomic metadata writes** (`crates/nvram-sim/src/lib.rs`)
+  - `save_segment_map()` now writes to a `.tmp` sidecar then renames it over the canonical path — `rename(2)` is atomic on POSIX; Windows `AlreadyExists` case handled with explicit remove-then-rename
+  - `open()` recovers orphaned `.tmp` files (crash between write and rename) by promoting them, and detects `.compacting` markers from interrupted compaction and fails fast
+
+- **`ScrubConfig::max_bytes_per_sec` — token-bucket I/O throttle** (`crates/common/src/scrub.rs`, `crates/capsule-registry/src/scrub_executor.rs`)
+  - `max_bytes_per_sec: Option<u64>` field added to `ScrubConfig` (`#[serde(default)]`, default `None` = unlimited)
+  - Replaces the fixed per-segment `inter_segment_delay` with a cumulative token-bucket: the executor tracks `ScrubReport::bytes_checked` and sleeps only the surplus to hit the target rate, making throttling segment-size-aware
+  - `ScrubReport::bytes_checked: u64` field added (serde-defaulted) to carry total bytes read per cycle
+  - All `ScrubConfig` struct literals in tests updated to include `max_bytes_per_sec: None`
+
 - **`ScrubState` observable state machine** (`crates/common/src/scrub.rs`)
   - `ScrubState` enum: `Idle | Running(ScrubKind) | Completed { kind, errors }` — published via `tokio::sync::watch` so any consumer can observe scrub transitions without polling; mirrors TrueNAS's WAITING → SCANNING → FINISHED/CANCELED state model
   - `ScrubReport` error-type breakdown: `metadata_failures`, `mac_failures`, `content_failures`, `read_errors` serde-defaulted fields — operators now distinguish length mismatches (`MetadataMismatch`), bit-rot (`ContentCorrupted`), tampering/key-drift (`MacMismatch`), and transient I/O faults (`ReadError`) directly from the report without iterating the error vec; mirrors TrueNAS's per-error-type vdev taxonomy

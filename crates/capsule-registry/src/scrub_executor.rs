@@ -109,10 +109,27 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             .collect();
 
         for seg_id in to_check {
-            let result = match kind {
+            let (result, seg_bytes) = match kind {
                 ScrubKind::Light => self.light_check(seg_id).await,
                 ScrubKind::Deep => self.deep_check(seg_id).await,
             };
+            report.bytes_checked += seg_bytes;
+
+            // Bandwidth throttle: pace reads to stay within max_bytes_per_sec.
+            // We compute how long the cumulative bytes *should* have taken at
+            // the configured rate, then sleep only the surplus — nothing if
+            // we're already behind.  This is naturally segment-size-aware:
+            // a 4 MiB segment costs proportionally more than a 100-byte one.
+            if let Some(max_bps) = config.max_bytes_per_sec {
+                if max_bps > 0 {
+                    let target =
+                        Duration::from_secs_f64(report.bytes_checked as f64 / max_bps as f64);
+                    let elapsed = started.elapsed();
+                    if target > elapsed {
+                        tokio::time::sleep(target - elapsed).await;
+                    }
+                }
+            }
 
             if result.is_skipped() {
                 // Transient condition  -  don't advance the schedule timestamp
@@ -171,67 +188,88 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 
     // -- Light check ----------------------------------------------------------
 
-    async fn light_check(&self, seg_id: SegmentId) -> ScrubResult {
+    async fn light_check(&self, seg_id: SegmentId) -> (ScrubResult, u64) {
         let meta = match self.backend.metadata(seg_id).await {
             Ok(m) => m,
             Err(err) => {
-                return ScrubResult::ReadError {
-                    segment: seg_id,
-                    error: err.to_string(),
-                };
+                return (
+                    ScrubResult::ReadError {
+                        segment: seg_id,
+                        error: err.to_string(),
+                    },
+                    0,
+                );
             }
         };
 
         let stored = match self.backend.read(seg_id).await {
             Ok(b) => b,
             Err(err) => {
-                return ScrubResult::ReadError {
-                    segment: seg_id,
-                    error: err.to_string(),
-                };
+                return (
+                    ScrubResult::ReadError {
+                        segment: seg_id,
+                        error: err.to_string(),
+                    },
+                    0,
+                );
             }
         };
 
+        let bytes_read = stored.len() as u64;
         let actual_len = stored.len() as u32;
         if actual_len != meta.len {
-            ScrubResult::MetadataMismatch {
-                expected_len: meta.len,
-                actual_len,
-            }
+            (
+                ScrubResult::MetadataMismatch {
+                    expected_len: meta.len,
+                    actual_len,
+                },
+                bytes_read,
+            )
         } else {
-            ScrubResult::Ok
+            (ScrubResult::Ok, bytes_read)
         }
     }
 
     // -- Deep check -----------------------------------------------------------
 
-    async fn deep_check(&self, seg_id: SegmentId) -> ScrubResult {
+    async fn deep_check(&self, seg_id: SegmentId) -> (ScrubResult, u64) {
         let meta = match self.backend.metadata(seg_id).await {
             Ok(m) => m,
             Err(err) => {
-                return ScrubResult::ReadError {
-                    segment: seg_id,
-                    error: err.to_string(),
-                };
+                return (
+                    ScrubResult::ReadError {
+                        segment: seg_id,
+                        error: err.to_string(),
+                    },
+                    0,
+                );
             }
         };
 
         let stored = match self.backend.read(seg_id).await {
             Ok(b) => b,
             Err(err) => {
-                return ScrubResult::ReadError {
-                    segment: seg_id,
-                    error: err.to_string(),
-                };
+                return (
+                    ScrubResult::ReadError {
+                        segment: seg_id,
+                        error: err.to_string(),
+                    },
+                    0,
+                );
             }
         };
 
+        let bytes_read = stored.len() as u64;
+
         // Length sanity first (same as light scrub).
         if stored.len() as u32 != meta.len {
-            return ScrubResult::MetadataMismatch {
-                expected_len: meta.len,
-                actual_len: stored.len() as u32,
-            };
+            return (
+                ScrubResult::MetadataMismatch {
+                    expected_len: meta.len,
+                    actual_len: stored.len() as u32,
+                },
+                bytes_read,
+            );
         }
 
         if meta.encrypted {
@@ -243,14 +281,17 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                     segment_id = seg_id.0,
                     "scrub: encrypted segment has no integrity tag; nothing to verify"
                 );
-                return ScrubResult::Ok;
+                return (ScrubResult::Ok, bytes_read);
             };
 
             let Some(ref km) = self.key_manager else {
                 // MAC exists but we can't load the key right now — transient.
-                return ScrubResult::Skipped {
-                    reason: "no key manager available for MAC verification".into(),
-                };
+                return (
+                    ScrubResult::Skipped {
+                        reason: "no key manager available for MAC verification".into(),
+                    },
+                    bytes_read,
+                );
             };
 
             let key_version = match meta.key_version {
@@ -260,7 +301,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         segment_id = seg_id.0,
                         "scrub: encrypted segment missing key_version"
                     );
-                    return ScrubResult::MacMismatch { segment: seg_id };
+                    return (ScrubResult::MacMismatch { segment: seg_id }, bytes_read);
                 }
             };
 
@@ -271,7 +312,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         segment_id = seg_id.0,
                         "scrub: encrypted segment missing tweak_nonce"
                     );
-                    return ScrubResult::MacMismatch { segment: seg_id };
+                    return (ScrubResult::MacMismatch { segment: seg_id }, bytes_read);
                 }
             };
 
@@ -287,10 +328,13 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                             error = %err,
                             "scrub: failed to retrieve key for MAC check"
                         );
-                        return ScrubResult::ReadError {
-                            segment: seg_id,
-                            error: format!("key retrieval failed: {err}"),
-                        };
+                        return (
+                            ScrubResult::ReadError {
+                                segment: seg_id,
+                                error: format!("key retrieval failed: {err}"),
+                            },
+                            bytes_read,
+                        );
                     }
                 }
             };
@@ -306,7 +350,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 
             // MAC verification is CPU-intensive (BLAKE3 over ciphertext).
             // Run it on a blocking thread to avoid stalling async executors.
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 match verify_mac(&stored, &enc_meta, &key_pair.0, &key_pair.1) {
                     Ok(()) => ScrubResult::Ok,
                     Err(_) => ScrubResult::MacMismatch { segment: seg_id },
@@ -316,16 +360,17 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             .unwrap_or_else(|e| ScrubResult::ReadError {
                 segment: seg_id,
                 error: format!("MAC verify panicked: {e}"),
-            })
+            });
+            (result, bytes_read)
         } else {
             // Unencrypted: compare BLAKE3 content hash.
             let Some(expected) = meta.content_hash.clone() else {
-                return ScrubResult::Ok;
+                return (ScrubResult::Ok, bytes_read);
             };
 
             // BLAKE3 over potentially large (4 MiB) segments is CPU-intensive.
             // Run it on a blocking thread to avoid stalling async executors.
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 let actual = hash_content(&stored);
                 if actual.as_str() == expected.as_str() {
                     ScrubResult::Ok
@@ -337,7 +382,8 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             .unwrap_or_else(|e| ScrubResult::ReadError {
                 segment: seg_id,
                 error: format!("hash verify panicked: {e}"),
-            })
+            });
+            (result, bytes_read)
         }
     }
 }
@@ -549,12 +595,14 @@ mod tests {
                 deep_interval: Duration::from_secs(3600),
                 max_segments_per_cycle: 64,
                 inter_segment_delay: Duration::ZERO,
+                max_bytes_per_sec: None,
             },
             ScrubKind::Deep => ScrubConfig {
                 light_interval: Duration::from_secs(3600),
                 deep_interval: Duration::ZERO,
                 max_segments_per_cycle: 64,
                 inter_segment_delay: Duration::ZERO,
+                max_bytes_per_sec: None,
             },
         }
     }
@@ -650,6 +698,7 @@ mod tests {
             deep_interval: Duration::from_secs(3600),
             max_segments_per_cycle: 3,
             inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
         };
         let mut executor = ScrubExecutor::new(backend);
         let report = executor.scrub_cycle(&config, ScrubKind::Light).await;
@@ -673,6 +722,7 @@ mod tests {
             deep_interval: Duration::from_secs(7200),
             max_segments_per_cycle: 64,
             inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
         };
         let mut executor = ScrubExecutor::new(backend);
 
@@ -755,6 +805,7 @@ mod tests {
             deep_interval: Duration::ZERO,
             max_segments_per_cycle: 64,
             inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
         };
         let mut executor = ScrubExecutor::new(backend);
 
@@ -841,6 +892,7 @@ mod tests {
             deep_interval: Duration::from_secs(7200),
             max_segments_per_cycle: 64,
             inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
         };
 
         let (handle, mut state_rx) = ScrubExecutor::spawn_background(backend, config, None);
@@ -920,6 +972,7 @@ mod tests {
             deep_interval: Duration::from_secs(7200),
             max_segments_per_cycle: 64,
             inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
         };
 
         let (handle, mut state_rx) = ScrubExecutor::spawn_background(backend, config, None);

@@ -34,12 +34,40 @@ impl NvramLog {
         // Get file size for next_offset
         let file_len = file.metadata()?.len();
 
-        // Load segment map if exists
-        let segment_map = if Path::new(&metadata_path).exists() {
-            let data = std::fs::read_to_string(&metadata_path)?;
-            serde_json::from_str(&data)?
-        } else {
-            HashMap::new()
+        // Detect an interrupted compaction.  If we crashed after the data
+        // file was rewritten but before the new metadata was committed, the
+        // log may be inconsistent.  Fail loudly rather than silently serving
+        // wrong data.  The operator can remove the marker after verifying
+        // (or restoring from backup) and re-opening.
+        let compacting_path = format!("{}.compacting", metadata_path);
+        if Path::new(&compacting_path).exists() {
+            bail!(
+                "NvramLog at '{}' has an unfinished compaction marker \
+                 ('{}' exists). The log may be inconsistent after a crash \
+                 during compact(). Remove the marker file after verifying \
+                 integrity or restoring from backup.",
+                path_str,
+                compacting_path
+            );
+        }
+
+        // Load segment map if exists.  Also recover from an orphaned .tmp
+        // file — this happens on Windows if we crashed between the
+        // remove_file() and rename() calls in save_segment_map().
+        let segment_map = {
+            let tmp_path = format!("{}.tmp", metadata_path);
+            if Path::new(&metadata_path).exists() {
+                let data = std::fs::read_to_string(&metadata_path)?;
+                serde_json::from_str(&data)?
+            } else if Path::new(&tmp_path).exists() {
+                let data = std::fs::read_to_string(&tmp_path)?;
+                let map: HashMap<SegmentId, Segment> = serde_json::from_str(&data)?;
+                // Complete the interrupted rename so the store is consistent.
+                let _ = std::fs::rename(&tmp_path, &metadata_path);
+                map
+            } else {
+                HashMap::new()
+            }
         };
 
         Ok(Self {
@@ -61,8 +89,36 @@ impl NvramLog {
     fn save_segment_map(&self) -> Result<()> {
         let map = self.segment_map.read().unwrap();
         let json = serde_json::to_string_pretty(&*map)?;
-        std::fs::write(&self.metadata_path, json)?;
+        // Write to a .tmp file first, then atomically rename over the target.
+        // On POSIX, rename(2) atomically replaces the destination — the
+        // previous good metadata is never overwritten until the new one is
+        // fully written to disk.  On Windows, rename fails if the destination
+        // already exists, so we remove it first; if we crash in that narrow
+        // window the orphaned .tmp is recovered at open() time below.
+        let tmp_path = format!("{}.tmp", self.metadata_path);
+        std::fs::write(&tmp_path, json.as_bytes())?;
+        match std::fs::rename(&tmp_path, &self.metadata_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(&self.metadata_path)?;
+                std::fs::rename(&tmp_path, &self.metadata_path)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
         Ok(())
+    }
+
+    /// Total bytes occupied by live segment data (sum of `len` fields).
+    ///
+    /// Segments with `ref_count == 0` are included until GC runs — this
+    /// reflects physical bytes on the log, not logical live data.
+    pub fn used_bytes(&self) -> u64 {
+        self.segment_map
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| s.len as u64)
+            .sum()
     }
 
     #[cfg(feature = "advanced-security")]
@@ -227,6 +283,91 @@ impl NvramLog {
         self.segment_map.write().unwrap().insert(seg_id, segment);
         self.save_segment_map()?;
         Ok(())
+    }
+
+    /// Compact the log by rewriting only live segments (`ref_count > 0`).
+    ///
+    /// Segments with `ref_count == 0` are skipped — their bytes are
+    /// permanently reclaimed.  All live segments are rewritten sequentially
+    /// from offset 0, then the file is truncated.  The metadata sidecar is
+    /// updated atomically afterwards.
+    ///
+    /// Returns the number of bytes reclaimed.
+    ///
+    /// ## Crash safety
+    ///
+    /// A `.compacting` marker file is written before any modification and
+    /// removed only after `save_segment_map()` completes.  If the process
+    /// crashes between the data rewrite and the metadata commit, `open()`
+    /// detects the marker and returns an error rather than serving
+    /// inconsistent data.
+    pub fn compact(&self) -> Result<u64> {
+        let compacting_path = format!("{}.compacting", self.metadata_path);
+        // Plant the marker before touching any file.
+        std::fs::write(&compacting_path, b"")?;
+
+        let result = self.do_compact();
+
+        if result.is_ok() {
+            let _ = std::fs::remove_file(&compacting_path);
+        }
+        result
+    }
+
+    fn do_compact(&self) -> Result<u64> {
+        let mut file = self.file.write().unwrap();
+        let mut segment_map = self.segment_map.write().unwrap();
+        let mut next_offset = self.next_offset.write().unwrap();
+
+        let old_size = *next_offset;
+        if old_size == 0 {
+            return Ok(0);
+        }
+
+        // Collect live segments (sorted by offset for sequential reads).
+        let mut live: Vec<(SegmentId, Segment)> = segment_map
+            .iter()
+            .filter(|(_, s)| s.ref_count > 0)
+            .map(|(&id, s)| (id, s.clone()))
+            .collect();
+        live.sort_by_key(|(_, s)| s.offset);
+
+        // Read all live segment bytes while holding the write lock.
+        let mut payloads: Vec<(SegmentId, Segment, Vec<u8>)> = Vec::with_capacity(live.len());
+        for (id, seg) in live {
+            let mut buf = vec![0u8; seg.len as usize];
+            file.seek(SeekFrom::Start(seg.offset))?;
+            file.read_exact(&mut buf)?;
+            payloads.push((id, seg, buf));
+        }
+
+        // Rewrite live segments to the beginning of the same file.
+        file.seek(SeekFrom::Start(0))?;
+        let mut new_offset = 0u64;
+        let mut new_map = HashMap::new();
+        for (id, mut seg, data) in payloads {
+            file.write_all(&data)?;
+            seg.offset = new_offset;
+            new_offset += data.len() as u64;
+            new_map.insert(id, seg);
+        }
+
+        // Truncate the reclaimed tail and flush.
+        file.set_len(new_offset)?;
+        file.sync_data()?;
+
+        // Update in-memory state while still holding locks.
+        *segment_map = new_map;
+        *next_offset = new_offset;
+
+        drop(file);
+        drop(segment_map);
+        drop(next_offset);
+
+        // Commit the updated segment map atomically (tmp+rename).
+        self.save_segment_map()?;
+
+        Ok(old_size.saturating_sub(new_offset))
     }
 
     pub fn begin_transaction(&self) -> Result<NvramTransaction> {

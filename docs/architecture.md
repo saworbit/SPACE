@@ -300,7 +300,19 @@ The `common::scrub` module defines the two-level scrubbing model; `capsule-regis
 
 **Key types (`common::scrub`)**
 
-`ScrubConfig` controls intervals, per-cycle segment cap, and inter-segment delay. `ScrubSchedule` tracks per-segment scrub history so only stale segments are re-checked. Deep scrub implicitly records a light-scrub timestamp. `ScrubResult` covers six outcomes: `Ok`, `MetadataMismatch`, `ContentCorrupted`, `MacMismatch`, `ReadError`, and `Skipped` (transient).
+`ScrubConfig` controls intervals, per-cycle segment cap, and I/O bandwidth throttling:
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `light_interval` | `Duration` | 24 h | Minimum time between light-scrub passes |
+| `deep_interval` | `Duration` | 7 days | Minimum time between deep-scrub passes |
+| `max_segments_per_cycle` | `Option<usize>` | `None` (unlimited) | Hard cap on segments checked per run |
+| `inter_segment_delay` | `Duration` | 0 | Fixed sleep between segments (legacy; superseded by `max_bytes_per_sec`) |
+| `max_bytes_per_sec` | `Option<u64>` | `None` (unlimited) | Token-bucket I/O bandwidth cap; segment-size-aware |
+
+When `max_bytes_per_sec` is set the executor uses a **token-bucket** rate limiter: it accumulates total bytes read in `ScrubReport::bytes_checked` and computes the ideal elapsed time from `bytes / rate`.  After each segment it sleeps only the surplus, keeping the long-run average at or below the cap regardless of segment size.  This is more accurate than a fixed per-segment delay, which under-throttles large segments and over-throttles small ones.
+
+`ScrubSchedule` tracks per-segment scrub history so only stale segments are re-checked. Deep scrub implicitly records a light-scrub timestamp. `ScrubResult` covers six outcomes: `Ok`, `MetadataMismatch`, `ContentCorrupted`, `MacMismatch`, `ReadError`, and `Skipped` (transient).
 
 `ScrubState` is a state-machine enum published via `tokio::sync::watch` by `spawn_background`:
 
@@ -321,6 +333,7 @@ Monitoring consumers receive a `watch::Receiver<ScrubState>` and observe transit
 | `mac_failures` | Encrypted segments whose BLAKE3-MAC tag did not match (tampering / key-drift) |
 | `content_failures` | Unencrypted segments whose BLAKE3 content hash did not match (bit-rot) |
 | `read_errors` | Segments that could not be read — transient I/O failures excluded from `Completed.errors` |
+| `bytes_checked` | Total bytes read from the backend during the cycle; used by the token-bucket throttle |
 
 **Executor (`capsule-registry::scrub_executor`)**
 
@@ -340,9 +353,78 @@ CPU-intensive work (BLAKE3 hash recompute and MAC verification over up to 4 MiB 
 
 **Schedule recording** is gated on `ScrubResult::should_record_schedule()`: definitive outcomes (`Ok`, integrity failures) advance the timestamp; transient outcomes (`Skipped`, `ReadError`) leave it unchanged so the segment is retried next cycle.
 
-The background task yields `inter_segment_delay` between individual checks and logs a structured summary (including `metadata_failures`, `mac_failures`, `content_failures`, `read_errors`) after each cycle.  `Completed.errors` reflects only the three definitive failure types (`metadata_failures + mac_failures + content_failures`); `read_errors` is logged for observability but excluded from the alerting field.
+The background task applies I/O pacing between individual checks (token-bucket if `max_bytes_per_sec` is set, otherwise `inter_segment_delay`) and logs a structured summary (including `metadata_failures`, `mac_failures`, `content_failures`, `read_errors`, `bytes_checked`) after each cycle.  `Completed.errors` reflects only the three definitive failure types (`metadata_failures + mac_failures + content_failures`); `read_errors` is logged for observability but excluded from the alerting field.
 
-### 9.3 QoS Admission Control
+### 9.3 Storage Durability & Read Cache
+
+#### 9.3.1 NvramLog crash safety
+
+`NvramLog` stores its segment-map (a `HashMap<SegmentId, Segment>`) as a JSON sidecar alongside the data file.  Two failure modes are guarded against:
+
+**Torn metadata write** — `save_segment_map()` writes to a `.tmp` file then renames it over the canonical path.  On POSIX, `rename(2)` is atomic.  On Windows, the rename is preceded by an explicit remove if the destination already exists (Windows `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` fails on collision).
+
+**Orphaned `.tmp` file** — If a crash occurs after the `.tmp` is written but before the rename, `open()` detects the orphan and promotes it, recovering the latest metadata without data loss.
+
+**Interrupted compaction** — `compact()` writes a `.compacting` marker before rewriting the log in place.  If a crash occurs mid-compaction, `open()` detects the marker and **refuses to start** rather than silently serving a partially-rewritten log.  Recovery requires manual intervention (restore from replica or re-run `compact()`).  This fail-safe is intentional: the data file is not self-describing and cannot be safely partially-read after a crash.
+
+#### 9.3.2 NvramLog compaction
+
+Unlike ZFS, which has no first-class defragmentation tool and relies on the 80%-full heuristic, SPACE provides `NvramBackend::compact() -> Result<u64>`:
+
+1. All live segments (those present in the segment-map) are read under a write lock.
+2. Segments are written back to the log file sequentially from offset 0, closing gaps left by prior deletes.
+3. The file is truncated to the new length; `save_segment_map()` persists updated offsets atomically.
+4. Returns the number of bytes reclaimed.
+
+Compaction is not automatic; it is an operator- or policy-driven maintenance operation, suitable for scheduling during low-activity windows.
+
+#### 9.3.3 StorageBackend::used_bytes()
+
+The `StorageBackend` trait now provides a default `used_bytes()` method:
+
+```rust
+fn used_bytes(&self) -> BoxFuture<'_, Result<u64>> {
+    Box::pin(async { Ok(0) })
+}
+```
+
+Concrete backends override this to return the sum of `Segment::len` across all stored segments — physical bytes on the medium (post-compression, post-encryption), not logical capsule size.  Segments with `ref_count == 0` pending GC are included; the value reflects actual occupied storage.  `InMemoryBackend` sums data-vector lengths; `NvramBackend` delegates to `NvramLog::used_bytes()`.
+
+#### 9.3.4 CachedBackend\<B\> — byte-bounded LRU read cache
+
+The `storage` crate provides `CachedBackend<B: StorageBackend>`, a composable wrapper that adds a byte-bounded LRU read cache in front of any backend:
+
+```
+                     ┌─────────────────────────────┐
+read(seg)  ────────► │  ByteLruCache (hit?)         │ ──► cached bytes
+                     │  Arc<Mutex<ByteLruCache>>    │
+write/txn  ─────────►│  invalidate(seg)             │ ──► inner backend
+                     └─────────────────────────────┘
+                                   │ miss
+                                   ▼
+                           inner StorageBackend
+```
+
+**Design choices vs. ZFS ARC:**
+
+| | ZFS ARC | CachedBackend |
+|---|---|---|
+| Bound | Entry count + byte target | Bytes only |
+| Lists | MRU + MFU + ghost lists | Single LRU |
+| Adaptation | Ghost list hit rate drives MRU/MFU split | None; scan resistance via segment-size cap |
+| L2 cache | L2ARC index resident in RAM | N/A |
+
+The simpler single-LRU design is appropriate for SPACE's segment-granularity access patterns.  The segment-size cap provides natural scan resistance: a sequential scan of 4 MiB segments can evict at most `max_bytes / 4 MiB` entries before the cache stabilises at its filled state.
+
+**Write-through invalidation** is strict: `CachedBackend::append()` and `delete()` invalidate before forwarding to the inner backend; `CacheInvalidatingTransaction::commit()` invalidates all segments touched during the transaction after the inner commit succeeds.
+
+**Usage:**
+```rust
+let backend = NvramBackend::open(path)?;
+let cached = CachedBackend::new(backend, 256 * 1024 * 1024); // 256 MiB cap
+```
+
+### 9.4 QoS Admission Control
 
 The `common::qos` module provides mClock-style scheduling with per-class semaphore concurrency ceilings:
 
@@ -356,7 +438,7 @@ The `common::qos` module provides mClock-style scheduling with per-class semapho
 
 ---
 
-## 9.4 Phase 4: Protocol Views & Federation
+## 9.5 Phase 4: Protocol Views & Federation
 
 Phase 4 is the bridge between the capsule control plane and the external protocol surfaces. Capsules continue to flow through `capsule-registry` and the pipeline, and the `phase4` feature enables a simulation-first “View” layer:
 

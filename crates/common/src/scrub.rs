@@ -25,6 +25,16 @@ pub struct ScrubConfig {
     pub max_segments_per_cycle: usize,
     /// Pause between individual segment checks to yield back to foreground IO.
     pub inter_segment_delay: Duration,
+    /// Maximum I/O bandwidth consumed by scrubbing, in bytes per second.
+    ///
+    /// The executor paces reads so the cumulative byte rate stays at or below
+    /// this limit, sleeping only as long as needed to honour it.  This is
+    /// segment-size-aware: large segments are automatically throttled more
+    /// than small ones, unlike a fixed `inter_segment_delay`.
+    ///
+    /// `None` means unlimited (scrub as fast as the backend allows).
+    #[serde(default)]
+    pub max_bytes_per_sec: Option<u64>,
 }
 
 impl Default for ScrubConfig {
@@ -34,6 +44,7 @@ impl Default for ScrubConfig {
             deep_interval: Duration::from_secs(7 * 24 * 3600), // 1 week
             max_segments_per_cycle: 1024,
             inter_segment_delay: Duration::from_millis(5),
+            max_bytes_per_sec: None,
         }
     }
 }
@@ -151,6 +162,12 @@ pub struct ScrubReport {
     /// segment metadata (truncation, missing data). Subset of `errors`.
     #[serde(default)]
     pub metadata_failures: usize,
+    /// Total bytes read from the backend during this cycle.
+    ///
+    /// Useful for measuring scrub throughput and validating that
+    /// `max_bytes_per_sec` throttling is working as expected.
+    #[serde(default)]
+    pub bytes_checked: u64,
 }
 
 /// Whether a scrub cycle is light (length-only) or deep (content verification).
@@ -271,6 +288,7 @@ mod tests {
         assert_eq!(config.deep_interval, Duration::from_secs(7 * 24 * 3600));
         assert_eq!(config.max_segments_per_cycle, 1024);
         assert_eq!(config.inter_segment_delay, Duration::from_millis(5));
+        assert_eq!(config.max_bytes_per_sec, None, "unlimited by default");
     }
 
     // ── ScrubResult variants ────────────────────────────────────────
@@ -374,6 +392,7 @@ mod tests {
         assert_eq!(report.content_failures, 0);
         assert_eq!(report.read_errors, 0);
         assert_eq!(report.metadata_failures, 0);
+        assert_eq!(report.bytes_checked, 0);
     }
 
     #[test]
@@ -488,9 +507,11 @@ mod tests {
             deep_interval: Duration::from_secs(3600),
             max_segments_per_cycle: 256,
             inter_segment_delay: Duration::from_millis(10),
+            max_bytes_per_sec: Some(50 * 1024 * 1024), // 50 MB/s
         };
         let json = serde_json::to_string(&config).unwrap();
         let restored: ScrubConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.max_segments_per_cycle, 256);
+        assert_eq!(restored.max_bytes_per_sec, Some(50 * 1024 * 1024));
     }
 }

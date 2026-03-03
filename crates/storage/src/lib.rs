@@ -16,6 +16,9 @@ use tiering::{
     Heatmap, TieringPaths,
 };
 
+mod cache;
+pub use cache::{CachedBackend, CacheInvalidatingTransaction};
+
 #[cfg(all(target_os = "linux", feature = "uring"))]
 mod uring;
 
@@ -162,6 +165,14 @@ impl StorageBackend for InMemoryBackend {
         let inner = Arc::clone(&self.inner);
         Box::pin(future::ready(Ok(InMemoryTransaction::new(inner))))
     }
+
+    fn used_bytes(&self) -> futures::future::BoxFuture<'_, Result<u64>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(guard.segments.values().map(|b| b.len() as u64).sum())
+        })
+    }
 }
 
 /// NVRAM-backed storage implementation that wraps the legacy simulator.
@@ -284,6 +295,20 @@ impl StorageBackend for NvramBackend {
             let txn = log.begin_transaction()?;
             Ok(NvramStorageTransaction::new(txn))
         })
+    }
+
+    fn used_bytes(&self) -> futures::future::BoxFuture<'_, Result<u64>> {
+        let log = self.log.clone();
+        Box::pin(async move { Ok(log.used_bytes()) })
+    }
+}
+
+impl NvramBackend {
+    /// Compact the underlying NVRAM log, reclaiming bytes from GC'd segments.
+    ///
+    /// Delegates to [`nvram_sim::NvramLog::compact`]. Returns bytes reclaimed.
+    pub fn compact(&self) -> Result<u64> {
+        self.log.compact()
     }
 }
 

@@ -10,6 +10,7 @@ publish = false
 anyhow = { workspace = true }
 common = { path = "../common" }
 futures = { workspace = true }
+lru = { workspace = true }
 nvram-sim = { path = "../nvram-sim" }
 serde = { workspace = true }
 serde_json = { workspace = true }

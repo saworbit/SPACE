@@ -242,6 +242,20 @@ pub trait StorageBackend: Send + Sync {
     fn segment_ids(&self) -> BoxFuture<'_, Result<Vec<SegmentId>>>;
 
     fn begin_txn(&mut self) -> BoxFuture<'_, Result<Self::Transaction>>;
+
+    /// Total bytes of live segment data stored in this backend.
+    ///
+    /// Returns the sum of `Segment::len` across all known segments.  This
+    /// reflects physical bytes on the storage medium (post-compression,
+    /// post-encryption), not logical capsule sizes.
+    ///
+    /// Segments with `ref_count == 0` (pending GC) are included until GC
+    /// runs — the result reflects actual occupied storage, not live data.
+    ///
+    /// Returns `Ok(0)` by default for backends that do not track byte usage.
+    fn used_bytes(&self) -> BoxFuture<'_, Result<u64>> {
+        Box::pin(async { Ok(0) })
+    }
 }
 
 /// Evaluates policy directives for a given capsule write.

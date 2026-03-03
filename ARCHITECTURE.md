@@ -323,17 +323,31 @@ pub struct Policy {
 **StorageBackend Trait:**
 ```rust
 pub trait StorageBackend: Send + Sync {
+    type Transaction: StorageTransaction;
+
     fn append(&mut self, segment: SegmentId, data: &[u8]) -> BoxFuture<Result<()>>;
     fn read(&self, segment: SegmentId) -> BoxFuture<Result<Vec<u8>>>;
     fn metadata(&self, segment: SegmentId) -> BoxFuture<Result<Segment>>;
     fn delete(&mut self, segment: SegmentId) -> BoxFuture<Result<()>>;
+    fn segment_ids(&self) -> BoxFuture<Result<Vec<SegmentId>>>;
+    fn begin_txn(&mut self) -> BoxFuture<Result<Self::Transaction>>;
+
+    /// Physical bytes occupied on the storage medium (post-compression, post-encryption).
+    /// Returns Ok(0) by default for backends that do not track usage.
+    fn used_bytes(&self) -> BoxFuture<Result<u64>>;
 }
 ```
 
 **Implementations:**
-- `InMemoryBackend` - Testing (HashMap-based)
-- `NvramBackend` - Production (file-backed append-only log)
-- `UringBackend` - Linux io_uring for zero-copy I/O
+- `InMemoryBackend` — Testing (HashMap-based, `Arc<Mutex<Inner>>` so clones share state)
+- `NvramBackend` — Production (append-only log backed by `NvramLog`)
+  - Metadata written atomically via `.tmp` + `rename` (crash-safe)
+  - `NvramBackend::compact()` rewrites live segments in-place and truncates the tail, reclaiming fragmented space; a `.compacting` marker ensures crash detection on next open
+- `UringBackend` — Linux io_uring for zero-copy I/O
+- `CachedBackend<B>` — Composable byte-bounded LRU read cache wrapping any backend
+  - Cache cap in bytes, not entry count (256 MB holds the same amount regardless of segment size)
+  - Write-through invalidation: any write or transaction commit evicts the affected segment
+  - Segments larger than `max_cache_bytes` are never cached (prevents a single large segment from evicting the entire working set)
 
 ### 6.2 Compression
 
@@ -460,6 +474,7 @@ pub trait Encryptor: Send + Sync {
 pub trait StorageBackend: Send + Sync {
     fn append(&mut self, segment: SegmentId, data: &[u8]) -> BoxFuture<Result<()>>;
     fn read(&self, segment: SegmentId) -> BoxFuture<Result<Vec<u8>>>;
+    fn used_bytes(&self) -> BoxFuture<Result<u64>>;  // default: Ok(0)
 }
 
 // Key management
