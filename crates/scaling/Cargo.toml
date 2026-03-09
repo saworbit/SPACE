@@ -23,7 +23,7 @@ futures = { workspace = true }
 raft-rs = { workspace = true, optional = true }
 bytes = "1"
 blake3 = { workspace = true }
-bincode = "1"
+bincode = "2"
 hex = "0.4"
 socket2 = { version = "0.5", features = ["all"] }
 dashmap = "5"
