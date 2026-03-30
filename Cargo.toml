@@ -79,13 +79,13 @@ lz4 = { version = "=1.28.1" } # 2025-11-03 sw: hot-path compression, SIMD routin
 zstd = { version = "=0.13.3" } # 2025-11-03 sw: deep compression with wasm off, see audit log entry CRS-132
 zeroize = { version = "=1.8.2" } # 2025-11-03 sw: memory clearing policy alignment
 aes = { version = "=0.8.4" } # 2025-11-03 sw: AES-NI optimized, matches Phase3 design
-cipher = { version = "=0.4.4" } # 2025-11-03 sw: trait glue for AES/Poly1305 stack
+cipher = { version = "=0.5.1" } # 2025-11-03 sw: trait glue for AES/Poly1305 stack
 xts-mode = { version = "=0.5.1" } # 2025-11-03 sw: XTS primitive, matches patentable_concepts.md guidance
 poly1305 = { version = "=0.8.0" } # 2025-11-03 sw: MAC verification, constant-time guarantee
 cpufeatures = { version = "=0.2.17" } # 2025-11-03 sw: runtime AES capability detection
 subtle = { version = "=2.6.1" } # 2025-11-03 sw: constant-time comparisons for key/tweak handling
 hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for key derivation
-sha2 = { version = "=0.10.9" } # 2025-11-04 sw: Hash core for HKDF extractor
+sha2 = { version = "=0.11.0" } # 2025-11-04 sw: Hash core for HKDF extractor
 
 # Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
 axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
