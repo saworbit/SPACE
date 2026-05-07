@@ -41,6 +41,22 @@ Record tier assignments inside PR descriptions and keep the table up to date whe
 - `cargo xtask graph` captures a workspace dependency snapshot (and, if available, `cargo deps` output) for review.
 - Results from the last green run are mirrored in `docs/security/audit-status.json` and surfaced via Slack.
 
+### Advisory Windows
+
+When a fixed upstream version is not available or the vulnerable crate is only
+reachable through an experimental/non-default path, keep CI blocking enabled by
+default and document the exception in three places:
+
+1. `.cargo/audit.toml` with advisory id, affected stack, risk, and migration plan.
+2. `deny.toml` when the exception affects duplicate/yanked policy.
+3. `docs/security/audit-status.json` with the last reviewed date and owner.
+
+The 2026-05-08 audit refresh follows this pattern for rustls-webpki advisories
+remaining in older transitive rustls stacks, Wasmtime advisories in the
+experimental transform path, and `core2` yanked/unmaintained status through the
+experimental libp2p path. These waivers are migration windows, not permanent
+acceptance; remove them as the dependency stacks are upgraded or split out.
+
 ## Crypto Review Rubric
 - Require constant-time primitives (`subtle::ConstantTimeEq`, no `PartialEq` on secret data).
 - Verify upstream uses hardware acceleration safely (`cpufeatures` gating, no runtime feature toggles that alter timing).

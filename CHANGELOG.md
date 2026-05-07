@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CI, audit, and Windows cross-platform checks** (`Cargo.toml`, `Cargo.lock`, `.cargo/audit.toml`, `deny.toml`, `crates/foundry/src/backend/device.rs`)
+  - Restored the main-branch `PR Checks` workflow under rustc 1.95 by fixing new clippy warnings in scaling, web-interface ordering, and PODMS heartbeat handling
+  - Restored `Security Audit` by moving `layout-engine` off the yanked `sha3` 0.11 RC line, updating patched `rand` lines, refreshing the `rustls-webpki` 0.103.x lockfile entry, removing stale `cargo deny` exceptions, and documenting the remaining 2026 RustSec advisory window for experimental/transitive rustls, Wasmtime, and libp2p/core2 paths
+  - Restored `Cross-Platform Tests` on Windows by serializing the `DirectIoDevice` stub's seek/read/write/flush operations through the guarded file handle. The previous per-operation file-handle cloning could expose a Magma L2P update before the appended payload was visible through another duplicated Windows handle, causing an early EOF in `test_magma_backend_overwrite`
+  - Verification: `cargo fmt --all -- --check`, `cargo test -p foundry -- --test-threads=2`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo xtask audit`, plus green GitHub `PR Checks`, `Security Audit`, and `Cross-Platform Tests` on `main`
+
 - **Cross-policy dedup collision could return mismatched plaintext** (`crates/dedup/src/lib.rs`, `crates/capsule-registry/src/pipeline/legacy.rs`, `crates/pipeline/src/lib.rs`, `crates/capsule-registry/src/scrub_executor.rs`)
   - Reported by code review as a follow-up to the read-path fix below. Reproducer: write an LZ4 frame as raw bytes under `CompressionPolicy::None`, then write the original plaintext under `CompressionPolicy::LZ4`. The compressor produces the same byte sequence, both writes hash to the same `ContentHash`, and the second write deduplicates onto the first segment — whose metadata says `compressed = false`. Reading the second capsule then returns the LZ4 frame bytes instead of the plaintext
   - Root cause: the dedup key was `hash_content(compressed_data)` — bytes only, no compression context. The dedup invariant `key(a) == key(b) ⇒ read(a) == read(b)` was violated whenever two segments shared stored bytes but required different decompression treatment

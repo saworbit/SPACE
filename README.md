@@ -125,13 +125,13 @@
 | **LegacyBackend (File-based)** | 🟢 Beta | Sparse file volumes, works on all platforms | - |
 | **MagmaBackend (Log-structured)** | 🟢 Beta | L2P mapping, append-only writes, crash recovery | `magma` |
 | **Magma Durability** | 🟢 Beta | Checkpoint + log replay recovery (Milestone 8.3) | - |
-| **DirectIoDevice** | ⚪ Stub | Abstraction for SPDK/raw device (tokio::fs for now) | - |
+| **DirectIoDevice** | ⚪ Stub | Abstraction for SPDK/raw device; tokio::fs stub serializes seek/read/write for deterministic Windows tests | - |
 | **Volume Management** | 🟢 Beta | Create, get, delete, list volumes | - |
 | **Concurrent Access** | 🟡 Alpha | Thread-safe reads, sequential writes recommended | - |
 | **Sparse Volumes** | 🟢 Beta | Filesystem-backed sparse file support | - |
 | **Online Resize** | 🟢 Beta | LegacyBackend supports volume resize | - |
 | **Bounds Checking** | 🟢 Beta | Automatic validation of read/write offsets | - |
-| **Windows Compatibility** | 🟢 Beta | File sharing, sparse file support | - |
+| **Windows Compatibility** | 🟢 Beta | File sharing, sparse file support, cross-platform CI coverage | - |
 | **Snapshot Engine** | 🟢 Beta | Point-in-time volume snapshots to capsules (Milestone 8.1) | - |
 | **Snapshot Restore** | 🟢 Beta | Restore snapshots to same or different volume | - |
 | **Policy-Aware Snapshots** | 🟢 Beta | Compression, encryption, deduplication support | - |
@@ -1073,6 +1073,14 @@ by code review of the first fix. See the `[Unreleased]` section of
 [CHANGELOG.md](CHANGELOG.md). XTS-AES requires ≥ 16 byte plaintexts, so the
 encrypted property is bounded accordingly — sub-block plaintext support is a
 separate pipeline change.
+
+CI also runs a Windows/Linux cross-platform workflow. A 2026-05-08 failure in
+`foundry::backend::magma::tests::test_magma_backend_overwrite` exposed a
+Windows-specific race in the `DirectIoDevice` test stub: duplicated file
+handles could make an append visible to the L2P map before the payload was
+readable through another handle. The stub now serializes seek/read/write/flush
+through its guarded file handle, which matches the current non-SPDK
+implementation and keeps Magma read-after-write tests deterministic.
 
 ---
 

@@ -74,6 +74,8 @@ pub trait VolumeBackend: Send + Sync {
 
 3. **DirectIoDevice** - Device abstraction
    - ⚪ Currently a stub using tokio::fs
+   - Serializes seek/read/write/flush through one guarded file handle so
+     Windows read-after-write tests observe Magma appends deterministically
    - 🔮 Future: SPDK NVMe bdev integration
    - 🔮 Future: io_uring with O_DIRECT
 
@@ -592,6 +594,9 @@ async fn test_crash_recovery() {
 - Sparse file support (NTFS)
 - Explicit file sharing (`FILE_SHARE_READ | FILE_SHARE_WRITE`)
 - Tested on Windows 10/11
+- The current `DirectIoDevice` stub is seek-based and serializes file access
+  internally; this avoids duplicated-handle visibility races in Magma overwrite
+  tests on `windows-latest`
 
 ## Error Handling
 
@@ -655,9 +660,11 @@ cargo test -- --nocapture
 
 ### Test Coverage
 
-- **28 unit tests** - Backend implementations, error handling, device abstraction
+- **42 unit tests** - Backend implementations, error handling, device abstraction, Magma recovery
 - **9 integration tests** - Volume lifecycle, concurrent access, resize, sparse operations
-- **1 doc test** - Usage example verification
+- **3 recovery integration tests** - Checkpoint/replay and multi-crash scenarios
+- **5 snapshot tests** - Snapshot/restore coverage including sparse volumes and policy-aware snapshots
+- **3 doc tests** - Usage example verification
 
 ## Future Roadmap
 

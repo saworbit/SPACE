@@ -1,6 +1,6 @@
 {
-  "last_audit": "2026-02-07",
-  "auditor": "SPACE_Dependabot_Triage",
+  "last_audit": "2026-05-08",
+  "auditor": "Codex_CI_Repair",
   "status": "conditional_pass",
   "waivers": [
     {
@@ -14,8 +14,26 @@
       "advisory_id": "RUSTSEC-2025-0134",
       "risk_level": "medium",
       "mitigation": "Operational constraint: Only trusted local PEM files are parsed."
+    },
+    {
+      "crate": "rustls-webpki",
+      "advisory_id": "RUSTSEC-2026-0049/RUSTSEC-2026-0098/RUSTSEC-2026-0099/RUSTSEC-2026-0104",
+      "risk_level": "medium",
+      "mitigation": "Partially updated to rustls-webpki 0.103.13 where possible; older transitive rustls stacks remain in non-critical paths until the reqwest/tokio-tungstenite refresh."
+    },
+    {
+      "crate": "wasmtime",
+      "advisory_id": "RUSTSEC-2026-0085..RUSTSEC-2026-0096",
+      "risk_level": "medium",
+      "mitigation": "Transform-engine/phase5 path is experimental and not part of the v0.2 default single-node surface; upgrade Wasmtime before enabling by default."
+    },
+    {
+      "crate": "core2",
+      "advisory_id": "RUSTSEC-2026-0105",
+      "risk_level": "low",
+      "mitigation": "Transitive through experimental libp2p/PODMS path; yanked status is tracked with the advisory until the libp2p stack is refreshed or split out."
     }
   ],
   "dependency_review": "Passed",
-  "notes": "Dependabot triage: merged blake3 1.8.3, toml 0.9.11, fuser 0.16.0; PRs open for aya 0.13.1 (#18), cargo_metadata 0.23.1 (#19); rejected bincode 3.0.0 (protest crate) and serde_json 1.0.149 (suspicious zmij dep); deferred axum 0.8 and libp2p ecosystem bumps."
+  "notes": "2026-05-08 CI repair: cargo xtask audit passed after moving layout-engine sha3 off the yanked 0.11 RC line, updating patched rand lines, refreshing rustls-webpki 0.103.x, removing stale deny exceptions, and documenting remaining experimental/transitive advisory windows."
 }
