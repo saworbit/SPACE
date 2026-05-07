@@ -60,6 +60,7 @@ tracing-test = { workspace = true }
 futures = { workspace = true }
 criterion = "0.5"
 tokio = { workspace = true, features = ["full"] }
+proptest = "^1.8.0"  # 2026-05-07 sw: property-based tests for pipeline invariants (Tier2 dev-only per docs/dependency-security.md)
 
 [build-dependencies]
 tonic-build = "0.12.3"

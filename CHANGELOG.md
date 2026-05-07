@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Property-based tests for the write/read pipeline** (`crates/capsule-registry/tests/proptest_pipeline.rs`)
+  - Four `proptest!` properties: round-trip correctness (unencrypted), round-trip correctness (encrypted with deterministic XTS-AES-256), dedup determinism (same payload → identical segment list, `ref_count == writes`), content separation (distinct payloads → distinct segment lists)
+  - Five pinned boundary tests: empty payload, single byte, `SEGMENT_SIZE - 1`, exactly `SEGMENT_SIZE`, `SEGMENT_SIZE + 1` (crosses segment boundary, asserts 2 segments produced)
+  - Shared Tokio runtime (via `OnceLock`) across cases; per-case `PipelineHarness` with unique temp paths and best-effort cleanup in `Drop`
+  - Encrypted property bounded to ≥ 16 byte payloads — XTS-AES requires at least one full cipher block; sub-block plaintext support is a separate pipeline change (padding / GCM fallback / small-blob bypass) and out of scope for these tests
+  - `proptest = "^1.8.0"` added as a `[dev-dependencies]` entry in `crates/capsule-registry/Cargo.toml` (Tier2 dev-only per `docs/dependency-security.md`)
+
+### Fixed
+
+- **Cross-policy dedup collision could return mismatched plaintext** (`crates/dedup/src/lib.rs`, `crates/capsule-registry/src/pipeline/legacy.rs`, `crates/pipeline/src/lib.rs`, `crates/capsule-registry/src/scrub_executor.rs`)
+  - Reported by code review as a follow-up to the read-path fix below. Reproducer: write an LZ4 frame as raw bytes under `CompressionPolicy::None`, then write the original plaintext under `CompressionPolicy::LZ4`. The compressor produces the same byte sequence, both writes hash to the same `ContentHash`, and the second write deduplicates onto the first segment — whose metadata says `compressed = false`. Reading the second capsule then returns the LZ4 frame bytes instead of the plaintext
+  - Root cause: the dedup key was `hash_content(compressed_data)` — bytes only, no compression context. The dedup invariant `key(a) == key(b) ⇒ read(a) == read(b)` was violated whenever two segments shared stored bytes but required different decompression treatment
+  - Fix: added `hash_content_with_algo(data, algo)` and a corresponding `Deduper::hash_content_with_algo` trait method (with default impl falling back to `hash_content` for back-compat). Both legacy pipeline write paths (sync `write_capsule_with_policy`, async `prepare_segment`) and the modular pipeline (`pipeline::Pipeline::write_capsule` and `write_capsule_in_zone`) now domain-separate the dedup key with a versioned BLAKE3 prefix `b"space.dedup.v1\0algo:" || algo || b"\0" || data`
+  - **Scrub compatibility window** (added 2026-05-08 after a second review pass): the legacy write paths always populated `Segment::compression_algo` with non-empty values (`"identity"`, `"lz4:N"`, `"zstd:N"`), so distinguishing pre-fix from post-fix segments by the algo field is impossible — the previous "empty algo means legacy" check was dead code. `ScrubExecutor` now tries the algo-aware hash first and falls back to bare `hash_content` for legacy data, emitting a `tracing::warn!` when the fallback fires so operators can observe the migration. The fallback can be removed once no pre-fix data remains in flight. The dedup write index does **not** accept the legacy form — only scrub verification does — so the fallback cannot reintroduce cross-policy collisions
+  - Regression tests: `prop_no_cross_policy_dedup_collision` in `crates/capsule-registry/tests/proptest_pipeline.rs` constructs the cross-policy collision scenario; three new `scrub_executor` tests cover post-upgrade segments, pre-upgrade legacy segments with bare hashes + non-empty algo metadata, and that the fallback does not mask genuine corruption
+
+- **Data-loss bug on read path for uncompressed segments** (`crates/capsule-registry/src/pipeline/legacy.rs`, both `read_capsule` and `read_range`)
+  - Discovered by the new boundary tests above. Reproducer: write a single byte (or any payload that crosses `SEGMENT_SIZE` such that the trailing segment is small) → read returned empty bytes
+  - Root cause: the read path branched on `capsule.policy.compression` and unconditionally accepted `Ok(decompressed)` from `decompress_lz4` / `decompress_zstd`, with `Err(_) => decrypted_data` as a fallback. When the adaptive compressor decides compression is ineffective (small/incompressible inputs), the segment is stored raw with `segment.compressed = false`. Calling `decompress_lz4` on raw bytes can return `Ok(empty_vec)` for inputs that aren't a valid LZ4 frame, silently zeroing the segment instead of falling through to the raw bytes
+  - Fix: trust `segment.compressed` instead of guessing from policy. When the metadata says the segment is uncompressed, return the bytes as-is. When it says compressed, propagate decompression errors as `Err` rather than masking them
+  - Impact: any capsule with an uncompressed segment (e.g. high-entropy data, very small payloads, tail segments smaller than the LZ4 frame overhead) was returning truncated or empty content from `read_capsule` / `read_range`
+
 - **`CachedBackend<B>` — byte-bounded LRU read cache** (`crates/storage/src/cache.rs`)
   - `CachedBackend<B: StorageBackend>` wraps any backend with a byte-bounded LRU read cache; cache cap is in bytes, not entry count, so a 256 MiB cache holds 256 MiB regardless of segment size
   - Cache hit returns a clone of cached bytes; cache miss falls through to the inner backend and populates the cache (data + metadata fetched together)

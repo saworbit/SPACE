@@ -44,7 +44,7 @@ use encryption::policy::EncryptionMetadata;
 use encryption::{verify_mac, KeyManager};
 use tracing::{debug, info, warn};
 
-use crate::dedup::hash_content;
+use crate::dedup::{hash_content, hash_content_with_algo};
 
 /// Runs scrub cycles against a `StorageBackend`, verifying segment integrity.
 ///
@@ -367,12 +367,42 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             let Some(expected) = meta.content_hash.clone() else {
                 return (ScrubResult::Ok, bytes_read);
             };
+            // The pipeline domain-separates dedup keys by compression
+            // algorithm. Segments written *after* that change have a hash
+            // computed by `hash_content_with_algo(data, compression_algo)`.
+            // Segments written *before* that change have a bare BLAKE3
+            // (`hash_content(data)`) — and crucially, their stored
+            // `compression_algo` is non-empty (e.g. "identity", "lz4:1"),
+            // so we can't tell "legacy bare hash" apart from "new algo
+            // hash" by inspecting the algo field alone.
+            //
+            // Compatibility window: accept either form. Try the algo-aware
+            // hash first (the long-term scheme) and fall back to the bare
+            // hash for legacy data. Emit a tracing warn when the bare path
+            // matches so operators can observe the migration and we can
+            // remove the fallback once no pre-fix data is in flight.
+            let algo = meta.compression_algo.clone();
 
             // BLAKE3 over potentially large (4 MiB) segments is CPU-intensive.
             // Run it on a blocking thread to avoid stalling async executors.
             let result = tokio::task::spawn_blocking(move || {
-                let actual = hash_content(&stored);
-                if actual.as_str() == expected.as_str() {
+                if !algo.is_empty() {
+                    let with_algo = hash_content_with_algo(&stored, &algo);
+                    if with_algo.as_str() == expected.as_str() {
+                        return ScrubResult::Ok;
+                    }
+                }
+                // Legacy fallback (or genuinely unknown algo): bare BLAKE3.
+                let bare = hash_content(&stored);
+                if bare.as_str() == expected.as_str() {
+                    if !algo.is_empty() {
+                        warn!(
+                            segment_id = seg_id.0,
+                            algo = %algo,
+                            "scrub: segment verifies under legacy bare content hash; \
+                             rewrite to upgrade to algo-domain-separated key"
+                        );
+                    }
                     ScrubResult::Ok
                 } else {
                     ScrubResult::ContentCorrupted { segment: seg_id }
@@ -659,6 +689,117 @@ mod tests {
             report.errors.is_empty(),
             "valid segment should pass deep scrub"
         );
+    }
+
+    /// Helper: write a segment with full control over `compression_algo`,
+    /// simulating either pre-fix (bare hash + non-empty algo) or post-fix
+    /// (algo-aware hash + non-empty algo) layouts.
+    async fn write_segment_with_algo(
+        backend: &mut InMemoryBackend,
+        id: u64,
+        data: &[u8],
+        content_hash: ContentHash,
+        compression_algo: &str,
+    ) {
+        let seg_id = SegmentId(id);
+        let seg = Segment {
+            id: seg_id,
+            offset: 0,
+            len: data.len() as u32,
+            content_hash: Some(content_hash),
+            compression_algo: compression_algo.to_string(),
+            compressed: !compression_algo.is_empty() && compression_algo != "identity",
+            encrypted: false,
+            ..Default::default()
+        };
+        let mut txn = backend.begin_txn().await.unwrap();
+        txn.append(seg_id, data).await.unwrap();
+        txn.set_segment_metadata(seg_id, seg).await.unwrap();
+        txn.commit().await.unwrap();
+    }
+
+    /// Post-fix layout: segment was written by the new pipeline. Its
+    /// `content_hash` was computed with `hash_content_with_algo(data, algo)`
+    /// and `compression_algo` is non-empty. Scrub must verify cleanly.
+    #[tokio::test]
+    async fn deep_scrub_post_upgrade_segment_passes() {
+        let mut backend = InMemoryBackend::new();
+        let data = b"segment written under the new dedup-key scheme";
+        let hash = hash_content_with_algo(data, "identity");
+        write_segment_with_algo(&mut backend, 1, data, hash, "identity").await;
+
+        let config = fast_config(ScrubKind::Deep);
+        let mut executor = ScrubExecutor::new(backend);
+        let report = executor.scrub_cycle(&config, ScrubKind::Deep).await;
+
+        assert_eq!(report.segments_checked, 1);
+        assert!(
+            report.errors.is_empty(),
+            "post-upgrade segment must verify under hash_content_with_algo"
+        );
+    }
+
+    /// Pre-fix layout (the regression scenario): the segment's
+    /// `compression_algo` is non-empty (e.g. "identity", "lz4:1") because
+    /// the old pipeline always populated it, but its `content_hash` was
+    /// computed with bare `hash_content(data)`. Scrub must accept the
+    /// legacy bare hash during the compatibility window — otherwise every
+    /// existing on-disk segment would be falsely flagged as corrupted
+    /// after upgrade.
+    #[tokio::test]
+    async fn deep_scrub_legacy_segment_with_bare_hash_passes() {
+        let mut backend = InMemoryBackend::new();
+        let data = b"segment written by the pre-fix pipeline";
+        // Bare hash, exactly as the old write paths produced.
+        let bare_hash = hash_content(data);
+        // But the segment metadata still records a non-empty algo —
+        // this is the case my first attempt got wrong (empty-string
+        // fallback was dead code).
+        write_segment_with_algo(&mut backend, 1, data, bare_hash, "identity").await;
+
+        let config = fast_config(ScrubKind::Deep);
+        let mut executor = ScrubExecutor::new(backend);
+        let report = executor.scrub_cycle(&config, ScrubKind::Deep).await;
+
+        assert_eq!(report.segments_checked, 1);
+        assert!(
+            report.errors.is_empty(),
+            "legacy bare-hash segment with non-empty algo must verify via \
+             scrub's compatibility-window fallback (regression for the \
+             false-corruption-after-upgrade bug)"
+        );
+    }
+
+    /// Genuine corruption: stored bytes differ from what produced the
+    /// recorded hash, under either scheme. Scrub must still flag this as
+    /// `ContentCorrupted` — the compatibility fallback must not become a
+    /// general "accept anything" loophole.
+    #[tokio::test]
+    async fn deep_scrub_corruption_under_algo_metadata_still_detected() {
+        let mut backend = InMemoryBackend::new();
+        let original = b"original payload, length matters!";
+        let corrupted = b"corrupted payload! length matters"; // same len
+        assert_eq!(original.len(), corrupted.len());
+
+        // Record an algo-aware hash of `original`, but store `corrupted`.
+        let hash = hash_content_with_algo(original, "lz4:1");
+        write_segment_with_algo(&mut backend, 1, corrupted, hash, "lz4:1").await;
+
+        let config = fast_config(ScrubKind::Deep);
+        let mut executor = ScrubExecutor::new(backend);
+        let report = executor.scrub_cycle(&config, ScrubKind::Deep).await;
+
+        assert_eq!(report.segments_checked, 1);
+        assert_eq!(
+            report.errors.len(),
+            1,
+            "neither algo-aware nor bare hash matches corrupted bytes; \
+             the compatibility fallback must not mask real bitrot"
+        );
+        assert!(matches!(
+            report.errors[0],
+            ScrubResult::ContentCorrupted { .. }
+        ));
     }
 
     #[tokio::test]

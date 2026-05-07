@@ -2,6 +2,22 @@
 
 Thank you for helping harden SPACE. This document highlights day-to-day expectations with an emphasis on dependency hygiene and security auditing.
 
+## Current Focus: v0.2 "Core Capsule"
+
+SPACE is currently focused on delivering a stable single-node release. See [MVP_SCOPE.md](MVP_SCOPE.md) for the full scope. Contributions that advance the v0.2 goals are highest priority. Distributed/experimental features are welcome but should stay behind their respective feature flags.
+
+### Good First Issues
+
+These are high-impact areas where new contributors can make meaningful progress:
+
+1. **Expand property-based tests** — `crates/capsule-registry/tests/proptest_pipeline.rs` covers round-trip, dedup, content separation, and segment-boundary cases. Open invariants: MAC verification fails on tampered ciphertext, compression entropy detection skips random data, sub-block plaintext encryption (currently bounded out — needs padding / GCM fallback)
+2. **Criterion benchmarks** — Add benchmarks for the segment write pipeline hot path and track them in CI
+3. **Documentation alignment** — Update docs where "planned" is described as "implemented"; align with the [Feature Status Table](README.md#-feature--capability-status)
+4. **`spacectl` UX** — Add progress bars for large operations, improve error messages, add `--json` output mode
+5. **Prometheus metrics** — Expand metrics: per-stage latency histograms, dedup hit rates, GC effectiveness
+6. **Structured error types** — Replace string errors with typed errors that include recovery guidance
+7. **Background GC** — Help make garbage collection automatic with tunable aggressiveness
+
 ## Licensing
 
 SPACE is dual-licensed under **MIT OR Apache 2.0**. This means:

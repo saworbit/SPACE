@@ -108,6 +108,19 @@ cargo test -p scaling --test data_motion_test
 ./scripts/test_phase4.sh
 ```
 
+### Property-Based Pipeline Tests
+```bash
+# Generated-input invariants: round-trip, dedup, encryption, segment boundaries
+cargo test -p capsule-registry --test proptest_pipeline
+
+# Show details (writes a regression file on failure)
+cargo test -p capsule-registry --test proptest_pipeline -- --nocapture
+```
+
+The harness lives at `crates/capsule-registry/tests/proptest_pipeline.rs` and
+covers four `proptest!` properties plus five pinned segment-boundary cases.
+See README → Testing → Property-based tests for the full invariant list.
+
 ### S3 View Tests
 ```bash
 # Specific S3 protocol tests

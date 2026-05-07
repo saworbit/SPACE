@@ -1,5 +1,11 @@
 # SPACE Future State Architecture
 
+> **This is a vision document.** It describes the long-term architectural
+> north star, not current implementation status. For what is actually
+> implemented and shippable today, see the
+> [Feature Status Table](../README.md#-feature--capability-status) in the
+> README and the [MVP Scope (v0.2)](../MVP_SCOPE.md).
+
 ## Executive Summary
 
 SPACE redefines the relationship between storage, compute, and orchestration. It introduces the **capsule** as a universal data primitive that erases the distinction between block, file, and object while preserving cryptographic verifiability and policy control. Built entirely as a collection of stateless microservices written in Rust, SPACE unifies data access, policy enforcement, and self-repair within a single programmable substrate.
@@ -292,13 +298,19 @@ fn read_range(id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
 - **Hardware composability** aligns with the trend toward DPUs and computational storage.
 - **Confidential compute integration** future-proofs against regulatory and privacy demands.
 
-### 10.2 Looking Forward
+### 10.2 Current Priority: v0.2 Core Capsule
+
+Before pursuing the full vision above, SPACE is focused on delivering a stable
+single-node "Core Capsule" release (v0.2) that proves the fundamental thesis.
+See [MVP_SCOPE.md](../MVP_SCOPE.md) for scope and timeline.
+
+### 10.3 Looking Forward (post-v0.2)
 - Expand the Policy Compiler into a full **constraint solver** that weighs latency, RPO, and energy cost.
 - Integrate **AI-assisted policy synthesis** to recommend optimal data placement.
 - Extend the **offload framework** to quantum-resistant cryptographic modules.
 - Formal verification of **Merkle root integrity proofs** across federated clusters.
 
-### 10.3 Phase 4: View Federation Layer
+### 10.4 Phase 4: View Federation Layer
 - **Protocol adapters** (`protocol-nvme`, `protocol-nfs::phase4`, `protocol-fuse`, `protocol-csi`) expose NVMe, NFS/FUSE, and CSI views from the same capsule namespace.
 - **Mesh federation** (MeshNode resolve/federate/shard helpers) keeps metadata sharded across zones and returns federated targets in ≤100µs.
 - **Policy signals** (latency_target, sovereignty) orchestrate view projection, transformation, and migration, ensuring QoS and compliance without copying data.

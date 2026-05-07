@@ -663,7 +663,12 @@ where
             }
             let chunk = &data[start..end];
             let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
-            let hash = self.deduper.hash_content(view.as_ref());
+            // Domain-separate the dedup key by compression algorithm so
+            // segments with identical stored bytes under different
+            // compression treatments cannot collide.
+            let hash = self
+                .deduper
+                .hash_content_with_algo(view.as_ref(), summary.algorithm.as_str());
 
             if let Some(existing) = self.catalog.lookup_content(&hash) {
                 let mut metadata = self.storage.metadata(existing).await?;
@@ -774,7 +779,12 @@ where
             }
             let chunk = &data[start..end];
             let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
-            let hash = self.deduper.hash_content(view.as_ref());
+            // Domain-separate the dedup key by compression algorithm so
+            // segments with identical stored bytes under different
+            // compression treatments cannot collide.
+            let hash = self
+                .deduper
+                .hash_content_with_algo(view.as_ref(), summary.algorithm.as_str());
 
             if let Some(existing) = self.catalog.lookup_content(&hash) {
                 let mut metadata = self.storage.metadata(existing).await?;

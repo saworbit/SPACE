@@ -5,10 +5,43 @@ use common::{traits::Deduper, ContentHash, SegmentId};
 
 pub use common::traits::DedupStats;
 
-/// Compute BLAKE3 hash of data for deduplication.
+/// Compute BLAKE3 hash of data for deduplication, with no algorithm context.
+///
+/// Prefer [`hash_content_with_algo`] on pipeline write paths — using a bare
+/// content hash there allows two segments that happen to have the same stored
+/// bytes but different decompression treatments (e.g. an LZ4 frame stored raw
+/// under `CompressionPolicy::None` vs the original plaintext compressed under
+/// `CompressionPolicy::LZ4`) to collide in the dedup index, which produces
+/// silently-wrong reads after dedup hits.
+///
+/// This entry point remains for callers that genuinely have no compression
+/// context (raw blob hashing, integrity tests, etc.).
 pub fn hash_content(data: &[u8]) -> ContentHash {
     let hash = blake3::hash(data);
     ContentHash::from_bytes(hash.as_bytes())
+}
+
+/// Compute a domain-separated BLAKE3 hash for deduplication.
+///
+/// The dedup index must guarantee `key(a) == key(b) ⇒ read(a) == read(b)`.
+/// Hashing only the stored bytes breaks that invariant when two writes land
+/// the same bytes through different compression treatments. Mixing the
+/// compression algorithm name into the hash domain prevents cross-policy
+/// reuse: `(raw_lz4_frame, "identity")` and `(plaintext_compressed, "lz4:1")`
+/// produce different keys even when the byte sequences match.
+///
+/// `algo` should be the value of `CompressionResult::algorithm` from the
+/// segment that produced `data` (e.g. `"identity"`, `"lz4:1"`, `"zstd:3"`).
+pub fn hash_content_with_algo(data: &[u8], algo: &str) -> ContentHash {
+    let mut hasher = blake3::Hasher::new();
+    // Versioned domain prefix so we can rotate the scheme later without
+    // colliding with older keys. The trailing NUL separates the algo string
+    // from `data` so e.g. `"lz4"` + `":1\0..."` cannot alias `"lz4:1"` + `"\0..."`.
+    hasher.update(b"space.dedup.v1\0algo:");
+    hasher.update(algo.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(data);
+    ContentHash::from_bytes(hasher.finalize().as_bytes())
 }
 
 /// Basic in-memory deduper backed by a hash map.
@@ -39,6 +72,10 @@ impl Default for Blake3Deduper {
 impl Deduper for Blake3Deduper {
     fn hash_content(&self, data: &[u8]) -> ContentHash {
         hash_content(data)
+    }
+
+    fn hash_content_with_algo(&self, data: &[u8], algo: &str) -> ContentHash {
+        hash_content_with_algo(data, algo)
     }
 
     fn check_dedup(&self, hash: &ContentHash) -> Option<SegmentId> {

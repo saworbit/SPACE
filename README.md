@@ -27,7 +27,7 @@
 
 ---
 
-**🔬 Current Focus:** Core storage primitives + distributed consensus (Phase 9)
+**🔬 Current Focus:** v0.2 "Core Capsule" — stable single-node storage + S3 + CLI ([scope](MVP_SCOPE.md))
 
 **✅ Working (Beta/Alpha):** Basic capsule storage • Compression • Deduplication • Encryption • S3 API • Raft consensus • Global registry • Self-driving reconciliation
 
@@ -192,7 +192,8 @@
 | **NVMe-oF Simulation** | 🟡 Alpha | Native NVMe/TCP with fallback | - |
 | **Docker Compose Setup** | 🟡 Alpha | 3-node mesh environment | - |
 | **Integration Tests** | 🟡 Alpha | Basic coverage, needs expansion | - |
-| **Unit Tests** | 🟡 Alpha | 419 tests passing across workspace | - |
+| **Unit Tests** | 🟡 Alpha | 419+ tests passing across workspace | - |
+| **Property-Based Tests** | 🟡 Alpha | Pipeline round-trip, dedup, encryption, segment-boundary invariants (`crates/capsule-registry/tests/proptest_pipeline.rs`) | - |
 | **Benchmarks** | 🟠 Experimental | Limited performance tests | - |
 
 ### Key Gaps & Limitations
@@ -1025,6 +1026,9 @@ cargo test -p scaling --test replication_integration -- --nocapture  # Inbound r
 cargo test --features advanced-security -- --nocapture
 ./scripts/test_batch_queue_limits.sh  # BatchQueue byte/count/stat limits
 
+# Property-based pipeline tests (round-trip, dedup, encryption, segment boundaries)
+cargo test -p capsule-registry --test proptest_pipeline
+
 # Automated dedup demo
 ./scripts/test_dedup.sh  # Linux/macOS/Git Bash
 ```
@@ -1046,8 +1050,29 @@ cargo test --features advanced-security -- --nocapture
 | MAC integrity verification | ✅ |
 | Key derivation & rotation | ✅ |
 | Deterministic encryption | ✅ |
+| **Property-based pipeline invariants** | ✅ |
+| **Segment-boundary round-trip (1B / 4MiB ± 1)** | ✅ |
 
 </div>
+
+#### Property-based tests
+
+[`crates/capsule-registry/tests/proptest_pipeline.rs`](crates/capsule-registry/tests/proptest_pipeline.rs)
+exercises the write/read pipeline against generated inputs:
+
+- Round-trip correctness, both unencrypted and with deterministic XTS-AES-256
+- Dedup determinism — same payload N times produces identical segment lists with `ref_count == N`
+- Content separation — distinct payloads produce distinct segment lists
+- **No cross-policy dedup collision** — capsules written under different `CompressionPolicy` values must not share segments even when stored bytes coincide
+- Pinned boundary cases — empty, single byte, `SEGMENT_SIZE - 1`, exactly `SEGMENT_SIZE`, `SEGMENT_SIZE + 1`
+
+These tests have caught three real bugs so far: a data-loss bug in the legacy
+read path (uncompressed segments were silently zeroed on read), an XTS-AES
+sub-block plaintext rejection, and a cross-policy dedup-key collision found
+by code review of the first fix. See the `[Unreleased]` section of
+[CHANGELOG.md](CHANGELOG.md). XTS-AES requires ≥ 16 byte plaintexts, so the
+encrypted property is bounded accordingly — sub-block plaintext support is a
+separate pipeline change.
 
 ---
 
@@ -1187,75 +1212,64 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 
 ## 🗺️ Roadmap
 
-### ✅ Phase 1: Core Storage (COMPLETE)
-- ✅ Capsule registry with persistent metadata
-- ✅ NVRAM log simulator
-- ✅ CLI for create/read operations
+> **See [ROADMAP.md](ROADMAP.md) for the canonical roadmap and [MVP_SCOPE.md](MVP_SCOPE.md) for the detailed v0.2 scope contract.**
+
+### Completed Foundations
+
+<details>
+<summary><b>Phases 1-3: Core Storage, Compression, Dedup, Encryption</b> ✅</summary>
+
+- ✅ Capsule registry with Sled-backed persistent metadata
+- ✅ NVRAM log simulator with atomic writes + crash recovery
 - ✅ 4MB automatic segmentation
-- ✅ Integration tests
+- ✅ LZ4/Zstd adaptive compression with entropy detection
+- ✅ BLAKE3 content-addressed deduplication (post-compression)
+- ✅ XTS-AES-256 encryption with deterministic tweaks preserving dedup
+- ✅ BLAKE3-MAC integrity verification per segment
+- ✅ Key management with version-tracked derivation + rotation
+- ✅ Reference-counted segment tracking + manual GC
+- ✅ S3-compatible REST API (basic PUT/GET/HEAD/LIST/DELETE)
+- ✅ Advanced security primitives (Bloom filters, audit log, SPIFFE stubs, Kyber toggle) behind `advanced-security` flag
 
-### ✅ Phase 2.1: Compression (COMPLETE)
-- ✅ LZ4 fast compression
-- ✅ Zstd balanced compression
-- ✅ Entropy-based compression selection
-- ✅ Policy-driven compression levels
-- ✅ Compression statistics tracking
+</details>
 
-### ✅ Phase 2.2: Deduplication (COMPLETE)
-- ✅ BLAKE3 content hashing
-- ✅ Content-addressed storage (ContentHash -> SegmentId)
-- ✅ Post-compression deduplication
-- ✅ Dedup statistics and monitoring
-- ✅ Reference counting (foundation for GC)
+### Current Focus: v0.2 "Core Capsule" Release
 
-### ✅ Phase 2.3: Protocol Views (COMPLETE)
-- ✅ S3-compatible REST API
-- ✅ PUT/GET/HEAD/LIST/DELETE operations
-- ✅ Protocol abstraction layer
-- ✅ S3 server with Axum
+The strategic goal is a **shippable single-node artifact** that proves the core thesis. See [MVP_SCOPE.md](MVP_SCOPE.md) for details.
 
-### ✅ Phase 3.1: Encryption & Integrity (COMPLETE)
-- ✅ XTS-AES-256 per-segment encryption
-- ✅ Deterministic tweak derivation (preserves dedup)
-- ✅ BLAKE3-MAC integrity verification
-- ✅ Key management with BLAKE3-KDF
-- ✅ Key rotation with version tracking
-- ✅ Environment-based key configuration
-- ✅ Memory zeroization for security
-- ✅ 53 comprehensive tests
+**Phase 0 — Stabilization (current)**
+- 🔧 Align documentation with implementation reality
+- 🔧 Crate consolidation (reduce ~25 members to streamline builds)
+- 🔧 Make modular pipeline the default path
+- 🔧 Implement automatic background GC (replace manual-only)
+- 🔧 Add property-based tests + Criterion benchmark harness
+- 🔧 Feature flag hygiene: document "stable" vs "research" sets
 
-### ✅ Phase 3.2: Lifecycle Management (COMPLETE)
-- ✅ Reference-counted segment tracking across capsules
-- ✅ Startup refcount reconciliation on pipeline initialization
-- ✅ Manual garbage collector for metadata reclamation
+**Phase 1 — Core Capsule v0.2 (1-4 months)**
+- 📋 Production-grade single-node capsule CRUD + streaming + range reads
+- 📋 S3 view: multipart uploads, range requests, proper error codes
+- 📋 CLI polish: progress bars, `spacectl doctor`, config file, completions
+- 📋 Prometheus metrics: per-stage latency, dedup hit rate, GC stats
+- 📋 Published benchmarks tracked in CI
+- 📋 External security review of encryption crate (scheduled)
 
-### ✅ Phase 3.3: Advanced Security (COMPLETE)
-- ✅ Counting Bloom filters + registry plumbing
-- ✅ Immutable audit log with BLAKE3 hash chains + TSA hooks
-- ✅ SPIFFE + mTLS ingress middleware + refreshable allow-list
-- ✅ Kyber hybrid crypto profile + segment metadata
-- ✅ Security module + docs aligning Bloom/Audit/PQ/eBPF
+**Phase 2 — Selective Distributed Layer (after v0.2 is solid)**
+- 📋 Only after real single-node usage and feedback
+- 📋 Simplified distributed story: Raft metadata + async replication first
+- 📋 Re-evaluate PODMS/gossip/mesh scope based on demand
+- 📋 Consider separate repo for experimental distributed crates
 
-### 🔮 Phase 4: Advanced Protocol Views
-- 📋 NVMe-oF block target (SPDK feature-gated, TCP fallback)
-- 📋 NFS v4.2 file export
-- 📋 FUSE filesystem mount
-- 📋 CSI driver for Kubernetes
-- Encryption-transparent views via RegistryTransformOps + centralized enforce_view_policy so protocols serve plaintext while capsules stay XTS-encrypted
+### Research / Experimental (deferred, behind feature flags)
 
-### 🧠 Phase 5: The Brain (Compute-over-Data)
-- 🟠 WASM transform engine embedded in the pipeline (`Policy.transform`)
-- 📋 Chained transforms with resource limits (fuel + memory pages)
-- 📋 On-read transforms for streaming clients (no pre-processing storage cost)
-- 📋 On-write transforms for destructive ingest filtering (optional)
+These represent the long-term vision. They are **not part of v0.2** and live behind feature flags or in experimental sub-crates.
 
-### 🚀 Phase 6: Enterprise Features
-- 📋 Metro-sync replication
-- 📋 Autonomous tiering (hot/cold) + rehydrate
-- 📋 Policy compiler
-- 🟡 Erasure coding trait & types (6+2 RS default profile, pluggable algorithms)
-- 📋 Hardware offload (DPU/GPU)
-- 📋 Confidential compute enclaves
+| Area | Items | Flag |
+|------|-------|------|
+| **Distributed** | PODMS mesh, gossip, swarm intelligence, metro-sync replication | `podms` |
+| **Protocol Views** | NFS export, Block/NVMe-oF target, FUSE mount, CSI driver | `phase4` |
+| **Compute** | WASM transform engine, layout engine, ML placement | `phase5` |
+| **Security** | SPIFFE/mTLS/eBPF gateway, post-quantum (Kyber) | `advanced-security` |
+| **Enterprise** | Erasure coding, hardware offload (DPU/GPU), confidential compute | Future |
 
 ---
 
@@ -1368,10 +1382,12 @@ SPACE is a **single-developer research project** exploring novel storage archite
 5. ⏰ **Be patient** - single developer means slower response times
 
 **Good First Issues:**
-- Improving test coverage on core storage features
-- Clarifying documentation (especially "planned" vs "implemented")
-- Adding error handling to existing code paths
-- Performance benchmarking and profiling
+- Add property-based tests (proptest) for pipeline round-trip invariants
+- Clarify documentation: align "planned" vs "implemented" labels with the [Feature Status Table](#-feature--capability-status)
+- Add Criterion benchmarks for the segment write pipeline hot path
+- Improve `spacectl` error messages and add progress bars for large operations
+- Add structured error types with recovery guidance to existing code paths
+- Expand Prometheus metrics (per-stage latency histograms, dedup hit rates)
 
 📄 See [CONTRIBUTING.md](CONTRIBUTING.md) • [Code of Conduct](CODE_OF_CONDUCT.md) • [Security](SECURITY.md)
 
@@ -1384,7 +1400,9 @@ SPACE is a **single-developer research project** exploring novel storage archite
 | Document | Description |
 |:---------|:------------|
 | 🏗️ [Architecture Overview](docs/architecture.md) | Full system design |
-| 🔮 [Future State Architecture](docs/future_state_architecture.md) | Vision and roadmap |
+| 🗺️ [Roadmap](ROADMAP.md) | Canonical Phase 0 / 1 / 2 plan |
+| 🎯 [MVP Scope (v0.2)](MVP_SCOPE.md) | What ships next and what's deferred |
+| 🔮 [Future State Architecture](docs/future_state_architecture.md) | Long-term vision (aspirational) |
 | 💡 [Patentable Concepts](docs/patentable_concepts.md) | Novel mechanisms |
 | 🔗 [Dedup Implementation](docs/implementation/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
 | 🔐 [Encryption Implementation](docs/implementation/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
@@ -1436,12 +1454,12 @@ This follows the same licensing model as the Rust programming language itself.
 
 | Aspect | Status |
 |:-------|:-------|
-| **🎯 Maturity Level** | **Pre-Alpha** (v0.1.0) |
+| **🎯 Maturity Level** | **Pre-Alpha** (v0.1.0) — targeting v0.2 "Core Capsule" |
 | **🔬 Stability** | **Unstable** — Breaking changes without notice |
 | **🚀 Production Use** | **❌ NOT RECOMMENDED** — Educational/research only |
 | **👤 Development** | Single developer, limited real-world testing |
-| **🧪 Test Coverage** | ~70-80%, many gaps remain |
-| **📚 Documentation** | Describes vision more than current reality |
+| **🧪 Test Coverage** | ~419 tests; property-based and integration coverage expanding |
+| **📚 Documentation** | Aligning with reality — see [MVP_SCOPE.md](MVP_SCOPE.md) for current scope |
 
 </div>
 

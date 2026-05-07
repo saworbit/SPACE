@@ -1,4 +1,4 @@
-use crate::dedup::{hash_content, DedupStats};
+use crate::dedup::{hash_content_with_algo, DedupStats};
 #[cfg(feature = "pipeline_async")]
 use crate::error::PipelineResult;
 use crate::error::{CompressionError, PipelineError};
@@ -143,7 +143,10 @@ fn prepare_segment(
                 source: comp_err,
             }
         })?;
-    let content_hash = hash_content(compressed_data.as_ref());
+    // Domain-separate the dedup key by compression algorithm so identical
+    // stored bytes under different compression treatments never collide
+    // (would otherwise return decompression-mismatched plaintext on read).
+    let content_hash = hash_content_with_algo(compressed_data.as_ref(), &comp_result.algorithm);
 
     let encryption_enabled = policy.encryption.is_enabled() && key_manager.is_some();
     let mut encryption_meta = None;
@@ -585,8 +588,16 @@ impl LegacyPipeline {
                 .map_err(|err| map_compression_error(index, err))?;
             total_compressed_size += comp_result.compressed_size as u64;
 
-            // Step 2: Hash the compressed data for deduplication
-            let content_hash = hash_content(compressed_data.as_ref());
+            // Step 2: Hash the compressed data for deduplication.
+            //
+            // The algorithm name is mixed into the hash domain so segments
+            // stored under different compression treatments cannot collide
+            // (e.g. a raw LZ4 frame stored via `CompressionPolicy::None` and
+            // the original plaintext stored via `CompressionPolicy::LZ4`
+            // would otherwise share a key, with the second reader getting
+            // mismatched decompression treatment).
+            let content_hash =
+                hash_content_with_algo(compressed_data.as_ref(), &comp_result.algorithm);
 
             // Step 3: Encrypt if enabled (before dedup check)
             let mut encryption_meta = None;
@@ -1642,21 +1653,25 @@ impl LegacyPipeline {
                 raw_data
             };
 
-            // Step 2: Decompress based on policy
-            let data = match capsule.policy.compression {
-                CompressionPolicy::None => decrypted_data,
-                CompressionPolicy::LZ4 { .. } => {
-                    match decompress_lz4(&decrypted_data) {
-                        Ok(decompressed) => decompressed,
-                        Err(_) => decrypted_data, // Wasn't compressed
-                    }
+            // Step 2: Decompress based on what was *actually* stored.
+            //
+            // Trusting `capsule.policy.compression` here is wrong: when the
+            // adaptive compressor decides compression is ineffective (e.g. a
+            // single-byte segment, or already-compressed data), the segment
+            // is stored as raw bytes with `segment.compressed = false`. The
+            // metadata is the source of truth — falling back on a decoder
+            // error is unsafe because some codecs (LZ4) can return Ok(empty)
+            // for non-frame inputs, which silently zeroes the segment.
+            let data = if segment.compressed {
+                match capsule.policy.compression {
+                    CompressionPolicy::None => decrypted_data,
+                    CompressionPolicy::LZ4 { .. } => decompress_lz4(&decrypted_data)
+                        .map_err(|e| anyhow::anyhow!("decompress_lz4: {e}"))?,
+                    CompressionPolicy::Zstd { .. } => decompress_zstd(&decrypted_data)
+                        .map_err(|e| anyhow::anyhow!("decompress_zstd: {e}"))?,
                 }
-                CompressionPolicy::Zstd { .. } => {
-                    match decompress_zstd(&decrypted_data) {
-                        Ok(decompressed) => decompressed,
-                        Err(_) => decrypted_data, // Wasn't compressed
-                    }
-                }
+            } else {
+                decrypted_data
             };
 
             // Backfill plain_len when missing to enable range skipping for future reads.
@@ -1800,21 +1815,25 @@ impl LegacyPipeline {
                 raw_data
             };
 
-            // Step 2: Decompress based on policy
-            let data = match capsule.policy.compression {
-                CompressionPolicy::None => decrypted_data,
-                CompressionPolicy::LZ4 { .. } => {
-                    match decompress_lz4(&decrypted_data) {
-                        Ok(decompressed) => decompressed,
-                        Err(_) => decrypted_data, // Wasn't compressed
-                    }
+            // Step 2: Decompress based on what was *actually* stored.
+            //
+            // Trusting `capsule.policy.compression` here is wrong: when the
+            // adaptive compressor decides compression is ineffective (e.g. a
+            // single-byte segment, or already-compressed data), the segment
+            // is stored as raw bytes with `segment.compressed = false`. The
+            // metadata is the source of truth — falling back on a decoder
+            // error is unsafe because some codecs (LZ4) can return Ok(empty)
+            // for non-frame inputs, which silently zeroes the segment.
+            let data = if segment.compressed {
+                match capsule.policy.compression {
+                    CompressionPolicy::None => decrypted_data,
+                    CompressionPolicy::LZ4 { .. } => decompress_lz4(&decrypted_data)
+                        .map_err(|e| anyhow::anyhow!("decompress_lz4: {e}"))?,
+                    CompressionPolicy::Zstd { .. } => decompress_zstd(&decrypted_data)
+                        .map_err(|e| anyhow::anyhow!("decompress_zstd: {e}"))?,
                 }
-                CompressionPolicy::Zstd { .. } => {
-                    match decompress_zstd(&decrypted_data) {
-                        Ok(decompressed) => decompressed,
-                        Err(_) => decrypted_data, // Wasn't compressed
-                    }
-                }
+            } else {
+                decrypted_data
             };
 
             // Backfill plain_len when missing to enable future range skipping.

@@ -301,7 +301,10 @@ pub struct Policy {
                               ▼                    │
 ┌─────────────────────────────────────────────┐    │
 │ 4. DECOMPRESS                               │    │
-│    - Apply inverse of compression_algo      │    │
+│    - Branch on `segment.compressed`         │    │
+│      (segment metadata, not policy)         │    │
+│    - If false: return decrypted bytes as-is │    │
+│    - If true: apply inverse of policy algo  │    │
 └─────────────────────────────┬───────────────┘    │
                               │                    │
          ┌────────────────────┴────────────────────┘
@@ -355,6 +358,34 @@ pub trait StorageBackend: Send + Sync {
 - Entropy detection (skip if >7.5 bits/byte)
 - Adaptive: LZ4 for speed, Zstd for ratio
 - Zero-copy path with `Cow<[u8]>`
+
+**Storage invariant:** when adaptive compression decides compression is
+ineffective (small payloads, high entropy, or output ≥ input), the segment is
+written raw and `segment.compressed = false`. Read paths **must** branch on
+`segment.compressed` (the metadata is authoritative), not on the capsule
+policy — otherwise raw bytes get fed to a decompressor, which can silently
+return empty for non-frame inputs and zero the segment.
+
+**Dedup invariant:** the dedup index key must guarantee
+`key(a) == key(b) ⇒ read(a) == read(b)`. Hashing only the stored bytes
+(`hash_content(data)`) does **not** satisfy this: two segments can share
+stored bytes but require different decompression treatments — e.g. an LZ4
+frame stored raw under `CompressionPolicy::None` versus the original
+plaintext compressed under `CompressionPolicy::LZ4`. Pipeline write paths
+must use `hash_content_with_algo(data, comp_result.algorithm)` so the
+algorithm name is mixed into the hash domain. Scrub verification reproduces
+the same hash by reading `Segment::compression_algo` from segment metadata.
+
+**Scrub migration window:** `Segment::compression_algo` was already populated
+with non-empty values (`"identity"`, `"lz4:N"`, `"zstd:N"`) before the
+dedup-key fix landed, so the algo field alone cannot distinguish pre-fix
+segments (bare `hash_content`) from post-fix ones (`hash_content_with_algo`).
+`ScrubExecutor` therefore tries the algo-aware hash first and falls back to
+bare `hash_content` for legacy data, emitting a tracing warning when the
+fallback fires. The dedup **write** path does not accept the legacy form —
+only scrub verification does — so the fallback cannot reintroduce
+cross-policy collisions. Remove the fallback once pre-fix data is no longer
+in flight (or after a metadata migration step lands).
 
 ### 6.3 Deduplication
 
@@ -594,25 +625,40 @@ RUST_LOG=info,space=debug
 
 ## 15. Roadmap
 
+> **Canonical roadmap: [ROADMAP.md](ROADMAP.md) — v0.2 scope: [MVP_SCOPE.md](MVP_SCOPE.md).**
+
 ### Completed
 - [x] Phase 1-3: Core storage, compression, dedup, encryption
 - [x] Phase 8: Foundry block storage
 - [x] Phase 9.1-9.2: Raft consensus foundation
 
-### In Progress
-- [ ] Phase 9.3+: Full mesh federation
-- [ ] ML-driven placement engine
-- [ ] Production hardening
+### Current: v0.2 "Core Capsule" (single-node focus)
+- [ ] Stabilization: align docs with reality, crate consolidation, feature flag hygiene
+- [ ] Modular pipeline as default path (remove legacy bridge)
+- [ ] Automatic background GC with tunable aggressiveness
+- [ ] S3 view: multipart uploads, range requests, proper error codes
+- [ ] CLI polish: progress bars, `spacectl doctor`, config file, completions
+- [ ] Property-based tests + Criterion benchmarks in CI
+- [ ] Expanded Prometheus metrics (per-stage latency, dedup/GC stats)
+- [ ] External security review of encryption crate
 
-### Future
+### Post-v0.2: Selective Distributed Layer
+- [ ] Simplified distributed story: Raft metadata + async replication
+- [ ] Re-evaluate PODMS/gossip/mesh scope based on real usage
+- [ ] ML-driven placement engine (experimental)
+
+### Long-term Vision
 - [ ] Hardware offload (DPU/GPU)
 - [ ] Confidential compute enclaves
-- [ ] Full Kubernetes integration
+- [ ] Full Kubernetes integration (CSI driver)
+- [ ] Full mesh federation with PODMS swarm intelligence
 
 ---
 
 ## References
 
 - [README.md](README.md) - Project overview and quick start
+- [ROADMAP.md](ROADMAP.md) - Canonical Phase 0 / 1 / 2 plan
+- [MVP_SCOPE.md](MVP_SCOPE.md) - v0.2 release scope contract
 - [docs/](docs/) - Detailed specifications
 - [CHANGELOG.md](CHANGELOG.md) - Version history

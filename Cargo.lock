@@ -924,6 +924,7 @@ dependencies = [
  "nvram-sim",
  "openraft",
  "pipeline",
+ "proptest",
  "prost 0.13.5",
  "protoc-bin-vendored",
  "scaling",
