@@ -80,19 +80,17 @@ impl DirectIoDevice {
     /// - SPDK: `spdk_bdev_read()`
     /// - io_uring: `read_at()` with O_DIRECT
     pub async fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let file_guard = self.file.read().await;
+        let mut file_guard = self.file.write().await;
         let file = file_guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| crate::error::FoundryError::device_error("Device not initialized"))?;
 
-        // Clone the file to avoid holding the lock during I/O
-        let mut file_clone = file.try_clone().await?;
-        drop(file_guard);
-
-        // Seek to offset and read
-        file_clone.seek(tokio::io::SeekFrom::Start(offset)).await?;
+        // The stub implementation is seek-based, so serialize access to the
+        // single file cursor. This keeps Windows read-after-write visibility
+        // deterministic for tests that append and immediately read.
+        file.seek(tokio::io::SeekFrom::Start(offset)).await?;
         let mut buffer = vec![0u8; len];
-        file_clone.read_exact(&mut buffer).await?;
+        file.read_exact(&mut buffer).await?;
 
         Ok(buffer)
     }
@@ -108,18 +106,13 @@ impl DirectIoDevice {
     /// - SPDK: `spdk_bdev_write()`
     /// - io_uring: `write_at()` with O_DIRECT
     pub async fn write_at(&self, offset: u64, data: &[u8]) -> Result<()> {
-        let file_guard = self.file.read().await;
+        let mut file_guard = self.file.write().await;
         let file = file_guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| crate::error::FoundryError::device_error("Device not initialized"))?;
 
-        // Clone the file to avoid holding the lock during I/O
-        let mut file_clone = file.try_clone().await?;
-        drop(file_guard);
-
-        // Seek to offset and write
-        file_clone.seek(tokio::io::SeekFrom::Start(offset)).await?;
-        file_clone.write_all(data).await?;
+        file.seek(tokio::io::SeekFrom::Start(offset)).await?;
+        file.write_all(data).await?;
 
         Ok(())
     }
@@ -135,11 +128,9 @@ impl DirectIoDevice {
     /// - SPDK: `spdk_bdev_flush()`
     /// - NVMe: Direct flush command
     pub async fn flush(&self) -> Result<()> {
-        let file_guard = self.file.read().await;
-        if let Some(file) = file_guard.as_ref() {
-            let mut file_clone = file.try_clone().await?;
-            drop(file_guard);
-            file_clone.flush().await?;
+        let mut file_guard = self.file.write().await;
+        if let Some(file) = file_guard.as_mut() {
+            file.flush().await?;
         }
         Ok(())
     }
