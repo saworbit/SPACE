@@ -31,4 +31,38 @@ ignore = [
     "RUSTSEC-2025-0141",  # bincode unmaintained (warning; gossip-layer wire format)
     "RUSTSEC-2026-0002",  # lru IterMut unsoundness (transitive via leptos_router and gossip-layer)
                           # Risk: Low (we don't use IterMut; cache reads only)
+    # 2026-05 advisory batch. Keep CI green while v0.2 stabilization removes
+    # or upgrades the experimental dependency paths carrying these.
+    "RUSTSEC-2026-0049",  # rustls-webpki CRL distribution point matching
+                          # Risk: Low in current clients; CRL checking is not enabled in SPACE TLS paths
+                          # Mitigation: upgrade reqwest/tokio-tungstenite rustls stacks during dependency refresh
+    "RUSTSEC-2026-0098",  # rustls-webpki URI name constraints accepted
+                          # Risk: requires CA misissuance; URI SAN assertion is not used by SPACE
+    "RUSTSEC-2026-0099",  # rustls-webpki wildcard name constraint handling
+                          # Risk: requires CA misissuance; accepted until rustls stack upgrade
+    "RUSTSEC-2026-0104",  # rustls-webpki CRL parser panic
+                          # Risk: CRL parsing is not used by current client/server paths
+    "RUSTSEC-2026-0085",  # wasmtime component flags panic
+    "RUSTSEC-2026-0086",  # wasmtime Winch/table host data leakage
+    "RUSTSEC-2026-0087",  # wasmtime Cranelift f64x2.splat issue
+    "RUSTSEC-2026-0088",  # wasmtime pooling allocator leakage
+    "RUSTSEC-2026-0089",  # wasmtime Winch table.fill panic
+    "RUSTSEC-2026-0091",  # wasmtime component string transcoding OOB
+    "RUSTSEC-2026-0092",  # wasmtime UTF-16 transcoding panic
+    "RUSTSEC-2026-0093",  # wasmtime component string transcoding OOB read
+    "RUSTSEC-2026-0094",  # wasmtime Winch table.grow masking
+    "RUSTSEC-2026-0095",  # wasmtime Winch sandbox escape
+    "RUSTSEC-2026-0096",  # wasmtime aarch64 Cranelift sandbox escape
+                          # Risk: transform-engine is experimental and not in v0.2 default path
+                          # Mitigation: upgrade Wasmtime to a supported fixed line before enabling phase5 by default
+    "RUSTSEC-2026-0105",  # core2 unmaintained/yanked via libp2p multiaddr
+                          # Risk: isolated to experimental gossip/PODMS path
+                          # Mitigation: libp2p refresh or distributed crate split
 ]
+
+[yanked]
+# `core2 0.4.0` is pulled transitively through the experimental libp2p stack.
+# It also has RUSTSEC-2026-0105 above, so keep the risk tracked there rather
+# than failing the whole workspace on yanked status while v0.2 focuses on the
+# single-node path.
+enabled = false

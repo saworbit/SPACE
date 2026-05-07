@@ -95,7 +95,7 @@ where
                 let shard_keys = capsule_id.shard_keys(zones.len());
                 let shards: Vec<MetadataShard> = zones
                     .into_iter()
-                    .zip(shard_keys.into_iter())
+                    .zip(shard_keys)
                     .map(|(zone, shard_id)| MetadataShard {
                         shard_id,
                         owner: mesh.id(),

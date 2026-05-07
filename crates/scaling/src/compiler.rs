@@ -641,11 +641,7 @@ impl MeshState {
             .find(|(id, _)| *id == node_id)
             .map(|(_, info)| {
                 let total = info.available_bytes + info.used_bytes;
-                if total == 0 {
-                    0
-                } else {
-                    (info.used_bytes * 100) / total
-                }
+                (info.used_bytes * 100).checked_div(total).unwrap_or(0)
             })
             .unwrap_or(100) // Treat unknown nodes as fully utilized
     }

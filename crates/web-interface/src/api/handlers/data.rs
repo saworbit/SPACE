@@ -68,7 +68,7 @@ pub async fn list_objects(
         })
         .collect();
 
-    files.sort_by(|a, b| b.uploaded_at.cmp(&a.uploaded_at));
+    files.sort_by_key(|file| std::cmp::Reverse(file.uploaded_at));
 
     let total = files.len();
     let total_size = files.iter().map(|f| f.size).sum();

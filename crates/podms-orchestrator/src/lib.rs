@@ -326,24 +326,22 @@ impl<C: ContentStore + 'static> Orchestrator<C> {
                     timestamp: _,
                     raft_port: _,
                     gossip_addr: _,
-                } => {
+                } if load.storage_used_bytes > 1_000_000_000_000 => {
                     // Could emit capacity telemetry based on storage usage
-                    if load.storage_used_bytes > 1_000_000_000_000 {
-                        // >1TB usage
-                        // Note: We use a placeholder node_id here because peer_id is a libp2p PeerId string
-                        // In a production system, we'd maintain a mapping from PeerId -> NodeId
-                        let node_id = NodeId::new(); // Placeholder
-                        let event = Telemetry::CapacityThreshold {
-                            node_id,
-                            used_bytes: load.storage_used_bytes,
-                            total_bytes: load.storage_used_bytes + 100_000_000, // Mock total
-                            threshold_pct: 0.9,
-                        };
+                    // >1TB usage
+                    // Note: We use a placeholder node_id here because peer_id is a libp2p PeerId string
+                    // In a production system, we'd maintain a mapping from PeerId -> NodeId
+                    let node_id = NodeId::new(); // Placeholder
+                    let event = Telemetry::CapacityThreshold {
+                        node_id,
+                        used_bytes: load.storage_used_bytes,
+                        total_bytes: load.storage_used_bytes + 100_000_000, // Mock total
+                        threshold_pct: 0.9,
+                    };
 
-                        if telemetry_tx.send(event).is_err() {
-                            error!("telemetry channel closed, shutting down bridge");
-                            break;
-                        }
+                    if telemetry_tx.send(event).is_err() {
+                        error!("telemetry channel closed, shutting down bridge");
+                        break;
                     }
                 }
                 mesh_core::GossipMessage::DataMigration { path, .. } => {

@@ -122,12 +122,6 @@ name = "rdma-sys"
 expression = "MIT"
 license-files = [{ path = "LICENSE", hash = 0x57d00757 }]
 
-# rdma-sys is a build-time dependency (bindgen) without a declared SPDX expression.
-# We scope an explicit exception to avoid blocking on the missing metadata.
-[[licenses.exceptions]]
-name = "rdma-sys"
-allow = ["Apache-2.0", "MIT", "BSD-3-Clause"]
-
 [licenses.private]
 ignore = true
 
@@ -177,7 +171,7 @@ skip = [
     { crate = "redox_syscall@0.5.18", reason = "parking_lot_core 0.9.x pin" },
 
     # rand ecosystem
-    { crate = "rand@0.8.5", reason = "ecosystem compatibility" },
+    { crate = "rand@0.8.6", reason = "ecosystem compatibility; patched RUSTSEC-2026-0097 line" },
     { crate = "rand_chacha@0.3.1", reason = "rand 0.8 compatibility" },
     { crate = "rand_core@0.6.4", reason = "rand 0.8 compatibility" },
 
@@ -215,11 +209,6 @@ skip = [
     # Tower/Axum compatibility
     { crate = "tower@0.4.13", reason = "protocol-s3 compatibility" },
     { crate = "tower@0.5.2", reason = "axum 0.7 stack" },
-
-    # Build-time duplicate stacks pulled by bindgen (rdma-sys)
-    { crate = "clap@2.34.0", reason = "bindgen build-time dependency (rdma-sys); coexists with clap 4 runtime" },
-    { crate = "hermit-abi@0.1.19", reason = "bindgen/atty build-time dependency (rdma-sys); coexists with hermit-abi 0.5" },
-    { crate = "strsim@0.8.0", reason = "bindgen/clap2 build-time dependency (rdma-sys); coexists with strsim 0.11" },
 
     # Phase 9.1: raft-proto 0.7.0 build-time dependencies (prost 0.11 vs 0.13)
     # raft-proto uses old prost 0.11, while rest of project uses prost 0.13
