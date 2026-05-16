@@ -29,6 +29,11 @@ use crate::error::Result;
 /// - NVMe command passthrough
 pub struct DirectIoDevice {
     path: PathBuf,
+    // TODO(foundry-direct-io): the seek-based stub serializes all reads and
+    // writes under a single `RwLock<File>` because seek + read/write cannot
+    // share a file cursor safely. The real backend (pwrite/pread, SPDK,
+    // io_uring) must use offset-addressed I/O to allow concurrent operations —
+    // do NOT copy this lock pattern into the production path.
     file: Arc<RwLock<Option<File>>>,
 }
 

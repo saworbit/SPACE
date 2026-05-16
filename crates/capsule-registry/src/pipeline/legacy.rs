@@ -114,6 +114,33 @@ fn map_nvram_error(operation: &'static str, err: AnyhowError) -> AnyhowError {
     .into()
 }
 
+/// Reverse the compression step on a decrypted segment.
+///
+/// Trusts `segment.compressed` (set at write time by the adaptive compressor)
+/// rather than `policy.compression`: when the compressor decides compression
+/// is ineffective (single-byte segment, already-compressed data) the segment
+/// is stored raw with `compressed = false`. Falling back on a decoder error is
+/// unsafe because some codecs (LZ4) can return Ok(empty) for non-frame inputs,
+/// silently zeroing the segment.
+fn decompress_segment(
+    segment: &Segment,
+    policy: &CompressionPolicy,
+    decrypted: Vec<u8>,
+) -> Result<Vec<u8>> {
+    if !segment.compressed {
+        return Ok(decrypted);
+    }
+    match policy {
+        CompressionPolicy::None => Ok(decrypted),
+        CompressionPolicy::LZ4 { .. } => {
+            decompress_lz4(&decrypted).map_err(|e| anyhow::anyhow!("decompress_lz4: {e}"))
+        }
+        CompressionPolicy::Zstd { .. } => {
+            decompress_zstd(&decrypted).map_err(|e| anyhow::anyhow!("decompress_zstd: {e}"))
+        }
+    }
+}
+
 #[cfg(feature = "pipeline_async")]
 #[instrument(
     skip(chunk, policy, key_manager),
@@ -1653,26 +1680,7 @@ impl LegacyPipeline {
                 raw_data
             };
 
-            // Step 2: Decompress based on what was *actually* stored.
-            //
-            // Trusting `capsule.policy.compression` here is wrong: when the
-            // adaptive compressor decides compression is ineffective (e.g. a
-            // single-byte segment, or already-compressed data), the segment
-            // is stored as raw bytes with `segment.compressed = false`. The
-            // metadata is the source of truth — falling back on a decoder
-            // error is unsafe because some codecs (LZ4) can return Ok(empty)
-            // for non-frame inputs, which silently zeroes the segment.
-            let data = if segment.compressed {
-                match capsule.policy.compression {
-                    CompressionPolicy::None => decrypted_data,
-                    CompressionPolicy::LZ4 { .. } => decompress_lz4(&decrypted_data)
-                        .map_err(|e| anyhow::anyhow!("decompress_lz4: {e}"))?,
-                    CompressionPolicy::Zstd { .. } => decompress_zstd(&decrypted_data)
-                        .map_err(|e| anyhow::anyhow!("decompress_zstd: {e}"))?,
-                }
-            } else {
-                decrypted_data
-            };
+            let data = decompress_segment(&segment, &capsule.policy.compression, decrypted_data)?;
 
             // Backfill plain_len when missing to enable range skipping for future reads.
             if segment.plain_len.is_none() || segment.plain_len != Some(data.len() as u32) {
@@ -1815,26 +1823,7 @@ impl LegacyPipeline {
                 raw_data
             };
 
-            // Step 2: Decompress based on what was *actually* stored.
-            //
-            // Trusting `capsule.policy.compression` here is wrong: when the
-            // adaptive compressor decides compression is ineffective (e.g. a
-            // single-byte segment, or already-compressed data), the segment
-            // is stored as raw bytes with `segment.compressed = false`. The
-            // metadata is the source of truth — falling back on a decoder
-            // error is unsafe because some codecs (LZ4) can return Ok(empty)
-            // for non-frame inputs, which silently zeroes the segment.
-            let data = if segment.compressed {
-                match capsule.policy.compression {
-                    CompressionPolicy::None => decrypted_data,
-                    CompressionPolicy::LZ4 { .. } => decompress_lz4(&decrypted_data)
-                        .map_err(|e| anyhow::anyhow!("decompress_lz4: {e}"))?,
-                    CompressionPolicy::Zstd { .. } => decompress_zstd(&decrypted_data)
-                        .map_err(|e| anyhow::anyhow!("decompress_zstd: {e}"))?,
-                }
-            } else {
-                decrypted_data
-            };
+            let data = decompress_segment(&segment, &capsule.policy.compression, decrypted_data)?;
 
             // Backfill plain_len when missing to enable future range skipping.
             if segment.plain_len.is_none() || segment.plain_len != Some(data.len() as u32) {

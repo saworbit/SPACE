@@ -168,6 +168,14 @@ pub struct ScrubReport {
     /// `max_bytes_per_sec` throttling is working as expected.
     #[serde(default)]
     pub bytes_checked: u64,
+    /// Segments that verified clean only via the pre-fix bare-BLAKE3 hash
+    /// (the compatibility-window fallback in `dedup::verify_content_hash`).
+    ///
+    /// Operators can watch this counter trend to zero before retiring the
+    /// fallback. Not an error — these segments are integrity-clean — but
+    /// they should be rewritten under the algo-domain-separated scheme.
+    #[serde(default)]
+    pub legacy_hash_hits: u64,
 }
 
 /// Whether a scrub cycle is light (length-only) or deep (content verification).

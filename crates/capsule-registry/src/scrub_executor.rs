@@ -44,6 +44,8 @@ use encryption::policy::EncryptionMetadata;
 use encryption::{verify_mac, KeyManager};
 use tracing::{debug, info, warn};
 
+use crate::dedup::{verify_content_hash, VerifyOutcome};
+#[cfg(test)]
 use crate::dedup::{hash_content, hash_content_with_algo};
 
 /// Runs scrub cycles against a `StorageBackend`, verifying segment integrity.
@@ -109,11 +111,14 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             .collect();
 
         for seg_id in to_check {
-            let (result, seg_bytes) = match kind {
+            let (result, seg_bytes, legacy_hash_hit) = match kind {
                 ScrubKind::Light => self.light_check(seg_id).await,
                 ScrubKind::Deep => self.deep_check(seg_id).await,
             };
             report.bytes_checked += seg_bytes;
+            if legacy_hash_hit {
+                report.legacy_hash_hits += 1;
+            }
 
             // Bandwidth throttle: pace reads to stay within max_bytes_per_sec.
             // We compute how long the cumulative bytes *should* have taken at
@@ -188,7 +193,10 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 
     // -- Light check ----------------------------------------------------------
 
-    async fn light_check(&self, seg_id: SegmentId) -> (ScrubResult, u64) {
+    /// Returns `(result, bytes_read, legacy_hash_hit)`. `legacy_hash_hit` is
+    /// always `false` for light scrubs — only deep scrubs can match via the
+    /// legacy bare-hash fallback.
+    async fn light_check(&self, seg_id: SegmentId) -> (ScrubResult, u64, bool) {
         let meta = match self.backend.metadata(seg_id).await {
             Ok(m) => m,
             Err(err) => {
@@ -198,6 +206,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         error: err.to_string(),
                     },
                     0,
+                    false,
                 );
             }
         };
@@ -211,6 +220,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         error: err.to_string(),
                     },
                     0,
+                    false,
                 );
             }
         };
@@ -224,15 +234,20 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                     actual_len,
                 },
                 bytes_read,
+                false,
             )
         } else {
-            (ScrubResult::Ok, bytes_read)
+            (ScrubResult::Ok, bytes_read, false)
         }
     }
 
     // -- Deep check -----------------------------------------------------------
 
-    async fn deep_check(&self, seg_id: SegmentId) -> (ScrubResult, u64) {
+    /// Returns `(result, bytes_read, legacy_hash_hit)`. `legacy_hash_hit` is
+    /// `true` when an unencrypted segment verified only via the bare-BLAKE3
+    /// fallback (pre-fix layout); the outer loop bumps
+    /// `ScrubReport::legacy_hash_hits` accordingly.
+    async fn deep_check(&self, seg_id: SegmentId) -> (ScrubResult, u64, bool) {
         let meta = match self.backend.metadata(seg_id).await {
             Ok(m) => m,
             Err(err) => {
@@ -242,6 +257,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         error: err.to_string(),
                     },
                     0,
+                    false,
                 );
             }
         };
@@ -255,6 +271,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         error: err.to_string(),
                     },
                     0,
+                    false,
                 );
             }
         };
@@ -269,6 +286,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                     actual_len: stored.len() as u32,
                 },
                 bytes_read,
+                false,
             );
         }
 
@@ -281,7 +299,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                     segment_id = seg_id.0,
                     "scrub: encrypted segment has no integrity tag; nothing to verify"
                 );
-                return (ScrubResult::Ok, bytes_read);
+                return (ScrubResult::Ok, bytes_read, false);
             };
 
             let Some(ref km) = self.key_manager else {
@@ -291,6 +309,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         reason: "no key manager available for MAC verification".into(),
                     },
                     bytes_read,
+                    false,
                 );
             };
 
@@ -301,7 +320,11 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         segment_id = seg_id.0,
                         "scrub: encrypted segment missing key_version"
                     );
-                    return (ScrubResult::MacMismatch { segment: seg_id }, bytes_read);
+                    return (
+                        ScrubResult::MacMismatch { segment: seg_id },
+                        bytes_read,
+                        false,
+                    );
                 }
             };
 
@@ -312,7 +335,11 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                         segment_id = seg_id.0,
                         "scrub: encrypted segment missing tweak_nonce"
                     );
-                    return (ScrubResult::MacMismatch { segment: seg_id }, bytes_read);
+                    return (
+                        ScrubResult::MacMismatch { segment: seg_id },
+                        bytes_read,
+                        false,
+                    );
                 }
             };
 
@@ -334,6 +361,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                                 error: format!("key retrieval failed: {err}"),
                             },
                             bytes_read,
+                            false,
                         );
                     }
                 }
@@ -361,59 +389,50 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                 segment: seg_id,
                 error: format!("MAC verify panicked: {e}"),
             });
-            (result, bytes_read)
+            (result, bytes_read, false)
         } else {
-            // Unencrypted: compare BLAKE3 content hash.
+            // Unencrypted: compare BLAKE3 content hash via `dedup::verify_content_hash`,
+            // which encapsulates the post-fix algo-aware scheme and the legacy
+            // bare-BLAKE3 fallback. A `LegacyMatched` outcome is integrity-clean
+            // but feeds `ScrubReport::legacy_hash_hits` so operators can gauge
+            // when the fallback can be retired.
             let Some(expected) = meta.content_hash.clone() else {
-                return (ScrubResult::Ok, bytes_read);
+                return (ScrubResult::Ok, bytes_read, false);
             };
-            // The pipeline domain-separates dedup keys by compression
-            // algorithm. Segments written *after* that change have a hash
-            // computed by `hash_content_with_algo(data, compression_algo)`.
-            // Segments written *before* that change have a bare BLAKE3
-            // (`hash_content(data)`) — and crucially, their stored
-            // `compression_algo` is non-empty (e.g. "identity", "lz4:1"),
-            // so we can't tell "legacy bare hash" apart from "new algo
-            // hash" by inspecting the algo field alone.
-            //
-            // Compatibility window: accept either form. Try the algo-aware
-            // hash first (the long-term scheme) and fall back to the bare
-            // hash for legacy data. Emit a tracing warn when the bare path
-            // matches so operators can observe the migration and we can
-            // remove the fallback once no pre-fix data is in flight.
             let algo = meta.compression_algo.clone();
 
             // BLAKE3 over potentially large (4 MiB) segments is CPU-intensive.
             // Run it on a blocking thread to avoid stalling async executors.
-            let result = tokio::task::spawn_blocking(move || {
-                if !algo.is_empty() {
-                    let with_algo = hash_content_with_algo(&stored, &algo);
-                    if with_algo.as_str() == expected.as_str() {
-                        return ScrubResult::Ok;
-                    }
-                }
-                // Legacy fallback (or genuinely unknown algo): bare BLAKE3.
-                let bare = hash_content(&stored);
-                if bare.as_str() == expected.as_str() {
-                    if !algo.is_empty() {
-                        warn!(
-                            segment_id = seg_id.0,
-                            algo = %algo,
-                            "scrub: segment verifies under legacy bare content hash; \
-                             rewrite to upgrade to algo-domain-separated key"
-                        );
-                    }
-                    ScrubResult::Ok
-                } else {
-                    ScrubResult::ContentCorrupted { segment: seg_id }
-                }
+            let outcome = tokio::task::spawn_blocking(move || {
+                verify_content_hash(&expected, &stored, &algo)
             })
-            .await
-            .unwrap_or_else(|e| ScrubResult::ReadError {
-                segment: seg_id,
-                error: format!("hash verify panicked: {e}"),
-            });
-            (result, bytes_read)
+            .await;
+
+            match outcome {
+                Ok(VerifyOutcome::Matched) => (ScrubResult::Ok, bytes_read, false),
+                Ok(VerifyOutcome::LegacyMatched) => {
+                    warn!(
+                        segment_id = seg_id.0,
+                        algo = %meta.compression_algo,
+                        "scrub: segment verifies under legacy bare content hash; \
+                         rewrite to upgrade to algo-domain-separated key"
+                    );
+                    (ScrubResult::Ok, bytes_read, true)
+                }
+                Ok(VerifyOutcome::Mismatched) => (
+                    ScrubResult::ContentCorrupted { segment: seg_id },
+                    bytes_read,
+                    false,
+                ),
+                Err(e) => (
+                    ScrubResult::ReadError {
+                        segment: seg_id,
+                        error: format!("hash verify panicked: {e}"),
+                    },
+                    bytes_read,
+                    false,
+                ),
+            }
         }
     }
 }
@@ -752,9 +771,8 @@ mod tests {
         let data = b"segment written by the pre-fix pipeline";
         // Bare hash, exactly as the old write paths produced.
         let bare_hash = hash_content(data);
-        // But the segment metadata still records a non-empty algo —
-        // this is the case my first attempt got wrong (empty-string
-        // fallback was dead code).
+        // Segment metadata still records a non-empty algo; only the hash is
+        // the legacy bare form. This is what the compatibility window targets.
         write_segment_with_algo(&mut backend, 1, data, bare_hash, "identity").await;
 
         let config = fast_config(ScrubKind::Deep);
@@ -767,6 +785,10 @@ mod tests {
             "legacy bare-hash segment with non-empty algo must verify via \
              scrub's compatibility-window fallback (regression for the \
              false-corruption-after-upgrade bug)"
+        );
+        assert_eq!(
+            report.legacy_hash_hits, 1,
+            "legacy verification must be counted so operators can gauge migration"
         );
     }
 

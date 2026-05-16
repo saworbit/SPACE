@@ -51,6 +51,10 @@ Input Data
    - When the `pipeline_async` feature is enabled, `WritePipeline` saturates Tokio workers and stages new segment data inside `NvramTransaction`
    - Dedup hits are handled in two phases: staged reuse (within the same capsule) updates pending segment refcounts, while persistent reuse increments existing segments lazily and is rolled back if the transaction aborts
    - Content-store registration is deferred until the transaction successfully commits, guaranteeing that hashes only point at durable on-disk segments
+7. **Algorithm-domain-separated dedup key**
+   - The dedup index must guarantee `key(a) == key(b) ⇒ read(a) == read(b)`. Bare `hash_content(data)` violates this when two segments share stored bytes but require different decompression — e.g. an LZ4 frame stored raw under `CompressionPolicy::None` vs the plaintext compressed under `CompressionPolicy::LZ4`
+   - Write paths use `hash_content_with_algo(data, comp_result.algorithm)`, which mixes the algorithm name into a versioned BLAKE3 prefix: `b"space.dedup.v1\0algo:" || algo || b"\0" || data`. `Deduper::hash_content_with_algo` is a required trait method (no defaulted shim) so new implementations cannot silently reintroduce the collision
+   - Scrub verification calls `dedup::verify_content_hash(expected, data, algo)`, which returns `Matched`, `LegacyMatched` (pre-fix bare-hash compatibility window — counted in `ScrubReport::legacy_hash_hits`), or `Mismatched`. The write index never accepts the legacy form
 
 ## Files Modified
 

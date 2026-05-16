@@ -334,6 +334,7 @@ Monitoring consumers receive a `watch::Receiver<ScrubState>` and observe transit
 | `content_failures` | Unencrypted segments whose BLAKE3 content hash did not match (bit-rot) |
 | `read_errors` | Segments that could not be read — transient I/O failures excluded from `Completed.errors` |
 | `bytes_checked` | Total bytes read from the backend during the cycle; used by the token-bucket throttle |
+| `legacy_hash_hits` | Segments that verified clean only via the pre-fix bare-BLAKE3 fallback (compatibility window for the algo-domain-separated dedup key). Not an error — these segments are integrity-clean — but they should be rewritten under the current scheme; the fallback can be retired once this counter trends to zero |
 
 **Executor (`capsule-registry::scrub_executor`)**
 
@@ -346,7 +347,7 @@ ScrubExecutor<B: StorageBackend>
 
 Deep scrub applies the strongest check available per segment:
 1. **Encrypted** (`encrypted == true`, `integrity_tag` set, key manager available) — `encryption::verify_mac` (BLAKE3-MAC; detects bitrot and tampering)
-2. **Unencrypted** with `content_hash` — re-computes `dedup::hash_content` and compares
+2. **Unencrypted** with `content_hash` — `dedup::verify_content_hash(expected, data, algo)` returns `Matched` (post-fix, algo-domain-separated), `LegacyMatched` (pre-fix bare BLAKE3 — clean but counted in `legacy_hash_hits`), or `Mismatched` (`ContentCorrupted`)
 3. **No hash / no tag** — recorded as `Ok` (stable condition; segment was written before checksumming was added)
 
 CPU-intensive work (BLAKE3 hash recompute and MAC verification over up to 4 MiB segments) runs in `tokio::task::spawn_blocking`, keeping async-executor worker threads free for I/O.

@@ -139,12 +139,10 @@ pub trait Deduper: Send + Sync {
     /// where two segments share stored bytes but require different
     /// decompression treatment, producing silently-wrong reads on dedup hits.
     ///
-    /// The default impl is a no-op shim over `hash_content` so existing
-    /// implementations keep compiling; concrete dedupers should override.
-    fn hash_content_with_algo(&self, data: &[u8], algo: &str) -> ContentHash {
-        let _ = algo;
-        self.hash_content(data)
-    }
+    /// This is a required method (not a defaulted shim) — silently falling
+    /// back to `hash_content` would reintroduce the exact bug the algo
+    /// argument exists to prevent.
+    fn hash_content_with_algo(&self, data: &[u8], algo: &str) -> ContentHash;
 
     fn check_dedup(&self, hash: &ContentHash) -> Option<SegmentId>;
 

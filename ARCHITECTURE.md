@@ -380,12 +380,14 @@ the same hash by reading `Segment::compression_algo` from segment metadata.
 with non-empty values (`"identity"`, `"lz4:N"`, `"zstd:N"`) before the
 dedup-key fix landed, so the algo field alone cannot distinguish pre-fix
 segments (bare `hash_content`) from post-fix ones (`hash_content_with_algo`).
-`ScrubExecutor` therefore tries the algo-aware hash first and falls back to
-bare `hash_content` for legacy data, emitting a tracing warning when the
-fallback fires. The dedup **write** path does not accept the legacy form —
-only scrub verification does — so the fallback cannot reintroduce
-cross-policy collisions. Remove the fallback once pre-fix data is no longer
-in flight (or after a metadata migration step lands).
+The `dedup` crate exposes `verify_content_hash(expected, data, algo) ->
+VerifyOutcome { Matched, LegacyMatched, Mismatched }` which tries the
+algo-aware hash first and falls back to bare `hash_content` for legacy data.
+`ScrubExecutor` calls this verifier, emits a `tracing::warn!` on
+`LegacyMatched`, and increments `ScrubReport::legacy_hash_hits` so operators
+can watch the counter trend to zero before retiring the fallback. The dedup
+**write** path does not accept the legacy form — only scrub verification
+does — so the fallback cannot reintroduce cross-policy collisions.
 
 ### 6.3 Deduplication
 
@@ -488,6 +490,10 @@ pub trait Compressor: Send + Sync {
 // Deduplication
 pub trait Deduper: Send + Sync {
     fn hash_content(&self, data: &[u8]) -> ContentHash;
+    // Required (not defaulted) — pipeline write paths must use this. A
+    // silently-defaulted shim would reintroduce the cross-policy collision
+    // bug described in §6.2 by dropping the algo argument.
+    fn hash_content_with_algo(&self, data: &[u8], algo: &str) -> ContentHash;
     fn check_dedup(&self, hash: &ContentHash) -> Option<SegmentId>;
     fn register_content(&mut self, hash: ContentHash, segment: SegmentId);
 }
