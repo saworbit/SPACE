@@ -1,9 +1,14 @@
 # SPACE Documentation Index
 
+## Foundations — start here
+- **[The Capsule](capsule.md)** — the canonical foundations doc: why, what, data model, write/read flow, GC, scrub, design rationale, invariants, failure modes. Read this first.
+
 ## Architecture
 - [Architecture Overview](architecture.md)
 - [Future State](future_state_architecture.md)
 - [Patentable Concepts](patentable_concepts.md)
+- [CapsuleFlow Layout Engine](capsuleflow.md)
+- [Protocol Views](protocol_views.md)
 
 ## Guides
 - [Build Guide](guides/BUILD.md)
