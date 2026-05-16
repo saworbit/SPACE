@@ -22,7 +22,7 @@ use crate::error::{FoundryError, Result};
 ///
 /// - **Sparse Files**: Uses filesystem sparse file support (ext4, xfs, btrfs, NTFS)
 /// - **Cross-Platform**: Works on Linux, macOS, Windows
-/// - **Concurrent Access**: RwLock enables multiple concurrent readers
+/// - **Serialized seek I/O**: seek-based file access is guarded by a write lock
 /// - **Bounds Checking**: Validates all I/O operations
 ///
 /// ## Performance
@@ -144,28 +144,20 @@ impl VolumeBackend for LegacyBackend {
                 return Err(FoundryError::out_of_bounds(offset, len, size));
             }
 
-            // Get file handle
-            let file_guard = self.file.read().await;
+            // Seek-based I/O uses the file cursor, so serialize access to the
+            // handle. On Unix, cloned file descriptors can share cursor state.
+            let mut file_guard = self.file.write().await;
             let file = file_guard
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| FoundryError::config_error("Volume not initialized"))?;
 
-            // Clone file to avoid holding lock during I/O
-            let mut file_clone = file
-                .try_clone()
-                .await
-                .map_err(|e| FoundryError::io_error(offset, e))?;
-            drop(file_guard);
-
             // Seek and read
-            file_clone
-                .seek(tokio::io::SeekFrom::Start(offset))
+            file.seek(tokio::io::SeekFrom::Start(offset))
                 .await
                 .map_err(|e| FoundryError::io_error(offset, e))?;
 
             let mut buffer = vec![0u8; len];
-            file_clone
-                .read_exact(&mut buffer)
+            file.read_exact(&mut buffer)
                 .await
                 .map_err(|e| FoundryError::io_error(offset, e))?;
 
@@ -183,27 +175,19 @@ impl VolumeBackend for LegacyBackend {
                 return Err(FoundryError::out_of_bounds(offset, len, size));
             }
 
-            // Get file handle
-            let file_guard = self.file.read().await;
+            // Seek-based I/O uses the file cursor, so serialize access to the
+            // handle. The production path should use offset-addressed I/O.
+            let mut file_guard = self.file.write().await;
             let file = file_guard
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| FoundryError::config_error("Volume not initialized"))?;
 
-            // Clone file to avoid holding lock during I/O
-            let mut file_clone = file
-                .try_clone()
-                .await
-                .map_err(|e| FoundryError::io_error(offset, e))?;
-            drop(file_guard);
-
             // Seek and write
-            file_clone
-                .seek(tokio::io::SeekFrom::Start(offset))
+            file.seek(tokio::io::SeekFrom::Start(offset))
                 .await
                 .map_err(|e| FoundryError::io_error(offset, e))?;
 
-            file_clone
-                .write_all(&data)
+            file.write_all(&data)
                 .await
                 .map_err(|e| FoundryError::io_error(offset, e))?;
 
@@ -213,11 +197,9 @@ impl VolumeBackend for LegacyBackend {
 
     fn sync(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let file_guard = self.file.read().await;
+            let file_guard = self.file.write().await;
             if let Some(file) = file_guard.as_ref() {
-                let file_clone = file.try_clone().await?;
-                drop(file_guard);
-                file_clone.sync_all().await?;
+                file.sync_all().await?;
             }
             Ok(())
         })
