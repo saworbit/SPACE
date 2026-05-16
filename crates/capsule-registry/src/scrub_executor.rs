@@ -44,9 +44,9 @@ use encryption::policy::EncryptionMetadata;
 use encryption::{verify_mac, KeyManager};
 use tracing::{debug, info, warn};
 
-use crate::dedup::{verify_content_hash, VerifyOutcome};
 #[cfg(test)]
 use crate::dedup::{hash_content, hash_content_with_algo};
+use crate::dedup::{verify_content_hash, VerifyOutcome};
 
 /// Runs scrub cycles against a `StorageBackend`, verifying segment integrity.
 ///
@@ -403,10 +403,9 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 
             // BLAKE3 over potentially large (4 MiB) segments is CPU-intensive.
             // Run it on a blocking thread to avoid stalling async executors.
-            let outcome = tokio::task::spawn_blocking(move || {
-                verify_content_hash(&expected, &stored, &algo)
-            })
-            .await;
+            let outcome =
+                tokio::task::spawn_blocking(move || verify_content_hash(&expected, &stored, &algo))
+                    .await;
 
             match outcome {
                 Ok(VerifyOutcome::Matched) => (ScrubResult::Ok, bytes_read, false),
