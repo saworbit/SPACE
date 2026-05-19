@@ -91,6 +91,8 @@ cipher = AES_XTS(key_seg, IV, plaintext)
 
 This yields identical ciphertext for identical plaintext globally, enabling dedupe over encrypted data.
 
+> **Implementation note.** The default `CryptoProfile` path matches this claim: the XTS tweak is deterministically derived from the BLAKE3 content hash, so identical plaintext under the same key version produces identical ciphertext. The `advanced-security` + `CryptoProfile::HybridKyber` path diverges — ML-KEM wraps a per-capsule/segment XTS key and the tweak is mixed with a per-segment nonce, so ciphertext-level determinism does not hold across capsules. Dedup is preserved in both paths because the lookup key is the pre-encryption content hash, not the ciphertext. See [DEDUP_IMPLEMENTATION.md](implementation/DEDUP_IMPLEMENTATION.md) for the lookup model.
+
 ### 3.2  Pseudocode
 
 ```rust

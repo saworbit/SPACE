@@ -1,8 +1,8 @@
-# Phase 2.2: Deduplication Implementation
+# Deduplication Implementation
 
 ## Overview
 
-SPACE now implements **content-addressed deduplication** at the segment level, operating on compressed data. This proves the architectural claim from `patentable_concepts.md`: "dedupe over encrypted ciphertext" (encryption comes in Phase 3).
+SPACE implements **content-addressed deduplication** at the segment level, operating on compressed data. The hash is computed pre-encryption so that XTS-AES-256 (with deterministic tweaks derived from the same content hash) preserves dedup across ciphertext — the architectural claim from `patentable_concepts.md`. Encryption is implemented and integrated into the write pipeline; see [ENCRYPTION_IMPLEMENTATION.md](ENCRYPTION_IMPLEMENTATION.md) for details.
 
 ## Architecture
 
@@ -12,36 +12,41 @@ Input Data
     │
     ├─► Split into 4MB segments
     │
-    ├─► Compress each segment (LZ4/Zstd)
+    ├─► Compress each segment (LZ4/Zstd, entropy-aware)
     │
-    ├─► Hash compressed data (BLAKE3)
+    ├─► Hash compressed data (BLAKE3, algorithm-domain-separated)
     │
-    ├─► Check content store
-    │   ├─ Hit?  → Reuse existing segment
+    ├─► Encrypt if enabled (XTS-AES-256, tweak derived from hash) + BLAKE3-MAC
+    │
+    ├─► Check content store (key = pre-encryption hash)
+    │   ├─ Hit?  → Reuse existing segment, bump ref_count
     │   └─ Miss? → Write new segment, register hash
     │
     └─► Build capsule metadata
+
+The dedup *key* is the hash of compressed-pre-encryption bytes; the dedup *check* runs after the encrypt step (see "Step 3: Encrypt if enabled (before dedup check)" in `crates/capsule-registry/src/pipeline/legacy.rs`). Dedup is preserved by pre-encryption hash lookup, not by ciphertext-level determinism:
+
+- **Classical XTS path** (default `CryptoProfile`): the tweak is `derive_tweak_from_hash(content_hash)`, so identical plaintext under the same key version also produces identical ciphertext. The implementation still looks up by content hash, not ciphertext — but the ciphertext-equality property is what makes the on-disk dedup'd segment safely reusable across capsules.
+- **`advanced-security` + `CryptoProfile::HybridKyber`**: ML-KEM wraps a *per-capsule/segment* XTS key (via `wrap_xts_key(profile, base, capsule_id, segment_id, content_hash)`) and the tweak is mixed with a per-segment nonce, so identical plaintext can produce *different* ciphertext across capsules. Dedup still works because the lookup key remains the pre-encryption content hash.
 
 ### Key Design Decisions
 
 1. **Post-Compression Deduplication**
    - Hash is computed on *compressed* data, not raw data
-   - Rationale: Proves "dedupe over ciphertext" concept (encryption = Phase 3)
-   - Trade-off: Lower dedup ratio than pre-compression, but more realistic
+   - Trade-off: Lower dedup ratio than pre-compression, but stable across encryption (deterministic XTS tweak is derived from this hash)
 
 2. **BLAKE3 for Content Hashing**
    - Fast (1-2 GB/s single-threaded)
-   - Cryptographically secure (preparation for Phase 3)
+   - Cryptographically secure — also used to derive the XTS tweak via `derive_tweak_from_hash` in `crates/encryption/src/xts.rs`
    - 32-byte hash = 64 hex characters
 
 3. **Content Store Design**
-   - Simple HashMap: `ContentHash → SegmentId`
-   - Stored in `space.db` alongside capsule registry
-   - No bloom filter yet (Phase 3 optimization)
+   - `ContentHash → SegmentId` map persisted in the registry
+   - No bloom filter yet (potential optimization for very large stores)
 
 4. **Reference Counting**
-   - Each segment tracks `ref_count` (currently not enforced)
-   - Preparation for garbage collection (Phase 3)
+   - Each segment tracks `ref_count`, updated on every dedup hit and capsule deletion
+   - Drives garbage collection (see Phase 3.2 GC section below)
    - Capsules track `deduped_bytes` for monitoring
 5. **Zero-Copy Compression Fast-Path**
    - Compression returns `Cow<[u8]>`, borrowing the original slice when compression is skipped
@@ -189,36 +194,23 @@ chmod +x scripts/test_dedup.sh
 
 ## Known Limitations
 
-### Phase 2.2 Scope
-
-1. **No log-space reclamation yet**
-   - Freed segment bytes remain in the append-only log until a future compaction pass
-   - Free-list based reuse is planned for Phase 3.3
-
-2. **No Cross-Node Dedup**
+1. **No Cross-Node Dedup**
    - Content store is local per node
-   - Federation/clustering = Phase 4
+   - Federation/clustering across PODMS mesh is experimental
 
-3. **No Bloom Filter**
+2. **No Bloom Filter**
    - Content store grows with unique segments
-   - May need optimization for 1M+ segments (Phase 3)
+   - May need optimization for very large stores (1M+ segments)
 
-4. **Fixed 4MB Granularity**
-   - Small duplicates (<4MB) not detected
-   - Variable-length dedup = future optimization
+3. **Fixed Segment Granularity**
+   - Small duplicates below segment size are not detected
+   - Variable-length (rolling-hash) dedup remains a future optimization
 
-## Future Enhancements (Phase 3+)
+## Future Enhancements
 
-### Phase 3: Security Enhancements
-
-- [ ] Encrypt segments *after* dedup (deterministic IV)
-- [ ] Introduce free-list or compaction to reclaim log space
-- [ ] Add bloom filter for negative lookups
-
-### Phase 4: Scale
-
-- [ ] Distributed content store (across nodes)
+- [ ] Distributed content store across PODMS mesh nodes
 - [ ] Variable-length deduplication (rolling hash)
+- [ ] Bloom filter for negative lookups at scale
 - [ ] GPU-accelerated bloom filter (as per patent doc)
 
 ## Validation Against Patent Claims
@@ -226,19 +218,22 @@ chmod +x scripts/test_dedup.sh
 From `../patentable_concepts.md` § 3:
 
 > **Per-Segment Encryption with Inline Dedup & Compression**
-> 
-> Encrypt XTS-AES-256 per 256 MiB segment *after* compression + dedupe 
-> yet retain global dedupe across ciphertext via deterministic IV derivation.
+>
+> Encrypt XTS-AES-256 per 256 MiB segment *after* compression + dedupe yet retain global dedupe across ciphertext via deterministic IV derivation.
 
-**Phase 2.2 Status:**
+**Current status:**
 
-✅ Compression before dedup: **IMPLEMENTED**  
-✅ Content-addressed storage: **IMPLEMENTED**  
-✅ Hash-based dedup: **IMPLEMENTED**  
-⏳ Encryption with deterministic IV: **Phase 3**  
-⏳ Global dedupe across encrypted data: **Phase 3**
+✅ Compression before dedup: **IMPLEMENTED**
+✅ Content-addressed storage: **IMPLEMENTED**
+✅ Hash-based dedup: **IMPLEMENTED**
+✅ Encryption with deterministic tweak (classical XTS-AES-256 path, tweak from BLAKE3 content hash): **IMPLEMENTED**
+✅ Global dedupe across encrypted data via pre-encryption hash lookup: **IMPLEMENTED**
+✅ Algorithm-domain-separated dedup key (`hash_content_with_algo`): **IMPLEMENTED**
+✅ Reference-counted segments with GC: **IMPLEMENTED**
 
-**Proof of Concept:** This implementation validates that post-compression deduplication is viable and will extend cleanly to post-encryption dedup in Phase 3.
+Caveat on "deterministic ciphertext for identical plaintext": this holds for the classical XTS path only. Under `advanced-security` + `CryptoProfile::HybridKyber`, the per-capsule/segment ML-KEM key wrap and nonce-mixed tweak break ciphertext-level determinism; dedup is preserved in that path because the lookup key is the pre-encryption content hash, not the ciphertext.
+
+The single-node dedup-over-encrypted-data claim is realized end-to-end. Cross-node dedupe over the PODMS mesh remains experimental.
 
 ## Troubleshooting
 
@@ -279,14 +274,15 @@ cargo bench --bench dedup_bench
 
 ## Summary
 
-Phase 2.2 successfully implements content-addressed deduplication as a foundation for the vision outlined in the architecture documents. The implementation:
+Content-addressed deduplication is implemented and integrated end-to-end with the encryption pipeline:
 
-- ✅ Deduplicates at segment granularity (4MB)
+- ✅ Deduplicates at segment granularity
 - ✅ Operates on compressed data (not plaintext)
-- ✅ Uses cryptographic hashing (BLAKE3)
+- ✅ Uses cryptographic hashing (BLAKE3), algorithm-domain-separated to prevent cross-policy collisions
 - ✅ Preserves data integrity across all test scenarios
-- ✅ Provides foundation for encrypted dedup (Phase 3)
-- ✅ Maintains performance (<1% overhead)
+- ✅ Composes with XTS-AES-256 encryption: dedup is preserved end-to-end by pre-encryption hash lookup. The classical `CryptoProfile` path additionally produces deterministic ciphertext (tweak derived from the content hash); the `advanced-security` + `HybridKyber` path mixes per-capsule/segment material and so does *not* produce identical ciphertext, but dedup still works because lookup is hash-based
+- ✅ Reference-counted with garbage collection
+- ✅ Maintains performance (<1% overhead from dedup itself)
 - ✅ Scales to thousands of segments
 
-The next phase will add per-segment encryption with deterministic IVs, proving the complete "dedupe over ciphertext" concept described in the patent documentation.
+The single-node "dedupe over ciphertext" concept from the patent documentation is fully realized. Cross-node dedup over the PODMS mesh remains experimental.
