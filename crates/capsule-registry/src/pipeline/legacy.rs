@@ -585,6 +585,8 @@ impl LegacyPipeline {
     #[cfg(not(feature = "pipeline_async"))]
     #[instrument(skip(self, data, policy), fields(bytes = data.len(), policy = ?policy))]
     pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
         #[cfg(feature = "modular_pipeline")]
         if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
             return runtime.block_on(async {
@@ -942,6 +944,8 @@ impl LegacyPipeline {
 
     #[cfg(feature = "pipeline_async")]
     pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
         #[cfg(feature = "modular_pipeline")]
         if let (Some(modular), Some(runtime)) = (&self.modular, &self.runtime) {
             return runtime.block_on(async {
@@ -966,6 +970,8 @@ impl LegacyPipeline {
         data: &[u8],
         policy: &Policy,
     ) -> Result<CapsuleId> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
         #[cfg(feature = "modular_pipeline")]
         if let Some(modular) = &self.modular {
             let mut handle = modular.lock().await;

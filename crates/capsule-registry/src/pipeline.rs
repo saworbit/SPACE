@@ -132,6 +132,7 @@ impl WritePipeline {
         data: &[u8],
         policy: &Policy,
     ) -> Result<CapsuleId> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
         self.strategy().write_capsule(data, policy).await
     }
 
@@ -141,6 +142,7 @@ impl WritePipeline {
         data: &[u8],
         policy: &Policy,
     ) -> Result<CapsuleId> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
         self.strategy().write_capsule(data, policy).await
     }
 

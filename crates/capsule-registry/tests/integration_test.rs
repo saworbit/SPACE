@@ -75,6 +75,41 @@ async fn test_compression_integration() {
     cleanup_path(meta_path.to_string_lossy().as_ref());
 }
 
+#[tokio::test]
+async fn hybrid_kyber_with_dedup_is_rejected_at_pipeline_boundary() {
+    use common::{CryptoProfile, Policy};
+
+    let base = std::env::temp_dir().join("space_registry_integration");
+    let _ = fs::create_dir_all(&base);
+    let unique = Uuid::new_v4();
+    let log_path = base.join(format!("test_kyber_dedup_{unique}.log"));
+    let meta_path = base.join(format!("test_kyber_dedup_{unique}.metadata"));
+
+    let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).unwrap();
+    let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).unwrap();
+    let pipeline = WritePipeline::new(registry, nvram);
+
+    let policy = Policy {
+        crypto_profile: CryptoProfile::HybridKyber,
+        dedupe: true,
+        ..Policy::default()
+    };
+
+    let err = pipeline
+        .write_capsule_with_policy(b"unused", &policy)
+        .await
+        .expect_err("HybridKyber + dedupe must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("HybridKyber") && msg.contains("dedupe"),
+        "error must mention HybridKyber and dedupe; got: {msg}"
+    );
+
+    cleanup_path(log_path.to_string_lossy().as_ref());
+    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
+    cleanup_path(meta_path.to_string_lossy().as_ref());
+}
+
 #[cfg(feature = "modular_pipeline")]
 mod modular_pipeline_integration {
     use super::*;

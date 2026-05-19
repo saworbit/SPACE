@@ -1214,7 +1214,7 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)
 # Encryption now auto-enabled! ✨
 ```
 
-📚 **Detailed documentation:** [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md)
+📚 **Detailed documentation:** [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md) — internals of XTS, MAC, and key manager. For the end-to-end encrypt + dedup write/read flow with diagram, see [ENCRYPTED_DEDUP_FLOW.md](docs/implementation/ENCRYPTED_DEDUP_FLOW.md).
 
 ---
 
@@ -1412,8 +1412,9 @@ SPACE is a **single-developer research project** exploring novel storage archite
 | 🎯 [MVP Scope (v0.2)](MVP_SCOPE.md) | What ships next and what's deferred |
 | 🔮 [Future State Architecture](docs/future_state_architecture.md) | Long-term vision (aspirational) |
 | 💡 [Patentable Concepts](docs/patentable_concepts.md) | Novel mechanisms |
-| 🔗 [Dedup Implementation](docs/implementation/DEDUP_IMPLEMENTATION.md) | Phase 2.2 technical details |
-| 🔐 [Encryption Implementation](docs/implementation/ENCRYPTION_IMPLEMENTATION.md) | Phase 3 security details |
+| 🔗 [Dedup Implementation](docs/implementation/DEDUP_IMPLEMENTATION.md) | Content store, ref counting, GC |
+| 🔐 [Encryption Implementation](docs/implementation/ENCRYPTION_IMPLEMENTATION.md) | XTS-AES-256, MAC, key manager internals |
+| 🔁 [Encrypted Dedup Flow](docs/implementation/ENCRYPTED_DEDUP_FLOW.md) | End-to-end write/read pipeline with diagram |
 | 🔗 [Implementation Summary](docs/implementation/IMPLEMENTATION_SUMMARY.md) | Cross-cutting milestones |
 | 🔗 [Inbound Replication Status](docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) | Progress tracking |
 | 🔗 [Multi-Node Status](docs/status/MULTI_NODE_STATUS.md) | Federation readiness |

@@ -108,6 +108,7 @@ pub mod modular_pipeline {
 
     impl RegistryPipelineHandle {
         pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+            policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
             match self {
                 Self::Encrypted(p) => p.write_capsule(data, policy).await,
                 Self::Plain(p) => p.write_capsule(data, policy).await,

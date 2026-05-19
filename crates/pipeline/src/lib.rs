@@ -619,6 +619,8 @@ where
         K: Keyring + Send + Sync + 'static,
         R: CapsuleCatalog + Send + Sync + 'static,
     {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
         let transformed_data;
         let data = if policy
             .transform
@@ -747,6 +749,8 @@ where
     #[cfg(not(feature = "phase5"))]
     #[instrument(skip_all)]
     pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+
         let capsule_id = CapsuleId::new();
         let compression_policy = self
             .evaluator

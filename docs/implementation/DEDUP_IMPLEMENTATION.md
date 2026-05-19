@@ -27,7 +27,7 @@ Input Data
 The dedup *key* is the hash of compressed-pre-encryption bytes; the dedup *check* runs after the encrypt step (see "Step 3: Encrypt if enabled (before dedup check)" in `crates/capsule-registry/src/pipeline/legacy.rs`). Dedup is preserved by pre-encryption hash lookup, not by ciphertext-level determinism:
 
 - **Classical XTS path** (default `CryptoProfile`): the tweak is `derive_tweak_from_hash(content_hash)`, so identical plaintext under the same key version also produces identical ciphertext. The implementation still looks up by content hash, not ciphertext — but the ciphertext-equality property is what makes the on-disk dedup'd segment safely reusable across capsules.
-- **`advanced-security` + `CryptoProfile::HybridKyber`**: ML-KEM wraps a *per-capsule/segment* XTS key (via `wrap_xts_key(profile, base, capsule_id, segment_id, content_hash)`) and the tweak is mixed with a per-segment nonce, so identical plaintext can produce *different* ciphertext across capsules. Dedup still works because the lookup key remains the pre-encryption content hash.
+- **`advanced-security` + `CryptoProfile::HybridKyber`** — *rejected at the pipeline boundary*: ML-KEM wraps a *per-capsule/segment* XTS key (via `wrap_xts_key(profile, base, capsule_id, segment_id, content_hash)`) and the tweak is mixed with a per-segment nonce. The hash-based dedup index would still produce a hit, but the read path re-derives material from the *reading* capsule's id and segment index, so a cross-capsule hit would yield the wrong wrapped key. `Policy::validate()` rejects `HybridKyber + dedupe = true` with `PolicyError::HybridKyberDedupConflict`; the pipeline calls it on every write. Set `dedupe = false` when using HybridKyber, or stay on `Classical`.
 
 ### Key Design Decisions
 
@@ -231,9 +231,9 @@ From `../patentable_concepts.md` § 3:
 ✅ Algorithm-domain-separated dedup key (`hash_content_with_algo`): **IMPLEMENTED**
 ✅ Reference-counted segments with GC: **IMPLEMENTED**
 
-Caveat on "deterministic ciphertext for identical plaintext": this holds for the classical XTS path only. Under `advanced-security` + `CryptoProfile::HybridKyber`, the per-capsule/segment ML-KEM key wrap and nonce-mixed tweak break ciphertext-level determinism; dedup is preserved in that path because the lookup key is the pre-encryption content hash, not the ciphertext.
+Caveat on "deterministic ciphertext for identical plaintext": this holds for the classical XTS path only. Under `advanced-security` + `CryptoProfile::HybridKyber`, the per-capsule/segment ML-KEM key wrap and nonce-mixed tweak break ciphertext-level determinism, *and* the read path re-derives material from the reading capsule's context — so a dedup hit would produce the wrong key. To avoid silent data inaccessibility, `Policy::validate()` rejects `HybridKyber + dedupe = true` at the pipeline boundary (`PolicyError::HybridKyberDedupConflict`). Lifting the restriction requires either keying the dedup index on the crypto context or storing and using the originating derivation context on read.
 
-The single-node dedup-over-encrypted-data claim is realized end-to-end. Cross-node dedupe over the PODMS mesh remains experimental.
+The single-node dedup-over-encrypted-data claim is realized end-to-end for the classical XTS path. Cross-node dedupe over the PODMS mesh remains experimental.
 
 ## Troubleshooting
 
@@ -280,7 +280,8 @@ Content-addressed deduplication is implemented and integrated end-to-end with th
 - ✅ Operates on compressed data (not plaintext)
 - ✅ Uses cryptographic hashing (BLAKE3), algorithm-domain-separated to prevent cross-policy collisions
 - ✅ Preserves data integrity across all test scenarios
-- ✅ Composes with XTS-AES-256 encryption: dedup is preserved end-to-end by pre-encryption hash lookup. The classical `CryptoProfile` path additionally produces deterministic ciphertext (tweak derived from the content hash); the `advanced-security` + `HybridKyber` path mixes per-capsule/segment material and so does *not* produce identical ciphertext, but dedup still works because lookup is hash-based
+- ✅ Composes with XTS-AES-256 encryption (classical `CryptoProfile`): tweak derived from the content hash, deterministic ciphertext, dedup preserved end-to-end
+- ⚠️ `advanced-security` + `HybridKyber + dedupe` is rejected at the pipeline boundary by `Policy::validate()` — the read path re-derives wrapped key material from the reading capsule's context, so a cross-capsule dedup hit would produce the wrong key. Use `dedupe = false` when on HybridKyber
 - ✅ Reference-counted with garbage collection
 - ✅ Maintains performance (<1% overhead from dedup itself)
 - ✅ Scales to thousands of segments

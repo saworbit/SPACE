@@ -541,7 +541,45 @@ impl Policy {
             replica_count: 3,
         }
     }
+
+    /// Reject policy combinations that the pipeline cannot handle correctly.
+    ///
+    /// `HybridKyber + dedupe` is currently incompatible: the ML-KEM key wrap
+    /// derives material from the originating capsule_id and segment_index, but
+    /// the read path re-derives using the reading capsule's context. A dedup
+    /// hit across capsules (or at a different logical index within the same
+    /// capsule) would yield the wrong wrapped key and the segment would fail
+    /// to decrypt.
+    pub fn validate(&self) -> Result<(), PolicyError> {
+        if self.crypto_profile == CryptoProfile::HybridKyber && self.dedupe {
+            return Err(PolicyError::HybridKyberDedupConflict);
+        }
+        Ok(())
+    }
 }
+
+/// Errors produced by [`Policy::validate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyError {
+    HybridKyberDedupConflict,
+}
+
+impl std::fmt::Display for PolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PolicyError::HybridKyberDedupConflict => write!(
+                f,
+                "CryptoProfile::HybridKyber is currently incompatible with dedupe=true: \
+                 the ML-KEM key wrap binds to the originating capsule_id and segment_index, \
+                 so a cross-capsule dedup hit would derive the wrong key on read and the \
+                 segment would fail to decrypt. Set policy.dedupe = false when using \
+                 HybridKyber, or switch crypto_profile to Classical."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PolicyError {}
 
 #[cfg(test)]
 mod tests {
@@ -569,6 +607,48 @@ mod tests {
 
         let edge = Policy::edge_optimized();
         assert!(edge.compact_interval_secs.is_none());
+    }
+
+    #[test]
+    fn default_policy_validates() {
+        Policy::default()
+            .validate()
+            .expect("default policy must validate");
+    }
+
+    #[test]
+    fn hybrid_kyber_with_dedup_is_rejected() {
+        let policy = Policy {
+            crypto_profile: CryptoProfile::HybridKyber,
+            dedupe: true,
+            ..Policy::default()
+        };
+        assert_eq!(
+            policy.validate().unwrap_err(),
+            PolicyError::HybridKyberDedupConflict
+        );
+    }
+
+    #[test]
+    fn hybrid_kyber_without_dedup_is_accepted() {
+        let policy = Policy {
+            crypto_profile: CryptoProfile::HybridKyber,
+            dedupe: false,
+            ..Policy::default()
+        };
+        policy
+            .validate()
+            .expect("HybridKyber with dedupe=false must validate");
+    }
+
+    #[test]
+    fn classical_with_dedup_is_accepted() {
+        let policy = Policy {
+            crypto_profile: CryptoProfile::Classical,
+            dedupe: true,
+            ..Policy::default()
+        };
+        policy.validate().expect("Classical + dedupe must validate");
     }
 
     #[test]
