@@ -28,7 +28,7 @@ jobs:
     name: Fast Checks (fmt, clippy, test, docs, licenses)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -78,7 +78,7 @@ jobs:
     # Only run on PRs (not every push to main to save minutes)
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Spell check
         uses: crate-ci/typos@master
