@@ -73,7 +73,7 @@ bloomfilter = { version = "=1.0.13" } # 2025-11-03 sw: dedupe candidate screenin
 aya = { version = "=0.11.0" } # 2025-11-09 sw: eBPF loader for zero-trust ingress hooks
 tokio-tungstenite = { version = "=0.21.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] } # 2025-11-09 sw: mTLS control plane for zero-trust frontends
 pqcrypto-mlkem = { version = "=0.1.1" } # 2025-11-09 sw: ML-KEM hybrid wrapping
-reqwest = { version = "=0.11.27", default-features = false, features = ["json", "blocking", "rustls-tls"] } # 2025-11-09 sw: TSA client with rustls backend
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "blocking", "rustls-tls"] } # 2025-11-09 sw: TSA client with rustls backend
 hex = { version = "=0.4.3" } # 2025-11-03 sw: hex encoding for key material, constant-time encode/decode
 lz4 = { version = "=1.28.1" } # 2025-11-03 sw: hot-path compression, SIMD routines audited
 zstd = { version = "=0.13.3" } # 2025-11-03 sw: deep compression with wasm off, see audit log entry CRS-132
