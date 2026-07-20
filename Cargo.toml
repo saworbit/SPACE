@@ -65,8 +65,8 @@ time = { version = "^0.3.36", features = ["macros", "formatting"] } # 2025-11-03
 semver = { version = "^1.0.27" } # 2025-11-03 sw: version range evaluation for drift detection
 
 # Tier 0 — cryptography, serialization, dedup core (2025-11-03 sw; see docs/dependency-security.md#tier-0)
-serde = { version = "=1.0.228", features = ["derive"] } # 2025-11-03 sw: canonical serialization; CT reviewed
-serde_json = { version = "=1.0.145" } # 2025-11-03 sw: deterministic JSON for protocol surfaces
+serde = { version = "=1.0.229", features = ["derive"] } # 2025-11-03 sw: canonical serialization; CT reviewed
+serde_json = { version = "=1.0.150" } # 2025-11-03 sw: deterministic JSON for protocol surfaces
 serde_yaml = { version = "0.9" } # YAML parsing for CLI policies
 blake3 = { version = "=1.8.3" } # 2025-11-03 sw: convergent hash, SIMD constant-time per upstream audit
 bloomfilter = { version = "=1.0.13" } # 2025-11-03 sw: dedupe candidate screening, bounded memory
@@ -98,7 +98,7 @@ libp2p-tcp = { version = "=0.41.0", default-features = false, features = ["tokio
 libp2p-noise = { version = "=0.44.0" } # 2025-11-16 sw: Noise handshake
 libp2p-yamux = { version = "=0.45.2" } # 2025-11-16 sw: Yamux multiplexer
 multiaddr = { version = "=0.18.2" } # 2025-11-16 sw: Multiaddr /ip4/... format
-bincode = { version = "=1.3.3" } # 2025-11-16 sw: Binary serialization for gossip messages
+bincode = { version = "=2.0.1" } # 2025-11-16 sw: Binary serialization for gossip messages
 bytes = { version = "^1.10.1" } # 2025-11-16 sw: Zero-copy byte buffers
 rand = { version = "=0.8.6" } # 2026-05-08 sw: Random peer selection for gossip; includes RUSTSEC-2026-0097 fix
 backoff = { version = "=0.4.0" } # 2025-11-16 sw: Retry logic with exponential backoff
