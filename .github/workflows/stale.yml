@@ -14,7 +14,7 @@ jobs:
     name: Close stale issues and PRs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v9
+      - uses: actions/stale@v11
         with:
           # Issues: 90 days stale, 14 days grace
           days-before-stale: 90
