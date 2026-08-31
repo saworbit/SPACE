@@ -91,7 +91,7 @@ sha2 = { version = "=0.10.9" } # 2025-11-04 sw: Hash core for HKDF extractor
 axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
 tower-http = { version = "^0.6.8", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
 libp2p-core = { version = "=0.41.3" } # 2025-11-16 sw: libp2p core transport traits
-libp2p-identity = { version = "=0.2.13", default-features = false, features = ["peerid", "ed25519", "rand"] } # 2025-11-16 sw: PeerId + key material
+libp2p-identity = { version = "=0.3.0", default-features = false, features = ["peerid", "ed25519", "rand"] } # 2025-11-16 sw: PeerId + key material
 libp2p-gossipsub = { version = "=0.46.1" } # 2025-11-16 sw: Gossip protocol
 libp2p-swarm = { version = "^0.44.1" } # 2025-11-16 sw: Swarm behavior
 libp2p-tcp = { version = "=0.41.0", default-features = false, features = ["tokio"] } # 2025-11-16 sw: TCP transport
