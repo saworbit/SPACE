@@ -21,7 +21,7 @@ tch = { version = "0.15", optional = true, features = ["download-libtorch"] }
 common = { path = "../common" }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "layout_bench"
