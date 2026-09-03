@@ -32,7 +32,7 @@ jobs:
             protoc-install: choco install protoc
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install protobuf compiler
         run: ${{ matrix.protoc-install }}
