@@ -37,19 +37,12 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for the full
 
 ## Automated checks
 
-CI on pull requests runs `cargo test --workspace` (see `.github/workflows/pr-checks.yml`). Spell check and link check run as warnings. PR titles use Conventional Commits.
+CI on pull requests runs `cargo test --workspace` (see `.github/workflows/ci.yml`), and checks that the workspace license field is `MIT OR Apache-2.0`.
 
 | Check | Command |
 |-------|---------|
 | Workspace tests | `cargo test --workspace` |
-| Typos | `typos` |
-| Links | `lychee .` |
-| PR title | `feat:`, `fix:`, `docs:`, and the other types in `.github/workflows/semantic.yml` |
-
-### 🔍 Conventional Commits
-All Pull Requests must follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
-* **Good:** `feat(storage): implement zero-copy read path`
-* **Bad:** `added read path`
+| License field | `license = "MIT OR Apache-2.0"` in the root `Cargo.toml` |
 
 ## Dependency Changes
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.

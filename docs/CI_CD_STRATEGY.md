@@ -1,7 +1,7 @@
 # CI
 
-Pull requests run `.github/workflows/pr-checks.yml`: a license field check and `cargo test --workspace`.
+Pull requests and pushes to `main` run `.github/workflows/ci.yml`: a license field check and `cargo test --workspace` on Ubuntu. Markdown-only changes skip that run.
 
-`cross-platform.yml`, `msrv.yml`, and `coverage.yml` also run the workspace tests on `main`. `release.yml` runs the tests and builds `spacectl` when a `v*` tag is pushed.
+`.github/workflows/release.yml` runs the same tests and builds `spacectl` when a `v*` tag is pushed, then attaches the binary to a GitHub release. The workspace crates are `publish = false`, so a tag does not publish to crates.io.
 
-There is no xtask, fuzz, or layout-engine benchmark workflow on this branch.
+Dependabot still opens weekly cargo and GitHub Actions updates.

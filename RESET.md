@@ -27,7 +27,7 @@ Everything else (PODMS mesh, gossip, other protocol views, foundry, web UI, vend
 
 The unused crates are gone from this branch, not just unwired. Removed source trees: federation, foundry, gossip-layer, layout-engine, mesh-core, podms-orchestrator, scaling, protocol-block, protocol-csi, protocol-fuse, protocol-nfs, protocol-nvme, sim-nvmeof, sim-nvram, sim-other, tiering, transform-engine, web-interface, plus `vendor/`, `UI_mockup/`, `fuzz/`, `xtask/`, `sim/`, `containerization/`, `deploy/`, and `deployment/`. The full pre-reset tree is on `archive/pre-reset-2026-10`.
 
-`cargo check --workspace` and `cargo test --workspace` pass. CI on pull requests runs that test command. The root `Dockerfile` builds `spacectl` only.
+`cargo check --workspace` and `cargo test --workspace` pass. CI is `.github/workflows/ci.yml` (that test command on pull requests and on `main`) and `.github/workflows/release.yml` (a `v*` tag builds `spacectl`). The root `Dockerfile` builds `spacectl` only.
 
 The registry write path is the modular pipeline in the `pipeline` crate. The old in-tree legacy pipeline and the in-process Raft mesh are gone. Metadata updates apply on this node directly.
 
