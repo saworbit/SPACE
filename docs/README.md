@@ -1,5 +1,9 @@
 # SPACE Documentation Index
 
+The core reset kept a single-node capsule, the modular pipeline, the S3 view, and spacectl. Start with the repository [README](../README.md), [RESET](../RESET.md), [ARCHITECTURE](../ARCHITECTURE.md), and [capsule.md](capsule.md).
+
+Many pages below describe the pre-reset tree (mesh, federation, extra protocol views, tiering, foundry, simulations). That code is on `archive/pre-reset-2026-10`, not on this branch.
+
 ## Foundations — start here
 - **[The Capsule](capsule.md)** — the canonical foundations doc: why, what, data model, write/read flow, GC, scrub, design rationale, invariants, failure modes. Read this first.
 
@@ -17,7 +21,7 @@
 - [Multi-Node Quickstart](MULTI_NODE_QUICKSTART.md)
 - [Mesh Cluster (Phase 3)](guides/MESH_CLUSTER.md)
 - [Foundry Block Storage (Phase 8)](guides/FOUNDRY.md)
-- Golden Path Verification: `scripts/test_golden_path.sh`
+- Golden path, mesh, foundry, and tiering guides below match the archive branch, not this one.
 
 ## Security
 - [Security Policy & Hardening](../SECURITY.md) - Reporting, hardening summary, known limitations

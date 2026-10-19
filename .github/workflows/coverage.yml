@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   # Only run coverage on main branch to avoid duplicate test execution.
-  # PRs run tests via ci.yml workflow.
+  # PRs run tests via pr-checks.yml.
 
 # Cancel outdated runs when new commits are pushed
 concurrency:
@@ -18,8 +18,6 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install Tarpaulin

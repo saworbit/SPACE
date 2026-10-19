@@ -25,14 +25,18 @@ Only the pieces that prove the core thesis and are in good enough shape to build
 
 Everything else (PODMS mesh, gossip, other protocol views, foundry, web UI, vendor stubs, heavy experimental CI, etc.) is preserved on the `archive/pre-reset-2026-10` branch. Those ideas can be revisited later if the single-node core gets real use and feedback.
 
-On this branch the unused crate manifests have been removed (federation, foundry, gossip-layer, layout-engine, mesh-core, podms-orchestrator, scaling, protocol-*, sim-*, tiering, transform-engine, web-interface, fuzz, xtask). Top-level leftovers such as the multi-node docker-compose files, UI_mockup entry points, and stub directories have also been cleared. Source trees for the removed crates remain for now so the history is intact; they are no longer part of the workspace.
+The unused crates are gone from this branch, not just unwired. Removed source trees: federation, foundry, gossip-layer, layout-engine, mesh-core, podms-orchestrator, scaling, protocol-block, protocol-csi, protocol-fuse, protocol-nfs, protocol-nvme, sim-nvmeof, sim-nvram, sim-other, tiering, transform-engine, web-interface, plus `vendor/`, `UI_mockup/`, `fuzz/`, `xtask/`, `sim/`, `containerization/`, `deploy/`, and `deployment/`. The full pre-reset tree is on `archive/pre-reset-2026-10`.
+
+`cargo check --workspace` and `cargo test --workspace` pass. CI on pull requests runs that test command. The root `Dockerfile` builds `spacectl` only.
+
+The default registry write path is still the in-tree legacy pipeline. The `pipeline` crate is the modular implementation and is covered by its unit tests; `--features modular_pipeline` turns it on for the registry, S3, and spacectl.
 
 ## Next steps
 
-- Make the modular pipeline the default and remove any remaining legacy bridges.
+- Make `modular_pipeline` the default and delete the legacy write path once nothing still depends on it.
 - Automatic background GC and solid reference counting.
-- Polish S3 (multipart, range requests, proper errors) and spacectl UX.
-- Local `cargo check` / `cargo test` on the reduced workspace.
+- S3 multipart, range requests, and clearer errors.
+- spacectl UX for the local create / read / list / serve-s3 flow.
 - Keep the feature set small until someone outside the original author is actually using it.
 
 The archive branch exists so nothing is lost. This branch is the clean start.

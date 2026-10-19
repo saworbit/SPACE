@@ -20,22 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS removed: Storage backends have systematic data integrity issues on macOS
-        # All foundry tests fail with data corruption (reading zeros instead of written data)
-        # Root cause: Platform-specific file I/O incompatibilities with sparse files/direct I/O
-        # See: 15+ ignored tests in crates/foundry/{src,tests}/*.rs
+        # ubuntu and windows only. protoc comes from protoc-bin-vendored.
         os: [ubuntu-latest, windows-latest]
-        include:
-          - os: ubuntu-latest
-            protoc-install: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          - os: windows-latest
-            protoc-install: choco install protoc
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protobuf compiler
-        run: ${{ matrix.protoc-install }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

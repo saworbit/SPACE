@@ -4,15 +4,15 @@ Thank you for helping harden SPACE. This document highlights day-to-day expectat
 
 ## Current Focus: v0.2 "Core Capsule"
 
-SPACE is currently focused on delivering a stable single-node release. See [MVP_SCOPE.md](MVP_SCOPE.md) for the full scope. Contributions that advance the v0.2 goals are highest priority. Distributed/experimental features are welcome but should stay behind their respective feature flags.
+SPACE is a single-node capsule store. See [MVP_SCOPE.md](MVP_SCOPE.md) and [RESET.md](RESET.md). Contributions should stay inside that core. The mesh, extra protocol views, and other experimental crates are on `archive/pre-reset-2026-10` and are not being revived on this branch.
 
 ### Good First Issues
 
 These are high-impact areas where new contributors can make meaningful progress:
 
 1. **Expand property-based tests** — `crates/capsule-registry/tests/proptest_pipeline.rs` covers round-trip, dedup, content separation, and segment-boundary cases. Open invariants: MAC verification fails on tampered ciphertext, compression entropy detection skips random data, sub-block plaintext encryption (currently bounded out — needs padding / GCM fallback)
-2. **Criterion benchmarks** — Add benchmarks for the segment write pipeline hot path and track them in CI
-3. **Documentation alignment** — Update docs where "planned" is described as "implemented"; align with the [Feature Status Table](README.md#-feature--capability-status)
+2. **Pipeline benchmarks** — Add local benchmarks for the segment write path. There is no benchmark workflow on this branch.
+3. **Documentation alignment** — Pages under `docs/` still describe the pre-reset tree. Prefer updates that match what `cargo test --workspace` actually runs.
 4. **`spacectl` UX** — Add progress bars for large operations, improve error messages, add `--json` output mode
 5. **Prometheus metrics** — Expand metrics: per-stage latency histograms, dedup hit rates, GC effectiveness
 6. **Structured error types** — Replace string errors with typed errors that include recovery guidance
@@ -49,23 +49,20 @@ git commit --amend -s --no-edit
 
 ## Getting Started
 - Install the latest stable Rust toolchain (`rustup default stable`).
-- Run `cargo xtask audit` before opening a pull request to execute formatting, checks, and security tooling in one pass.
-- Generate dependency artefacts with `cargo xtask graph` when introducing new crates or features; attach resulting files if reviewers request them.
-- Install `cargo fuzz` (`cargo install cargo-fuzz`) to exercise the fuzz harnesses when touching encryption or compression code.
-- Follow the coding standards in `docs/architecture.md` and module-specific guides such as `docs/implementation/ENCRYPTION_IMPLEMENTATION.md`.
+- Run `cargo test --workspace` before opening a pull request. That is what CI runs.
+- Property tests live in `crates/capsule-registry/tests/proptest_pipeline.rs`. Run them with the workspace tests.
+- `docs/architecture.md` still describes parts of the pre-reset tree. [ARCHITECTURE.md](ARCHITECTURE.md) and [RESET.md](RESET.md) match this branch.
 
-## 🤖 Automated Quality Gates
+## Automated checks
 
-To maintain the high reliability standards of SPACE, the following automated checks must pass before merging:
+CI on pull requests runs `cargo test --workspace` (see `.github/workflows/pr-checks.yml`). Spell check and link check run as warnings. PR titles use Conventional Commits.
 
-| Check | Description | Command to Run Locally |
-|-------|-------------|------------------------|
-| **Fuzzing** | Checks for edge-case crashes | `cargo fuzz run <target>` |
-| **Typos** | Validates spelling | `typos` (Install via `cargo install typos-cli`) |
-| **Links** | Checks for broken URLs | `lychee .` (Install via `cargo install lychee`) |
-| **Docs** | Ensures documentation compiles | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` |
-| **Conventional Commits** | Enforces semantic PR titles | Use `feat:`, `fix:`, etc. in PR titles |
-| **Benchmarks** | Checks for performance regressions | `cargo bench` |
+| Check | Command |
+|-------|---------|
+| Workspace tests | `cargo test --workspace` |
+| Typos | `typos` |
+| Links | `lychee .` |
+| PR title | `feat:`, `fix:`, `docs:`, and the other types in `.github/workflows/semantic.yml` |
 
 ### 🔍 Conventional Commits
 All Pull Requests must follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
@@ -78,19 +75,15 @@ Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy
 **Checklist (include in PR description)**
 - [ ] Identify Tier (0/1/2) for each change and record reviewer initials with date in `Cargo.toml` comment.
 - [ ] Attach `cargo tree --edges normal,build,dev` diff (before/after).
-- [ ] Run `cargo audit --deny warnings`.
-- [ ] Run `cargo deny check bans licenses sources`.
-- [ ] Run `cargo bloat --crates --release` and record notable regressions.
-- [ ] Run `cargo xtask audit` (enforces feature allowlist, fmt, clippy, tests).
-- [ ] Run `cargo xtask graph` if the dependency graph changed and archive the generated artefacts.
-- [ ] Update `docs/security/audit-status.json` if this PR contains the latest successful audit run.
+- [ ] Run `cargo test --workspace`.
+- [ ] Run `cargo audit` and `cargo deny check` when a dependency changes.
 
-Pull requests lacking the artefacts above will be blocked until they comply.
+There is no `xtask` crate on this branch.
 
 ## Review Expectations
 - Validate dependency tiering and ensure comments follow the `YYYY-MM-DD <initials>` format.
-- Confirm CI `security-audit` workflow succeeded and review the posted summaries.
-- Reject PRs that introduce prohibited licenses or push the transitive dependency count beyond 50 without an approved waiver.
+- Confirm `cargo test --workspace` succeeded.
+- Reject PRs that introduce prohibited licenses.
 - Triage Dependabot PRs weekly (configurable via `.github/dependabot.yml`); do not merge without full audit artefacts.
 
 ## Dependabot Triage
@@ -99,7 +92,7 @@ When triaging Dependabot PRs, follow the policy in [`docs/dependency-security.md
 
 1. **Green CI, patch bump** — merge directly after a quick review.
 2. **Major version bumps** — check for breaking API changes. Dependabot cannot fix code; create a manual migration branch if needed.
-3. **Ecosystem-coupled crates** (libp2p, axum+leptos+tower) — close individual PRs and coordinate a single migration.
+3. **Coupled crates** (axum, tonic, tokio) — close individual PRs and coordinate a single migration when the bump is breaking.
 4. **Verify crate legitimacy** — check `lib.rs` for protest/squatter crates and inspect transitive dependency diffs for supply-chain substitutions.
 5. **Stale PRs** (changes already on main) — close promptly.
 
@@ -111,8 +104,8 @@ When triaging Dependabot PRs, follow the policy in [`docs/dependency-security.md
 - **Descriptive expect messages.** Every `expect()` call must describe what operation failed and suggest remediation (e.g., `"failed to open audit log; check path and permissions"`).
 - **Use `&'static str` for fixed strings.** Functions returning a fixed set of strings (like MIME type detection) should return `&'static str` to avoid per-call heap allocations.
 
-## Fuzz & Side-channel Checks
-- After modifying cryptography or compression, run `cargo fuzz run encrypt_roundtrip` to smoke-test the fuzz harness.
+## Crypto changes
+- After modifying cryptography or compression, run `cargo test --workspace`, including `crates/capsule-registry/tests/proptest_pipeline.rs`.
 - Avoid data-dependent branching or early returns on sensitive comparisons; rely on helpers wired with `subtle::ConstantTimeEq`.
 
 ## Security Escalations

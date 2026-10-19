@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Entries below this heading describe the pre-reset tree (foundry, federation, mesh, web UI, and the other removed crates). That code is on `archive/pre-reset-2026-10`. See [RESET.md](RESET.md).
+
 ### Changed
 
 - **Code-review simplification pass on the dedup/scrub/foundry diff** (`crates/dedup/src/lib.rs`, `crates/common/src/traits.rs`, `crates/common/src/scrub.rs`, `crates/capsule-registry/src/scrub_executor.rs`, `crates/capsule-registry/src/pipeline/legacy.rs`, `crates/foundry/src/backend/device.rs`)

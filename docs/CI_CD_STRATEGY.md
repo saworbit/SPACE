@@ -1,5 +1,7 @@
 # CI/CD Strategy
 
+This page describes the pre-reset pipeline, including xtask, fuzzing, layout-engine benchmarks, and the security-audit workflow. Those are gone. Pull requests now run `cargo test --workspace` from `.github/workflows/pr-checks.yml`. Older detail is on `archive/pre-reset-2026-10`.
+
 This document describes SPACE's comprehensive CI/CD pipeline and automation strategy.
 
 ## 📋 Overview

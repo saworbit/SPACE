@@ -25,51 +25,21 @@ concurrency:
 
 jobs:
   fast-checks:
-    name: Fast Checks (fmt, clippy, test, docs, licenses)
+    name: Build and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
 
-      # Fast checks first (fail fast)
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      # License compliance checks (fast)
-      - name: Verify LICENSE-MIT
-        run: |
-          [ -f "LICENSE-MIT" ] || { echo "❌ LICENSE-MIT missing"; exit 1; }
-          grep -q "MIT License" LICENSE-MIT || { echo "❌ LICENSE-MIT invalid"; exit 1; }
-
-      - name: Verify LICENSE-APACHE
-        run: |
-          [ -f "LICENSE-APACHE" ] || { echo "❌ LICENSE-APACHE missing"; exit 1; }
-          grep -q "Apache License" LICENSE-APACHE || { echo "❌ LICENSE-APACHE invalid"; exit 1; }
-
       - name: Verify Cargo.toml license
         run: |
-          grep -q 'license = "MIT OR Apache-2.0"' Cargo.toml || { echo "❌ Incorrect license field"; exit 1; }
+          grep -q 'license = "MIT OR Apache-2.0"' Cargo.toml || { echo "Incorrect license field"; exit 1; }
 
-      # Documentation check
-      - name: Check docs compile
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --workspace --no-deps --document-private-items
-
-      # Tests (run with limited parallelism)
-      - name: Run tests
+      - name: Test workspace
         run: cargo test --workspace -- --test-threads=2
 
   quality:

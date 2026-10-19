@@ -59,10 +59,7 @@ The following security measures are implemented in the current codebase:
 - **BLAKE3-MAC**: Keyed integrity tags on every segment, validated on read.
 - **Key rotation**: Version-tracked key derivation with BLAKE3-KDF.
 - **Memory zeroization**: Keys are zeroized on drop via the `zeroize` crate.
-- **Post-quantum readiness**: Optional ML-KEM/Kyber hybrid key wrapping (`advanced-security` feature).
 
 ### Known Limitations
-- TLS stream wrapping is infrastructure-only (config + env loading); actual `tokio-rustls` integration is pending.
 - Security features have not been professionally audited. Do not use in production without an independent review.
-- The eBPF/SPIFFE gateway is experimental and needs validation.
-- Post-quantum crypto (Kyber hybrid) is untested in production scenarios.
+- Inter-node TLS, the eBPF gateway, and the optional post-quantum key wrap were removed with the experimental crates. They remain on `archive/pre-reset-2026-10`.

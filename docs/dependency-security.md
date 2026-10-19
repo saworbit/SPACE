@@ -1,5 +1,7 @@
 # Dependency Security Policy
 
+Much of the workflow below (xtask, the security-audit workflow, Phase 3 encryption rollout) describes the pre-reset tree. On this branch, check dependencies with ordinary Cargo commands. The experimental crates are on `archive/pre-reset-2026-10`.
+
 SPACE enforces deterministic, auditable builds for every crate in the workspace. This document captures the lifecycle for selecting, pinning, reviewing, and updating third‑party code, with special focus on cryptography as we roll out Phase 3 encryption.
 
 ## Goals

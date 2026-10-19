@@ -27,7 +27,6 @@ updates:
           - "blake3"
           - "sha2"
           - "hmac"
-          - "pqcrypto-*"
       # Infrastructure dependencies
       infra:
         patterns:
@@ -55,20 +54,6 @@ updates:
       # Real bincode development continues on the 1.x and 2.x lines.
       - dependency-name: "bincode"
         versions: [">=3.0.0"]
-      # libp2p crates must be bumped as a coordinated set — individual
-      # major bumps cause diamond dependency trait conflicts.
-      - dependency-name: "libp2p-core"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "libp2p-yamux"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "libp2p-tcp"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "libp2p-noise"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "libp2p-swarm"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "libp2p-gossipsub"
-        update-types: ["version-update:semver-major"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"

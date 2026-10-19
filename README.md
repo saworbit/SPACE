@@ -20,11 +20,16 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 
 ## What works today
 
-- Capsule create / read / stream
-- Compression (LZ4 / Zstd) + deduplication + encryption working together
+`cargo check --workspace` and `cargo test --workspace` pass on this branch.
+
+- Capsule create / read / stream through the registry pipeline
+- Compression (LZ4 / Zstd), BLAKE3 content-addressed dedup, and XTS-AES-256 encryption
+- Modular pipeline crate (`pipeline`). Capsule-registry and spacectl opt into it with `--features modular_pipeline`
 - Basic S3 PUT / GET / DELETE
-- spacectl for local operations
-- Property tests covering round-trip, dedup under encryption, and related invariants
+- `spacectl` for local create, read, list, and `serve-s3`
+- Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)
+
+The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`.
 
 ## Quick start
 
@@ -32,11 +37,9 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 git clone https://github.com/saworbit/SPACE.git
 cd SPACE
 git checkout core-reset
-cargo build --workspace
 cargo test --workspace
+cargo run -p spacectl -- --help
 ```
-
-Then use `spacectl` or the S3 gateway (see crate docs).
 
 ## Status
 
@@ -46,8 +49,8 @@ Then use `spacectl` or the S3 gateway (see crate docs).
 | Write/read pipeline (compress + dedup + encrypt) | Beta |
 | S3 view | Alpha |
 | spacectl | Alpha |
-| Property tests | Present and useful |
-| Distributed / other protocols / web UI | Archived |
+| Property tests | Passing on the default workspace test run |
+| Distributed mesh, other protocol views, web UI | Removed from this branch; history is on `archive/pre-reset-2026-10` |
 
 ## License
 
