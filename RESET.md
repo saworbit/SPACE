@@ -21,15 +21,18 @@ Only the pieces that prove the core thesis and are in good enough shape to build
 - Property-based tests for pipeline invariants
 - Supporting crates: common, compression, dedup, encryption, storage / nvram-sim
 
-## What was archived
+## What was archived / pruned
 
 Everything else (PODMS mesh, gossip, other protocol views, foundry, web UI, vendor stubs, heavy experimental CI, etc.) is preserved on the `archive/pre-reset-2026-10` branch. Those ideas can be revisited later if the single-node core gets real use and feedback.
+
+On this branch the unused crate manifests have been removed (federation, foundry, gossip-layer, layout-engine, mesh-core, podms-orchestrator, scaling, protocol-*, sim-*, tiering, transform-engine, web-interface, fuzz, xtask). Top-level leftovers such as the multi-node docker-compose files, UI_mockup entry points, and stub directories have also been cleared. Source trees for the removed crates remain for now so the history is intact; they are no longer part of the workspace.
 
 ## Next steps
 
 - Make the modular pipeline the default and remove any remaining legacy bridges.
 - Automatic background GC and solid reference counting.
 - Polish S3 (multipart, range requests, proper errors) and spacectl UX.
+- Local `cargo check` / `cargo test` on the reduced workspace.
 - Keep the feature set small until someone outside the original author is actually using it.
 
 The archive branch exists so nothing is lost. This branch is the clean start.
