@@ -137,32 +137,6 @@ This demo proves:
 ✅ **Metadata Mapping** - S3 keys are resolved to capsules at runtime
 
 
-## Project a Phase 4 NVMe View
-
-```bash
-cargo build --release --features phase4
-
-# Keep this process running to serve NVMe-oF traffic
-./target/release/spacectl project \
-  --view nvme \
-  --id <CAPSULE_UUID> \
-  --policy-file examples/phase4-policy.yaml
-```
-
-This projects the same capsule you wrote via S3 into an NVMe target and triggers Raft-backed federation/sharding logic (`scripts/test_phase4.sh` exercises the flow end-to-end).
-
-
-## What's Next?
-
-Now that protocol views work, you can:
-
-1. **Add Authentication** - SPIFFE/mTLS integration
-2. **Add NFS View** - Mount capsules as a filesystem
-3. **Add Block View** - Expose capsules via NVMe-oF
-4. **Add Encryption** - Per-segment XTS-AES-256
-5. **Add Replication** - Metro-sync between nodes
-6. **Enable Tiering** - Hot/cold offload + rehydrate (Phase 6) via [Tiering Guide](TIERING.md)
-
 ## Troubleshooting
 
 **Server won't start:**

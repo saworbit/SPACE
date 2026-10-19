@@ -1,60 +1,19 @@
-# SPACE Documentation Index
+# SPACE documentation
 
-The core reset kept a single-node capsule, the modular pipeline, the S3 view, and spacectl. Start with the repository [README](../README.md), [RESET](../RESET.md), [ARCHITECTURE](../ARCHITECTURE.md), and [capsule.md](capsule.md).
+This branch is the single-node core. Start with the repository [README](../README.md), [RESET](../RESET.md), [ARCHITECTURE](../ARCHITECTURE.md), and [The Capsule](capsule.md).
 
-Many pages below describe the pre-reset tree (mesh, federation, extra protocol views, tiering, foundry, simulations). That code is on `archive/pre-reset-2026-10`, not on this branch.
+## What is documented here
 
-## Foundations — start here
-- **[The Capsule](capsule.md)** — the canonical foundations doc: why, what, data model, write/read flow, GC, scrub, design rationale, invariants, failure modes. Read this first.
+- [The Capsule](capsule.md) — identity, segments, and policy
+- [Build](guides/BUILD.md)
+- [S3 quick start](guides/QUICKSTART_S3.md)
+- [Streaming reads](guides/STREAMING_READS.md)
+- [NVRAM log](nvram-sim.md)
+- [Encryption](encryption.md)
+- [Dedup implementation](implementation/DEDUP_IMPLEMENTATION.md)
+- [Encryption implementation](implementation/ENCRYPTION_IMPLEMENTATION.md)
+- [Encrypted dedup flow](implementation/ENCRYPTED_DEDUP_FLOW.md)
+- [CI](CI_CD_STRATEGY.md)
+- [Dependencies](dependency-security.md)
 
-## Architecture
-- [Architecture Overview](architecture.md)
-- [Future State](future_state_architecture.md)
-- [Patentable Concepts](patentable_concepts.md)
-- [CapsuleFlow Layout Engine](capsuleflow.md)
-- [Protocol Views](protocol_views.md)
-
-## Guides
-- [Build Guide](guides/BUILD.md)
-- [S3 Quick Start](guides/QUICKSTART_S3.md)
-- [Autonomous Tiering (Phase 6)](guides/TIERING.md)
-- [Multi-Node Quickstart](MULTI_NODE_QUICKSTART.md)
-- [Mesh Cluster (Phase 3)](guides/MESH_CLUSTER.md)
-- [Foundry Block Storage (Phase 8)](guides/FOUNDRY.md)
-- Golden path, mesh, foundry, and tiering guides below match the archive branch, not this one.
-
-## Security
-- [Security Policy & Hardening](../SECURITY.md) - Reporting, hardening summary, known limitations
-- [Encryption Implementation](implementation/ENCRYPTION_IMPLEMENTATION.md) - XTS-AES-256 + BLAKE3-MAC details
-- [Replication Security](replication.md#security-guarantees) - MAC validation, key management, frame size limits
-- [Dependency Security](dependency-security.md) - Audit process and tiering
-
-## Implementation
-- [Dedup Implementation](implementation/DEDUP_IMPLEMENTATION.md)
-- [Encryption Implementation](implementation/ENCRYPTION_IMPLEMENTATION.md)
-- [Implementation Summary](implementation/IMPLEMENTATION_SUMMARY.md)
-- [Implementation Complete](implementation/IMPLEMENTATION_COMPLETE.md)
-- [Multi-Node Implementation](MULTI_NODE_IMPLEMENTATION.md)
-- [Performance Fix: Pipeline Runtime](specs/PERFORMANCE_FIX_PIPELINE_RUNTIME.md)
-
-## Status & Progress
-- [Inbound Replication Status](status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md)
-- [Multi-Node Status](status/MULTI_NODE_STATUS.md)
-
-## Federation & Simulation
-- [PODMS Scaling](podms.md)
-- [Multi-Node Deployment](multi-node-deployment.md)
-- [Phase 3 Mesh Overview](phase3.md)
-- [Phase 4 Views & Federation](phase4.md)
-- [Phase 5 WASM Transforms](phase5.md)
-- **[Phase 9 Federation Control Plane (Complete)](phase9.md)** ⭐
-  - Phase 9.1: Raft Consensus Engine ✅
-  - Phase 9.2: Persistence & Transport ✅
-  - Phase 9.3: Global Registry State Machine ✅
-  - Phase 9.4: Node Reconciliation (Self-Driving) ✅
-  - Phase 9.5: The Architect (Placement Scheduler) ✅
-  - Phase 9.6: The Transporter (Volume Hydration) ✅ NEW
-  - [Phase 9.6 Summary](PHASE_9_6_SUMMARY.md) - Implementation details
-- [Federation Mesh](federation.md)
-- [Protocol Views Guide](protocol_views.md)
-- [Simulations Guide](SIMULATIONS.md)
+The pre-reset writeups (mesh, federation, foundry, extra protocol views, tiering, the web UI) are on `archive/pre-reset-2026-10`.

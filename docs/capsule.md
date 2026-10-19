@@ -1,6 +1,6 @@
 # The Capsule
 
-> The foundational unit of storage in SPACE. Everything else — protocols, replication, federation, scrub, tiering — is downstream of this object. Read this document first.
+> The storage object on this branch: one id, an ordered list of segments, and a policy for compression, dedup, and encryption. Mesh, federation, and tiering are not implemented here. That design is on `archive/pre-reset-2026-10`.
 
 ---
 

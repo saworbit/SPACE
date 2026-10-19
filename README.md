@@ -24,7 +24,7 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 
 - Capsule create / read / stream through the registry pipeline
 - Compression (LZ4 / Zstd), BLAKE3 content-addressed dedup, and XTS-AES-256 encryption
-- Modular pipeline crate (`pipeline`). Capsule-registry and spacectl opt into it with `--features modular_pipeline`
+- Modular pipeline (`pipeline`): the registry write and read path
 - Basic S3 PUT / GET / DELETE
 - `spacectl` for local create, read, list, and `serve-s3`
 - Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)

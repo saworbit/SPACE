@@ -29,11 +29,10 @@ The unused crates are gone from this branch, not just unwired. Removed source tr
 
 `cargo check --workspace` and `cargo test --workspace` pass. CI on pull requests runs that test command. The root `Dockerfile` builds `spacectl` only.
 
-The default registry write path is still the in-tree legacy pipeline. The `pipeline` crate is the modular implementation and is covered by its unit tests; `--features modular_pipeline` turns it on for the registry, S3, and spacectl.
+The registry write path is the modular pipeline in the `pipeline` crate. The old in-tree legacy pipeline and the in-process Raft mesh are gone. Metadata updates apply on this node directly.
 
 ## Next steps
 
-- Make `modular_pipeline` the default and delete the legacy write path once nothing still depends on it.
 - Automatic background GC and solid reference counting.
 - S3 multipart, range requests, and clearer errors.
 - spacectl UX for the local create / read / list / serve-s3 flow.
