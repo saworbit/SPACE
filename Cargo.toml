@@ -4,42 +4,14 @@ members = [
     "crates/common",
     "crates/compression",
     "crates/dedup",
+    "crates/encryption",
     "crates/storage",
-    "crates/tiering",
-    "crates/pipeline",
-    "crates/transform-engine",
-    "crates/layout-engine",
-    "crates/federation",
-    "crates/capsule-registry",
     "crates/nvram-sim",
-    "crates/protocol-block",
-    "crates/protocol-nfs",
-    "crates/protocol-nvme",
-    "crates/protocol-fuse",
-    "crates/protocol-csi",
+    "crates/pipeline",
+    "crates/capsule-registry",
     "crates/protocol-s3",
     "crates/spacectl",
-    "crates/encryption",        # NEW: Phase 3 encryption crate
-    "crates/scaling",           # NEW: PODMS Step 2 scaling crate
-    "crates/sim-nvram",         # NEW: Lightweight NVRAM simulation wrapper
-    "crates/sim-nvmeof",        # NEW: NVMe-oF fabric simulation
-    "crates/sim-other",         # NEW: Placeholder for future sims (GPU, etc.)
-    "crates/mesh-core",         # NEW: Core types and traits for mesh and gossip
-    "crates/gossip-layer",      # NEW: Gossip protocol layer using libp2p
-    "crates/web-interface",     # NEW: Next-gen web interface with Axum + Leptos
-    "crates/podms-orchestrator", # NEW: PODMS multi-node orchestration layer
-    "crates/foundry",           # NEW: Phase 8 polymorphic block storage
-    "xtask",
-    "vendor/raft-rs",
-    "vendor/spdk-rs",
-    "vendor/nfs-rs",
-    "vendor/fuse-rs",
-    "vendor/csi-driver-rs",
-    "fuzz",
 ]
-
-[patch.crates-io]
-rdma-sys = { path = "vendor/rdma-sys" }
 
 [workspace.package]
 version = "0.1.0"
@@ -48,76 +20,31 @@ authors = ["Shane Wall <shane@adaptive-storage.dev>"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-# Tier 1 — platform scaffolding (2025-11-03 sw; see docs/dependency-security.md#tier-1)
-uuid = { version = "^1.18.1", features = ["v4", "serde"] } # 2025-11-03 sw: deterministic object IDs for registry state
-anyhow = { version = "^1.0.100" } # 2025-11-03 sw: ergonomic error context, low risk per audit log
-thiserror = { version = "^2.0.17" } # 2025-11-03 sw: structured errors, carries audit note Tier1-2025-11
-tokio = { version = "^1.48.0", features = ["full"] } # 2025-11-03 sw: async runtime staple, reviewed for LTS support
-futures = { version = "^0.3.31" } # 2025-11-03 sw: combinators align with tokio 1.48, no unsafe diff
-num_cpus = { version = "^1.17.0" } # 2025-11-03 sw: worker sizing, perf only
-tracing = { version = "^0.1.41", features = ["std", "attributes"] } # 2025-11-03 sw: observability spine
-tracing-subscriber = { version = "^0.3.20", features = ["env-filter", "fmt", "json"] } # 2025-11-03 sw: logging bridge
-tracing-test = { version = "^0.2.5" } # 2025-11-03 sw: ensures span assertions match runtime wiring
-clap = { version = "^4.5.49", features = ["derive"] } # 2025-11-03 sw: CLI + xtask parsing, Tier1 review
-cargo_metadata = { version = "^0.18.1" } # 2025-11-03 sw: workspace graph inspection for xtask
-toml = { version = "^0.9.11" } # 2025-11-03 sw: manifest parsing in xtask
-time = { version = "^0.3.36", features = ["macros", "formatting"] } # 2025-11-03 sw: ISO-8601 timestamps for drift reports
-semver = { version = "^1.0.27" } # 2025-11-03 sw: version range evaluation for drift detection
-
-# Tier 0 — cryptography, serialization, dedup core (2025-11-03 sw; see docs/dependency-security.md#tier-0)
-serde = { version = "=1.0.228", features = ["derive"] } # 2025-11-03 sw: canonical serialization; CT reviewed
-serde_json = { version = "=1.0.145" } # 2025-11-03 sw: deterministic JSON for protocol surfaces
-serde_yaml = { version = "0.9" } # YAML parsing for CLI policies
-blake3 = { version = "=1.8.3" } # 2025-11-03 sw: convergent hash, SIMD constant-time per upstream audit
-bloomfilter = { version = "=1.0.13" } # 2025-11-03 sw: dedupe candidate screening, bounded memory
-aya = { version = "=0.11.0" } # 2025-11-09 sw: eBPF loader for zero-trust ingress hooks
-tokio-tungstenite = { version = "=0.21.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] } # 2025-11-09 sw: mTLS control plane for zero-trust frontends
-pqcrypto-mlkem = { version = "=0.1.1" } # 2025-11-09 sw: ML-KEM hybrid wrapping
-reqwest = { version = "=0.11.27", default-features = false, features = ["json", "blocking", "rustls-tls"] } # 2025-11-09 sw: TSA client with rustls backend
-hex = { version = "=0.4.3" } # 2025-11-03 sw: hex encoding for key material, constant-time encode/decode
-lz4 = { version = "=1.28.1" } # 2025-11-03 sw: hot-path compression, SIMD routines audited
-zstd = { version = "=0.13.3" } # 2025-11-03 sw: deep compression with wasm off, see audit log entry CRS-132
-zeroize = { version = "=1.8.2" } # 2025-11-03 sw: memory clearing policy alignment
-aes = { version = "=0.8.4" } # 2025-11-03 sw: AES-NI optimized, matches Phase3 design
-cipher = { version = "=0.4.4" } # 2025-11-03 sw: trait glue for AES/Poly1305 stack
-xts-mode = { version = "=0.5.1" } # 2025-11-03 sw: XTS primitive, matches patentable_concepts.md guidance
-poly1305 = { version = "=0.8.0" } # 2025-11-03 sw: MAC verification, constant-time guarantee
-cpufeatures = { version = "=0.2.17" } # 2025-11-03 sw: runtime AES capability detection
-subtle = { version = "=2.6.1" } # 2025-11-03 sw: constant-time comparisons for key/tweak handling
-hmac = { version = "=0.12.1" } # 2025-11-04 sw: HKDF based on HMAC-SHA256 for key derivation
-sha2 = { version = "=0.10.9" } # 2025-11-04 sw: Hash core for HKDF extractor
-
-# Web Interface & Mesh Networking (2025-11-16 sw; Next-gen web interface with gossip)
-axum = { version = "^0.7.9", features = ["ws", "macros", "multipart"] } # 2025-11-16 sw: Web server framework
-tower-http = { version = "^0.6.8", features = ["cors", "trace", "fs"] } # 2025-11-16 sw: HTTP middleware
-libp2p-core = { version = "=0.41.3" } # 2025-11-16 sw: libp2p core transport traits
-libp2p-identity = { version = "=0.2.13", default-features = false, features = ["peerid", "ed25519", "rand"] } # 2025-11-16 sw: PeerId + key material
-libp2p-gossipsub = { version = "=0.46.1" } # 2025-11-16 sw: Gossip protocol
-libp2p-swarm = { version = "^0.44.1" } # 2025-11-16 sw: Swarm behavior
-libp2p-tcp = { version = "=0.41.0", default-features = false, features = ["tokio"] } # 2025-11-16 sw: TCP transport
-libp2p-noise = { version = "=0.44.0" } # 2025-11-16 sw: Noise handshake
-libp2p-yamux = { version = "=0.45.2" } # 2025-11-16 sw: Yamux multiplexer
-multiaddr = { version = "=0.18.2" } # 2025-11-16 sw: Multiaddr /ip4/... format
-bincode = { version = "=1.3.3" } # 2025-11-16 sw: Binary serialization for gossip messages
-bytes = { version = "^1.10.1" } # 2025-11-16 sw: Zero-copy byte buffers
-rand = { version = "=0.8.6" } # 2026-05-08 sw: Random peer selection for gossip; includes RUSTSEC-2026-0097 fix
-backoff = { version = "=0.4.0" } # 2025-11-16 sw: Retry logic with exponential backoff
-lru = { version = "=0.12.1" } # 2025-11-16 sw: LRU cache for peer views
-prometheus = { version = "=0.14.0", features = ["process"] } # 2025-11-16 sw: Metrics collection (updated for RUSTSEC-2024-0437)
-leptos = { version = "=0.6.15", features = ["csr"] } # 2025-11-16 sw: Reactive web framework
-leptos_axum = { version = "=0.6.15" } # 2025-11-16 sw: Leptos integration with Axum
-wasm-bindgen = { version = "^0.2.91" } # 2025-11-16 sw: Wasm interop
-gloo = { version = "=0.11.0" } # 2025-11-16 sw: Browser utilities for Wasm
-web-sys = { version = "^0.3.68", features = ["WebSocket", "MessageEvent", "CloseEvent"] } # 2025-11-16 sw: Web APIs
-tower = { version = "=0.4.13", features = ["util"] } # 2025-11-16 sw: Service abstractions
-
-raft-rs = { path = "vendor/raft-rs", version = "0.7.0" }
-spdk-rs = { path = "vendor/spdk-rs", version = "0.1.0" }
-nfs-rs = { path = "vendor/nfs-rs", version = "0.2.0" }
-fuse-rs = { path = "vendor/fuse-rs", version = "0.3.0" }
-csi-driver-rs = { path = "vendor/csi-driver-rs", version = "0.4.0" }
+uuid = { version = "^1.18.1", features = ["v4", "serde"] }
+anyhow = { version = "^1.0.100" }
+thiserror = { version = "^2.0.17" }
+tokio = { version = "^1.48.0", features = ["full"] }
+futures = { version = "^0.3.31" }
+tracing = { version = "^0.1.41", features = ["std", "attributes"] }
+tracing-subscriber = { version = "^0.3.20", features = ["env-filter", "fmt", "json"] }
+clap = { version = "^4.5.49", features = ["derive"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.145" }
+blake3 = { version = "=1.8.3" }
+lz4 = { version = "=1.28.1" }
+zstd = { version = "=0.13.3" }
+zeroize = { version = "=1.8.2" }
+aes = { version = "=0.8.4" }
+cipher = { version = "=0.4.4" }
+xts-mode = { version = "=0.5.1" }
+poly1305 = { version = "=0.8.0" }
+subtle = { version = "=2.6.1" }
+hmac = { version = "=0.12.1" }
+sha2 = { version = "=0.10.9" }
+bytes = { version = "^1.10.1" }
+prometheus = { version = "=0.14.0", features = ["process"] }
 
 [workspace.metadata.space.allowed-features]
-"capsule-registry" = ["pipeline_async", "podms", "modular_pipeline", "advanced-security", "phase4"]
-"spacectl" = ["pipeline_async"]
-"encryption" = ["std", "experimental", "pqc", "tee"]
+"capsule-registry" = ["modular_pipeline"]
+"spacectl" = []
+"encryption" = ["std"]
