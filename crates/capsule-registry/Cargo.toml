@@ -8,8 +8,6 @@ publish = false
 
 [features]
 default = []
-pipeline_async = ["dep:num_cpus"]
-modular_pipeline = ["dep:pipeline"]
 
 [dependencies]
 common = { path = "../common" }
@@ -26,7 +24,6 @@ serde_json = { workspace = true }
 bincode = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
-num_cpus = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 lz4 = { workspace = true }
@@ -35,26 +32,17 @@ blake3 = { workspace = true }
 subtle = { workspace = true }
 bytes = { workspace = true }
 sled = "0.34"
-pipeline = { path = "../pipeline", optional = true }
+pipeline = { path = "../pipeline" }
 async-trait = "0.1"
 tokio-util = { version = "^0.7.11", features = ["io"] }
 async-stream = "0.3"
-
-# Phase 3: distributed consensus (Raft)
-openraft = { version = "0.9.21", features = ["serde", "storage-v2"] }
-tonic = { version = "0.12.3", features = ["transport"] }
-prost = "0.13.5"
 
 [dev-dependencies]
 tracing-test = { workspace = true }
 futures = { workspace = true }
 criterion = "0.5"
 tokio = { workspace = true, features = ["full"] }
-proptest = "^1.8.0"  # 2026-05-07 sw: property-based tests for pipeline invariants (Tier2 dev-only per docs/dependency-security.md)
-
-[build-dependencies]
-tonic-build = "0.12.3"
-protoc-bin-vendored = "3.2.0"
+proptest = "^1.8.0"
 
 [[bench]]
 name = "pipeline"

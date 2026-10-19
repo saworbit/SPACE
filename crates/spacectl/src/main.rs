@@ -1,52 +1,26 @@
 use anyhow::{anyhow, Context, Result};
-#[cfg(feature = "modular_pipeline")]
 use capsule_registry::modular_pipeline;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
-#[cfg(feature = "phase4")]
-use clap::Args;
+
 use clap::{Parser, Subcommand};
-#[cfg(feature = "phase4")]
-use common::podms::{Telemetry, ZoneId};
+
 use common::CapsuleId;
 use common::{Policy, SegmentId};
-#[cfg(feature = "phase4")]
-use csi_driver_rs::ProvisionRequest;
-#[cfg(feature = "phase4")]
-use encryption::keymanager::KeyManager;
-#[cfg(feature = "phase4")]
-use federation::FederationBridge;
+
+
 use nvram_sim::NvramLog;
-#[cfg(feature = "phase4")]
-use protocol_csi::csi_provision_capsule;
-#[cfg(feature = "phase4")]
-use protocol_fuse::{mount_capsule_fuse, mount_fuse_view};
-#[cfg(feature = "phase4")]
-use protocol_nfs::phase4::export_nfs_view;
-#[cfg(feature = "phase4")]
-use protocol_nvme::NvmeView;
-#[cfg(feature = "phase4")]
-use scaling::ContentStore;
-#[cfg(feature = "phase4")]
-use scaling::MeshNode;
+
+
 use std::fs;
 use std::io::{self, Write};
-use std::net::SocketAddr;
-#[cfg(feature = "phase4")]
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Once;
-#[cfg(feature = "phase4")]
-use std::time::Duration;
-#[cfg(feature = "phase4")]
-use tokio::sync::RwLock;
+
+
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-#[cfg(feature = "spdk")]
-use foundry::{Foundry, VolumeId};
-#[cfg(feature = "spdk")]
-use protocol_nvme::foundry_bdev;
 
 const NVRAM_PATH: &str = "space.nvram";
 const REGISTRY_DB_PATH: &str = "space.db";
@@ -117,165 +91,6 @@ struct Cli {
     command: Commands,
 }
 
-#[cfg(feature = "phase4")]
-#[derive(Clone, Debug, Args)]
-struct ProjectArgs {
-    /// Optional subcommand (e.g. `mount`).
-    #[command(subcommand)]
-    command: Option<ProjectCommand>,
-    /// Protocol view to project (nvme, nfs, fuse, csi).
-    #[arg(long)]
-    view: Option<String>,
-    /// Capsule UUID to materialize.
-    #[arg(long)]
-    id: Option<Uuid>,
-    /// YAML policy file driving the projection.
-    #[arg(long)]
-    policy_file: Option<PathBuf>,
-    /// Optional zone name (backed by `space.<zone>.db` / `space.<zone>.nvram`).
-    #[arg(long)]
-    zone: Option<String>,
-}
-
-#[cfg(feature = "phase4")]
-#[derive(Clone, Debug, Subcommand)]
-enum ProjectCommand {
-    /// Mount a capsule into a local directory as a file-style view.
-    Mount {
-        /// Capsule UUID to materialize.
-        #[arg(long)]
-        id: Uuid,
-        /// Target directory to project into (creates `content` inside).
-        #[arg(long)]
-        target: PathBuf,
-        /// Optional zone name (backed by `space.<zone>.db` / `space.<zone>.nvram`).
-        #[arg(long)]
-        zone: Option<String>,
-        /// Optional YAML policy override used for view enforcement/federation.
-        #[arg(long)]
-        policy_file: Option<PathBuf>,
-    },
-}
-
-#[cfg(feature = "phase4")]
-#[derive(Clone, Default)]
-struct DummyContentStore;
-
-#[cfg(feature = "phase4")]
-impl ContentStore for DummyContentStore {
-    fn lookup_content(&self, _hash: &common::ContentHash) -> Option<common::SegmentId> {
-        None
-    }
-
-    fn register_content(&self, _hash: &common::ContentHash, _segment_id: common::SegmentId) {}
-}
-
-#[cfg(feature = "phase4")]
-#[derive(Subcommand)]
-enum ZoneCommands {
-    /// Add or update a remote Zone endpoint.
-    Add {
-        /// Zone name/alias (e.g., "us-west").
-        #[arg(long)]
-        name: String,
-        /// Federation gRPC endpoint (e.g., "http://127.0.0.1:9001").
-        #[arg(long)]
-        url: String,
-        /// Shared secret for inter-zone replication.
-        #[arg(long)]
-        secret: String,
-    },
-    /// List known Zones.
-    List,
-}
-
-#[cfg(feature = "phase4")]
-#[derive(Subcommand)]
-enum FederationCommands {
-    /// Start the Federation gRPC service (Phase 4b receiver).
-    Serve {
-        /// Listen address for federation gRPC.
-        #[arg(long, default_value = "0.0.0.0:9001")]
-        addr: SocketAddr,
-        /// Path to the capsule metadata store (sled).
-        #[arg(long, default_value = "space.db")]
-        metadata_path: String,
-        /// Path to the NVRAM segment log.
-        #[arg(long, default_value = "space.nvram")]
-        nvram_path: String,
-        /// Expected shared secret (defaults to `SPACE_FEDERATION_SECRET` if set).
-        #[arg(long)]
-        secret: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum RegistryCommands {
-    /// Create/update a capsule's metadata through the Raft leader.
-    Put {
-        /// Raft gRPC address of any cluster node.
-        #[arg(long)]
-        addr: SocketAddr,
-
-        /// Capsule UUID.
-        #[arg(long)]
-        id: String,
-
-        /// Capsule size in bytes.
-        #[arg(long, default_value_t = 0)]
-        size: u64,
-
-        /// Segment id(s) belonging to the capsule (repeatable).
-        #[arg(long)]
-        segment: Vec<u64>,
-
-        /// Optional YAML policy file to attach.
-        #[arg(long)]
-        policy_file: Option<String>,
-    },
-
-    /// Fetch capsule metadata from a node's local state machine.
-    Get {
-        /// Raft gRPC address of any cluster node.
-        #[arg(long)]
-        addr: SocketAddr,
-
-        /// Capsule UUID.
-        #[arg(long)]
-        id: String,
-    },
-
-    /// Delete capsule metadata through the Raft leader.
-    Delete {
-        /// Raft gRPC address of any cluster node.
-        #[arg(long)]
-        addr: SocketAddr,
-
-        /// Capsule UUID.
-        #[arg(long)]
-        id: String,
-    },
-}
-
-#[cfg(feature = "phase4")]
-#[derive(Subcommand)]
-enum SnapshotCommands {
-    /// Force immediate execution of a capsule's replication policy.
-    Trigger {
-        /// Capsule UUID to snapshot/replicate now.
-        #[arg(long, value_name = "UUID")]
-        id: String,
-        /// Optional override for the RPO interval (seconds).
-        #[arg(long, value_name = "SECONDS")]
-        rpo_secs: Option<u64>,
-        /// Wait briefly after emitting the telemetry event.
-        #[arg(long)]
-        wait: bool,
-        /// Where to append the serialized telemetry event.
-        #[arg(long, default_value = "space.telemetry.jsonl")]
-        out: String,
-    },
-}
 
 fn open_registry_and_nvram_for_zone(zone: Option<&str>) -> Result<(CapsuleRegistry, NvramLog)> {
     let registry_path = registry_path_for_zone(zone);
@@ -289,27 +104,6 @@ fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
     open_registry_and_nvram_for_zone(None)
 }
 
-#[cfg(feature = "modular_pipeline")]
-fn build_modular_pipeline_handle(
-    registry: CapsuleRegistry,
-) -> Result<modular_pipeline::RegistryPipelineHandle> {
-    modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)
-}
-
-#[cfg(feature = "modular_pipeline")]
-async fn modular_write_capsule(data: &[u8]) -> Result<CapsuleId> {
-    let registry = CapsuleRegistry::new();
-    let mut handle = build_modular_pipeline_handle(registry)?;
-    handle.write_capsule(data, &Policy::default()).await
-}
-
-#[cfg(feature = "modular_pipeline")]
-async fn modular_read_capsule(id: CapsuleId) -> Result<Vec<u8>> {
-    let registry = CapsuleRegistry::new();
-    let handle = build_modular_pipeline_handle(registry)?;
-    handle.read_capsule(id).await
-}
-
 #[derive(Subcommand)]
 enum Commands {
     /// Create a new capsule from data
@@ -317,11 +111,8 @@ enum Commands {
         /// Input file path
         #[arg(short, long)]
         file: String,
-        #[cfg(feature = "modular_pipeline")]
-        #[arg(long)]
-        modular: bool,
     },
-    /// Store a local file as a capsule (Phase 4 projection tests use this shape).
+    /// Store a local file as a capsule without running it through the pipeline.
     Put {
         /// Input file path
         file: String,
@@ -339,9 +130,6 @@ enum Commands {
     Read {
         /// Capsule UUID
         capsule_id: String,
-        #[cfg(feature = "modular_pipeline")]
-        #[arg(long)]
-        modular: bool,
     },
     /// List all capsules
     List,
@@ -350,49 +138,6 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "8080")]
         port: u16,
-        #[cfg(feature = "modular_pipeline")]
-        #[arg(long)]
-        modular: bool,
-    },
-    #[cfg(feature = "phase4")]
-    Project(ProjectArgs),
-    #[cfg(feature = "phase4")]
-    Snapshot {
-        #[command(subcommand)]
-        command: SnapshotCommands,
-    },
-    /// Expose a Foundry volume via NVMe-oF (Milestone 8.2)
-    #[cfg(feature = "spdk")]
-    Expose {
-        /// Volume ID (UUID) to expose
-        #[arg(long)]
-        volume_id: String,
-        /// Logical name for the volume (used in NQN)
-        #[arg(long)]
-        name: String,
-        /// NVMe-oF TCP port
-        #[arg(short, long, default_value = "4420")]
-        port: u16,
-        /// Volume size in bytes (for new volumes)
-        #[arg(long)]
-        size: Option<u64>,
-    },
-    /// Manage the "Known Universe" of remote Zones (Phase 4b).
-    #[cfg(feature = "phase4")]
-    Zone {
-        #[command(subcommand)]
-        command: ZoneCommands,
-    },
-    /// Federation operations (Phase 4b).
-    #[cfg(feature = "phase4")]
-    Federation {
-        #[command(subcommand)]
-        command: FederationCommands,
-    },
-    /// Operate on capsule metadata via Raft.
-    Registry {
-        #[command(subcommand)]
-        command: RegistryCommands,
     },
 }
 
@@ -401,225 +146,6 @@ fn load_policy_file(path: &PathBuf) -> Result<Policy> {
     serde_yaml::from_str(&text).map_err(|err| anyhow!(err))
 }
 
-#[cfg(feature = "phase4")]
-async fn handle_project_command(args: ProjectArgs) -> Result<()> {
-    if let Some(ProjectCommand::Mount {
-        id,
-        target,
-        zone,
-        policy_file,
-    }) = args.command
-    {
-        let capsule_id = CapsuleId::from_uuid(id);
-        let (registry, nvram) = open_registry_and_nvram_for_zone(zone.as_deref())?;
-        let registry = Arc::new(registry);
-        let capsule = registry
-            .lookup(capsule_id)
-            .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
-
-        fs::create_dir_all(&target)
-            .with_context(|| format!("create mount target {}", target.display()))?;
-
-        let pipeline = Arc::new(WritePipeline::new(registry.as_ref().clone(), nvram.clone()));
-        println!(
-            "Mounting capsule {} at {} (read-only FUSE: {}/content)",
-            capsule_id.as_uuid(),
-            target.display(),
-            target.display()
-        );
-
-        match mount_capsule_fuse(Arc::clone(&pipeline), capsule_id, capsule.size, &target) {
-            Ok(()) => return Ok(()),
-            Err(err) => {
-                eprintln!("Kernel FUSE mount unavailable ({err}); falling back to file view.");
-            }
-        }
-
-        let policy = match policy_file {
-            Some(path) => load_policy_file(&path)?,
-            None => capsule.policy.clone(),
-        };
-
-        let content_store = Arc::new(RwLock::new(DummyContentStore));
-        let nvram_log = Arc::new(RwLock::new(nvram.clone()));
-        let key_manager = Arc::new(RwLock::new(KeyManager::new([0u8; 32])));
-        let zone_name = zone.unwrap_or_else(|| "local".into());
-
-        let mesh = MeshNode::new(
-            ZoneId::Metro { name: zone_name },
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            content_store,
-            nvram_log,
-            key_manager,
-        )
-        .await?;
-
-        let pipeline = Arc::clone(&pipeline);
-        let view = mount_fuse_view(
-            capsule_id,
-            &policy,
-            &mesh,
-            pipeline,
-            &target,
-            registry.as_ref(),
-        )
-        .await?;
-
-        println!(
-            "Mounted capsule {} at {}",
-            capsule_id.as_uuid(),
-            view.mountpoint().display()
-        );
-        tokio::signal::ctrl_c().await?;
-        let _ = view.unmount().await;
-        return Ok(());
-    }
-
-    let capsule_id = CapsuleId::from_uuid(
-        args.id
-            .ok_or_else(|| anyhow!("--id is required unless using `spacectl project mount`"))?,
-    );
-    let view = args
-        .view
-        .clone()
-        .ok_or_else(|| anyhow!("--view is required unless using `spacectl project mount`"))?
-        .to_lowercase();
-    let policy = match args.policy_file.as_ref() {
-        Some(path) => load_policy_file(path)?,
-        None => Policy::default(),
-    };
-
-    let (registry, nvram) = open_registry_and_nvram_for_zone(args.zone.as_deref())?;
-    let registry = Arc::new(registry);
-    let pipeline = Arc::new(WritePipeline::new(registry.as_ref().clone(), nvram.clone()));
-
-    let content_store = Arc::new(RwLock::new(DummyContentStore));
-    let nvram_log = Arc::new(RwLock::new(nvram));
-    let key_manager = Arc::new(RwLock::new(KeyManager::new([0u8; 32])));
-    let zone_name = args.zone.clone().unwrap_or_else(|| "local".into());
-
-    let mesh = MeshNode::new(
-        ZoneId::Metro { name: zone_name },
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        content_store,
-        nvram_log,
-        key_manager,
-    )
-    .await?;
-
-    match view.as_str() {
-        "nvme" => {
-            let capsule = registry
-                .lookup(capsule_id)
-                .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
-            let nvme_view = NvmeView::project(&capsule, &policy, &mesh, registry.as_ref()).await?;
-            println!("NVMe Target Active: {}", nvme_view.nqn());
-            tokio::signal::ctrl_c().await?;
-            drop(nvme_view);
-        }
-        "nfs" => {
-            registry
-                .lookup(capsule_id)
-                .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
-            let server = export_nfs_view(capsule_id, &policy, &mesh, registry.as_ref()).await?;
-            println!(
-                "NFS Export Active: nfs://127.0.0.1:2049/{}",
-                capsule_id.as_uuid()
-            );
-            tokio::signal::ctrl_c().await?;
-            drop(server);
-        }
-        "fuse" => {
-            let capsule = registry
-                .lookup(capsule_id)
-                .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
-            let mountpoint = std::env::temp_dir().join(format!("space-{}", capsule_id.as_uuid()));
-            fs::create_dir_all(&mountpoint)
-                .with_context(|| format!("create mount target {}", mountpoint.display()))?;
-            println!(
-                "Mounting capsule {} at {} (read-only FUSE: {}/content)",
-                capsule_id.as_uuid(),
-                mountpoint.display(),
-                mountpoint.display()
-            );
-
-            match mount_capsule_fuse(Arc::clone(&pipeline), capsule_id, capsule.size, &mountpoint) {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    eprintln!("Kernel FUSE mount unavailable ({err}); falling back to file view.");
-                }
-            }
-
-            let view = mount_fuse_view(
-                capsule_id,
-                &policy,
-                &mesh,
-                pipeline,
-                &mountpoint,
-                registry.as_ref(),
-            )
-            .await?;
-            println!("View ready at {}", view.mountpoint().display());
-            tokio::signal::ctrl_c().await?;
-            let _ = view.unmount().await;
-        }
-        "csi" => {
-            registry
-                .lookup(capsule_id)
-                .with_context(|| format!("capsule {} not found", capsule_id.as_uuid()))?;
-            let req = ProvisionRequest::from_capsule(&capsule_id.as_uuid().to_string());
-            let server = csi_provision_capsule(req, &policy, &mesh, registry.as_ref()).await?;
-            println!("CSI driver active for capsule {}", server.capsule_id());
-            tokio::signal::ctrl_c().await?;
-            drop(server);
-        }
-        other => return Err(anyhow!("Unknown view type: {}", other)),
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "phase4")]
-async fn handle_snapshot_command(command: SnapshotCommands) -> Result<()> {
-    match command {
-        SnapshotCommands::Trigger {
-            id,
-            rpo_secs,
-            wait,
-            out,
-        } => {
-            let uuid = Uuid::parse_str(&id).map_err(|err| anyhow!(err))?;
-            let capsule_id = CapsuleId::from_uuid(uuid);
-            let forced_rpo = rpo_secs.map(Duration::from_secs);
-            let telemetry = Telemetry::ForcePolicyExecution {
-                capsule_id,
-                forced_rpo,
-            };
-
-            let serialized = serde_json::to_string(&telemetry)?;
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&out)?;
-            writeln!(file, "{}", serialized)?;
-
-            println!(
-                "Queued forced snapshot for capsule {} (forced_rpo={}) -> {}",
-                capsule_id.as_uuid(),
-                forced_rpo
-                    .map(|d| format!("{:?}", d))
-                    .unwrap_or_else(|| "policy".to_string()),
-                out
-            );
-
-            if wait {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-
-    Ok(())
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -635,20 +161,8 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Create {
-            file,
-            #[cfg(feature = "modular_pipeline")]
-            modular,
-        } => {
+        Commands::Create { file } => {
             let data = fs::read(&file)?;
-            #[cfg(feature = "modular_pipeline")]
-            if modular {
-                let id = modular_write_capsule(&data).await?;
-                println!("Capsule created: {}", id.as_uuid());
-                println!("Size: {} bytes", data.len());
-                return Ok(());
-            }
-
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::new(registry, nvram);
             let id = pipeline.write_capsule(&data).await?;
@@ -687,38 +201,11 @@ async fn main() -> Result<()> {
 
             println!("{}", capsule_id.as_uuid());
 
-            #[cfg(feature = "phase4")]
-            if !policy.federation.targets.is_empty() {
-                let local_zone_id = zone.clone().unwrap_or_else(|| "local".into());
-                let bridge = FederationBridge::open_default(
-                    Arc::clone(&registry),
-                    Arc::clone(&nvram),
-                    local_zone_id,
-                )?;
-                let result = bridge.apply_policy(capsule_id).await?;
-                if result.zones_attempted > 0 {
-                    println!(
-                        "Federation: succeeded {}/{} zones",
-                        result.zones_succeeded, result.zones_attempted
-                    );
-                }
-            }
+            
         }
-        Commands::Read {
-            capsule_id,
-            #[cfg(feature = "modular_pipeline")]
-            modular,
-        } => {
+        Commands::Read { capsule_id } => {
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
-
-            #[cfg(feature = "modular_pipeline")]
-            if modular {
-                let data = modular_read_capsule(id).await?;
-                io::stdout().write_all(&data)?;
-                return Ok(());
-            }
-
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::new(registry, nvram);
             let data = pipeline.read_capsule(id).await?;
@@ -763,208 +250,26 @@ async fn main() -> Result<()> {
                 println!("(no capsules)");
             }
         }
-        Commands::ServeS3 {
-            port,
-            #[cfg(feature = "modular_pipeline")]
-            modular,
-        } => {
+        Commands::ServeS3 { port } => {
             use protocol_s3::{server::S3Server, S3View};
 
             println!("Starting SPACE S3 Protocol View...");
 
-            #[cfg(feature = "modular_pipeline")]
-            let s3_view = if modular {
-                let registry = CapsuleRegistry::new();
-                if let Ok(storage_root) = std::env::var("SPACE_STORAGE_ROOT") {
-                    let storage_root = PathBuf::from(storage_root);
-                    let storage = storage::AutoFsBackend::open(&storage_root).await?;
-                    let handle =
-                        modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)?;
-                    S3View::new_modular(handle)
-                } else {
-                    let handle =
-                        modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
-                    S3View::new_modular(handle)
-                }
+            let registry = CapsuleRegistry::new();
+            let s3_view = if let Ok(storage_root) = std::env::var("SPACE_STORAGE_ROOT") {
+                let storage_root = PathBuf::from(storage_root);
+                let storage = storage::AutoFsBackend::open(&storage_root).await?;
+                let handle =
+                    modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)?;
+                S3View::new_modular(handle)
             } else {
-                let registry = CapsuleRegistry::new();
-                let nvram = NvramLog::open(NVRAM_PATH)?;
-                S3View::new(registry, nvram)
-            };
-
-            #[cfg(not(feature = "modular_pipeline"))]
-            let s3_view = {
-                let registry = CapsuleRegistry::new();
-                let nvram = NvramLog::open(NVRAM_PATH)?;
-                S3View::new(registry, nvram)
+                let handle = modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
+                S3View::new_modular(handle)
             };
 
             let server = S3Server::new(s3_view, port);
-
             server.run().await?;
         }
-        #[cfg(feature = "phase4")]
-        Commands::Project(args) => {
-            handle_project_command(args).await?;
-        }
-        #[cfg(feature = "phase4")]
-        Commands::Snapshot { command } => {
-            handle_snapshot_command(command).await?;
-        }
-        #[cfg(feature = "spdk")]
-        Commands::Expose {
-            volume_id,
-            name,
-            port,
-            size,
-        } => {
-            println!("Exposing Foundry volume via NVMe-oF");
-            println!("Volume ID: {}", volume_id);
-            println!("Volume Name: {}", name);
-            println!("NVMe-oF Port: {}", port);
-
-            // Parse volume ID
-            let vol_id = Uuid::parse_str(&volume_id)
-                .with_context(|| format!("Invalid volume UUID: {}", volume_id))?;
-            let volume_id = VolumeId::from_uuid(vol_id);
-
-            // Create or get the Foundry instance
-            let foundry = Foundry::new();
-
-            // Get or create the volume
-            let volume = if let Some(size_bytes) = size {
-                // Create a new volume
-                println!("Creating new volume with size {} bytes", size_bytes);
-                foundry.create_volume(volume_id, size_bytes, None).await?
-            } else {
-                // Get existing volume
-                println!("Looking up existing volume");
-                foundry.get_volume(volume_id).await?
-            };
-
-            let volume_size = volume.size().await?;
-            println!(
-                "Volume size: {} bytes ({} MB)",
-                volume_size,
-                volume_size / (1024 * 1024)
-            );
-
-            // Start NVMe-oF target
-            let nqn = format!("nqn.2024-01.io.space:{}", name);
-            println!("\nStarting NVMe-oF target...");
-            println!("NQN: {}", nqn);
-            println!("Listen: 0.0.0.0:{}", port);
-
-            foundry_bdev::start_nvme_target(volume, &name, port).await?;
-
-            println!("\nNVMe-oF target is running.");
-            println!("\nTo connect from a Linux initiator:");
-            println!(
-                "  sudo nvme connect -t tcp -n {} -a 127.0.0.1 -s {}",
-                nqn, port
-            );
-            println!("\nPress Ctrl+C to stop...");
-
-            // Wait for Ctrl+C
-            tokio::signal::ctrl_c().await?;
-
-            println!("\nShutting down NVMe-oF target...");
-            foundry_bdev::stop_nvme_target().await?;
-            println!("Shutdown complete.");
-        }
-        #[cfg(feature = "phase4")]
-        Commands::Zone { command } => match command {
-            ZoneCommands::Add { name, url, secret } => {
-                let path = federation::zones::ZoneDirectory::default_path()?;
-                let mut directory = federation::zones::ZoneDirectory::load(&path)?;
-                directory.upsert(federation::zones::ZoneConfig {
-                    name,
-                    endpoint: url,
-                    secret_key: secret,
-                });
-                directory.save(&path)?;
-                println!("ok");
-            }
-            ZoneCommands::List => {
-                let path = federation::zones::ZoneDirectory::default_path()?;
-                let directory = federation::zones::ZoneDirectory::load(&path)?;
-                if directory.zones.is_empty() {
-                    println!("(no zones)");
-                } else {
-                    for zone in directory.zones {
-                        println!("{}\t{}\t***", zone.name, zone.endpoint);
-                    }
-                }
-            }
-        },
-        #[cfg(feature = "phase4")]
-        Commands::Federation { command } => match command {
-            FederationCommands::Serve {
-                addr,
-                metadata_path,
-                nvram_path,
-                secret,
-            } => {
-                let secret = secret.or_else(|| std::env::var("SPACE_FEDERATION_SECRET").ok());
-                federation::serve_from_paths(addr, &metadata_path, &nvram_path, secret).await?;
-            }
-        },
-        Commands::Registry { command } => match command {
-            RegistryCommands::Put {
-                addr,
-                id,
-                size,
-                segment,
-                policy_file,
-            } => {
-                let uuid = id.parse()?;
-                let capsule_id = CapsuleId::from_uuid(uuid);
-                let policy = if let Some(path) = policy_file {
-                    let text = fs::read_to_string(path)?;
-                    serde_yaml::from_str::<Policy>(&text)?
-                } else {
-                    Policy::default()
-                };
-
-                let capsule = common::Capsule {
-                    id: capsule_id,
-                    size,
-                    segments: segment.into_iter().map(common::SegmentId).collect(),
-                    created_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)?
-                        .as_secs(),
-                    policy,
-                    deduped_bytes: 0,
-                };
-
-                capsule_registry::mesh::put_capsule(addr, capsule).await?;
-                println!("ok");
-            }
-            RegistryCommands::Get { addr, id } => {
-                let uuid = id.parse()?;
-                let capsule_id = CapsuleId::from_uuid(uuid);
-                match capsule_registry::mesh::get_capsule(addr, capsule_id).await? {
-                    Some(capsule) => {
-                        println!("{}", serde_json::to_string_pretty(&capsule)?);
-                    }
-                    None => {
-                        println!("(not found)");
-                    }
-                }
-            }
-            RegistryCommands::Delete { addr, id } => {
-                let uuid = id.parse()?;
-                let capsule_id = CapsuleId::from_uuid(uuid);
-                match capsule_registry::mesh::delete_capsule(addr, capsule_id).await? {
-                    Some(capsule) => {
-                        println!("{}", serde_json::to_string_pretty(&capsule)?);
-                    }
-                    None => {
-                        println!("(not found)");
-                    }
-                }
-            }
-        },
     }
 
     Ok(())

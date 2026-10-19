@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use common::{CapsuleId, Policy};
+use encryption::KeyManager;
 use nvram_sim::NvramLog;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -16,11 +17,27 @@ pub struct ModularPipeline {
 }
 
 impl ModularPipeline {
-    pub fn try_new(nvram: NvramLog, registry: CapsuleRegistry) -> Result<Option<Self>> {
+    pub fn open(nvram: NvramLog, registry: CapsuleRegistry) -> Result<Self> {
         let handle = crate::modular_pipeline::registry_pipeline_from_log(nvram, registry)?;
-        Ok(Some(Self {
+        Ok(Self {
             handle: Arc::new(TokioMutex::new(handle)),
-        }))
+        })
+    }
+
+    pub fn open_with_key(
+        nvram: NvramLog,
+        registry: CapsuleRegistry,
+        key_manager: KeyManager,
+    ) -> Result<Self> {
+        let key_manager = Arc::new(std::sync::Mutex::new(key_manager));
+        let handle = crate::modular_pipeline::registry_pipeline_from_log_with_key(
+            nvram,
+            registry,
+            key_manager,
+        )?;
+        Ok(Self {
+            handle: Arc::new(TokioMutex::new(handle)),
+        })
     }
 }
 

@@ -1,4 +1,3 @@
-#![cfg(feature = "modular_pipeline")]
 
 use anyhow::Result;
 use capsule_registry::modular_pipeline::{

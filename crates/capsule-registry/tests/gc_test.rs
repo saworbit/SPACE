@@ -138,7 +138,6 @@ fn cleanup_path(path: &str) {
     }
 }
 
-#[cfg(feature = "modular_pipeline")]
 mod modular_pipeline_gc {
     use super::*;
     use capsule_registry::modular_pipeline::{

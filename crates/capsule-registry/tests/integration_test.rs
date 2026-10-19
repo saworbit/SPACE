@@ -110,7 +110,6 @@ async fn hybrid_kyber_with_dedup_is_rejected_at_pipeline_boundary() {
     cleanup_path(meta_path.to_string_lossy().as_ref());
 }
 
-#[cfg(feature = "modular_pipeline")]
 mod modular_pipeline_integration {
     use super::*;
     use capsule_registry::modular_pipeline::{

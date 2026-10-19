@@ -85,18 +85,10 @@ struct PolicyLegacyV2 {
     pub layout: LayoutPolicy,
     #[serde(default)]
     pub federation: Option<FederationPolicyLegacy>,
-    #[cfg(feature = "podms")]
-    #[serde(default = "default_duration_60s")]
-    pub rpo: std::time::Duration,
-    #[cfg(feature = "podms")]
-    #[serde(default = "default_duration_10ms")]
-    pub latency_target: std::time::Duration,
-    #[cfg(feature = "podms")]
-    #[serde(default)]
-    pub sovereignty: common::podms::SovereigntyLevel,
-    #[cfg(feature = "podms")]
-    #[serde(default = "default_replica_count_3")]
-    pub replica_count: u8,
+    
+    
+    
+    
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,39 +109,18 @@ struct PolicyLegacy {
     pub crypto_profile: CryptoProfile,
     #[serde(default)]
     pub layout: LayoutPolicy,
-    #[cfg(feature = "podms")]
-    #[serde(default = "default_duration_60s")]
-    pub rpo: std::time::Duration,
-    #[cfg(feature = "podms")]
-    #[serde(default = "default_duration_10ms")]
-    pub latency_target: std::time::Duration,
-    #[cfg(feature = "podms")]
-    #[serde(default)]
-    pub sovereignty: common::podms::SovereigntyLevel,
-    #[cfg(feature = "podms")]
-    #[serde(default = "default_replica_count_3")]
-    pub replica_count: u8,
+    
+    
+    
+    
 }
 
-#[cfg(feature = "podms")]
-fn default_duration_60s() -> std::time::Duration {
-    std::time::Duration::from_secs(60)
-}
-
-#[cfg(feature = "podms")]
-fn default_duration_10ms() -> std::time::Duration {
-    std::time::Duration::from_millis(10)
-}
-
-#[cfg(feature = "podms")]
-fn default_replica_count_3() -> u8 {
-    3
-}
 
 impl From<PolicyLegacy> for Policy {
     fn from(value: PolicyLegacy) -> Self {
-        #[cfg(feature = "podms")]
-        let mut policy = Policy {
+        
+
+                let policy = Policy {
             compression: value.compression,
             dedupe: value.dedupe,
             compact_interval_secs: value.compact_interval_secs,
@@ -160,25 +131,7 @@ impl From<PolicyLegacy> for Policy {
             ..Policy::default()
         };
 
-        #[cfg(not(feature = "podms"))]
-        let policy = Policy {
-            compression: value.compression,
-            dedupe: value.dedupe,
-            compact_interval_secs: value.compact_interval_secs,
-            erasure_profile: value.erasure_profile,
-            encryption: value.encryption,
-            crypto_profile: value.crypto_profile,
-            layout: value.layout,
-            ..Policy::default()
-        };
-
-        #[cfg(feature = "podms")]
-        {
-            policy.rpo = value.rpo;
-            policy.latency_target = value.latency_target;
-            policy.sovereignty = value.sovereignty;
-            policy.replica_count = value.replica_count;
-        }
+        
 
         policy
     }
@@ -186,20 +139,9 @@ impl From<PolicyLegacy> for Policy {
 
 impl From<PolicyLegacyV2> for Policy {
     fn from(value: PolicyLegacyV2) -> Self {
-        #[cfg(feature = "podms")]
-        let mut policy = Policy {
-            compression: value.compression,
-            dedupe: value.dedupe,
-            compact_interval_secs: value.compact_interval_secs,
-            erasure_profile: value.erasure_profile,
-            encryption: value.encryption,
-            crypto_profile: value.crypto_profile,
-            layout: value.layout,
-            ..Policy::default()
-        };
+        
 
-        #[cfg(not(feature = "podms"))]
-        let mut policy = Policy {
+                let mut policy = Policy {
             compression: value.compression,
             dedupe: value.dedupe,
             compact_interval_secs: value.compact_interval_secs,
@@ -215,13 +157,7 @@ impl From<PolicyLegacyV2> for Policy {
             policy.federation.strategy = Some(fed.strategy);
         }
 
-        #[cfg(feature = "podms")]
-        {
-            policy.rpo = value.rpo;
-            policy.latency_target = value.latency_target;
-            policy.sovereignty = value.sovereignty;
-            policy.replica_count = value.replica_count;
-        }
+        
 
         policy
     }

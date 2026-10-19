@@ -1,22 +1,19 @@
 use anyhow::{anyhow, bail, Result};
-#[cfg(feature = "advanced-security")]
-use common::security::audit_log::AuditLog;
+
 use common::*;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-#[cfg(feature = "advanced-security")]
-use tracing::warn;
+
 
 pub struct NvramLog {
     file: Arc<RwLock<File>>,
     segment_map: Arc<RwLock<HashMap<SegmentId, Segment>>>,
     next_offset: Arc<RwLock<u64>>,
     metadata_path: String,
-    #[cfg(feature = "advanced-security")]
-    audit_log: Option<AuditLog>,
+    
 }
 
 impl NvramLog {
@@ -75,16 +72,11 @@ impl NvramLog {
             segment_map: Arc::new(RwLock::new(segment_map)),
             next_offset: Arc::new(RwLock::new(file_len)),
             metadata_path,
-            #[cfg(feature = "advanced-security")]
-            audit_log: None,
+            
         })
     }
 
-    #[cfg(feature = "advanced-security")]
-    pub fn with_audit(mut self, audit_log: AuditLog) -> Self {
-        self.audit_log = Some(audit_log);
-        self
-    }
+    
 
     fn save_segment_map(&self) -> Result<()> {
         let map = self.segment_map.read().unwrap();
@@ -121,20 +113,7 @@ impl NvramLog {
             .sum()
     }
 
-    #[cfg(feature = "advanced-security")]
-    fn log_segment(&self, segment: &Segment) {
-        if let Some(audit) = &self.audit_log {
-            let event = Event::SegmentAppended {
-                segment_id: segment.id,
-                len: segment.len,
-                content_hash: segment.content_hash.clone(),
-                encrypted: segment.encrypted,
-            };
-            if let Err(err) = audit.append(event) {
-                warn!(error = %err, "failed to append audit log entry");
-            }
-        }
-    }
+    
 
     /// List all known segments with their metadata.
     pub fn list_segments(&self) -> Result<Vec<Segment>> {
@@ -205,8 +184,7 @@ impl NvramLog {
         drop(map);
         self.save_segment_map()?;
 
-        #[cfg(feature = "advanced-security")]
-        self.log_segment(&updated);
+        
 
         Ok(updated)
     }
@@ -387,8 +365,7 @@ impl Clone for NvramLog {
             segment_map: Arc::clone(&self.segment_map),
             next_offset: Arc::clone(&self.next_offset),
             metadata_path: self.metadata_path.clone(),
-            #[cfg(feature = "advanced-security")]
-            audit_log: self.audit_log.clone(),
+            
         }
     }
 }
@@ -555,8 +532,7 @@ impl NvramTransaction {
             let mut map = self.log.segment_map.write().unwrap();
             for entry in &self.pending {
                 map.insert(entry.segment.id, entry.segment.clone());
-                #[cfg(feature = "advanced-security")]
-                self.log.log_segment(&entry.segment);
+                
             }
         }
         self.log.save_segment_map()?;

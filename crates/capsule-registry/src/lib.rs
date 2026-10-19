@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Result};
-#[cfg(feature = "advanced-security")]
-use common::security::bloom_dedup::BloomFilterWrapper;
-#[cfg(feature = "advanced-security")]
-use common::security::DedupOptimizer;
+
+
 use common::*;
 use encryption::keymanager::MASTER_KEY_SIZE;
 use encryption::KeyManager;
@@ -14,12 +12,9 @@ use crate::metadata_ops::{MetadataOp, OpResult};
 use crate::store::{MetadataStore, SledStore};
 
 mod consensus;
-pub mod mesh;
 mod metadata_ops;
-mod raft_rpc;
 mod store;
-#[cfg(feature = "podms")]
-mod transform;
+
 
 const DEFAULT_PAGE_SIZE: usize = 1024;
 
@@ -27,17 +22,12 @@ pub mod dedup; // NEW
 pub mod error;
 pub mod gc;
 pub mod pipeline;
-#[cfg(feature = "podms")]
-pub mod runtime;
+
 pub mod scrub_executor;
 
 pub use error::{CompressionError, DedupError, PipelineError};
-#[cfg(feature = "podms")]
-pub use runtime::RuntimeHandles;
-#[cfg(feature = "podms")]
-pub use transform::RegistryTransformOps;
 
-#[cfg(feature = "modular_pipeline")]
+
 pub mod modular_pipeline {
     use std::sync::{Arc, Mutex};
 
@@ -177,6 +167,16 @@ pub mod modular_pipeline {
     ) -> Result<RegistryPipelineHandle> {
         let backend = NvramBackend::from_log(log);
         registry_pipeline_from_nvram_backend(backend, registry)
+    }
+
+    pub fn registry_pipeline_from_log_with_key(
+        log: NvramLog,
+        registry: crate::CapsuleRegistry,
+        key_manager: Arc<Mutex<KeyManager>>,
+    ) -> Result<RegistryPipelineHandle> {
+        let backend = NvramBackend::from_log(log);
+        let pipeline = build_nvram_encrypted_pipeline(backend, registry, key_manager)?;
+        Ok(RegistryPipelineHandle::Encrypted(pipeline))
     }
 
     pub fn registry_nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
@@ -323,8 +323,6 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
     raft: RaftNode,
-    #[cfg(feature = "advanced-security")]
-    bloom_filter: Option<Arc<BloomFilterWrapper>>,
     key_manager: Arc<Mutex<KeyManager>>,
 }
 
@@ -344,14 +342,12 @@ impl CapsuleRegistry {
             KeyManager::from_env().unwrap_or_else(|_| KeyManager::new([0u8; MASTER_KEY_SIZE]));
         let key_manager = Arc::new(Mutex::new(key_manager));
 
-        #[cfg(feature = "advanced-security")]
-        let bloom_filter = Self::configure_bloom(&*store)?;
+        
 
         Ok(Self {
             store,
             raft,
-            #[cfg(feature = "advanced-security")]
-            bloom_filter,
+            
             key_manager,
         })
     }
@@ -454,12 +450,7 @@ impl CapsuleRegistry {
     }
 
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        #[cfg(feature = "advanced-security")]
-        if let Some(filter) = &self.bloom_filter {
-            if !filter.might_contain(hash) {
-                return None;
-            }
-        }
+        
         self.store.get_content(hash).ok().flatten()
     }
 
@@ -469,10 +460,7 @@ impl CapsuleRegistry {
             segment: seg_id,
         })? {
             OpResult::Ok => {
-                #[cfg(feature = "advanced-security")]
-                if let Some(filter) = &self.bloom_filter {
-                    filter.record_insertion(&hash);
-                }
+                
                 Ok(())
             }
             other => anyhow::bail!("unexpected raft response: {:?}", other),
@@ -485,10 +473,7 @@ impl CapsuleRegistry {
             segment: seg_id,
         })? {
             OpResult::Ok => {
-                #[cfg(feature = "advanced-security")]
-                if let Some(filter) = &self.bloom_filter {
-                    filter.record_removal(hash);
-                }
+                
                 Ok(true)
             }
             OpResult::NotFound => Ok(false),
@@ -546,33 +531,7 @@ impl CapsuleRegistry {
         &self.key_manager
     }
 
-    #[cfg(feature = "advanced-security")]
-    fn configure_bloom(store: &dyn MetadataStore) -> Result<Option<Arc<BloomFilterWrapper>>> {
-        let capacity = std::env::var("SPACE_BLOOM_CAPACITY")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(10_000_000);
-        let fp_rate = std::env::var("SPACE_BLOOM_FPR")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.001);
-
-        let hashes = store
-            .list_content()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(hash, _)| hash)
-            .collect::<Vec<_>>();
-
-        let filter = if hashes.is_empty() {
-            BloomFilterWrapper::new(capacity, fp_rate)
-        } else {
-            BloomFilterWrapper::with_existing(capacity, fp_rate, hashes)
-        };
-
-        Ok(Some(Arc::new(filter)))
     }
-}
 
 impl Default for CapsuleRegistry {
     fn default() -> Self {
@@ -585,21 +544,10 @@ impl Clone for CapsuleRegistry {
         Self {
             store: Arc::clone(&self.store),
             raft: self.raft.clone(),
-            #[cfg(feature = "advanced-security")]
-            bloom_filter: self.bloom_filter.clone(),
+            
             key_manager: Arc::clone(&self.key_manager),
         }
     }
 }
 
-// Implement ContentStore trait for mesh replication (PODMS feature only)
-#[cfg(feature = "podms")]
-impl scaling::ContentStore for CapsuleRegistry {
-    fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        self.lookup_content(hash)
-    }
 
-    fn register_content(&self, hash: &ContentHash, segment_id: SegmentId) {
-        let _ = self.register_content(hash.clone(), segment_id);
-    }
-}
