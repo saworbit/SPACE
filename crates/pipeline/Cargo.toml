@@ -8,17 +8,14 @@ publish = false
 
 [features]
 default = []
-phase5 = ["dep:transform-engine"]
 
 [dependencies]
 anyhow = { workspace = true }
 common = { path = "../common" }
-layout-engine = { path = "../layout-engine" }
 compression = { path = "../compression" }
 dedup = { path = "../dedup" }
 storage = { path = "../storage" }
 encryption = { path = "../encryption" }
-transform-engine = { path = "../transform-engine", optional = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 blake3 = { workspace = true }
@@ -28,6 +25,3 @@ tokio-util = { version = "^0.7.11", features = ["io"] }
 bytes = { workspace = true }
 async-stream = "0.3"
 uuid = { workspace = true }
-
-[dev-dependencies]
-tempfile = "3"

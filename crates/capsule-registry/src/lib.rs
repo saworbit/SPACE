@@ -192,22 +192,7 @@ pub mod modular_pipeline {
         root: P,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
-        let reheat_on_read = std::env::var("SPACE_REHEAT_ON_READ")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let cold_root = std::env::var("SPACE_COLD_ROOT")
-            .ok()
-            .map(std::path::PathBuf::from);
-
         let storage = AutoFsBackend::open(root).await?;
-        let storage = if let Some(cold) = cold_root {
-            storage.with_tiering(cold, reheat_on_read)?
-        } else {
-            storage
-        };
-
         registry_pipeline_from_fs_backend(storage, registry)
     }
 

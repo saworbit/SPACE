@@ -9,11 +9,6 @@ publish = false
 [features]
 default = []
 modular_pipeline = ["capsule-registry/modular_pipeline"]
-advanced-security = [
-    "common/advanced-security",
-    "capsule-registry/advanced-security",
-    "nvram-sim/advanced-security",
-]
 
 [dependencies]
 common = { path = "../common" }
@@ -47,6 +42,5 @@ futures = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
-tokio-tungstenite = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
+reqwest = { version = "=0.11.27", default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
 http-body-util = "0.1"

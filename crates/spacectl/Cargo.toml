@@ -17,48 +17,18 @@ modular_pipeline = [
     "capsule-registry/modular_pipeline",
     "protocol-s3/modular_pipeline",
 ]
-phase5 = [
-    "capsule-registry/phase5",
-    "modular_pipeline",
-]
-kernel_fuse = ["protocol-fuse/kernel_fuse"]
-spdk = ["protocol-nvme/spdk"]  # Enable SPDK NVMe-oF integration
-phase4 = [
-    "protocol-nvme/phase4",
-    "protocol-nfs/phase4",
-    "protocol-fuse/phase4",
-    "protocol-csi/phase4",
-    "dep:federation",
-    "federation/phase4",
-    "scaling/phase4",
-    "common/podms",
-    "csi-driver-rs",
-]
 
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }
 storage = { path = "../storage" }
-tiering = { path = "../tiering" }
-mesh-core = { path = "../mesh-core" }
-gossip-layer = { path = "../gossip-layer" }
 nvram-sim = { path = "../nvram-sim" }
 protocol-s3 = { path = "../protocol-s3" }
-protocol-nfs = { path = "../protocol-nfs" }
-protocol-block = { path = "../protocol-block" }
-protocol-nvme = { path = "../protocol-nvme" }
-protocol-fuse = { path = "../protocol-fuse" }
-protocol-csi = { path = "../protocol-csi" }
-federation = { path = "../federation", optional = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync", "signal"] }
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-scaling = { path = "../scaling", features = ["phase4"] }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-csi-driver-rs = { workspace = true, optional = true }
-encryption = { path = "../encryption" }
-foundry = { path = "../foundry" }

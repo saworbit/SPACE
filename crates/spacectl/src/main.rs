@@ -16,14 +16,12 @@ use encryption::keymanager::KeyManager;
 #[cfg(feature = "phase4")]
 use federation::FederationBridge;
 use nvram_sim::NvramLog;
-use protocol_block::BlockView;
 #[cfg(feature = "phase4")]
 use protocol_csi::csi_provision_capsule;
 #[cfg(feature = "phase4")]
 use protocol_fuse::{mount_capsule_fuse, mount_fuse_view};
 #[cfg(feature = "phase4")]
 use protocol_nfs::phase4::export_nfs_view;
-use protocol_nfs::NfsView;
 #[cfg(feature = "phase4")]
 use protocol_nvme::NvmeView;
 #[cfg(feature = "phase4")]
@@ -45,9 +43,6 @@ use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-use gossip_layer::GossipImpl;
-use mesh_core::{GossipConfig, NodeRole, Peer, PeerStore};
-
 #[cfg(feature = "spdk")]
 use foundry::{Foundry, VolumeId};
 #[cfg(feature = "spdk")]
@@ -55,8 +50,6 @@ use protocol_nvme::foundry_bdev;
 
 const NVRAM_PATH: &str = "space.nvram";
 const REGISTRY_DB_PATH: &str = "space.db";
-const NFS_NAMESPACE_FILE: &str = "space.nfs.json";
-const BLOCK_METADATA_FILE: &str = "space.block.json";
 const LIST_PAGE_SIZE: usize = 256;
 
 fn sanitize_zone_component(zone: &str) -> String {
@@ -175,120 +168,6 @@ impl ContentStore for DummyContentStore {
     }
 
     fn register_content(&self, _hash: &common::ContentHash, _segment_id: common::SegmentId) {}
-}
-
-#[derive(Subcommand)]
-enum NfsCommands {
-    /// Materialise a directory hierarchy
-    Mkdir {
-        /// Directory path (POSIX-style)
-        #[arg(short, long)]
-        path: String,
-    },
-    /// Write a file from the local filesystem into the namespace
-    Write {
-        #[arg(short, long)]
-        path: String,
-        /// Source file path
-        #[arg(short, long)]
-        file: String,
-    },
-    /// Read a file and stream it to stdout
-    Read {
-        #[arg(short, long)]
-        path: String,
-    },
-    /// List the entries beneath a directory
-    List {
-        #[arg(short, long, default_value = "/")]
-        path: String,
-    },
-    /// Remove a file or empty directory
-    Delete {
-        #[arg(short, long)]
-        path: String,
-    },
-    /// Show metadata for a path
-    Metadata {
-        #[arg(short, long)]
-        path: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum BlockCommands {
-    /// Create a new logical volume
-    Create {
-        name: String,
-        size: u64,
-        #[arg(long)]
-        block_size: Option<u64>,
-    },
-    /// Delete a volume
-    Delete { name: String },
-    /// List all volumes
-    List,
-    /// Describe a single volume
-    Info { name: String },
-    /// Read bytes from a volume (writes to stdout)
-    Read {
-        name: String,
-        offset: u64,
-        #[arg(long)]
-        length: usize,
-    },
-    /// Write bytes from a file into a volume
-    Write {
-        name: String,
-        offset: u64,
-        #[arg(short, long)]
-        file: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum ServerCommands {
-    /// Start a SPACE node (gossip + raft).
-    Start {
-        /// Numeric node id used by the Raft cluster.
-        #[arg(long)]
-        node_id: u64,
-
-        /// Gossip listen address (libp2p TCP).
-        #[arg(long, default_value = "0.0.0.0:7000")]
-        gossip_addr: SocketAddr,
-
-        /// Raft gRPC listen address.
-        #[arg(long, default_value = "0.0.0.0:9000")]
-        raft_addr: SocketAddr,
-
-        /// Path to the capsule metadata store (sled).
-        #[arg(long, default_value = "space.db")]
-        metadata_path: String,
-
-        /// Path to the raft log/state store (sled).
-        #[arg(long, default_value = "space.raft.db")]
-        raft_store_path: String,
-
-        /// Bootstrap a new cluster (becomes leader term 1).
-        #[arg(long)]
-        bootstrap: bool,
-
-        /// Join an existing cluster by contacting a known raft node.
-        #[arg(long)]
-        join: Option<SocketAddr>,
-
-        /// Gossip seed peer(s) to dial (repeatable).
-        #[arg(long)]
-        gossip_seed: Vec<SocketAddr>,
-    },
-
-    /// Query cluster status from a raft node.
-    Status {
-        /// Raft gRPC address of any cluster node.
-        #[arg(long)]
-        addr: SocketAddr,
-    },
 }
 
 #[cfg(feature = "phase4")]
@@ -431,154 +310,6 @@ async fn modular_read_capsule(id: CapsuleId) -> Result<Vec<u8>> {
     handle.read_capsule(id).await
 }
 
-async fn run_nfs_command(command: NfsCommands) -> Result<()> {
-    let (registry, nvram) = open_registry_and_nvram()?;
-    let nfs = NfsView::open(registry, nvram, NFS_NAMESPACE_FILE)?;
-
-    match command {
-        NfsCommands::Mkdir { path } => {
-            nfs.mkdir(&path).await?;
-            println!("Created directory tree: {}", path);
-        }
-        NfsCommands::Write { path, file } => {
-            let data = fs::read(&file)?;
-            let capsule = nfs.write_file(&path, data).await?;
-            println!(
-                "Wrote {} (capsule {}) from {}",
-                path,
-                capsule.as_uuid(),
-                file
-            );
-        }
-        NfsCommands::Read { path } => {
-            let data = nfs.read_file(&path).await?;
-            io::stdout().write_all(&data)?;
-        }
-        NfsCommands::List { path } => {
-            let entries = nfs.list_directory(&path).await?;
-            if entries.is_empty() {
-                println!("(empty directory)");
-            } else {
-                println!("Type\tSize (bytes)\tPath\tCapsule");
-                for entry in entries {
-                    let kind = if entry.is_directory() { "dir " } else { "file" };
-                    let capsule = entry
-                        .capsule_id()
-                        .map(|id| id.as_uuid().to_string())
-                        .unwrap_or_else(|| "-".to_string());
-                    println!(
-                        "{}\t{:>12}\t{}\t{}",
-                        kind,
-                        entry.size(),
-                        entry.path(),
-                        capsule
-                    );
-                }
-            }
-        }
-        NfsCommands::Delete { path } => {
-            nfs.delete(&path).await?;
-            println!("Deleted {}", path);
-        }
-        NfsCommands::Metadata { path } => {
-            let entry = nfs.metadata(&path).await?;
-            let kind = if entry.is_directory() {
-                "directory"
-            } else {
-                "file"
-            };
-            println!("Path: {}", entry.path());
-            println!("Type: {}", kind);
-            println!("Size: {}", entry.size());
-            println!("Created: {}", entry.created_at());
-            println!("Modified: {}", entry.modified_at());
-            if let Some(id) = entry.capsule_id() {
-                println!("Capsule: {}", id.as_uuid());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_block_command(command: BlockCommands) -> Result<()> {
-    let (registry, nvram) = open_registry_and_nvram()?;
-    let block = BlockView::open(registry, nvram, BLOCK_METADATA_FILE)?;
-
-    match command {
-        BlockCommands::Create {
-            name,
-            size,
-            block_size,
-        } => {
-            let volume = if let Some(block_size) = block_size {
-                block
-                    .create_volume_with_block_size(&name, size, block_size)
-                    .await?
-            } else {
-                block.create_volume(&name, size).await?
-            };
-            println!(
-                "Created volume {} (size={} bytes, block_size={})",
-                volume.name(),
-                volume.size(),
-                volume.block_size()
-            );
-        }
-        BlockCommands::Delete { name } => {
-            block.delete_volume(&name).await?;
-            println!("Deleted volume {}", name);
-        }
-        BlockCommands::List => {
-            let volumes = block.list_volumes().await;
-            if volumes.is_empty() {
-                println!("(no volumes)");
-            } else {
-                println!("Name\tSize (bytes)\tBlock Size\tCapsule");
-                for volume in volumes {
-                    println!(
-                        "{}\t{:>12}\t{:>10}\t{}",
-                        volume.name(),
-                        volume.size(),
-                        volume.block_size(),
-                        volume.capsule_id().as_uuid()
-                    );
-                }
-            }
-        }
-        BlockCommands::Info { name } => {
-            let volume = block.volume(&name).await?;
-            println!("Name: {}", volume.name());
-            println!("Size: {}", volume.size());
-            println!("Block Size: {}", volume.block_size());
-            println!("Capsule: {}", volume.capsule_id().as_uuid());
-            println!("Created: {}", volume.created_at());
-            println!("Updated: {}", volume.updated_at());
-            println!("Version: {}", volume.version());
-        }
-        BlockCommands::Read {
-            name,
-            offset,
-            length,
-        } => {
-            let data = block.read(&name, offset, length).await?;
-            io::stdout().write_all(&data)?;
-        }
-        BlockCommands::Write { name, offset, file } => {
-            let data = fs::read(&file)?;
-            block.write(&name, offset, &data).await?;
-            println!(
-                "Wrote {} bytes to volume {} from {}",
-                data.len(),
-                name,
-                file
-            );
-        }
-    }
-
-    Ok(())
-}
-
 #[derive(Subcommand)]
 enum Commands {
     /// Create a new capsule from data
@@ -630,16 +361,6 @@ enum Commands {
         #[command(subcommand)]
         command: SnapshotCommands,
     },
-    /// Interact with the NFS namespace view
-    Nfs {
-        #[command(subcommand)]
-        command: NfsCommands,
-    },
-    /// Manage block-backed volumes
-    Block {
-        #[command(subcommand)]
-        command: BlockCommands,
-    },
     /// Expose a Foundry volume via NVMe-oF (Milestone 8.2)
     #[cfg(feature = "spdk")]
     Expose {
@@ -655,11 +376,6 @@ enum Commands {
         /// Volume size in bytes (for new volumes)
         #[arg(long)]
         size: Option<u64>,
-    },
-    /// Cluster server operations.
-    Server {
-        #[command(subcommand)]
-        command: ServerCommands,
     },
     /// Manage the "Known Universe" of remote Zones (Phase 4b).
     #[cfg(feature = "phase4")]
@@ -1061,50 +777,7 @@ async fn main() -> Result<()> {
                 let registry = CapsuleRegistry::new();
                 if let Ok(storage_root) = std::env::var("SPACE_STORAGE_ROOT") {
                     let storage_root = PathBuf::from(storage_root);
-                    let heatmap = tiering::Heatmap::new();
-
-                    let reheat_on_read = std::env::var("SPACE_REHEAT_ON_READ")
-                        .ok()
-                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                        .unwrap_or(false);
-
-                    let cold_root = std::env::var("SPACE_COLD_ROOT").ok().map(PathBuf::from);
-
-                    let mut storage = storage::AutoFsBackend::open(&storage_root).await?;
-                    if let Some(cold_root) = cold_root.clone() {
-                        storage = storage.with_tiering(cold_root.clone(), reheat_on_read)?;
-
-                        let bucket = std::env::var("SPACE_COLD_BUCKET")
-                            .ok()
-                            .unwrap_or_else(|| "bucket".to_string());
-                        let paths = tiering::TieringPaths::simulated_s3_with_bucket(
-                            storage_root.clone(),
-                            cold_root,
-                            bucket,
-                        )?;
-
-                        let mut config = tiering::TieringConfig::default_scan();
-                        if let Ok(v) = std::env::var("SPACE_COLD_THRESHOLD_SECS") {
-                            if let Ok(secs) = v.parse::<u64>() {
-                                config.cold_threshold = std::time::Duration::from_secs(secs);
-                            }
-                        }
-                        if let Ok(v) = std::env::var("SPACE_TIER_SCAN_INTERVAL_SECS") {
-                            if let Ok(secs) = v.parse::<u64>() {
-                                config.scan_interval = std::time::Duration::from_secs(secs);
-                            }
-                        }
-                        if let Ok(v) = std::env::var("SPACE_TIER_MAX_SEGMENTS_PER_SCAN") {
-                            if let Ok(limit) = v.parse::<usize>() {
-                                config.max_segments_per_scan = limit;
-                            }
-                        }
-
-                        let _tiering_agent =
-                            tiering::spawn_tiering_agent(Arc::new(paths), config, heatmap.clone())?;
-                    }
-
-                    storage = storage.with_heatmap(heatmap);
+                    let storage = storage::AutoFsBackend::open(&storage_root).await?;
                     let handle =
                         modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)?;
                     S3View::new_modular(handle)
@@ -1137,12 +810,6 @@ async fn main() -> Result<()> {
         #[cfg(feature = "phase4")]
         Commands::Snapshot { command } => {
             handle_snapshot_command(command).await?;
-        }
-        Commands::Nfs { command } => {
-            run_nfs_command(command).await?;
-        }
-        Commands::Block { command } => {
-            run_block_command(command).await?;
         }
         #[cfg(feature = "spdk")]
         Commands::Expose {
@@ -1205,151 +872,6 @@ async fn main() -> Result<()> {
             foundry_bdev::stop_nvme_target().await?;
             println!("Shutdown complete.");
         }
-        Commands::Server { command } => match command {
-            ServerCommands::Start {
-                node_id,
-                gossip_addr,
-                raft_addr,
-                metadata_path,
-                raft_store_path,
-                bootstrap,
-                join,
-                gossip_seed,
-            } => {
-                if bootstrap && join.is_some() {
-                    anyhow::bail!("--bootstrap and --join are mutually exclusive");
-                }
-                if !bootstrap && join.is_none() {
-                    anyhow::bail!("either --bootstrap or --join <addr> is required");
-                }
-
-                let peer_store = PeerStore::new();
-                let local_peer = Peer::new(node_id.to_string(), gossip_addr, NodeRole::StorageNode);
-
-                let gossip = GossipImpl::with_peer_store(
-                    GossipConfig::default(),
-                    local_peer,
-                    raft_addr.port(),
-                    peer_store.clone(),
-                )
-                .await?;
-
-                // Dial seeds from CLI and env `GOSSIP_SEEDS` (comma-separated).
-                let mut seeds = gossip_seed;
-                if let Ok(env_seeds) = std::env::var("GOSSIP_SEEDS") {
-                    for item in env_seeds
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        if let Ok(addr) = item.parse::<SocketAddr>() {
-                            seeds.push(addr);
-                        }
-                    }
-                }
-                for seed in seeds {
-                    let _ = gossip.dial(seed).await;
-                }
-
-                let raft = if bootstrap {
-                    capsule_registry::mesh::MeshRegistryRaft::start(
-                        node_id,
-                        raft_addr,
-                        &metadata_path,
-                        &raft_store_path,
-                        true,
-                    )
-                    .await?
-                } else {
-                    let raft = capsule_registry::mesh::MeshRegistryRaft::start(
-                        node_id,
-                        raft_addr,
-                        &metadata_path,
-                        &raft_store_path,
-                        false,
-                    )
-                    .await?;
-
-                    capsule_registry::mesh::join_cluster(join.unwrap(), node_id, raft_addr).await?;
-                    raft
-                };
-
-                // Forward gossip events into the registry peer monitor.
-                let mut events = gossip.subscribe_events();
-                let (tx, rx) = tokio::sync::mpsc::channel(256);
-                tokio::spawn(async move {
-                    loop {
-                        match events.recv().await {
-                            Ok(ev) => {
-                                if tx.send(ev).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                });
-
-                tokio::spawn(capsule_registry::mesh::monitor_peers(raft.raft.clone(), rx));
-
-                #[cfg(feature = "phase4")]
-                {
-                    let registry = Arc::new(CapsuleRegistry::open(&metadata_path)?);
-                    let nvram_path = std::env::var("SPACE_NVRAM_PATH")
-                        .ok()
-                        .unwrap_or_else(|| NVRAM_PATH.to_string());
-                    let nvram = Arc::new(NvramLog::open(&nvram_path)?);
-                    let local_zone_id = std::env::var("SPACE_ZONE_ID")
-                        .ok()
-                        .unwrap_or_else(|| format!("node-{}", node_id));
-                    let poll_secs = std::env::var("SPACE_FEDERATION_POLL_SECS")
-                        .ok()
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(15);
-
-                    match FederationBridge::open_default(
-                        Arc::clone(&registry),
-                        Arc::clone(&nvram),
-                        local_zone_id,
-                    ) {
-                        Ok(bridge) => {
-                            tokio::spawn(async move {
-                                if let Err(err) =
-                                    bridge.run_polling(Duration::from_secs(poll_secs)).await
-                                {
-                                    tracing::error!(error = %err, "federation bridge exited");
-                                }
-                            });
-                            tracing::info!(
-                                nvram_path = %nvram_path,
-                                poll_secs = poll_secs,
-                                "federation bridge started"
-                            );
-                        }
-                        Err(err) => {
-                            tracing::warn!(error = %err, "failed to start federation bridge");
-                        }
-                    }
-                }
-
-                tracing::info!(
-                    node_id = node_id,
-                    gossip_addr = %gossip_addr,
-                    raft_addr = %raft_addr,
-                    bootstrap = bootstrap,
-                    "SPACE node started"
-                );
-
-                tokio::signal::ctrl_c().await?;
-            }
-            ServerCommands::Status { addr } => {
-                let status = capsule_registry::mesh::cluster_status(addr).await?;
-                println!("leader_id: {}", status.leader_id);
-                println!("voters: {:?}", status.voters);
-                println!("learners: {:?}", status.learners);
-            }
-        },
         #[cfg(feature = "phase4")]
         Commands::Zone { command } => match command {
             ZoneCommands::Add { name, url, secret } => {

@@ -14,9 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use uuid::Uuid;
 
-#[cfg(feature = "advanced-security")]
-pub mod security;
-
 pub mod erasure;
 pub mod policy;
 pub mod qos;

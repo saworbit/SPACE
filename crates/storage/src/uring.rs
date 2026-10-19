@@ -8,11 +8,6 @@ use common::{Segment, SegmentId};
 use futures::future::{self, BoxFuture};
 use tokio::sync::{mpsc, oneshot};
 
-use tiering::{
-    delete_segment_from_cold, is_stub_bytes, migrate_segment_to_cold, recall_from_stub_bytes,
-    recall_segment_from_cold, Heatmap, TieringPaths,
-};
-
 #[derive(Debug)]
 enum UringCommand {
     Read {
@@ -30,14 +25,11 @@ enum UringCommand {
 
 /// io_uring-backed filesystem storage backend (Linux-only).
 ///
-/// Uses the same on-disk layout as `TokioFsBackend` so tiering stubs remain compatible.
+/// Uses the same on-disk layout as `TokioFsBackend`.
 #[derive(Clone)]
 pub struct UringBackend {
     command_tx: mpsc::UnboundedSender<UringCommand>,
     root: Arc<PathBuf>,
-    tiering: Option<Arc<TieringPaths>>,
-    reheat_on_read: bool,
-    heatmap: Option<Heatmap>,
 }
 
 impl UringBackend {
@@ -56,24 +48,7 @@ impl UringBackend {
         Ok(Self {
             command_tx: tx,
             root: Arc::new(root),
-            tiering: None,
-            reheat_on_read: false,
-            heatmap: None,
         })
-    }
-
-    pub fn with_tiering(mut self, cold_root: PathBuf, reheat_on_read: bool) -> Result<Self> {
-        let bucket = std::env::var("SPACE_COLD_BUCKET").unwrap_or_else(|_| "bucket".to_string());
-        let paths =
-            TieringPaths::simulated_s3_with_bucket((*self.root).clone(), cold_root, bucket)?;
-        self.tiering = Some(Arc::new(paths));
-        self.reheat_on_read = reheat_on_read;
-        Ok(self)
-    }
-
-    pub fn with_heatmap(mut self, heatmap: Heatmap) -> Self {
-        self.heatmap = Some(heatmap);
-        self
     }
 
     fn metadata_path(&self, segment: SegmentId) -> PathBuf {
@@ -114,38 +89,19 @@ impl UringBackend {
                 .await
                 .map_err(|_| anyhow!("io_uring actor dropped response"))??;
 
-            let out = if is_stub_bytes(&raw) {
-                if let Some(paths) = &self.tiering {
-                    recall_from_stub_bytes(paths, segment, &raw, self.reheat_on_read).await?
-                } else {
-                    return Err(anyhow!(
-                        "segment {} is cold but tiering is not configured",
-                        segment.0
-                    ));
-                }
-            } else {
-                raw
-            };
-
-            if let Some(heatmap) = &self.heatmap {
-                heatmap.record_access(segment.0);
+            if raw.starts_with(br#"{"magic":"SPACE_STUB_V1""#) {
+                return Err(anyhow!(
+                    "segment {} is a cold stub and cannot be read",
+                    segment.0
+                ));
             }
-
-            return Ok(out);
-        }
-
-        if let Some(paths) = &self.tiering {
-            let out = recall_segment_from_cold(paths, segment, self.reheat_on_read).await?;
-            if let Some(heatmap) = &self.heatmap {
-                heatmap.record_access(segment.0);
-            }
-            return Ok(out);
+            return Ok(raw);
         }
 
         let stub_path = self.stub_path(segment);
         if tokio::fs::try_exists(&stub_path).await.unwrap_or(false) {
             return Err(anyhow!(
-                "segment {} is cold but tiering is not configured",
+                "segment {} is a cold stub and cannot be read",
                 segment.0
             ));
         }
@@ -169,14 +125,6 @@ impl UringBackend {
 
         let _ = tokio::fs::remove_file(self.stub_path(segment)).await;
         Ok(())
-    }
-
-    pub async fn migrate_to_cold(&self, segment: SegmentId) -> Result<()> {
-        let paths = self
-            .tiering
-            .as_ref()
-            .ok_or_else(|| anyhow!("tiering not configured on backend"))?;
-        migrate_segment_to_cold(paths, segment).await
     }
 }
 
@@ -218,9 +166,6 @@ impl UringTransaction {
         let _ = tokio::fs::remove_file(self.backend.data_path(segment)).await;
         let _ = tokio::fs::remove_file(self.backend.stub_path(segment)).await;
         let _ = tokio::fs::remove_file(self.backend.metadata_path(segment)).await;
-        if let Some(paths) = &self.backend.tiering {
-            let _ = delete_segment_from_cold(paths, segment).await;
-        }
         Ok(())
     }
 }

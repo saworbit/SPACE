@@ -8,18 +8,7 @@ publish = false
 
 [features]
 default = []
-advanced-security = [
-    "dep:aya",
-    "dep:blake3",
-    "dep:bloomfilter",
-    "dep:http",
-    "dep:pqcrypto-mlkem",
-    "dep:pqcrypto-traits",
-    "dep:reqwest",
-    "dep:tokio-tungstenite",
-    "dep:tracing",
-]
-podms = ["dep:tracing"]  # PODMS types enabled via feature flag
+podms = ["dep:tracing"]
 
 [dependencies]
 uuid = { workspace = true }
@@ -28,20 +17,10 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
-blake3 = { workspace = true, optional = true }
-bloomfilter = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "fs"] }
-tokio-tungstenite = { workspace = true, optional = true }
-pqcrypto-mlkem = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
-http = { version = "1", optional = true }
-pqcrypto-traits = { version = "0.3", optional = true }
 tracing = { workspace = true, optional = true }
 bytes = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-aya = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_yaml = { workspace = true }

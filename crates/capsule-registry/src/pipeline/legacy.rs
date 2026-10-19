@@ -37,9 +37,7 @@ use encryption::{
     compute_mac, decrypt_segment, derive_tweak_from_hash, encrypt_segment, verify_mac,
     EncryptionMetadata, KeyManager,
 };
-use sim_nvram::start_nvram_sim; // Pipeline integration hook for simulation mode
 use std::any::Any;
-use std::env; // For SPACE_SIM_MODE environment variable
 use std::sync::{Arc, Mutex}; // NEW: For interior mutability
 #[cfg(feature = "pipeline_async")]
 use std::time::{Duration, Instant};
@@ -263,26 +261,6 @@ pub struct LegacyPipeline {
 
 impl LegacyPipeline {
     pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        // Pipeline Integration Hook: Check for simulation mode override
-        let nvram = if env::var("SPACE_SIM_MODE").ok().as_deref() == Some("nvram") {
-            info!("SPACE_SIM_MODE=nvram detected, initializing simulation NVRAM");
-            match start_nvram_sim("/sim/nvram/sim.log") {
-                Ok(sim_log) => {
-                    info!("Simulation NVRAM initialized at /sim/nvram/sim.log");
-                    sim_log
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        "Failed to initialize simulation NVRAM, using provided NVRAM"
-                    );
-                    nvram
-                }
-            }
-        } else {
-            nvram
-        };
-
         // Try to initialize key manager from environment
         let key_manager = KeyManager::from_env()
             .ok()
@@ -367,27 +345,7 @@ impl LegacyPipeline {
         nvram: NvramLog,
         key_manager: KeyManager,
     ) -> Self {
-        // Pipeline Integration Hook: Check for simulation mode override
-        let nvram = if env::var("SPACE_SIM_MODE").ok().as_deref() == Some("nvram") {
-            info!("SPACE_SIM_MODE=nvram detected, initializing simulation NVRAM");
-            match start_nvram_sim("/sim/nvram/sim.log") {
-                Ok(sim_log) => {
-                    info!("Simulation NVRAM initialized at /sim/nvram/sim.log");
-                    sim_log
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        "Failed to initialize simulation NVRAM, using provided NVRAM"
-                    );
-                    nvram
-                }
-            }
-        } else {
-            nvram
-        };
-
-        let key_manager = Some(Arc::new(Mutex::new(key_manager))); // CHANGED: Wrap in Arc<Mutex<>>
+        let key_manager = Some(Arc::new(Mutex::new(key_manager)));
 
         #[cfg(feature = "advanced-security")]
         let audit_log = AuditLog::from_env().ok();

@@ -23,19 +23,6 @@ use encryption::{
     compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE,
     EncryptionMetadata, KeyManager,
 };
-use layout_engine::LayoutEngine;
-#[cfg(feature = "phase5")]
-use std::sync::OnceLock;
-
-#[cfg(feature = "phase5")]
-use common::{TransformDef, TransformTrigger};
-#[cfg(feature = "phase5")]
-use futures::future::BoxFuture;
-#[cfg(feature = "phase5")]
-use transform_engine::{ModuleResolver, TransformEngine};
-#[cfg(feature = "phase5")]
-use uuid::Uuid;
-
 /// Minimal encryptor that performs no-op transformations.
 #[derive(Default, Clone)]
 pub struct NoopEncryptor;
@@ -417,93 +404,6 @@ impl CapsuleCatalog for InMemoryCatalog {
     }
 }
 
-#[cfg(feature = "phase5")]
-fn wasm_engine() -> Result<&'static TransformEngine> {
-    static ENGINE: OnceLock<Result<TransformEngine>> = OnceLock::new();
-    match ENGINE.get_or_init(TransformEngine::new) {
-        Ok(engine) => Ok(engine),
-        Err(err) => Err(anyhow!(err.to_string())).context("init wasm transform engine"),
-    }
-}
-
-#[cfg(feature = "phase5")]
-struct PipelineModuleResolver<'a, C, E, S, R> {
-    compressor: &'a C,
-    encryptor: &'a E,
-    storage: &'a S,
-    catalog: &'a R,
-}
-
-#[cfg(feature = "phase5")]
-impl<'a, C, E, S, R> PipelineModuleResolver<'a, C, E, S, R>
-where
-    C: Compressor + Send + Sync,
-    E: Encryptor + Send + Sync,
-    S: StorageBackend + Send + Sync,
-    R: CapsuleCatalog + Send + Sync,
-{
-    async fn read_capsule_bytes(&self, capsule_id: CapsuleId) -> Result<Vec<u8>> {
-        let capsule = self.catalog.lookup_capsule(capsule_id)?;
-        let mut out = Vec::with_capacity(capsule.size as usize);
-
-        for seg_id in &capsule.segments {
-            let metadata = self.storage.metadata(*seg_id).await?;
-            let raw = self.storage.read(*seg_id).await?;
-
-            let decrypted = if metadata.encrypted {
-                let ctx = DecryptContext::from_segment(&metadata);
-                self.encryptor
-                    .decrypt(&raw, &capsule.policy.encryption, *seg_id, &ctx)?
-            } else {
-                raw
-            };
-
-            let decompressed = if metadata.compressed {
-                self.compressor
-                    .decompress(&decrypted, metadata.compression_algo.as_str())?
-            } else {
-                decrypted
-            };
-
-            out.extend_from_slice(&decompressed);
-        }
-
-        Ok(out)
-    }
-
-    async fn read_file(image: &str) -> Result<Vec<u8>> {
-        let path = if let Some(rest) = image.strip_prefix("file://") {
-            rest.trim_start_matches('/').to_string()
-        } else {
-            image.to_string()
-        };
-        std::fs::read(&path).with_context(|| format!("read wasm module at {path}"))
-    }
-}
-
-#[cfg(feature = "phase5")]
-impl<'a, C, E, S, R> ModuleResolver for PipelineModuleResolver<'a, C, E, S, R>
-where
-    C: Compressor + Send + Sync,
-    E: Encryptor + Send + Sync,
-    S: StorageBackend + Send + Sync,
-    R: CapsuleCatalog + Send + Sync,
-{
-    fn load<'b>(&'b self, image: &'b str) -> BoxFuture<'b, Result<Vec<u8>>> {
-        Box::pin(async move {
-            if let Some(rest) = image.strip_prefix("capsule://") {
-                let id = rest.trim_matches('/');
-                let uuid = Uuid::parse_str(id).with_context(|| {
-                    format!("invalid capsule URI (expected capsule://<UUID>): {image}")
-                })?;
-                return self.read_capsule_bytes(CapsuleId::from_uuid(uuid)).await;
-            }
-
-            Self::read_file(image).await
-        })
-    }
-}
-
 /// Pipeline orchestrator that composes the modular traits.
 pub struct Pipeline<C, D, E, S, Eval, K, R>
 where
@@ -556,197 +456,6 @@ where
         }
     }
 
-    #[cfg(feature = "phase5")]
-    async fn apply_on_write_transforms(&self, data: &[u8], policy: &Policy) -> Result<Vec<u8>>
-    where
-        C: Compressor + Clone + Send + Sync + 'static,
-        D: Deduper + Send + Sync + 'static,
-        E: Encryptor + Clone + Send + Sync + 'static,
-        S: StorageBackend + Clone + Send + Sync + 'static,
-        Eval: PolicyEvaluator + Send + Sync + 'static,
-        K: Keyring + Send + Sync + 'static,
-        R: CapsuleCatalog + Send + Sync + 'static,
-    {
-        let transforms: Vec<TransformDef> = policy
-            .transform
-            .iter()
-            .filter(|t| t.trigger == TransformTrigger::OnWrite)
-            .cloned()
-            .collect();
-
-        if transforms.is_empty() {
-            return Ok(data.to_vec());
-        }
-
-        let engine = wasm_engine()?;
-        let resolver = PipelineModuleResolver {
-            compressor: &self.compressor,
-            encryptor: &self.encryptor,
-            storage: &self.storage,
-            catalog: &self.catalog,
-        };
-
-        let chunk_bytes = 4 * 1024 * 1024;
-        let base = futures::stream::iter(
-            data.chunks(chunk_bytes)
-                .map(|chunk| Ok::<Bytes, anyhow::Error>(Bytes::copy_from_slice(chunk)))
-                .collect::<Vec<_>>(),
-        );
-
-        let mut stream: DataStream = Box::pin(base);
-        for def in transforms {
-            stream = engine.execute_stream(stream, def, &resolver).await?;
-        }
-
-        let mut out = Vec::new();
-        let mut stream = Box::pin(stream);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            out.extend_from_slice(&chunk);
-        }
-        Ok(out)
-    }
-
-    #[cfg(feature = "phase5")]
-    #[instrument(skip_all)]
-    pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId>
-    where
-        C: Compressor + Clone + Send + Sync + 'static,
-        D: Deduper + Send + Sync + 'static,
-        E: Encryptor + Clone + Send + Sync + 'static,
-        S: StorageBackend + Clone + Send + Sync + 'static,
-        Eval: PolicyEvaluator + Send + Sync + 'static,
-        K: Keyring + Send + Sync + 'static,
-        R: CapsuleCatalog + Send + Sync + 'static,
-    {
-        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        let transformed_data;
-        let data = if policy
-            .transform
-            .iter()
-            .any(|t| t.trigger == TransformTrigger::OnWrite)
-        {
-            transformed_data = self.apply_on_write_transforms(data, policy).await?;
-            transformed_data.as_slice()
-        } else {
-            data
-        };
-
-        let capsule_id = CapsuleId::new();
-        let compression_policy = self
-            .evaluator
-            .evaluate_compression(policy, &data[..data.len().min(1024)])?;
-        let chunk_size = policy.layout.strategy.default_segment_size();
-        let data_slices: Vec<&[u8]> = data.chunks(chunk_size).collect();
-        let layout_engine = LayoutEngine::new(policy);
-        let zone_plan = layout_engine.synthesize(&[capsule_id], &data_slices, policy)?;
-        let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
-
-        let mut segment_ids = Vec::new();
-        let mut dedup_stats = DedupStats::new();
-
-        let mut planned_segments: Vec<(u64, u64)> = zone_plan
-            .zones
-            .iter()
-            .flat_map(|zone| zone.segments.iter().map(|seg| (seg.offset, seg.length)))
-            .collect();
-        planned_segments.sort_by_key(|(offset, _)| *offset);
-
-        for (offset, length) in planned_segments {
-            let start = offset as usize;
-            let end = start.saturating_add(length as usize);
-            if end > data.len() {
-                return Err(anyhow!(
-                    "zone plan refers beyond input data: {} > {}",
-                    end,
-                    data.len()
-                ));
-            }
-            let chunk = &data[start..end];
-            let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
-            // Domain-separate the dedup key by compression algorithm so
-            // segments with identical stored bytes under different
-            // compression treatments cannot collide.
-            let hash = self
-                .deduper
-                .hash_content_with_algo(view.as_ref(), summary.algorithm.as_str());
-
-            if let Some(existing) = self.catalog.lookup_content(&hash) {
-                let mut metadata = self.storage.metadata(existing).await?;
-                metadata.ref_count += 1;
-                metadata.deduplicated = metadata.ref_count > 1;
-                let mut txn = self.storage.begin_txn().await?;
-                txn.set_segment_metadata(existing, metadata).await?;
-                txn.commit().await?;
-                self.deduper.update_stats(summary.output_size as u64, true);
-                self.stats.record(summary.output_size as u64, true);
-                dedup_stats.record(summary.output_size as u64, true);
-                segment_ids.push(existing);
-            } else {
-                let mut txn = self.storage.begin_txn().await?;
-                let seg_id = self.catalog.allocate_segment()?;
-
-                let (payload, encryption_summary) = if encryption_policy.is_enabled() {
-                    let _key = self
-                        .keyring
-                        .as_ref()
-                        .map(|keyring| keyring.derive_key(capsule_id, seg_id))
-                        .transpose()?;
-                    let (encrypted, summary) = self.encryptor.encrypt(
-                        Cow::Borrowed(view.as_ref()),
-                        &encryption_policy,
-                        seg_id,
-                    )?;
-                    (encrypted, summary)
-                } else {
-                    (view.into_owned(), EncryptionSummary::new("none"))
-                };
-
-                txn.append(seg_id, &payload).await?;
-                let metadata = Segment {
-                    id: seg_id,
-                    offset: 0,
-                    len: payload.len() as u32,
-                    plain_len: Some(summary.original_size as u32),
-                    compressed: summary.compressed,
-                    compression_algo: summary.algorithm.clone(),
-                    content_hash: Some(hash.clone()),
-                    ref_count: 1,
-                    deduplicated: false,
-                    access_count: 0,
-                    encryption_version: encryption_summary.encryption_version,
-                    key_version: encryption_summary.key_version,
-                    tweak_nonce: encryption_summary.tweak_nonce,
-                    integrity_tag: encryption_summary.integrity_tag,
-                    encrypted: encryption_policy.is_enabled(),
-                    pq_ciphertext: None,
-                    pq_nonce: None,
-                };
-                txn.set_segment_metadata(seg_id, metadata).await?;
-                txn.commit().await?;
-
-                self.catalog.register_content(hash.clone(), seg_id)?;
-                self.deduper.register_content(hash, seg_id)?;
-                self.deduper.update_stats(summary.output_size as u64, false);
-                self.stats.record(summary.output_size as u64, false);
-                dedup_stats.record(summary.output_size as u64, false);
-                segment_ids.push(seg_id);
-            }
-        }
-
-        self.catalog.create_capsule(
-            capsule_id,
-            data.len() as u64,
-            policy,
-            segment_ids,
-            &dedup_stats,
-        )?;
-
-        Ok(capsule_id)
-    }
-
-    #[cfg(not(feature = "phase5"))]
     #[instrument(skip_all)]
     pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
         policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -756,20 +465,24 @@ where
             .evaluator
             .evaluate_compression(policy, &data[..data.len().min(1024)])?;
         let chunk_size = policy.layout.strategy.default_segment_size();
-        let data_slices: Vec<&[u8]> = data.chunks(chunk_size).collect();
-        let layout_engine = LayoutEngine::new(policy);
-        let zone_plan = layout_engine.synthesize(&[capsule_id], &data_slices, policy)?;
+        if chunk_size == 0 {
+            return Err(anyhow!("segment size must be non-zero"));
+        }
         let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
 
         let mut segment_ids = Vec::new();
         let mut dedup_stats = DedupStats::new();
 
-        let mut planned_segments: Vec<(u64, u64)> = zone_plan
-            .zones
-            .iter()
-            .flat_map(|zone| zone.segments.iter().map(|seg| (seg.offset, seg.length)))
+        let mut cursor = 0u64;
+        let planned_segments: Vec<(u64, u64)> = data
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let length = chunk.len() as u64;
+                let start = cursor;
+                cursor += length;
+                (start, length)
+            })
             .collect();
-        planned_segments.sort_by_key(|(offset, _)| *offset);
 
         for (offset, length) in planned_segments {
             let start = offset as usize;
@@ -914,38 +627,6 @@ where
         };
 
         let out: DataStream = Box::pin(stream);
-
-        #[cfg(feature = "phase5")]
-        let mut out = out;
-
-        #[cfg(feature = "phase5")]
-        {
-            let transforms: Vec<TransformDef> = capsule
-                .policy
-                .transform
-                .iter()
-                .filter(|t| t.trigger == TransformTrigger::OnRead)
-                .cloned()
-                .collect();
-
-            if !transforms.is_empty() {
-                let engine = wasm_engine()?;
-                let storage_resolver = self.storage.clone();
-                let encryptor_resolver = self.encryptor.clone();
-                let compressor_resolver = self.compressor.clone();
-
-                let resolver = PipelineModuleResolver {
-                    compressor: &compressor_resolver,
-                    encryptor: &encryptor_resolver,
-                    storage: &storage_resolver,
-                    catalog: &self.catalog,
-                };
-
-                for def in transforms {
-                    out = engine.execute_stream(out, def, &resolver).await?;
-                }
-            }
-        }
 
         Ok(out)
     }

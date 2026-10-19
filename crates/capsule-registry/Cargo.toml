@@ -10,13 +10,6 @@ publish = false
 default = []
 pipeline_async = ["dep:num_cpus"]
 modular_pipeline = ["dep:pipeline"]
-phase5 = ["modular_pipeline", "pipeline/phase5"]
-advanced-security = ["common/advanced-security", "nvram-sim/advanced-security"]
-podms = ["pipeline_async", "common/podms", "dep:scaling"]
-phase4 = [
-    "podms",
-    "scaling/phase4",
-]
 
 [dependencies]
 common = { path = "../common" }
@@ -25,7 +18,6 @@ encryption = { path = "../encryption" }  # NEW: Phase 3 encryption support
 compression = { path = "../compression" }
 dedup = { path = "../dedup" }
 storage = { path = "../storage" }
-mesh-core = { path = "../mesh-core" }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -44,8 +36,6 @@ subtle = { workspace = true }
 bytes = { workspace = true }
 sled = "0.34"
 pipeline = { path = "../pipeline", optional = true }
-scaling = { path = "../scaling", optional = true }
-sim-nvram = { path = "../sim-nvram", version = "0.1.0" }  # For simulation mode support
 async-trait = "0.1"
 tokio-util = { version = "^0.7.11", features = ["io"] }
 async-stream = "0.3"

@@ -1149,40 +1149,4 @@ pub async fn get_capsule(
     Ok(result)
 }
 
-/// Subscribe to gossip events and attempt to expand the Raft membership.
-///
-/// This is intentionally best-effort: only the current leader can apply membership changes.
-pub async fn monitor_peers(
-    raft: RegistryRaft,
-    mut gossip_events: tokio::sync::mpsc::Receiver<mesh_core::GossipEvent>,
-) {
-    while let Some(event) = gossip_events.recv().await {
-        match event {
-            mesh_core::GossipEvent::NodeDiscovered(peer) => {
-                tracing::debug!(peer_id = %peer.id, "node discovered via gossip");
-            }
-            mesh_core::GossipEvent::NodeLost(peer_id) => {
-                tracing::warn!(peer_id = %peer_id, "node lost from gossip (membership change not automatic)");
-            }
-            mesh_core::GossipEvent::Heartbeat {
-                peer_id,
-                raft_port,
-                gossip_addr,
-                ..
-            } => {
-                let Ok(node_id) = peer_id.parse::<u64>() else {
-                    continue;
-                };
-                let Some(gossip_addr) = gossip_addr else {
-                    continue;
-                };
 
-                let raft_addr = std::net::SocketAddr::new(gossip_addr.ip(), raft_port);
-                let node = BasicNode {
-                    addr: raft_addr.to_string(),
-                };
-                let _ = raft.add_learner(node_id, node, false).await;
-            }
-        }
-    }
-}

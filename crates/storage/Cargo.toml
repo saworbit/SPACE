@@ -15,7 +15,6 @@ nvram-sim = { path = "../nvram-sim" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "macros"] }
-tiering = { path = "../tiering" }
 
 [features]
 default = []
