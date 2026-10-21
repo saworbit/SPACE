@@ -32,7 +32,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.145" }
 blake3 = { version = "=1.8.3" }
 lz4 = { version = "=1.28.1" }
-zstd = { version = "=0.13.3" }
+zstd = { version = "=0.14.2" }
 zeroize = { version = "=1.8.2" }
 aes = { version = "=0.8.4" }
 cipher = { version = "=0.4.4" }
