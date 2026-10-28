@@ -428,3 +428,73 @@ impl MetadataStore for SledStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn sample_capsule() -> Capsule {
+        Capsule {
+            id: CapsuleId::from_uuid(uuid::Uuid::from_u128(
+                0x0011_2233_4455_6677_8899_aabb_ccdd_eeff,
+            )),
+            size: 4096,
+            segments: vec![SegmentId(1), SegmentId(2)],
+            created_at: 1_700_000_000,
+            policy: Policy::default(),
+            deduped_bytes: 7,
+        }
+    }
+
+    // Byte-for-byte encodings written by the current release. A change here
+    // means existing space.db stores can no longer be read without a
+    // migration, so update these only together with one (#113).
+    const CAPSULE_ID_HEX: &str = "100000000000000000112233445566778899aabbccddeeff";
+    const CAPSULE_HEX: &str = concat!(
+        "100000000000000000112233445566778899aabbccddeeff0010000000000000",
+        "02000000000000000100000000000000020000000000000000f1536500000000",
+        "01000000010000000101100e0000000000000000000000000000000000000000",
+        "00400000000000060000000000000002000000000000003333333f0000000000",
+        "000000000000000000000000000000000700000000000000",
+    );
+    const SEGMENT_ID_HEX: &str = "2a00000000000000";
+
+    #[test]
+    fn capsule_records_keep_their_on_disk_encoding() {
+        let capsule = sample_capsule();
+        assert_eq!(
+            to_hex(&bincode::serialize(&capsule.id).unwrap()),
+            CAPSULE_ID_HEX
+        );
+        assert_eq!(to_hex(&bincode::serialize(&capsule).unwrap()), CAPSULE_HEX);
+
+        let bytes: Vec<u8> = (0..CAPSULE_HEX.len() / 2)
+            .map(|i| u8::from_str_radix(&CAPSULE_HEX[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let decoded = decode_capsule_bytes(&bytes).unwrap();
+        assert_eq!(decoded.id, capsule.id);
+        assert_eq!(decoded.size, capsule.size);
+        assert_eq!(decoded.segments, capsule.segments);
+        assert_eq!(decoded.created_at, capsule.created_at);
+        assert_eq!(decoded.deduped_bytes, capsule.deduped_bytes);
+    }
+
+    #[test]
+    fn content_and_counter_records_keep_their_on_disk_encoding() {
+        let hash = ContentHash("ab".repeat(32));
+        let expected_hash = format!("4000000000000000{}", "6162".repeat(32));
+        assert_eq!(to_hex(&bincode::serialize(&hash).unwrap()), expected_hash);
+        assert_eq!(
+            to_hex(&bincode::serialize(&SegmentId(42)).unwrap()),
+            SEGMENT_ID_HEX
+        );
+        assert_eq!(
+            to_hex(&bincode::serialize(&42_u64).unwrap()),
+            SEGMENT_ID_HEX
+        );
+    }
+}

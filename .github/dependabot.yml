@@ -50,10 +50,12 @@ updates:
         update-types:
           - "version-update:semver-patch"
           - "version-update:semver-minor"
-      # bincode 3.x is a protest/squatter crate (compile_error! only).
-      # Real bincode development continues on the 1.x and 2.x lines.
+      # bincode is the on-disk encoding for space.db. A major bump changes
+      # the format and needs a migration, so it is never automatic (#113).
+      # 3.x is a protest crate (compile_error! only).
       - dependency-name: "bincode"
-        versions: [">=3.0.0"]
+        update-types:
+          - "version-update:semver-major"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
