@@ -2,7 +2,8 @@
 # docker build -t space-core:latest .
 # docker run --rm space-core:latest --help
 
-FROM rust:1.83 AS builder
+# Match the workspace rust-version, and the runtime image's Debian release.
+FROM rust:1.89-bookworm AS builder
 WORKDIR /usr/src/space
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
