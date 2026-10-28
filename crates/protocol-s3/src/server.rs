@@ -39,12 +39,12 @@ impl S3Server {
             // Health check
             .route("/health", get(health_check))
             // S3 Object Operations
-            .route("/:bucket/:key", put(put_object))
-            .route("/:bucket/:key", get(get_object))
-            .route("/:bucket/:key", head(head_object))
-            .route("/:bucket/:key", delete(delete_object))
+            .route("/{bucket}/{key}", put(put_object))
+            .route("/{bucket}/{key}", get(get_object))
+            .route("/{bucket}/{key}", head(head_object))
+            .route("/{bucket}/{key}", delete(delete_object))
             // Bucket Operations
-            .route("/:bucket", get(list_objects))
+            .route("/{bucket}", get(list_objects))
             // Add state
             .with_state(self.s3_view)
             // Add middleware

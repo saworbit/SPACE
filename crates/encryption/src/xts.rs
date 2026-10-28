@@ -68,7 +68,7 @@ pub fn encrypt(plaintext: &[u8], key_pair: &XtsKeyPair, tweak: &[u8; 16]) -> Res
     let mut ciphertext = plaintext.to_vec();
 
     // Encrypt in place - xts-mode expects [u8; 16] directly
-    xts.encrypt_sector(&mut ciphertext, *tweak);
+    xts.encrypt_sector(&mut ciphertext, (*tweak).into());
 
     Ok(ciphertext)
 }
@@ -108,7 +108,7 @@ pub fn decrypt(ciphertext: &[u8], key_pair: &XtsKeyPair, tweak: &[u8; 16]) -> Re
     let mut plaintext = ciphertext.to_vec();
 
     // Decrypt in place - xts-mode expects [u8; 16] directly
-    xts.decrypt_sector(&mut plaintext, *tweak);
+    xts.decrypt_sector(&mut plaintext, (*tweak).into());
 
     Ok(plaintext)
 }
