@@ -10,7 +10,7 @@ SPACE is a single-node capsule store. See [MVP_SCOPE.md](MVP_SCOPE.md) and [RESE
 
 These are high-impact areas where new contributors can make meaningful progress:
 
-1. **Expand property-based tests** — `crates/capsule-registry/tests/proptest_pipeline.rs` covers round-trip, dedup, content separation, and segment-boundary cases. Open invariants: MAC verification fails on tampered ciphertext, compression entropy detection skips random data, encrypting segments under 16 bytes (those writes currently fail, [#94](https://github.com/saworbit/SPACE/issues/94))
+1. **Expand property-based tests** — `crates/capsule-registry/tests/proptest_pipeline.rs` covers round-trip, dedup, content separation, and segment-boundary cases. Open invariants: MAC verification fails on tampered ciphertext, compression entropy detection skips random data
 2. **Pipeline benchmarks** — Add local benchmarks for the segment write path. There is no benchmark workflow on this branch.
 3. **Documentation alignment** — Pages under `docs/` still describe the pre-reset tree. Prefer updates that match what `cargo test --workspace` actually runs.
 4. **`spacectl` UX** — Add progress bars for large operations, improve error messages, add `--json` output mode

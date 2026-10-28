@@ -364,9 +364,9 @@ client bytes
 
 **3. Hash.** `hash_content_with_algo(compressed_bytes, algorithm_string)` produces a `ContentHash` that mixes the algorithm into the BLAKE3 input. This prevents cross-policy dedup collisions ([§10.4](#104-dedup-keys-need-algorithm-domain-separation)).
 
-**4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed. The lookup ignores the encryption policy ([#83](https://github.com/saworbit/SPACE/issues/83)) and `policy.dedupe` ([#87](https://github.com/saworbit/SPACE/issues/87)).
+**4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed. The hash domain includes the encryption mode, so encrypted and plaintext writes never share a segment. The lookup ignores `policy.dedupe` ([#87](https://github.com/saworbit/SPACE/issues/87)).
 
-**5. Encrypt.** Runs only when the policy enables encryption. XTS-AES-256, with the tweak taken from the first 16 bytes of a plain BLAKE3 hash of the compressed segment (not the algorithm-separated `content_hash`). Encryption is deterministic: the same compressed bytes under the same key version give the same ciphertext. This is the property that lets encryption preserve dedup ([§10.2](#102-deterministic-encryption-preserves-dedup)). Segments under 16 bytes can't be encrypted, so the write fails ([#94](https://github.com/saworbit/SPACE/issues/94)).
+**5. Encrypt.** Runs only when the policy enables encryption. XTS-AES-256, with the tweak taken from the first 16 bytes of a plain BLAKE3 hash of the compressed segment (not the algorithm-separated `content_hash`). Encryption is deterministic: the same compressed bytes under the same key version give the same ciphertext. This is the property that lets encryption preserve dedup ([§10.2](#102-deterministic-encryption-preserves-dedup)). XTS needs at least 16 bytes, so a shorter segment is stored uncompressed and zero-padded to 16 bytes. The read strips the padding using `plain_len`.
 
 **6. MAC.** BLAKE3-keyed MAC over the ciphertext plus the encryption metadata (encryption version, key version, tweak, ciphertext length). The MAC key is derived from both XTS subkeys. The first 16 bytes of the keyed hash become the `integrity_tag`.
 
@@ -430,11 +430,11 @@ client bytes
 
 ### Key points
 
-- **Trust segment metadata, not policy.** Steps 4, 5, 6 branch on `segment.encrypted`, `segment.compressed`, `segment.compression_algo` — not on `capsule.policy`. A Capsule's policy describes how it was *written*; segment metadata describes how it actually *is*. Through dedup, a capsule can already reference segments written under a different policy ([#83](https://github.com/saworbit/SPACE/issues/83)), so relying on `capsule.policy` would corrupt the read.
+- **Trust segment metadata, not policy.** Steps 4, 5, 6 branch on `segment.encrypted`, `segment.compressed`, `segment.compression_algo` — not on `capsule.policy`. A Capsule's policy describes how it was *written*; segment metadata describes how it actually *is*. Through dedup, a capsule can reference segments written under a different compression policy, so relying on `capsule.policy` would corrupt the read.
 
 - **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. The S3 view doesn't use range reads yet ([#99](https://github.com/saworbit/SPACE/issues/99)).
 
-- **Only encrypted segments are verified.** Unencrypted segments are returned exactly as stored; corruption in them is caught only by deep scrub. Whether verification runs at all depends on the sidecar's `encrypted` flag ([#95](https://github.com/saworbit/SPACE/issues/95)).
+- **Every segment is verified.** Encrypted segments are checked by MAC, unencrypted ones by their `content_hash`. A capsule whose policy requires encryption is never served from a segment marked unencrypted, so clearing the sidecar's `encrypted` flag doesn't skip verification.
 
 - **MAC before decrypt.** The MAC tag is verified against the ciphertext *before* decryption. If the ciphertext was tampered with, decryption never runs — we don't process untrusted input through the AES core.
 
@@ -499,7 +499,7 @@ Both run on configurable intervals (defaults: light = 24h, deep = 7d). The execu
 3. `verify_mac(ciphertext, metadata, key_pair)` — constant-time.
 4. Failure → `ScrubResult::MacMismatch` (durable corruption or tampering).
 
-An encrypted segment with no `integrity_tag` is recorded as healthy, so removing the tag from the sidecar hides tampering from scrub ([#95](https://github.com/saworbit/SPACE/issues/95)).
+An encrypted segment with no `integrity_tag` is recorded as `MacMismatch`, the same as the read path, which refuses it.
 
 ### Deep scrub of unencrypted segments
 
@@ -628,7 +628,7 @@ The tweak derives from the segment's own bytes, so identical segments get identi
 
 **Alternative**: rely on XTS alone, or use AES-GCM (which bundles auth).
 
-**Why**: XTS is a length-preserving cipher with no authentication — corrupting ciphertext produces corrupt plaintext silently. The MAC layer turns this into authenticated encryption. The MAC also covers the encryption metadata (version, key version, tweak, length), so those fields can't be changed undetected. It doesn't bind a segment to a Capsule (dedup deliberately shares segments). It also doesn't cover the sidecar's `encrypted` flag, which decides whether verification runs at all ([#95](https://github.com/saworbit/SPACE/issues/95)).
+**Why**: XTS is a length-preserving cipher with no authentication — corrupting ciphertext produces corrupt plaintext silently. The MAC layer turns this into authenticated encryption. The MAC also covers the encryption metadata (version, key version, tweak, length), so those fields can't be changed undetected. It doesn't bind a segment to a Capsule (dedup deliberately shares segments). It also doesn't cover the sidecar's `encrypted` flag. Clearing that flag doesn't help an attacker: the segment then fails its content-hash check, and a capsule that requires encryption refuses it outright.
 
 BLAKE3 is chosen for speed (>2 GB/s on commodity x86). The MAC key is derived deterministically from both XTS subkeys: `BLAKE3(b"SPACE-BLAKE3-MAC-KEY-V1", key1, key2)`. This binds the MAC to the encryption key without requiring a separate key store entry.
 
@@ -724,7 +724,6 @@ For any byte sequence `B` and any policy `P`:
 ```
 read(write(B, P)) == B
 ```
-Exception: with encryption on, writes whose final segment is 1–15 bytes fail instead ([#94](https://github.com/saworbit/SPACE/issues/94)).
 Tested by `prop_roundtrip_unencrypted`, `prop_roundtrip_encrypted`, and boundary cases (empty, single byte, 4 MiB ± epsilon).
 
 ### Dedup determinism
@@ -785,7 +784,7 @@ never on capsule.policy
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch. Reads catch it only for encrypted segments ([#95](https://github.com/saworbit/SPACE/issues/95)). | `ScrubResult::ContentCorrupted` / `MacMismatch`. Restore from backup or accept the loss (no replicas on this branch). |
+| **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch. Reads catch it too. | `ScrubResult::ContentCorrupted` / `MacMismatch`. Restore from backup or accept the loss (no replicas on this branch). |
 | **Truncated segment file** | Light scrub: actual_len ≠ metadata.len | `ScrubResult::MetadataMismatch`. Same as above. |
 | **Lost sidecar** | `open()` starts with an empty map; reads fail with `Segment not found` | None. The log has no framing to rebuild from ([#96](https://github.com/saworbit/SPACE/issues/96)). |
 | **Crash mid-`save_segment_map`** | `.segments.tmp` exists at `open()` | If `.segments` still exists, the stale `.tmp` is ignored and left in place. If `.segments` is missing, the `.tmp` is promoted. |

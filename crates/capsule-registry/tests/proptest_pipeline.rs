@@ -128,15 +128,11 @@ proptest! {
         })?;
     }
 
-    // Note: XTS-AES requires at least one full cipher block (16 bytes) of
-    // input. Plaintexts shorter than that are rejected by the encryption
-    // path with "Invalid ciphertext length: N". Handling sub-block payloads
-    // (via padding, GCM fallback, or a small-blob bypass) is a separate
-    // pipeline change and out of scope for these tests; the property here
-    // covers the supported size range only.
+    // Sub-block payloads (under 16 bytes) are included: the pipeline pads
+    // them to one XTS block (#94).
     #[test]
     fn prop_roundtrip_encrypted(
-        payload in prop::collection::vec(any::<u8>(), 16..16_384usize),
+        payload in prop::collection::vec(any::<u8>(), 0..16_384usize),
     ) {
         runtime().block_on(async {
             let harness = PipelineHarness::new_encrypted();

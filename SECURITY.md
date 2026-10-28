@@ -43,15 +43,14 @@ This describes the post-reset `main` branch. None of it has been professionally 
 - Per-version keys are derived from a 32-byte master key with HKDF-HMAC-SHA256 and zeroized on drop. See [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md).
 - Encryption is only reachable through the library API. `spacectl create` and the S3 view always write unencrypted, even with `SPACE_MASTER_KEY` set ([#82](https://github.com/saworbit/SPACE/issues/82)).
 - The master key comes from `SPACE_MASTER_KEY` (64 hex characters). `SPACE_MASTER_KEY_FILE` isn't supported; the library API does have a `FileKeyProvider`.
-- A missing or malformed `SPACE_MASTER_KEY` doesn't fail. Writes go through the plaintext pipeline, and some code paths fall back to an all-zero or fixed key ([#84](https://github.com/saworbit/SPACE/issues/84)).
+- A malformed `SPACE_MASTER_KEY` is a startup error. With no key set, writes whose policy asks for encryption fail.
 - Encryption is deterministic so that dedup keeps working. Identical segments produce identical ciphertext, which reveals that they're equal.
-- Dedup can attach an encrypted capsule to an existing plaintext segment ([#83](https://github.com/saworbit/SPACE/issues/83)).
 - Key rotation isn't persisted across restarts ([#98](https://github.com/saworbit/SPACE/issues/98)).
 
 ### Integrity
 
-- Only encrypted segments are verified on read. Unencrypted segments are returned as stored.
-- Whether a segment counts as encrypted is decided by a flag in an unauthenticated JSON sidecar ([#95](https://github.com/saworbit/SPACE/issues/95)).
+- Every segment is verified on read: encrypted ones by MAC, unencrypted ones by content hash.
+- Whether a segment counts as encrypted is a flag in an unauthenticated JSON sidecar. A capsule whose policy requires encryption refuses a segment marked unencrypted.
 - Deep scrub verifies content hashes and MACs when it runs, but nothing runs it automatically ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### Network exposure

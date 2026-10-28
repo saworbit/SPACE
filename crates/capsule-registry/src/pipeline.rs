@@ -18,9 +18,14 @@ pub struct WritePipeline {
 }
 
 impl WritePipeline {
+    /// Fails when `SPACE_MASTER_KEY` is set but invalid.
+    pub fn open(registry: CapsuleRegistry, nvram: NvramLog) -> Result<Self> {
+        let inner = ModularPipeline::open(nvram, registry)?;
+        Ok(Self { inner })
+    }
+
     pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        let inner = ModularPipeline::open(nvram, registry).expect("open modular pipeline");
-        Self { inner }
+        Self::open(registry, nvram).expect("open modular pipeline")
     }
 
     pub fn with_key_manager(
