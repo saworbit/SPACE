@@ -37,11 +37,14 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for the full
 
 ## Automated checks
 
-CI on pull requests runs `cargo test --workspace` (see `.github/workflows/ci.yml`), and checks that the workspace license field is `MIT OR Apache-2.0`.
+CI on pull requests runs the checks below (see `.github/workflows/ci.yml`).
 
 | Check | Command |
 |-------|---------|
+| Formatting | `cargo fmt --all -- --check` |
+| Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Workspace tests | `cargo test --workspace` |
+| Build on rust-version | `cargo +1.89 check --workspace --locked` |
 | License field | `license = "MIT OR Apache-2.0"` in the root `Cargo.toml` |
 
 ## Dependency Changes

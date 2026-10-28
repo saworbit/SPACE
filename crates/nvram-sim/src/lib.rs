@@ -7,13 +7,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-
 pub struct NvramLog {
     file: Arc<RwLock<File>>,
     segment_map: Arc<RwLock<HashMap<SegmentId, Segment>>>,
     next_offset: Arc<RwLock<u64>>,
     metadata_path: String,
-    
 }
 
 impl NvramLog {
@@ -72,11 +70,8 @@ impl NvramLog {
             segment_map: Arc::new(RwLock::new(segment_map)),
             next_offset: Arc::new(RwLock::new(file_len)),
             metadata_path,
-            
         })
     }
-
-    
 
     fn save_segment_map(&self) -> Result<()> {
         let map = self.segment_map.read().unwrap();
@@ -112,8 +107,6 @@ impl NvramLog {
             .map(|s| s.len as u64)
             .sum()
     }
-
-    
 
     /// List all known segments with their metadata.
     pub fn list_segments(&self) -> Result<Vec<Segment>> {
@@ -183,8 +176,6 @@ impl NvramLog {
         let updated = segment.clone();
         drop(map);
         self.save_segment_map()?;
-
-        
 
         Ok(updated)
     }
@@ -365,7 +356,6 @@ impl Clone for NvramLog {
             segment_map: Arc::clone(&self.segment_map),
             next_offset: Arc::clone(&self.next_offset),
             metadata_path: self.metadata_path.clone(),
-            
         }
     }
 }
@@ -532,7 +522,6 @@ impl NvramTransaction {
             let mut map = self.log.segment_map.write().unwrap();
             for entry in &self.pending {
                 map.insert(entry.segment.id, entry.segment.clone());
-                
             }
         }
         self.log.save_segment_map()?;

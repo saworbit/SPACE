@@ -50,7 +50,7 @@ impl ObjectMapping {
 /// S3 Protocol View - provides S3-compatible access to capsules
 enum PipelineBackend {
     Legacy(Arc<WritePipeline>),
-        Modular(Arc<TokioMutex<RegistryPipelineHandle>>),
+    Modular(Arc<TokioMutex<RegistryPipelineHandle>>),
 }
 
 pub struct S3View {
@@ -67,7 +67,7 @@ impl S3View {
         }
     }
 
-        pub fn new_modular(handle: RegistryPipelineHandle) -> Self {
+    pub fn new_modular(handle: RegistryPipelineHandle) -> Self {
         Self {
             pipeline: PipelineBackend::Modular(Arc::new(TokioMutex::new(handle))),
             key_map: Arc::new(RwLock::new(HashMap::new())),
@@ -104,7 +104,7 @@ impl S3View {
                 let pipeline = Arc::clone(pipeline);
                 pipeline.write_capsule(payload.as_slice()).await?
             }
-                        PipelineBackend::Modular(pipeline) => {
+            PipelineBackend::Modular(pipeline) => {
                 let payload = Arc::clone(&payload);
                 let mut handle = pipeline.lock().await;
                 handle
@@ -154,7 +154,7 @@ impl S3View {
                 let pipeline = Arc::clone(pipeline);
                 pipeline.read_capsule(mapping.capsule_id).await?
             }
-                        PipelineBackend::Modular(pipeline) => {
+            PipelineBackend::Modular(pipeline) => {
                 let handle = pipeline.lock().await;
                 handle.read_capsule(mapping.capsule_id).await?
             }

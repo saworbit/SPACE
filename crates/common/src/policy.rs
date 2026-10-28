@@ -246,8 +246,6 @@ pub struct Policy {
     /// Phase 5: ordered list of WASM transformations to apply.
     #[serde(default)]
     pub transform: Vec<TransformDef>,
-
-
 }
 
 /// Ordered transformation definition applied during read/write streaming.
@@ -319,7 +317,6 @@ pub struct ArtifactVerification {
     pub signature: Option<String>,
 }
 
-
 impl Default for Policy {
     fn default() -> Self {
         Self {
@@ -332,10 +329,6 @@ impl Default for Policy {
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
             transform: Vec::new(),
-            
-            
-            
-            
         }
     }
 }
@@ -353,10 +346,6 @@ impl Policy {
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
             transform: Vec::new(),
-            
-            
-            
-            
         }
     }
 
@@ -372,10 +361,6 @@ impl Policy {
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
             transform: Vec::new(),
-            
-            
-            
-            
         }
     }
 
@@ -391,7 +376,6 @@ impl Policy {
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
             transform: Vec::new(),
-
         }
     }
 
@@ -407,10 +391,6 @@ impl Policy {
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
             transform: Vec::new(),
-            
-            
-            
-            
         }
     }
 
@@ -426,15 +406,8 @@ impl Policy {
             layout: LayoutPolicy::default(),
             federation: FederationPolicy::default(),
             transform: Vec::new(),
-            
-            
-            
-            
         }
     }
-
-
-    
 
     /// Reject policy combinations that the pipeline cannot handle correctly.
     ///
@@ -584,14 +557,6 @@ mod tests {
         assert_eq!(policy.dedupe, deserialized.dedupe);
         assert_eq!(policy.crypto_profile, CryptoProfile::Classical);
     }
-
-    
-
-    
-
-    
-
-    
 
     #[test]
     fn test_encryption_serialization() {

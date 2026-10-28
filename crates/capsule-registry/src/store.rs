@@ -85,10 +85,6 @@ struct PolicyLegacyV2 {
     pub layout: LayoutPolicy,
     #[serde(default)]
     pub federation: Option<FederationPolicyLegacy>,
-    
-    
-    
-    
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,18 +105,11 @@ struct PolicyLegacy {
     pub crypto_profile: CryptoProfile,
     #[serde(default)]
     pub layout: LayoutPolicy,
-    
-    
-    
-    
 }
-
 
 impl From<PolicyLegacy> for Policy {
     fn from(value: PolicyLegacy) -> Self {
-        
-
-                let policy = Policy {
+        Policy {
             compression: value.compression,
             dedupe: value.dedupe,
             compact_interval_secs: value.compact_interval_secs,
@@ -129,19 +118,13 @@ impl From<PolicyLegacy> for Policy {
             crypto_profile: value.crypto_profile,
             layout: value.layout,
             ..Policy::default()
-        };
-
-        
-
-        policy
+        }
     }
 }
 
 impl From<PolicyLegacyV2> for Policy {
     fn from(value: PolicyLegacyV2) -> Self {
-        
-
-                let mut policy = Policy {
+        let mut policy = Policy {
             compression: value.compression,
             dedupe: value.dedupe,
             compact_interval_secs: value.compact_interval_secs,
@@ -156,8 +139,6 @@ impl From<PolicyLegacyV2> for Policy {
             policy.federation.targets = fed.target_zones;
             policy.federation.strategy = Some(fed.strategy);
         }
-
-        
 
         policy
     }
