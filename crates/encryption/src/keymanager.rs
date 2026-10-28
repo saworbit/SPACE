@@ -19,7 +19,7 @@
 use crate::error::{EncryptionError, Result};
 use crate::key_provider::KeyProvider;
 use blake3;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
 use zeroize::{Zeroize, ZeroizeOnDrop};
