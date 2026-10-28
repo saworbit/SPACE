@@ -10,7 +10,7 @@ The pipeline can read a capsule one segment at a time, so a reader holds roughly
 
 The stream looks up the capsule once, then for each segment in turn reads its bytes, verifies and decrypts it if it is encrypted, decompresses it if it is compressed, and yields the plaintext as one `Bytes` chunk. A 9 MiB capsule arrives as three chunks. `read_capsule` is the same loop collected into a `Vec<u8>`.
 
-Serving a stream with axum 0.7:
+Serving a stream with axum:
 
 ```rust
 use std::sync::Arc;
