@@ -10,11 +10,11 @@ SPACE is a single-node capsule store. See [MVP_SCOPE.md](MVP_SCOPE.md) and [RESE
 
 These are high-impact areas where new contributors can make meaningful progress:
 
-1. **Expand property-based tests** — `crates/capsule-registry/tests/proptest_pipeline.rs` covers round-trip, dedup, content separation, and segment-boundary cases. Open invariants: MAC verification fails on tampered ciphertext, compression entropy detection skips random data, sub-block plaintext encryption (currently bounded out — needs padding / GCM fallback)
+1. **Expand property-based tests** — `crates/capsule-registry/tests/proptest_pipeline.rs` covers round-trip, dedup, content separation, and segment-boundary cases. Open invariants: MAC verification fails on tampered ciphertext, compression entropy detection skips random data, encrypting segments under 16 bytes (those writes currently fail, [#94](https://github.com/saworbit/SPACE/issues/94))
 2. **Pipeline benchmarks** — Add local benchmarks for the segment write path. There is no benchmark workflow on this branch.
 3. **Documentation alignment** — Pages under `docs/` still describe the pre-reset tree. Prefer updates that match what `cargo test --workspace` actually runs.
 4. **`spacectl` UX** — Add progress bars for large operations, improve error messages, add `--json` output mode
-5. **Prometheus metrics** — Expand metrics: per-stage latency histograms, dedup hit rates, GC effectiveness
+5. **Metrics** — Nothing emits metrics yet. Add them: per-stage latency histograms, dedup hit rates, GC effectiveness
 6. **Structured error types** — Replace string errors with typed errors that include recovery guidance
 7. **Background GC** — Help make garbage collection automatic with tunable aggressiveness
 
@@ -30,10 +30,10 @@ SPACE is dual-licensed under **MIT OR Apache 2.0**. This means:
 See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for the full license texts.
 
 ## Getting Started
-- Install the latest stable Rust toolchain (`rustup default stable`).
+- Install the latest stable Rust toolchain (`rustup default stable`). The committed `Cargo.lock` needs Rust 1.89 or newer.
 - Run `cargo test --workspace` before opening a pull request. That is what CI runs.
 - Property tests live in `crates/capsule-registry/tests/proptest_pipeline.rs`. Run them with the workspace tests.
-- `docs/architecture.md` still describes parts of the pre-reset tree. [ARCHITECTURE.md](ARCHITECTURE.md) and [RESET.md](RESET.md) match this branch.
+- [ARCHITECTURE.md](ARCHITECTURE.md) and [RESET.md](RESET.md) describe this branch. The pre-reset design docs are on `archive/pre-reset-2026-10`.
 
 ## Automated checks
 
@@ -48,7 +48,7 @@ CI on pull requests runs `cargo test --workspace` (see `.github/workflows/ci.yml
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.
 
 **Checklist (include in PR description)**
-- [ ] Identify Tier (0/1/2) for each change and record reviewer initials with date in `Cargo.toml` comment.
+- [ ] Say why the dependency is needed. Pin cryptography and serialization crates to an exact version (`=x.y.z`), like the existing ones in the root `Cargo.toml`.
 - [ ] Attach `cargo tree --edges normal,build,dev` diff (before/after).
 - [ ] Run `cargo test --workspace`.
 - [ ] Run `cargo audit` and `cargo deny check` when a dependency changes.
@@ -56,14 +56,14 @@ Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy
 There is no `xtask` crate on this branch.
 
 ## Review Expectations
-- Validate dependency tiering and ensure comments follow the `YYYY-MM-DD <initials>` format.
+- Check that new cryptography and serialization dependencies are pinned to exact versions.
 - Confirm `cargo test --workspace` succeeded.
 - Reject PRs that introduce prohibited licenses.
 - Triage Dependabot PRs weekly (configurable via `.github/dependabot.yml`); do not merge without full audit artefacts.
 
 ## Dependabot Triage
 
-When triaging Dependabot PRs, follow the policy in [`docs/dependency-security.md`](docs/dependency-security.md#dependabot-triage-policy):
+When triaging Dependabot PRs (see also [`docs/dependency-security.md`](docs/dependency-security.md)):
 
 1. **Green CI, patch bump** — merge directly after a quick review.
 2. **Major version bumps** — check for breaking API changes. Dependabot cannot fix code; create a manual migration branch if needed.

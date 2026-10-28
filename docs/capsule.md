@@ -1,6 +1,8 @@
 # The Capsule
 
-> The storage object on this branch: one id, an ordered list of segments, and a policy for compression, dedup, and encryption. Mesh, federation, and tiering are not implemented here. That design is on `archive/pre-reset-2026-10`.
+> The storage object on this branch: one id, an ordered list of segments, and a policy for compression, dedup, and encryption.
+>
+> **Reading this on the post-reset `main` branch:** §1–§2 describe the design goal, which includes protocol views, migration, key rotation and replication. On this branch only the S3 view and `spacectl` exist, and capsules are never re-encrypted, transcoded, migrated or replicated. §3–§12 describe the code as it is, with links to open issues where it falls short. The mesh, federation and tiering design is on `archive/pre-reset-2026-10`.
 
 ---
 
@@ -33,7 +35,7 @@ This is a 30-year-old assumption baked into nearly every storage product. It fai
 
 ### The bet
 
-SPACE makes a different bet: **separate the durable representation of data from the protocol you use to talk to it**. The durable representation is the Capsule. Protocols (S3, NFS, block, NVMe-oF, FUSE, CSI) are *views* projected on top of capsules — none of them own bytes.
+SPACE makes a different bet: **separate the durable representation of data from the protocol you use to talk to it**. The durable representation is the Capsule. Protocols (S3 on this branch; NFS, block, NVMe-oF, FUSE and CSI in the archived design) are *views* projected on top of capsules — none of them own bytes.
 
 This means:
 
@@ -47,7 +49,7 @@ This means:
 The bet is non-trivial:
 
 - **Every byte must fit a single, opinionated representation.** Compression, encryption, dedup, and integrity verification all assume capsule structure. You cannot opt out of the abstraction for "fast path" data.
-- **Encryption must be deterministic to preserve dedup.** SPACE uses XTS-AES-256 with content-hash-derived tweaks. This is unusual — most systems pick deterministic-or-secure, not both. (See [§10.2](#102-deterministic-encryption-preserves-dedup).)
+- **Encryption must be deterministic to preserve dedup.** SPACE uses XTS-AES-256 with tweaks derived from a hash of each segment's bytes. This is unusual — most systems pick deterministic-or-secure, not both. (See [§10.2](#102-deterministic-encryption-preserves-dedup).)
 - **Metadata is on the hot path.** Every read touches Sled (for capsule lookup), the NVRAM segment map (for offsets), and the key manager (for decryption). Metadata cannot be slow.
 
 The rest of this document explains how SPACE pays that cost.
@@ -58,10 +60,10 @@ The rest of this document explains how SPACE pays that cost.
 
 A **Capsule** is a content-addressed, policy-bound collection of segments with a stable 128-bit identity.
 
-- **Stable identity**: `CapsuleId(Uuid)` is permanent for the Capsule's lifetime. It survives re-encryption, key rotation, compression transcoding, migration between zones, replication, and protocol projection. Generated without coordination.
+- **Stable identity**: `CapsuleId(Uuid)` is permanent for the Capsule's lifetime. It survives re-encryption, key rotation, compression transcoding, migration between zones, replication, and protocol projection (none of those transformations exist on this branch yet). Generated without coordination.
 - **Immutable logical content**: what `read(capsule_id)` returns is preserved across every storage-layer transformation. The bytes a client sees do not change because the Capsule moved zones or rotated keys.
 - **Mutable representation**: the segment list, per-segment content hashes, encryption metadata, and the `Policy` field itself **can change in place** when the Capsule is transformed by PODMS swarm migration, key rotation, or compression transcoding. See [§2.1](#21-identity-vs-representation) below.
-- **Content-addressed**: every segment carries a `content_hash` (BLAKE3 over compressed-pre-encryption bytes) that uniquely identifies its payload across the cluster.
+- **Content-addressed**: every segment carries a `content_hash` (BLAKE3 over compressed-pre-encryption bytes) that uniquely identifies its payload within a store.
 - **Policy-bound**: every Capsule carries a `Policy` describing how it is currently compressed, encrypted, replicated, and laid out. The policy is the active representation, not the historical one — transformations update it.
 
 A Capsule is *not*:
@@ -90,12 +92,12 @@ The single rule that resolves every "is this still the same Capsule?" question:
 
 The boundary is **what initiated the change**:
 
-- **Protocol-layer mutations** (a client overwriting a file at `/foo.txt`, rewriting block offset 4096 of `vol0`, PUT-ing a new object body to `s3://bucket/key`) produce a **new** Capsule with a new `CapsuleId`. The view's metadata is updated to point at the new Capsule; the old one is dereferenced and may be GC'd. The Capsule abstraction is *not* in-place mutable from the protocol surface.
+- **Protocol-layer mutations** (a client overwriting a file at `/foo.txt`, rewriting block offset 4096 of `vol0`, PUT-ing a new object body to `s3://bucket/key`) produce a **new** Capsule with a new `CapsuleId`. The view's metadata is updated to point at the new Capsule; the old one is dereferenced and may be GC'd. (The S3 view doesn't dereference the old capsule yet; it stays in the store, [#86](https://github.com/saworbit/SPACE/issues/86).) The Capsule abstraction is *not* in-place mutable from the protocol surface.
 - **Storage-layer transformations** (PODMS swarm migration, key rotation, compression transcoding, tier promotion/demotion) **preserve** `CapsuleId` and logical content while rewriting the on-disk representation. Audit log continuity is preserved; references at the view layer remain valid.
 
 This is what makes federated migration tractable: you can move a Capsule from `us-west` to `eu-central` (with re-encryption under the destination's key) without touching any file path, S3 key, or block volume that points at it.
 
-The implementation lives in `crates/scaling/src/agent.rs::data_motion_task` — `capsule_id` is passed through verbatim from source to destination, carried in each `ReplicationFrame`, and used by the receiver in `crates/scaling/src/replication.rs` to derive the wrapped-key context. (The receiver does not persist `capsule_id` in per-segment metadata; segments stay capsule-agnostic, and the Capsule record itself owns the identity.)
+The data-motion implementation (`crates/scaling`) was removed in the reset and is on `archive/pre-reset-2026-10`.
 
 ---
 
@@ -165,9 +167,9 @@ pub struct Capsule {
 | `id` | Unique identity | See §3.1 |
 | `size` | Logical (uncompressed, decrypted) byte count | Required for range reads without materializing segments. Allows reporting `df` / `ls -l` semantics through views. |
 | `segments` | Ordered list of segment IDs | Reads walk this list. Order = logical byte order. |
-| `created_at` | Unix seconds at creation | Used by heat/age policies and audit. |
-| `policy` | The compression/encryption/layout/federation/transform policy **currently active**. Updated in place by storage-layer transformations (PODMS migration, key rotation, transcoding). | Read-path code must NOT branch on this — branch on segment metadata. See [§2.1](#21-identity-vs-representation) and [§3.6](#36-policy). |
-| `deduped_bytes` | Bytes that hit existing segments during write | Operator visibility into dedup effectiveness per Capsule. |
+| `created_at` | Unix seconds at creation | Recorded only; nothing on this branch reads it yet. |
+| `policy` | The compression/encryption/layout policy the Capsule was written with. Set at write time; the storage-layer transformations that would update it aren't implemented. | Read-path code must NOT branch on this — branch on segment metadata. See [§2.1](#21-identity-vs-representation) and [§3.6](#36-policy). |
+| `deduped_bytes` | Compressed bytes that hit existing segments during write | Operator visibility into dedup effectiveness per Capsule. |
 
 ### 3.5 `Segment`
 
@@ -196,14 +198,14 @@ pub struct Segment {
 | Field | Set by | Read by |
 |---|---|---|
 | `id`, `offset`, `len` | Append to backend log | Reader (where to seek, how much to read) |
-| `plain_len` | Compressor (logical size before compression) | Range-read planner (skip segments outside range without decompressing) |
+| `plain_len` | Write pipeline (segment size before compression; `None` for `spacectl put`) | Range-read planner (skip segments outside range without decompressing) |
 | `compressed`, `compression_algo` | Write pipeline | Reader (choose decompressor); scrub (verify content_hash with same algo) |
 | `content_hash` | Dedup stage, pre-encryption | Dedup lookup; scrub (unencrypted deep verification) |
-| `ref_count` | Inc on dedup hit / new capsule; dec on delete | GC sweep (reclaim when 0) |
+| `ref_count` | Inc on dedup hit / new capsule; dec on delete | Delete path (removes the segment at the last reference); GC |
 | `deduplicated` | Write pipeline (true if any capsule shares this segment) | Operator visibility |
-| `access_count` | Reader (counters) | Tiering heatmap |
+| `access_count` | Not updated on read (stays 0) | Nothing (the tiering heatmap that used it was removed) |
 | `encryption_version`, `key_version`, `tweak_nonce`, `integrity_tag`, `encrypted` | Encryption stage | Reader (key selection, MAC verify); scrub (deep MAC check) |
-| `pq_ciphertext`, `pq_nonce` | Post-quantum hybrid wrap (gated) | Hybrid decrypt path |
+| `pq_ciphertext`, `pq_nonce` | Nothing: always `None` (there's no post-quantum implementation) | Nothing |
 
 > **Invariant: trust segment metadata, not policy, on read.** Branch on `segment.compressed` and `segment.encrypted`, never on `capsule.policy`. The policy reflects the *current* representation, but segments can be heterogeneous during transformation; segment fields are the durable truth. See [§11](#11-invariants).
 
@@ -222,19 +224,21 @@ pub struct Policy {
     pub layout: LayoutPolicy,                  // strategy + EC profile + heat threshold
     pub federation: FederationPolicy,          // target zones, priority, strategy
     pub transform: Vec<TransformDef>,          // WASM transforms (OnRead/OnWrite)
-    // PODMS-gated:
-    pub rpo: Duration,
-    pub latency_target: Duration,
-    pub sovereignty: SovereigntyLevel,
-    pub replica_count: u8,
 }
 ```
 
-Presets (`Policy::default()`, `text_optimized()`, `precompressed()`, `edge_optimized()`, `encrypted()`, `encrypted_compressed()`, `metro_sync()`, `geo_replicated()`) provide named bundles for common workloads. Custom policies are constructed field-by-field.
+Presets (`Policy::default()`, `text_optimized()`, `precompressed()`, `edge_optimized()`, `encrypted()`, `encrypted_compressed()`) provide named bundles for common workloads. Custom policies are constructed field-by-field.
+
+On this branch only `compression`, `encryption` and `layout` change what the write path does:
+
+- `dedupe` is ignored ([#87](https://github.com/saworbit/SPACE/issues/87)).
+- `compact_interval_secs`, `erasure_profile`, `federation` and `transform` are stored, but nothing reads them.
+- `CryptoProfile::HybridKyber` only affects `Policy::validate`; there's no ML-KEM code.
+- `spacectl create` and S3 PUT always use `Policy::default()`, which has encryption disabled ([#82](https://github.com/saworbit/SPACE/issues/82)).
 
 ### 3.7 `Event`
 
-Audit-log events emitted by the registry: `CapsuleCreated`, `CapsuleRead`, `CapsuleDeleted`, `SegmentAppended`, `DedupHit`, `AuditHeartbeat`. These are the immutable record of what happened to a Capsule — used by the security model and replication.
+The `Event` enum defines audit events: `CapsuleCreated`, `CapsuleRead`, `CapsuleDeleted`, `SegmentAppended`, `DedupHit`, `AuditHeartbeat`. Nothing on this branch emits them, and there's no audit log.
 
 ---
 
@@ -256,28 +260,29 @@ The split is deliberate: segment bytes are bulky and want streaming I/O; capsule
 The NVRAM log is the **primary** durable store. Segments are appended; nothing is ever rewritten in place (except during compaction, which is its own atomic operation).
 
 ```
-{path}                          # Append-only segment data
-  ├─ [offset 0]      Segment 1 bytes (len bytes)
-  ├─ [offset N]      Segment 2 bytes
+{path}                          # Append-only segment data, no per-record header
+  ├─ [offset 0]      Segment 0 bytes (len bytes)
+  ├─ [offset N]      Segment 1 bytes
   └─ ...
 
-{path}.segments                 # Segment metadata sidecar (JSON)
+{path}.segments                 # Segment metadata sidecar (pretty-printed JSON)
   {
-    "SegmentId(1)": { offset, len, content_hash, ref_count, ... },
-    "SegmentId(2)": { ... },
-    ...
+    "0": { "id": 0, "offset": 0, "len": 42, "content_hash": "…", "ref_count": 1, … },
+    "1": { … },
+    …
   }
 
-{path}.tmp                      # Atomic-rename staging file
-{path}.compacting               # Crash marker; presence at open() = recovery needed
+{path}.segments.tmp             # Staging file for the atomic rename
+{path}.segments.compacting      # Marker present while compact() runs
 ```
 
 **Crash safety**:
-- `save_segment_map()` writes to `.tmp`, then atomic-renames over the live sidecar. A crash mid-write leaves the old sidecar intact.
-- `open()` checks for `.tmp` and `.compacting` markers and recovers — orphaned `.tmp` files are dropped; `.compacting` triggers a re-validation pass.
-- See [§10.6](#106-atomic-metadata-via-tmprename) for why this pattern.
+- `save_segment_map()` writes the whole sidecar to `.segments.tmp`, then renames it over `.segments`. A crash before the rename leaves the old sidecar intact. Neither the file nor its directory is fsynced, so after a power loss the sidecar can lag behind the data, which is fsynced ([#96](https://github.com/saworbit/SPACE/issues/96)).
+- `open()` promotes `.segments.tmp` only when `.segments` is missing; otherwise a leftover `.tmp` is ignored. If `.segments.compacting` exists, `open()` refuses to open the log.
+- The log has no record framing, so the sidecar is the only map of the data. Losing it makes every segment unreadable ([#96](https://github.com/saworbit/SPACE/issues/96)).
+- See [§10.6](#106-atomic-metadata-via-tmp--rename) for why this pattern.
 
-**Compaction** (`NvramLog::compact()`) reclaims bytes from deleted/dedup-evicted segments by rewriting the live segments to a fresh file in-place, then truncating. The `.compacting` marker bounds the recovery window.
+**Compaction** (`NvramLog::compact()`) reclaims bytes from deleted segments. It copies the live segments to the start of the same file and truncates the rest, holding all live data in memory while it runs. Nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
 
 ### 4.3 Capsule registry
 
@@ -285,9 +290,9 @@ The registry is a Sled-backed KV store holding:
 
 - `Capsule` records keyed by `CapsuleId`
 - A content-hash index: `ContentHash → SegmentId` for dedup lookup
-- Audit events (`Event`) appended in order
+- A counter for allocating `SegmentId`s
 
-The registry exposes a transactional interface — `begin_txn().await?.set_segment_metadata(...).await?.commit().await?` — so capsule + segment metadata mutate atomically. See [§9.3](#93-transactional-metadata).
+Each update is a single sled insert followed by a flush. Segment metadata isn't in the registry: it lives in the NVRAM sidecar and is changed through `StorageBackend::begin_txn()…commit()`. The two stores are committed separately; see [§9.3](#93-metadata-commits).
 
 ### 4.4 Storage backends
 
@@ -296,10 +301,10 @@ The registry exposes a transactional interface — `begin_txn().await?.set_segme
 | Backend | Crate | Use case |
 |---|---|---|
 | `InMemoryBackend` | `storage` | Tests; ephemeral workloads. `Arc<Mutex<Inner>>` — clones share state. |
-| `NvramBackend` | `nvram-sim` | Primary durable store; append-only log on disk. |
+| `NvramBackend` | `storage` (wraps `nvram_sim::NvramLog`) | Primary durable store; append-only log on disk. |
 | `TokioFsBackend` | `storage` | Generic file-per-segment backend; `.tmp`+rename atomicity. |
-| `AutoFsBackend` | `storage` | Selects io_uring on Linux, tokio-fs elsewhere. |
-| `CachedBackend<B>` | `storage` | Byte-bounded LRU wrapper around any backend; invalidates on commit. |
+| `AutoFsBackend` | `storage` | Uses io_uring on Linux when `storage` is built with the `uring` feature, tokio-fs otherwise. `serve-s3` uses it when `SPACE_STORAGE_ROOT` is set. |
+| `CachedBackend<B>` | `storage` | Byte-bounded LRU wrapper around any backend; invalidates on commit. Not used by `spacectl` or the S3 view. |
 
 The capsule layer is backend-agnostic. The only assumption is that the backend implements the `StorageBackend` trait correctly (see [§9.2](#92-the-storagebackend-trait)).
 
@@ -332,7 +337,7 @@ client bytes
     │ MISS              MISS → continue
     ▼
 ┌─────────────────┐
-│ 5. Encrypt      │  tweak = first_16_bytes(content_hash)
+│ 5. Encrypt      │  tweak = first_16_bytes(BLAKE3(compressed_bytes))
 └─────────────────┘    ciphertext = XTS-AES-256(key_pair, tweak, compressed_bytes)
     │
     ▼
@@ -342,36 +347,40 @@ client bytes
     │
     ▼
 ┌─────────────────┐
-│ 7. Append       │  backend.append(segment_id, final_bytes)
-└─────────────────┘    + registry.set_segment_metadata(...)
+│ 7. Append       │  txn.append(segment_id, final_bytes)
+└─────────────────┘    + txn.set_segment_metadata(...); registry.register_content(hash)
     │
-    ▼
-SegmentId committed
+    ▼  (after every segment)
+┌─────────────────┐
+│ 8. Capsule      │  registry: insert Capsule { id, size, segments, policy, ... }
+└─────────────────┘
 ```
 
 ### Stage-by-stage
 
-**1. Segmentation.** The write pipeline splits the input into chunks. Default chunk size is 4 MiB (`SEGMENT_SIZE`). The `LayoutPolicy` can override this with adaptive entropy-driven sizing, ZNS zone graphs, or learned (Torch) strategies, but `Fixed(4 MiB)` is the only one always available.
+**1. Segmentation.** The write pipeline splits the input into chunks. Default chunk size is 4 MiB (`SEGMENT_SIZE`). `LayoutPolicy` can set another size, either `Fixed { segment_size }` or a zone size with `ZnsGraph { zone_size_mib }`. `AdaptiveEntropy`, `Learned` and `QuantumReady` all fall back to 4 MiB, so there's no variable-size chunking. No upper bound is enforced ([#109](https://github.com/saworbit/SPACE/issues/109)).
 
 **2. Compression.** Driven by `policy.compression`. Returns both the compressed bytes and the **algorithm string** (e.g., `"lz4:1"`, `"zstd:3"`, `"identity"`). The algorithm string is critical for step 3.
 
 **3. Hash.** `hash_content_with_algo(compressed_bytes, algorithm_string)` produces a `ContentHash` that mixes the algorithm into the BLAKE3 input. This prevents cross-policy dedup collisions ([§10.4](#104-dedup-keys-need-algorithm-domain-separation)).
 
-**4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed.
+**4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed. The lookup ignores the encryption policy ([#83](https://github.com/saworbit/SPACE/issues/83)) and `policy.dedupe` ([#87](https://github.com/saworbit/SPACE/issues/87)).
 
-**5. Encrypt.** XTS-AES-256, tweak derived from the first 16 bytes of the content hash. Encryption is deterministic — same plaintext + same key + same content hash → same ciphertext. This is the property that lets encryption preserve dedup ([§10.2](#102-deterministic-encryption-preserves-dedup)).
+**5. Encrypt.** Runs only when the policy enables encryption. XTS-AES-256, with the tweak taken from the first 16 bytes of a plain BLAKE3 hash of the compressed segment (not the algorithm-separated `content_hash`). Encryption is deterministic: the same compressed bytes under the same key version give the same ciphertext. This is the property that lets encryption preserve dedup ([§10.2](#102-deterministic-encryption-preserves-dedup)). Segments under 16 bytes can't be encrypted, so the write fails ([#94](https://github.com/saworbit/SPACE/issues/94)).
 
-**6. MAC.** BLAKE3-keyed MAC over `ciphertext || serialized_metadata`. The MAC key is derived from both XTS subkeys, ensuring the MAC binds to the encryption key in a way that key compromise of one doesn't trivially undermine the other. First 16 bytes of the keyed hash become the `integrity_tag`.
+**6. MAC.** BLAKE3-keyed MAC over the ciphertext plus the encryption metadata (encryption version, key version, tweak, ciphertext length). The MAC key is derived from both XTS subkeys. The first 16 bytes of the keyed hash become the `integrity_tag`.
 
-**7. Append.** Bytes go to the storage backend (NVRAM log); metadata goes to the registry under a transaction. On commit, the new SegmentId is durable.
+**7. Append.** Bytes are appended to the NVRAM log and fsynced. The segment record is written to the sidecar through a storage transaction, and then the content hash is registered in sled.
+
+**8. Capsule.** After the last segment, the capsule record is inserted into sled.
 
 ### Important properties of the write path
 
 - **Determinism**: write the same bytes under the same policy twice → same content hash → dedup hit on the second write. This is observable as `Capsule.deduped_bytes > 0` in the second Capsule.
-- **No partial writes**: a Segment is fully appended-and-metadata'd or it doesn't exist. The transactional registry interface enforces this.
+- **No partially visible capsules**: the capsule record is inserted only after every segment is stored, so a failed or interrupted write never shows up in `list` or `read`. Any segments it had already stored stay behind, unreferenced, until GC runs ([#97](https://github.com/saworbit/SPACE/issues/97)).
 - **Order-independent dedup**: which Capsule "owns" a segment doesn't matter; ref counting makes the relationship symmetric.
 
-The full implementation lives in `crates/capsule-registry/src/pipeline/legacy.rs` (and a modular variant gated by `SPACE_USE_MODULAR`).
+The implementation is `Pipeline::write_capsule` in [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs). `capsule_registry::pipeline::WritePipeline` and `capsule_registry::modular_pipeline::RegistryPipelineHandle` wrap it.
 
 ---
 
@@ -382,7 +391,7 @@ read(capsule_id, [range])
     │
     ▼
 ┌─────────────────┐
-│ 1. Lookup       │  registry.get(capsule_id) → Capsule
+│ 1. Lookup       │  registry.lookup(capsule_id) → Capsule
 └─────────────────┘
     │
     ▼  for each SegmentId in capsule.segments
@@ -398,7 +407,7 @@ read(capsule_id, [range])
     ▼
 ┌─────────────────┐
 │ 4. MAC verify   │  if segment.encrypted: verify_mac(...) — constant-time
-└─────────────────┘    fail → ScrubResult::MacMismatch / read error
+└─────────────────┘    fail → read error
     │
     ▼
 ┌─────────────────┐
@@ -421,9 +430,11 @@ client bytes
 
 ### Key points
 
-- **Trust segment metadata, not policy.** Steps 4, 5, 6 branch on `segment.encrypted`, `segment.compressed`, `segment.compression_algo` — not on `capsule.policy`. A Capsule's policy describes how it was *written*; segment metadata describes how it actually *is*. A Capsule transformed through PODMS swarm migration may have heterogeneous segments; relying on `capsule.policy` would corrupt the read.
+- **Trust segment metadata, not policy.** Steps 4, 5, 6 branch on `segment.encrypted`, `segment.compressed`, `segment.compression_algo` — not on `capsule.policy`. A Capsule's policy describes how it was *written*; segment metadata describes how it actually *is*. Through dedup, a capsule can already reference segments written under a different policy ([#83](https://github.com/saworbit/SPACE/issues/83)), so relying on `capsule.policy` would corrupt the read.
 
-- **Range reads skip work.** With `segment.plain_len` set, the planner can skip both reading and decompressing segments that lie entirely outside the requested range. This is the difference between a 2 GB read for a 4 KiB request and a 4 KiB read.
+- **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. The S3 view doesn't use range reads yet ([#99](https://github.com/saworbit/SPACE/issues/99)).
+
+- **Only encrypted segments are verified.** Unencrypted segments are returned exactly as stored; corruption in them is caught only by deep scrub. Whether verification runs at all depends on the sidecar's `encrypted` flag ([#95](https://github.com/saworbit/SPACE/issues/95)).
 
 - **MAC before decrypt.** The MAC tag is verified against the ciphertext *before* decryption. If the ciphertext was tampered with, decryption never runs — we don't process untrusted input through the AES core.
 
@@ -440,44 +451,37 @@ Capsules are deleted by reference; segments are deleted by reaching ref_count ze
 ```
 Segment lifecycle:
   Write new        : ref_count = 1
-  Dedup hit        : ref_count += 1 (atomic via NvramLog)
-  Capsule deleted  : ref_count -= 1 for each of its segments
-  ref_count == 0   : eligible for GC
+  Dedup hit        : ref_count += 1
+  Capsule deleted  : ref_count -= 1 per reference; at the last reference the segment
+                     record is removed and its hash unregistered
+  Bytes            : stay in the log until compaction
 ```
 
 ### Delete path
 
-`DELETE capsule_id`:
+`Pipeline::delete_capsule(capsule_id)` is library-only: neither `spacectl` nor the S3 view calls it ([#86](https://github.com/saworbit/SPACE/issues/86)). It:
 
-1. Look up the Capsule.
-2. For each `SegmentId` in `capsule.segments`: `nvram.decrement_refcount(seg_id)`.
-3. Remove the Capsule record from the registry.
-4. Emit `Event::CapsuleDeleted`.
+1. Looks up the Capsule.
+2. For each `SegmentId` in `capsule.segments`: if `ref_count > 1`, decrements it; otherwise deletes the segment record and unregisters its hash.
+3. Removes the Capsule record from the registry.
 
-Segments with `ref_count > 0` after the decrement remain — they belong to other Capsules.
+Segments still referenced by other Capsules remain.
 
 ### Garbage collection
 
-`GarbageCollector::sweep()` (in `capsule-registry/src/gc.rs`):
+`Pipeline::garbage_collect()` removes segments that no Capsule references, or whose `ref_count` is 0, and unregisters their hashes. Unreferenced segments are typically left over from a failed or interrupted write. `capsule_registry::gc::GarbageCollector` is an older variant that nothing uses.
 
-```
-for each segment in backend.segment_ids():
-    if segment.ref_count == 0:
-        registry.deregister_content(segment.content_hash, segment.id)
-        backend.remove_segment(segment.id)
-```
-
-GC removes the metadata entry and the content-hash index entry. **Bytes remain in the log** until compaction (`NvramLog::compact()`) rewrites the live segments to a fresh file and truncates. The two-step design — GC marks; compaction reclaims — lets ref-count decrement be cheap (touch one record) while keeping bulk reclamation infrequent.
+**Bytes remain in the log** until compaction (`NvramLog::compact()`) rewrites it. The two-step design keeps deletion cheap (touch one record) and bulk reclamation infrequent. Nothing runs GC or compaction automatically yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### Race-freedom
 
-The dedup-hit-vs-GC race is the classic worry: a segment hits zero just as a new write is about to dedup-hit it. SPACE serializes these through the NvramLog mutex on `ref_count`: a dedup hit either succeeds (incrementing from 1 → 2) or finds the segment already gone (forcing a fresh write). There is no window where a segment is both reachable and eligible for collection.
+The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle (write, delete, GC) runs under one async mutex, so they never interleave. A second process can't open the same store at all, because sled locks `space.db`.
 
 ---
 
 ## 8. Scrub: continuous integrity
 
-Capsules are durable only if their bytes still match their hashes and MACs. Scrub is the background loop that proves this.
+Capsules are durable only if their bytes still match their hashes and MACs. Scrub is the background loop that proves this. `ScrubExecutor` implements it, but nothing on this branch starts it yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### Two flavors
 
@@ -486,7 +490,7 @@ Capsules are durable only if their bytes still match their hashes and MACs. Scru
 | **Light** | Stored byte count matches `segment.len` | Full read | None |
 | **Deep** | MAC tag (encrypted) or content hash (unencrypted) | Full read | BLAKE3 / AES |
 
-Both run on configurable intervals (defaults: light = 24h, deep = 7d). Each segment tracks its last-checked timestamps; a cycle scrubs only segments that are due.
+Both run on configurable intervals (defaults: light = 24h, deep = 7d). The executor tracks each segment's last-checked times in memory, and a cycle scrubs only segments that are due.
 
 ### Deep scrub of encrypted segments
 
@@ -495,13 +499,15 @@ Both run on configurable intervals (defaults: light = 24h, deep = 7d). Each segm
 3. `verify_mac(ciphertext, metadata, key_pair)` — constant-time.
 4. Failure → `ScrubResult::MacMismatch` (durable corruption or tampering).
 
+An encrypted segment with no `integrity_tag` is recorded as healthy, so removing the tag from the sidecar hides tampering from scrub ([#95](https://github.com/saworbit/SPACE/issues/95)).
+
 ### Deep scrub of unencrypted segments
 
 1. Read bytes from backend.
 2. `verify_content_hash(expected_hash, data, algorithm_string)` → `VerifyOutcome::{Matched, LegacyMatched, Mismatched}`.
 3. `Matched` → healthy. `Mismatched` → `ContentCorrupted`. `LegacyMatched` → healthy *but* the segment was written before the algorithm-domain-separated hash fix and is verifiable only via the bare BLAKE3 fallback.
 
-The `legacy_hash_hits` counter in `ScrubReport` is the operator's gauge for retiring the compatibility window. When it trends to zero across the cluster, the legacy fallback can be removed.
+The `legacy_hash_hits` counter in `ScrubReport` is the operator's gauge for retiring the compatibility window. When it trends to zero across the store, the legacy fallback can be removed.
 
 ### Rate limiting
 
@@ -524,30 +530,30 @@ See `crates/common/src/scrub.rs` and `crates/capsule-registry/src/scrub_executor
 ### 9.1 Crate map
 
 ```
-common         ─ Capsule, Segment, ContentHash, Policy, all traits
-                 (no I/O, no async runtime, no crypto impl — just types & contracts)
+common           ─ Capsule, Segment, ContentHash, Policy, scrub types, all traits
+                   (no I/O, no async runtime, no crypto impl — just types & contracts)
 
-capsule-registry ─ The registry. WritePipeline. ScrubExecutor. GC.
-                   Transactional Sled metadata. Audit events.
+pipeline         ─ Pipeline: the write/read/range/delete/GC implementation.
+                   XtsEncryptor, NoopEncryptor.
 
-storage        ─ StorageBackend implementations: InMemory, TokioFs, AutoFs, Cached.
-                 io_uring optimization on Linux.
+capsule-registry ─ CapsuleRegistry (sled metadata). WritePipeline and
+                   RegistryPipelineHandle wrappers. ScrubExecutor.
 
-nvram-sim      ─ The primary durable backend. Append-only log + JSON sidecar.
-                 Atomic rename, compaction, ref count tracking.
+storage          ─ StorageBackend implementations: InMemory, Nvram, TokioFs, AutoFs, Cached.
+                   Optional io_uring (`uring` feature) on Linux.
 
-dedup          ─ hash_content, hash_content_with_algo, verify_content_hash.
-                 Blake3Deduper (in-memory hash → SegmentId index).
+nvram-sim        ─ NvramLog: append-only log + JSON sidecar, compaction.
 
-encryption     ─ XTS-AES-256 cipher. BLAKE3-MAC. KeyManager (HKDF derivation).
-                 Tweak derivation from content hash.
+dedup            ─ hash_content, hash_content_with_algo, verify_content_hash.
+                   Blake3Deduper.
 
-compression    ─ LZ4 and Zstd. Adaptive entropy-based selection.
+encryption       ─ XTS-AES-256, BLAKE3 MAC, KeyManager (HKDF), key providers.
 
-tiering        ─ Hot/cold heatmap. Driven by Segment.access_count.
+compression      ─ LZ4 and Zstd, with entropy-based skipping.
 
-(protocol-*)   ─ S3, NFS, block, FUSE, CSI, NVMe-oF adapters.
-                 None of these own bytes — they project capsules.
+protocol-s3      ─ S3 view (axum). Owns no bytes — it maps bucket/key to capsules.
+
+spacectl         ─ CLI: create, put, read, list, serve-s3.
 ```
 
 ### 9.2 The `StorageBackend` trait
@@ -572,23 +578,21 @@ pub trait StorageBackend: Send + Sync {
 Two contracts worth emphasizing:
 
 - **`&self` reads.** Multiple concurrent reads are expected and the trait does not gate them. Backends that need interior mutability use `Arc<Mutex<Inner>>` or similar.
-- **Metadata only via transactions.** Direct field-level mutation is intentionally not in the trait surface. `begin_txn().await?.set_segment_metadata(id, seg).await?.commit().await?` is the single path. This is what makes write/dedup/GC race-free.
+- **Metadata only via transactions.** Direct field-level mutation is intentionally not in the trait surface. `begin_txn().await?.set_segment_metadata(id, seg).await?.commit().await?` is the single path for segment metadata.
 
-### 9.3 Transactional metadata
+### 9.3 Metadata commits
 
-The registry's transaction abstraction wraps Sled's batch primitives. Key properties:
+There's no transaction spanning the two stores. A write commits in this order:
 
-- **Atomicity**: capsule + all its segment metadata updates commit together or not at all.
-- **Isolation**: in-flight transactions see a snapshot; commit is serialized.
-- **Crash safety**: on crash mid-commit, the batch is either applied or dropped — never partial.
+1. For each new segment: append the bytes (fsynced), write the segment record (sidecar rewrite, not fsynced), then register its hash in sled.
+2. For each dedup hit: write the segment record with the incremented `ref_count`.
+3. After the last segment: insert the capsule record into sled, then flush.
 
-This is why metadata invariants ("a referenced segment exists", "a content hash maps to a real segment") hold across crashes.
+A crash before step 3 leaves no visible capsule. It does leave stored segments with no capsule pointing at them, and ref-count increments on shared segments that nothing will ever decrement. GC can clear the unreferenced segments, but not the inflated counts ([#97](https://github.com/saworbit/SPACE/issues/97)). Each individual sled insert is crash-safe.
 
-### 9.4 PODMS swarm behavior (feature-gated)
+### 9.4 PODMS swarm behavior (archived)
 
-When `podms` is enabled, Capsules gain `apply_transform` and `on_migrate` hooks that let them re-shape themselves during migration: decrypt under source policy, transcode compression if it differs, re-encrypt under destination policy. This is how a Capsule moves between zones with different keys or compression settings without lossy intermediate states.
-
-See the `SwarmBehavior` implementation in `crates/common/src/lib.rs` and [docs/podms.md](podms.md).
+The PODMS hooks (`apply_transform`, `on_migrate`, `SwarmBehavior`) let a Capsule re-shape itself during migration between zones. They were removed in the reset and are on `archive/pre-reset-2026-10`.
 
 ---
 
@@ -608,7 +612,7 @@ Each subsection below covers one load-bearing decision and the alternative we re
 
 ### 10.2 Deterministic encryption preserves dedup
 
-**Decision**: XTS-AES-256 with the tweak derived from the content hash (first 16 bytes).
+**Decision**: XTS-AES-256 with the tweak taken from a BLAKE3 hash of the segment's compressed bytes (first 16 bytes).
 
 **Alternative**: AES-GCM with a random nonce per segment.
 
@@ -616,7 +620,7 @@ Each subsection below covers one load-bearing decision and the alternative we re
 
 The price: XTS is technically less robust against chosen-ciphertext attacks than GCM. We pay this back with the BLAKE3-MAC layer ([§10.3](#103-mac-on-top-of-xts)), which gives us authenticated encryption properties at the cost of one extra hash per segment. The combined construction is XTS-then-MAC, not GCM.
 
-The tweak derives from the content hash, so the tweak is also dedup-determined. This is unusual — XTS tweaks are conventionally sector numbers. Using the hash means we don't need a stable address space to encrypt, which is necessary because segment IDs can shift (compaction).
+The tweak derives from the segment's own bytes, so identical segments get identical tweaks. This is unusual: XTS tweaks are conventionally sector numbers. Using a content-derived tweak means identical segments encrypt identically wherever they're stored, and compaction can move segments to new offsets without re-encrypting them. The cost is that equal segments are visible as equal ciphertext.
 
 ### 10.3 MAC on top of XTS
 
@@ -624,7 +628,7 @@ The tweak derives from the content hash, so the tweak is also dedup-determined. 
 
 **Alternative**: rely on XTS alone, or use AES-GCM (which bundles auth).
 
-**Why**: XTS is a length-preserving cipher with no authentication — corrupting ciphertext produces corrupt plaintext silently. The MAC layer turns this into authenticated encryption. The MAC also covers the encryption metadata (version, key version, tweak, length) so an attacker cannot swap segments between Capsules and have them decrypt cleanly.
+**Why**: XTS is a length-preserving cipher with no authentication — corrupting ciphertext produces corrupt plaintext silently. The MAC layer turns this into authenticated encryption. The MAC also covers the encryption metadata (version, key version, tweak, length), so those fields can't be changed undetected. It doesn't bind a segment to a Capsule (dedup deliberately shares segments). It also doesn't cover the sidecar's `encrypted` flag, which decides whether verification runs at all ([#95](https://github.com/saworbit/SPACE/issues/95)).
 
 BLAKE3 is chosen for speed (>2 GB/s on commodity x86). The MAC key is derived deterministically from both XTS subkeys: `BLAKE3(b"SPACE-BLAKE3-MAC-KEY-V1", key1, key2)`. This binds the MAC to the encryption key without requiring a separate key store entry.
 
@@ -654,7 +658,7 @@ The fix domain-separates the hash by algorithm. The two writes now produce disti
 **Why**:
 - **Hash plaintext**: dedup before compression. Tempting, but means two capsules with the same plaintext but different compression policies would share a segment — the stored bytes differ, so this fails immediately.
 - **Hash ciphertext**: dedup after encryption. Requires the tweak to be content-independent, which means dedup is broken or tweaks leak content. Either way, no good.
-- **Hash compressed-pre-encryption**: dedup matches stored compressed bytes; tweak can derive from the hash deterministically; encryption preserves dedup. This is the only point in the pipeline where all three properties align.
+- **Hash compressed-pre-encryption**: dedup matches stored compressed bytes; the tweak can derive deterministically from the same bytes; encryption preserves dedup. This is the only point in the pipeline where all three properties align.
 
 ### 10.6 Atomic metadata via `.tmp` + rename
 
@@ -662,9 +666,9 @@ The fix domain-separates the hash by algorithm. The two writes now produce disti
 
 **Alternative**: overwrite in place.
 
-**Why**: a crash mid-overwrite leaves the sidecar truncated and unparseable, taking the entire segment map down. With `.tmp` + rename, a crash before rename leaves the old sidecar intact; a crash after rename leaves the new sidecar intact. The window between is the kernel's rename atomicity, which on POSIX is a single inode flip. On Windows, the equivalent is `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`.
+**Why**: a crash mid-overwrite leaves the sidecar truncated and unparseable, taking the entire segment map down. With `.tmp` + rename, a crash before rename leaves the old sidecar intact; a crash after rename leaves the new sidecar intact. The window between is the kernel's rename atomicity, which on POSIX is a single inode flip. On Windows, `std::fs::rename` replaces the destination the same way; the code also falls back to remove-then-rename if the rename reports that the target exists. Neither file is fsynced around the rename ([#96](https://github.com/saworbit/SPACE/issues/96)).
 
-The `.compacting` marker handles a different failure mode: a crash mid-compaction (rewriting the segment log itself, not the sidecar) might leave dangling references. The marker's presence at `open()` signals "re-validate" before accepting reads.
+The `.compacting` marker covers a different failure: a crash mid-compaction, while the segment log itself is being rewritten. If the marker exists, `open()` refuses to open the log. An operator then has to verify or restore the data and delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)).
 
 ### 10.7 4 MiB default segment size
 
@@ -673,12 +677,12 @@ The `.compacting` marker handles a different failure mode: a crash mid-compactio
 **Alternative**: smaller (better dedup granularity) or larger (less per-segment overhead).
 
 **Why**: 4 MiB is the empirical sweet spot across the workloads SPACE targets:
-- Large enough that per-segment metadata (offset, hash, MAC tag, ~120 bytes total) is well under 0.01% of the segment.
+- Large enough that per-segment metadata (about 490 bytes in the JSON sidecar) is about 0.01% of the segment.
 - Small enough that range reads waste at most 4 MiB.
 - Small enough that dedup hits are common for many real-world files (video frames, container layers, source archives).
 - Aligned with common SSD erase block and io_uring submission sizes.
 
-The `LayoutPolicy` can override this — adaptive entropy compression, ZNS zone graphs, and learned strategies all produce variable-sized segments. The 4 MiB default is the fallback when no smarter strategy is configured.
+`LayoutPolicy` can change the size (`Fixed`, `ZnsGraph`); the other strategies fall back to 4 MiB. Within a Capsule every segment is the same size except the last.
 
 ### 10.8 Append-only log as primary store
 
@@ -686,9 +690,9 @@ The `LayoutPolicy` can override this — adaptive entropy compression, ZNS zone 
 
 **Alternative**: in-place update with a free list.
 
-**Why**: append-only matches NVRAM/flash physics (no rewrites = no write amplification = longer device life), matches replication semantics (ship the log forward), and dramatically simplifies crash recovery (no partial-write torn states). The compaction cost is amortized and runs in the background; it doesn't block writes.
+**Why**: append-only matches NVRAM/flash physics (no rewrites = no write amplification = longer device life), matches replication semantics (ship the log forward), and dramatically simplifies crash recovery (no partial-write torn states). The intent is for compaction to be amortized in the background. Today nothing schedules it, and when it does run it holds the log's write lock, so it blocks writes ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
 
-The trade-off is space overhead: GC'd segments occupy bytes until the next compaction. For workloads with rapid churn this is real, but compaction frequency is policy-tunable (`compact_interval_secs`).
+The trade-off is space overhead: GC'd segments occupy bytes until the next compaction. For workloads with rapid churn this is real. `compact_interval_secs` is meant to tune the frequency, but nothing reads it yet.
 
 ### 10.9 Two-store split: NVRAM log + Sled registry
 
@@ -698,7 +702,7 @@ The trade-off is space overhead: GC'd segments occupy bytes until the next compa
 
 **Why**: the access patterns are fundamentally different. Segment bytes want streaming sequential I/O, large blocks, and append semantics. Capsule metadata wants point lookups, transactional updates, and small records. Fusing them means either the metadata path is slow (full-log scans) or the byte path is slow (random-write database pages).
 
-Sled gives transactional semantics for metadata. NVRAM log gives append throughput for bytes. The transactional commit handoff between the two is the single point where atomicity matters — and is the only place we use a coordinated write barrier.
+Sled gives crash-safe point updates for metadata. NVRAM log gives append throughput for bytes. The handoff between the two is the one place where atomicity matters, and it isn't atomic yet; see [§9.3](#93-metadata-commits).
 
 ### 10.10 Trust segment metadata over policy on read
 
@@ -712,7 +716,7 @@ Sled gives transactional semantics for metadata. NVRAM log gives append throughp
 
 ## 11. Invariants
 
-These are the invariants the system maintains. They are tested by the proptest harness in [crates/capsule-registry/tests/proptest_pipeline.rs](../crates/capsule-registry/tests/proptest_pipeline.rs).
+These are the invariants the system aims to maintain. The first four are tested by the proptest harness in [crates/capsule-registry/tests/proptest_pipeline.rs](../crates/capsule-registry/tests/proptest_pipeline.rs). The rest aren't tested; where one currently breaks, that's noted under it.
 
 ### Round-trip
 
@@ -720,6 +724,7 @@ For any byte sequence `B` and any policy `P`:
 ```
 read(write(B, P)) == B
 ```
+Exception: with encryption on, writes whose final segment is 1–15 bytes fail instead ([#94](https://github.com/saworbit/SPACE/issues/94)).
 Tested by `prop_roundtrip_unencrypted`, `prop_roundtrip_encrypted`, and boundary cases (empty, single byte, 4 MiB ± epsilon).
 
 ### Dedup determinism
@@ -755,15 +760,17 @@ Tested by `prop_no_cross_policy_dedup_collision`. This is the regression test fo
 seg.ref_count == count(capsules referencing seg.id)
 seg.ref_count == 0 ⟹ seg eligible for GC
 ```
+Broken by a crash mid-write: a dedup hit's increment survives even though its capsule was never created ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### Crash recovery
 
-After arbitrary crash during write or compaction:
+After a crash during a write:
 ```
 open() succeeds
 all committed Capsules remain readable
 no Capsule is partially visible
 ```
+Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log ([#97](https://github.com/saworbit/SPACE/issues/97)). It does not hold after a crash during compaction, where `open()` refuses to start ([#108](https://github.com/saworbit/SPACE/issues/108)), or if the sidecar is lost ([#96](https://github.com/saworbit/SPACE/issues/96)).
 
 ### Segment metadata is truth
 
@@ -778,16 +785,16 @@ never on capsule.policy
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch | `ScrubResult::ContentCorrupted` / `MacMismatch`. Operator restores from replica or accepts loss. |
+| **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch. Reads catch it only for encrypted segments ([#95](https://github.com/saworbit/SPACE/issues/95)). | `ScrubResult::ContentCorrupted` / `MacMismatch`. Restore from backup or accept the loss (no replicas on this branch). |
 | **Truncated segment file** | Light scrub: actual_len ≠ metadata.len | `ScrubResult::MetadataMismatch`. Same as above. |
-| **Lost sidecar** | `open()` finds no `.segments` file | Reconstruction from log scan (boot-time recovery). |
-| **Crash mid-`save_segment_map`** | `.tmp` exists at `open()` | Drop `.tmp`; old sidecar still valid. |
-| **Crash mid-compaction** | `.compacting` marker present | Re-validate live segments against rewritten log; resume or abort compaction. |
-| **Crash mid-append** | Log length > sidecar's max offset | Truncate log to last recorded offset. The partial segment was never committed; safe to discard. |
-| **Sled corruption** | Sled checksum failure on read | Restore registry from latest snapshot + replay audit log. |
+| **Lost sidecar** | `open()` starts with an empty map; reads fail with `Segment not found` | None. The log has no framing to rebuild from ([#96](https://github.com/saworbit/SPACE/issues/96)). |
+| **Crash mid-`save_segment_map`** | `.segments.tmp` exists at `open()` | If `.segments` still exists, the stale `.tmp` is ignored and left in place. If `.segments` is missing, the `.tmp` is promoted. |
+| **Crash mid-compaction** | `.segments.compacting` marker present | `open()` refuses to open the log. Verify or restore the data, then delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)). |
+| **Crash mid-append** | None; `open()` appends after the current end of the file | Nothing truncates the log. The partial bytes, and any segments the interrupted write had already stored, stay until GC and compaction run ([#97](https://github.com/saworbit/SPACE/issues/97)). |
+| **Sled corruption** | Sled checksum failure on read | Restore `space.db` from backup. There's no audit log to replay. |
 | **Wrong key on read** | MAC verify fails | Read fails with auth error. No plaintext is exposed. |
-| **Key rotated, old key gone** | `key_manager.get_key(version)` returns None for stored `key_version` | Read fails. Key retention is the operator's responsibility. |
-| **Dedup-hit-then-GC race** | Cannot occur — ref_count operations are serialized through NvramLog mutex | n/a |
+| **Key version no longer wanted** | n/a: every version is re-derived from the master key on demand | Old versions can't be retired while the master key is kept, and losing the master key loses every version. |
+| **Dedup-hit-then-GC race** | Cannot occur: write, delete and GC run under the pipeline handle's lock | n/a |
 | **Cross-policy hash collision** | `prop_no_cross_policy_dedup_collision` enforces non-occurrence | n/a — prevented by `hash_content_with_algo` domain separation. |
 | **Pre-fix bare-BLAKE3 segment encountered by scrub** | `verify_content_hash` returns `LegacyMatched` | Healthy; counted in `legacy_hash_hits`. Operator tracks gauge to retire compatibility window. |
 
@@ -802,18 +809,18 @@ never on capsule.policy
 | **CapsuleId** | UUID v4 wrapped in a newtype. |
 | **SegmentId** | Monotonic u64 within an NVRAM log. |
 | **ContentHash** | Hex-encoded BLAKE3 over compressed pre-encryption bytes, with algorithm domain separation. |
-| **Policy** | The compression/encryption/layout/federation/transform bundle currently active on a Capsule. Updated in place by storage-layer transformations (PODMS migration, key rotation, transcoding); see [§2.1](#21-identity-vs-representation). |
+| **Policy** | The compression/encryption/layout bundle a Capsule was written with. Set at write time; see [§3.6](#36-policy). |
 | **Integrity tag** | First 16 bytes of `BLAKE3_keyed(mac_key, ciphertext ‖ metadata)`. The MAC. |
-| **Tweak** | 16-byte XTS tweak derived from the content hash. |
+| **Tweak** | 16-byte XTS tweak: the first 16 bytes of a BLAKE3 hash of the segment's compressed bytes. |
 | **Light scrub** | Background verification of stored byte counts. |
 | **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted). |
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |
-| **Registry** | The Sled-backed metadata store: Capsules, content-hash index, audit log. |
+| **Registry** | The Sled-backed metadata store: Capsules, content-hash index, segment ID counter. |
 | **NVRAM log** | The primary durable backend. Append-only log + JSON sidecar. |
 | **Compaction** | Rewriting the live segments of an NVRAM log to reclaim space from GC'd segments. |
-| **PODMS** | Policy-Orchestrated Disaggregated Mesh Scaling. Feature-gated distributed mode. |
-| **Sovereignty** | A PODMS policy attribute controlling whether a Capsule may be replicated/migrated across zones. |
+| **PODMS** | Policy-Orchestrated Disaggregated Mesh Scaling. The distributed mode, archived in the reset. |
+| **Sovereignty** | A PODMS policy attribute controlling whether a Capsule may be replicated/migrated across zones (archived). |
 
 ---
 
@@ -825,7 +832,7 @@ never on capsule.policy
 - Policy: [crates/common/src/policy.rs](../crates/common/src/policy.rs)
 - Traits: [crates/common/src/traits.rs](../crates/common/src/traits.rs)
 - Scrub types: [crates/common/src/scrub.rs](../crates/common/src/scrub.rs)
-- Write/read pipeline: [crates/capsule-registry/src/pipeline/](../crates/capsule-registry/src/pipeline/)
+- Write/read pipeline: [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs) (wrapped by [crates/capsule-registry/src/pipeline/](../crates/capsule-registry/src/pipeline/))
 - Scrub executor: [crates/capsule-registry/src/scrub_executor.rs](../crates/capsule-registry/src/scrub_executor.rs)
 - GC: [crates/capsule-registry/src/gc.rs](../crates/capsule-registry/src/gc.rs)
 - NVRAM log: [crates/nvram-sim/src/lib.rs](../crates/nvram-sim/src/lib.rs)
@@ -835,16 +842,14 @@ never on capsule.policy
 
 ### Related documentation
 
-- [Architecture Overview](architecture.md) — platform-level diagrams, system context.
-- [CapsuleFlow Layout Engine](capsuleflow.md) — Phase 3 layout strategies.
-- [Protocol Views](protocol_views.md) — S3, NFS, block, FUSE, CSI, NVMe-oF facades.
-- [Encryption Implementation](implementation/ENCRYPTION_IMPLEMENTATION.md) — XTS-AES-256 + BLAKE3-MAC deep dive.
-- [Dedup Implementation](implementation/DEDUP_IMPLEMENTATION.md) — Blake3Deduper details.
-- [Dependency Security](dependency-security.md) — crypto dependency audit trail.
-- [Patentable Concepts](patentable_concepts.md) — novel-claims summary.
-- [PODMS Scaling](podms.md) — distributed mesh mode.
-- [Future State Architecture](future_state_architecture.md) — direction beyond v0.2.
+- [ARCHITECTURE.md](../ARCHITECTURE.md): the single-node core at a glance.
+- [S3 quick start](guides/QUICKSTART_S3.md) and [Streaming reads](guides/STREAMING_READS.md).
+- [Encryption Implementation](implementation/ENCRYPTION_IMPLEMENTATION.md): XTS-AES-256 + BLAKE3-MAC deep dive.
+- [Dedup Implementation](implementation/DEDUP_IMPLEMENTATION.md): content index, ref counting, GC.
+- [Encrypted Dedup Flow](implementation/ENCRYPTED_DEDUP_FLOW.md): how the two fit together.
+- [Dependency Security](dependency-security.md): crypto dependency policy.
+- The pre-reset design docs (architecture, CapsuleFlow layout engine, protocol views, PODMS, future-state architecture) are on `archive/pre-reset-2026-10`.
 
 ---
 
-*Last updated: 2026-05-16. If you change any invariant in §11, update both the corresponding proptest and this document.*
+*Last updated: 2026-10-29. If you change any invariant in §11, update both the corresponding proptest and this document.*

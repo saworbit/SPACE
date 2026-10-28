@@ -33,33 +33,46 @@ For Critical and High severity issues:
 
 Only the latest `main` branch receives security updates.
 
-## Security Hardening Summary
+## What this branch protects, and what it doesn't
 
-The following security measures are implemented in the current codebase:
+This describes the post-reset `main` branch. None of it has been professionally audited; don't use SPACE in production without an independent review.
 
-### Input Validation
-- **Path traversal protection**: All object API endpoints (`upload`, `download`, `HEAD`) reject null bytes, backslashes, and `..` path components before any filesystem operations.
-- **Deserialization size limits**: Replication frames are capped at 16 MiB before `bincode::deserialize` is called, preventing out-of-memory denial-of-service attacks.
+### Encryption at rest
 
-### Secret Management
-- **No hardcoded secrets**: JWT signing keys use random ephemeral generation in debug builds with a warning log. The dev god-token requires the `SPACE_DEV_GOD_TOKEN` environment variable to be explicitly set.
-- **Signing key entropy**: Default orchestrator signing keys use OS-provided entropy (`/dev/urandom` on Linux) instead of zeroed byte arrays.
-- **Master key isolation**: Production master keys are loaded from `SPACE_MASTER_KEY` (env) or `SPACE_MASTER_KEY_FILE` (file path), never hardcoded.
+- Segments can be encrypted with XTS-AES-256 and authenticated with a 16-byte BLAKE3 keyed MAC. The MAC is checked in constant time before decryption.
+- Per-version keys are derived from a 32-byte master key with HKDF-HMAC-SHA256 and zeroized on drop. See [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md).
+- Encryption is only reachable through the library API. `spacectl create` and the S3 view always write unencrypted, even with `SPACE_MASTER_KEY` set ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- The master key comes from `SPACE_MASTER_KEY` (64 hex characters). `SPACE_MASTER_KEY_FILE` isn't supported; the library API does have a `FileKeyProvider`.
+- A missing or malformed `SPACE_MASTER_KEY` doesn't fail. Writes go through the plaintext pipeline, and some code paths fall back to an all-zero or fixed key ([#84](https://github.com/saworbit/SPACE/issues/84)).
+- Encryption is deterministic so that dedup keeps working. Identical segments produce identical ciphertext, which reveals that they're equal.
+- Dedup can attach an encrypted capsule to an existing plaintext segment ([#83](https://github.com/saworbit/SPACE/issues/83)).
+- Key rotation isn't persisted across restarts ([#98](https://github.com/saworbit/SPACE/issues/98)).
 
-### Resilience
-- **Mutex poisoning recovery**: Locks across 6 crates use `unwrap_or_else(|e| e.into_inner())` to recover data from poisoned mutexes rather than propagating panics through the system.
-- **Descriptive panic messages**: All remaining `expect()` calls include context about what operation failed and suggested remediation.
+### Integrity
 
-### Transport Security
-- **TLS configuration**: `TlsConfig` struct supports env-based mTLS configuration (`SPACE_TLS_CA_CERT`, `SPACE_TLS_CERT`, `SPACE_TLS_KEY`) for inter-node transport. A warning is logged when TLS is not configured.
-- **Integrity verification**: All replicated segments include BLAKE3-MAC tags verified using constant-time comparison.
+- Only encrypted segments are verified on read. Unencrypted segments are returned as stored.
+- Whether a segment counts as encrypted is decided by a flag in an unauthenticated JSON sidecar ([#95](https://github.com/saworbit/SPACE/issues/95)).
+- Deep scrub verifies content hashes and MACs when it runs, but nothing runs it automatically ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
-### Encryption
-- **XTS-AES-256**: Per-segment encryption with deterministic tweaks preserving deduplication.
-- **BLAKE3-MAC**: Keyed integrity tags on every segment, validated on read.
-- **Key rotation**: Version-tracked key derivation with BLAKE3-KDF.
-- **Memory zeroization**: Keys are zeroized on drop via the `zeroize` crate.
+### Network exposure
 
-### Known Limitations
-- Security features have not been professionally audited. Do not use in production without an independent review.
-- Inter-node TLS, the eBPF gateway, and the optional post-quantum key wrap were removed with the experimental crates. They remain on `archive/pre-reset-2026-10`.
+- `spacectl serve-s3` listens on 0.0.0.0 with no authentication and permissive CORS. Anyone who can reach the port can read, write and delete objects ([#90](https://github.com/saworbit/SPACE/issues/90)).
+- `--token` and `SPACE_AUTH_TOKEN` are accepted but not enforced.
+- There's no TLS.
+- S3 request and response bodies are buffered in memory, so large or concurrent transfers can exhaust it ([#99](https://github.com/saworbit/SPACE/issues/99)).
+
+### Code practices
+
+- Lock acquisitions in `storage`, `pipeline`, `protocol-s3` and `capsule-registry` mostly recover from poisoned locks with `unwrap_or_else(|e| e.into_inner())`. `nvram-sim` still uses `.unwrap()`.
+- Cryptographic and serialization dependencies are pinned to exact versions in the root `Cargo.toml`, and `Cargo.lock` is committed.
+
+### Removed in the reset
+
+These belonged to crates removed in the 2026-10-19 reset and are on `archive/pre-reset-2026-10`:
+
+- object API path validation;
+- replication frame size limits;
+- JWT and token auth, and orchestrator signing keys;
+- inter-node TLS;
+- the eBPF gateway;
+- the post-quantum key wrap.

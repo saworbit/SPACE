@@ -1,611 +1,172 @@
-# SPACE Phase 3: Encryption Implementation Guide
+# Encryption Implementation
 
-**Version:** 0.1.0  
-**Date:** 2025-01-27  
-**Status:** Complete - Production Ready  
+This document covers how SPACE encrypts segments on the post-reset `main` branch: XTS-AES-256 with a deterministic tweak, a BLAKE3 keyed MAC, and HKDF-derived keys.
 
----
+**Status:**
+- The encryption path works through the library API.
+- `spacectl create` and S3 PUT always write with the default policy, which has encryption disabled, so they never encrypt ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- The crate hasn't had an external review.
 
-## Overview
+## Where the code lives
 
-This document provides implementation details for SPACE Phase 3 encryption, including XTS-AES-256 encryption, BLAKE3-MAC integrity, and key management with deduplication preservation.
+| File | Contents |
+|------|----------|
+| `crates/encryption/src/xts.rs` | `encrypt`, `decrypt`, `encrypt_segment`, `decrypt_segment`, `derive_tweak_from_hash` |
+| `crates/encryption/src/mac.rs` | `compute_mac`, `verify_mac` (BLAKE3 keyed MAC) |
+| `crates/encryption/src/keymanager.rs` | `KeyManager`, `XtsKeyPair`, HKDF key derivation |
+| `crates/encryption/src/key_provider.rs` | `KeyProvider` trait: `EnvKeyProvider`, `FileKeyProvider`, and `AwsKmsProvider` / `HashiCorpVaultProvider` stubs that return "not implemented" |
+| `crates/encryption/src/policy.rs` | `EncryptionMetadata` |
+| `crates/encryption/src/error.rs` | `EncryptionError` |
+| `crates/pipeline/src/lib.rs` | `XtsEncryptor` and `NoopEncryptor`, plus where the write and read paths call them |
 
----
+The pipeline uses `common::EncryptionPolicy`:
 
-## Module Architecture
-```
-crates/encryption/
-├── src/
-│   ├── lib.rs              # Exports & constants
-│   ├── error.rs            # EncryptionError enum
-│   ├── policy.rs           # EncryptionPolicy & EncryptionMetadata
-│   ├── keymanager.rs       # KeyManager & key derivation
-│   ├── xts.rs              # XTS-AES-256 encrypt/decrypt
-│   └── mac.rs              # BLAKE3-MAC compute/verify
-└── Cargo.toml              # Dependencies: aes, xts-mode, blake3, zeroize
-```
-
----
-
-## Core Components
-
-### 1. Error Handling (`error.rs`)
 ```rust
-#[derive(Debug, thiserror::Error)]
-pub enum EncryptionError {
-    #[error("Invalid key length: expected 32 or 64 bytes, got {0}")]
-    InvalidKeyLength(usize),
-    
-    #[error("Key version {0} not found")]
-    KeyVersionNotFound(u32),
-    
-    #[error("Integrity check failed")]
-    IntegrityFailure,
-    
-    #[error("Missing encryption metadata")]
-    MissingMetadata,
-    
-    // ... 5 more variants
-}
-
-pub type Result<T> = std::result::Result<T, EncryptionError>;
-```
-
-**Usage:**
-- All encryption functions return `Result<T>`
-- Errors propagate with `?` operator
-- Convert to `anyhow::Error` in pipeline with `.map_err(|e| anyhow::anyhow!("{}", e))`
-
----
-
-### 2. Policy & Metadata (`policy.rs`)
-
-#### EncryptionPolicy
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EncryptionPolicy {
-    Disabled,                              // Default
-    XtsAes256 { key_version: Option<u32> }, // Opt-in
-}
-
-impl EncryptionPolicy {
-    pub fn is_enabled(&self) -> bool;      // Check if encryption active
-    pub fn key_version(&self) -> Option<u32>; // Get version or None
+    Disabled,                                 // default
+    XtsAes256 { key_version: Option<u32> },  // None = current key version
 }
 ```
 
-**Integration:**
-```rust
-// In common/src/policy.rs
-pub struct Policy {
-    pub compression: CompressionPolicy,
-    pub dedupe: bool,
-    #[serde(default)]
-    pub encryption: EncryptionPolicy,  // Added
-}
+`Policy::encrypted()` (LZ4) and `Policy::encrypted_compressed()` (Zstd level 3) are the presets that turn it on. The `encryption` crate also defines its own `EncryptionPolicy` (`None` / `XtsAes256 { key_version: u32 }`), which the pipeline doesn't use.
 
-// Presets
-Policy::encrypted()              // Enable encryption
-Policy::encrypted_compressed()   // Encryption + Zstd
+## Keys
+
+### Master key
+
+The master key is 32 bytes. Ways to load it:
+
+- `KeyManager::from_env()` reads `SPACE_MASTER_KEY`, which must be exactly 64 hex characters.
+- `KeyManager::new([u8; 32])`.
+- `KeyManager::from_provider(&dyn KeyProvider).await`.
+- `KeyManager::from_tpm(&impl TpmProvider)`.
+- `KeyManager::generate()`, which creates a random key.
+
+### Derivation
+
+Derivation is HKDF-HMAC-SHA256, hand-rolled on the `hmac` and `sha2` crates:
+
+```
+salt   = BLAKE3("SPACE-HKDF-SALT-V1" || master_key)[..32]   (or a salt supplied by a TPM provider)
+prk    = HMAC-SHA256(salt, master_key)
+okm    = HKDF-Expand(prk, info = "SPACE-XTS-AES-256-KEY-V1" || version as u32 big-endian, 64 bytes)
+key1   = okm[..32]   (data key)
+key2   = okm[32..]   (tweak key)
 ```
 
-#### EncryptionMetadata
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptionMetadata {
-    pub encryption_version: Option<u16>,    // 1 = XTS-AES-256
-    pub key_version: Option<u32>,           // Key used
-    pub tweak_nonce: Option<[u8; 16]>,      // XTS tweak
-    pub integrity_tag: Option<[u8; 16]>,    // BLAKE3-MAC
-    pub ciphertext_len: Option<u32>,        // Length
-}
+`get_key(version)` derives a version on first use and caches it. Every version can be re-derived from the master key, so anyone holding the master key can read every version.
 
-// Constructor
-EncryptionMetadata::new_xts(key_version: u32, tweak: [u8; 16], len: u32)
+### Rotation
 
-// Helpers
-metadata.is_encrypted() -> bool
-metadata.require_tweak() -> Result<[u8; 16]>
-metadata.set_integrity_tag(tag: [u8; 16])
+`rotate()` increments the current version and errors while a previous rotation hasn't been marked done with `complete_rotation()`. Segments record the `key_version` they were written with and stay readable after a rotation.
+
+Rotation is in memory only: every constructor starts at version 1, so a restart undoes it, and nothing exposes it through `spacectl` ([#98](https://github.com/saworbit/SPACE/issues/98)).
+
+### Zeroization
+
+- `XtsKeyPair` derives `Zeroize` and `ZeroizeOnDrop`.
+- `KeyManager`'s `Drop` zeroizes the master key and the salt.
+- `XtsEncryptor` clones the key pair for each segment; the clones zeroize when dropped.
+
+### Fallbacks to know about
+
+These are tracked in [#84](https://github.com/saworbit/SPACE/issues/84):
+
+- If `SPACE_MASTER_KEY` is missing or invalid, `WritePipeline::new` and the registry pipeline builders quietly choose the plaintext pipeline (`NoopEncryptor`).
+- `CapsuleRegistry::open` falls back to an all-zero master key.
+- `EnvKeyProvider` falls back to a fixed key when its variable is unset.
+
+## XTS-AES-256
+
+- Built on the `xts-mode` and `aes` crates. `aes` uses AES-NI when the CPU supports it.
+- Each segment is encrypted as a single XTS data unit with one tweak. The ciphertext is the same length as the input.
+- Input must be at least 16 bytes, or encryption fails with `InvalidCiphertextLength`. Encrypted writes of 1–15 byte objects, or of objects whose last segment is under 16 bytes, therefore fail ([#94](https://github.com/saworbit/SPACE/issues/94)).
+- **Tweak:** `derive_tweak_from_hash(blake3(compressed_segment))`, the first 16 bytes of a plain BLAKE3 hash of the bytes being encrypted. This is not the dedup `content_hash`, which also mixes in the compression algorithm. The tweak is stored in the segment's `tweak_nonce`.
+- **Deterministic:** the same compressed bytes under the same key version always produce the same ciphertext. That is what lets encrypted segments be shared between capsules. It also means anyone who can read the disk can see which segments are equal.
+
+## MAC
+
+```
+mac_key = BLAKE3("SPACE-BLAKE3-MAC-KEY-V1" || key1 || key2)
+tag     = BLAKE3_keyed(mac_key, ciphertext || encryption_version (u16 LE) || key_version (u32 LE)
+                                || tweak (16 B) || ciphertext_len (u32 LE))[..16]
 ```
 
-**Storage:** Embedded in `Segment` struct, persisted to `space.nvram.segments`
+- Each metadata field is included only when it's set.
+- `verify_mac` compares tags with `subtle::ConstantTimeEq` and runs before decryption.
+- The MAC does **not** cover the segment ID, the capsule ID, the `encrypted` / `compressed` flags, or `wrapped_segment_key`.
+- Whether a segment gets verified at all depends on the `encrypted` flag in the segment sidecar. Clearing that flag skips verification, and unencrypted segments aren't integrity-checked on read ([#95](https://github.com/saworbit/SPACE/issues/95)).
 
----
+## Write path
 
-### 3. Key Management (`keymanager.rs`)
+`Pipeline::write_capsule` handles each chunk of the input (4 MiB by default) as follows:
 
-#### KeyManager
-```rust
-pub struct KeyManager {
-    master_key: [u8; 32],                    // From KeyProvider (env/file/TPM/KMS)
-    hkdf_salt: [u8; 32],                     // Device / TPM provided salt
-    key_cache: HashMap<u32, XtsKeyPair>,     // Derived keys
-    current_version: u32,                    // Active version
-}
+1. **Compress.** The chunk is stored as `identity` (uncompressed) if the first 1 KiB has entropy of 7.5 bits/byte or more, or if compression doesn't make it smaller.
+2. **Hash.** `content_hash = hash_content_with_algo(compressed, algo)`.
+3. **Dedup lookup.**
+   - **Hit:** increment the existing segment's `ref_count` and reuse it. Nothing is encrypted or written.
+   - The lookup ignores the encryption policy, so an encrypted write can reuse a plaintext segment ([#83](https://github.com/saworbit/SPACE/issues/83)).
+4. **Miss:** if the policy enables encryption, `XtsEncryptor::encrypt` produces the ciphertext, tweak, key version and MAC tag. The bytes are appended to the log, the segment metadata is written with those fields, and `content_hash` is registered.
+   - `encrypted` is set from the *policy*. With `NoopEncryptor` (no key loaded), the stored bytes are plaintext but still marked encrypted ([#84](https://github.com/saworbit/SPACE/issues/84)).
+5. **Record the capsule.** Once every chunk is stored, the capsule record is created with its list of segment IDs.
 
-// Initialization
-KeyManager::from_env() -> Result<Self>          // From SPACE_MASTER_KEY (hex; legacy helper)
-KeyManager::from_provider(provider: &dyn KeyProvider) -> Result<Self>  // async; env/file/vault/KMS
-KeyManager::from_tpm<T: TpmProvider>(provider: &T) -> Result<Self>
-KeyManager::new(master_key: [u8; 32]) -> Self   // Explicit (testing)
+## Read path
 
-// Key access
-get_key(&mut self, version: u32) -> Result<&XtsKeyPair>  // Derive if needed
-current_version(&self) -> u32
+For each segment of the capsule:
 
-// Rotation
-rotate_key(&mut self) -> u32                    // Bump version
-clear_cache(&mut self)                          // Force re-derivation
-```
+1. Read the stored bytes.
+2. If `segment.encrypted` is set:
+   - build the MAC metadata from the segment record (`tweak_nonce`, `key_version`, `encryption_version`, length);
+   - load that key version;
+   - verify the MAC;
+   - decrypt.
+3. If `segment.compressed` is set, decompress according to `compression_algo`.
 
-#### Key Derivation
-```rust
-fn derive_xts_key_pair(master_key: &[u8; 32], hkdf_salt: &[u8; 32], version: u32) -> [u8; 64] {
-    // Extract: PRK = HMAC-SHA256(hkdf_salt, master_key)
-    let prk = hkdf_extract(hkdf_salt, master_key);
+The read path uses the segment record's flags, never `capsule.policy`. If a segment has no `tweak_nonce`, the reader falls back to deriving a tweak from `content_hash`. That gives a different value from the one the writer used, so verification fails; segments written by the pipeline always record a tweak.
 
-    // Expand: context info binds the version into the key material
-    let mut info = Vec::from("SPACE-XTS-AES-256-KEY-V1");
-    info.extend_from_slice(&version.to_be_bytes());
+## Using it
 
-    hkdf_expand(&prk, &info, 64)
-}
-```
-
-**Properties:**
-- Deterministic (same master + version = same keys)
-- Domain-separated (different contexts = different keys)
-- Forward secure (old keys don't reveal new keys)
-
-#### XtsKeyPair
-```rust
-pub struct XtsKeyPair {
-    key1: [u8; 32],  // AES-256 key for data
-    key2: [u8; 32],  // AES-256 key for tweak
-}
-
-impl Drop for XtsKeyPair {
-    fn drop(&mut self) {
-        self.key1.zeroize();  // Clear from memory
-        self.key2.zeroize();
-    }
-}
-```
-
----
-
-### 4. XTS Encryption (`xts.rs`)
-
-#### Core API
-```rust
-// Low-level
-pub fn encrypt(
-    plaintext: &[u8],
-    key_pair: &XtsKeyPair,
-    tweak: &[u8; 16],
-) -> Result<Vec<u8>>
-
-pub fn decrypt(
-    ciphertext: &[u8],
-    key_pair: &XtsKeyPair,
-    tweak: &[u8; 16],
-) -> Result<Vec<u8>>
-
-// High-level (with metadata)
-pub fn encrypt_segment(
-    plaintext: &[u8],
-    key_pair: &XtsKeyPair,
-    key_version: u32,
-    tweak: [u8; 16],
-) -> Result<(Vec<u8>, EncryptionMetadata)>
-
-pub fn decrypt_segment(
-    ciphertext: &[u8],
-    key_pair: &XtsKeyPair,
-    metadata: &EncryptionMetadata,
-) -> Result<Vec<u8>>
-```
-
-#### Tweak Derivation (Critical for Dedup)
-```rust
-pub fn derive_tweak_from_hash(content_hash: &[u8]) -> [u8; 16] {
-    let mut tweak = [0u8; 16];
-    let copy_len = content_hash.len().min(16);
-    tweak[..copy_len].copy_from_slice(&content_hash[..copy_len]);
-    tweak
-}
-```
-
-**Why this works:**
-1. Content hash computed on compressed data
-2. Identical compressed data → Identical hash → Identical tweak
-3. Same tweak + key → Same ciphertext → Dedup succeeds
-
-#### Implementation
-```rust
-fn encrypt(plaintext: &[u8], key_pair: &XtsKeyPair, tweak: &[u8; 16]) -> Result<Vec<u8>> {
-    if plaintext.len() < 16 {
-        return Err(EncryptionError::InvalidCiphertextLength(plaintext.len()));
-    }
-
-    let cipher1 = Aes256::new(key_pair.key1().into());
-    let cipher2 = Aes256::new(key_pair.key2().into());
-    let xts = Xts128::<Aes256>::new(cipher1, cipher2);
-    
-    let mut ciphertext = plaintext.to_vec();
-    xts.encrypt_sector(&mut ciphertext, *tweak);
-    
-    Ok(ciphertext)
-}
-```
-
-**Properties:**
-- In-place encryption (minimizes allocations)
-- Length-preserving (ciphertext.len() == plaintext.len())
-- Hardware-accelerated (AES-NI when available)
-- Minimum 16 bytes (XTS requirement)
-
----
-
-### 5. MAC Integrity (`mac.rs`)
-
-#### API
-```rust
-pub fn compute_mac(
-    ciphertext: &[u8],
-    metadata: &EncryptionMetadata,
-    xts_key1: &[u8; 32],
-    xts_key2: &[u8; 32],
-) -> Result<[u8; 16]>
-
-pub fn verify_mac(
-    ciphertext: &[u8],
-    metadata: &EncryptionMetadata,
-    xts_key1: &[u8; 32],
-    xts_key2: &[u8; 32],
-) -> Result<()>  // Ok or IntegrityFailure
-```
-
-#### MAC Key Derivation
-```rust
-fn derive_mac_key(xts_key1: &[u8; 32], xts_key2: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"SPACE-BLAKE3-MAC-KEY-V1");  // Domain separation
-    hasher.update(xts_key1);
-    hasher.update(xts_key2);
-    let hash = hasher.finalize();
-    *hash.as_bytes()
-}
-```
-
-#### MAC Computation
-```rust
-pub fn compute_mac(...) -> Result<[u8; 16]> {
-    let mac_key = derive_mac_key(xts_key1, xts_key2);
-    let mut hasher = blake3::Hasher::new_keyed(&mac_key);
-    
-    // Hash ciphertext
-    hasher.update(ciphertext);
-    
-    // Hash metadata (deterministic serialization)
-    let metadata_bytes = serialize_metadata_for_mac(metadata)?;
-    hasher.update(&metadata_bytes);
-    
-    // Take first 16 bytes as MAC
-    let hash = hasher.finalize();
-    let mut tag = [0u8; 16];
-    tag.copy_from_slice(&hash.as_bytes()[0..16]);
-    Ok(tag)
-}
-```
-
-**What's Protected:**
-- Ciphertext (detects bit flips)
-- Metadata (detects tampering with version/key/tweak)
-- Length (implicit in metadata)
-
-#### Verification
-```rust
-pub fn verify_mac(...) -> Result<()> {
-    let stored_tag = metadata.require_integrity_tag()?;
-    
-    let mut metadata_for_mac = metadata.clone();
-    metadata_for_mac.integrity_tag = None;  // Avoid circular dependency
-    
-    let computed_tag = compute_mac(ciphertext, &metadata_for_mac, ...)?;
-    
-    if constant_time_eq(&stored_tag, &computed_tag) {
-        Ok(())
-    } else {
-        Err(EncryptionError::IntegrityFailure)
-    }
-}
-
-fn constant_time_eq(a: &[u8; 16], b: &[u8; 16]) -> bool {
-    let mut result = 0u8;
-    for i in 0..16 {
-        result |= a[i] ^ b[i];
-    }
-    result == 0
-}
-```
-
----
-
-## Integration
-
-### 1. Common Types Update
-```rust
-// In common/src/lib.rs
-pub struct Segment {
-    pub id: SegmentId,
-    pub offset: u64,
-    pub len: u32,
-    
-    // Existing Phase 2 fields...
-    pub compressed: bool,
-    pub content_hash: Option<ContentHash>,
-    
-    // NEW: Phase 3 encryption fields
-    #[serde(default)]
-    pub encryption_version: Option<u16>,
-    #[serde(default)]
-    pub key_version: Option<u32>,
-    #[serde(default)]
-    pub tweak_nonce: Option<[u8; 16]>,
-    #[serde(default)]
-    pub integrity_tag: Option<[u8; 16]>,
-    #[serde(default)]
-    pub encrypted: bool,
-}
-```
-
-```rust
-// In common/src/traits.rs
-#[derive(Debug, Clone, Default)]
-pub struct DecryptContext {
-    pub encryption_version: Option<u16>,
-    pub key_version: Option<u32>,
-    pub tweak_nonce: Option<[u8; 16]>,
-    pub integrity_tag: Option<[u8; 16]>,
-    pub ciphertext_len: Option<u32>,
-    pub content_hash: Option<[u8; 32]>,
-}
-```
-
-### 2. Pipeline Integration
-```rust
-// In capsule-registry/src/pipeline.rs
-use encryption::{KeyManager, encrypt_segment, decrypt_segment, 
-                 derive_tweak_from_hash, compute_mac, verify_mac};
-use std::sync::{Arc, Mutex};
-
-pub struct WritePipeline {
-    registry: CapsuleRegistry,
-    nvram: NvramLog,
-    key_manager: Option<Arc<Mutex<KeyManager>>>,  // NEW
-}
-
-impl WritePipeline {
-    pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        let key_manager = KeyManager::from_env().ok()
-            .map(|km| Arc::new(Mutex::new(km)));
-        
-        if key_manager.is_some() {
-            println!("🔐 Encryption enabled");
-        }
-        
-        Self { registry, nvram, key_manager }
-    }
-}
-```
-
-### 3. Write Path
-```rust
-pub fn write_capsule_with_policy(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-    let encryption_enabled = policy.encryption.is_enabled() && self.key_manager.is_some();
-    
-    for chunk in data.chunks(SEGMENT_SIZE) {
-        // 1. Compress
-        let (compressed_data, _) = compress_segment(chunk, &policy.compression)?;
-        
-        // 2. Hash (for dedup)
-        let content_hash = hash_content(&compressed_data);
-        
-        // 3. Encrypt + MAC (if enabled)
-        let (final_data, encryption_meta) = if encryption_enabled {
-            let km = self.key_manager.as_ref().unwrap();
-            let mut km = km.lock().unwrap();
-            let key_version = km.current_version();
-            let key_pair = km.get_key(key_version)?;
-            
-            // Derive tweak from content hash bytes (deterministic!)
-            // If you store ContentHash as hex, decode to 32 bytes first.
-            let tweak = derive_tweak_from_hash(content_hash_bytes);
-            
-            // Encrypt
-            let (ciphertext, mut enc_meta) = encrypt_segment(
-                &compressed_data, key_pair, key_version, tweak
-            )?;
-            
-            // Compute MAC
-            let mac_tag = compute_mac(&ciphertext, &enc_meta, 
-                                     key_pair.key1(), key_pair.key2())?;
-            enc_meta.set_integrity_tag(mac_tag);
-            
-            (ciphertext, Some(enc_meta))
-        } else {
-            (compressed_data, None)
-        };
-        
-        // 4. Dedup check
-        // 5. Store segment
-        // 6. Update metadata with encryption fields
-        
-        if let Some(ref enc_meta) = encryption_meta {
-            segment.encrypted = true;
-            segment.encryption_version = enc_meta.encryption_version;
-            segment.key_version = enc_meta.key_version;
-            segment.tweak_nonce = enc_meta.tweak_nonce;
-            segment.integrity_tag = enc_meta.integrity_tag;
-        }
-        
-        self.nvram.update_segment_metadata(seg_id, segment)?;
-    }
-    
-    Ok(capsule_id)
-}
-```
-
-### 4. Read Path
-```rust
-pub fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
-    let capsule = self.registry.lookup(id)?;
-    let mut result = Vec::new();
-    
-    for seg_id in &capsule.segments {
-        // 1. Fetch raw data
-        let raw_data = self.nvram.read(*seg_id)?;
-        let segment = self.nvram.get_segment_metadata(*seg_id)?;
-        
-        // 2. Verify MAC + Decrypt (if encrypted)
-        let decrypted_data = if segment.encrypted {
-            // Build a DecryptContext from Segment metadata
-            let ctx = DecryptContext::from_segment(&segment);
-
-            // Decrypt verifies MAC first and uses the stored tweak;
-            // if tweak_nonce is missing, it can fall back to content_hash.
-            encryptor.decrypt(&raw_data, &capsule.policy.encryption, *seg_id, &ctx)?
-        } else {
-            raw_data
-        };
-        
-        // 3. Decompress
-        let data = decompress(&decrypted_data, &capsule.policy)?;
-        
-        result.extend_from_slice(&data);
-    }
-    
-    Ok(result)
-}
-```
-
----
-
----
-
-### 4. Hybrid Kyber (Phase 3.3)
-- **Security crate**: `common::security::crypto_profiles` provides the ML-KEM key manager + nonce helpers behind the `advanced-security` feature.
-- **Key persistence**: `MlkemKeyManager::load_or_generate` stores the ML-KEM keypair at `SPACE_KYBER_KEY_PATH` (default `space.kyber.key`).
-- **Policy toggle**: `Policy::crypto_profile` defaults to `Classical`. Setting `HybridKyber` wraps the AES key pair and stores the ML-KEM ciphertext/nonce in each segment.
-- **Write path**: ML-KEM material is derived alongside AES keys; the nonce mixes into the deterministic tweak so dedupe is preserved.
-- **Read path**: when `HybridKyber`, the ML-KEM ciphertext is decapsulated before MAC verification + decryption, keeping backward compatibility.
-- **Feature gating**: sovereign builds keep `advanced-security` disabled to avoid PQ dependencies entirely.
-
-## Configuration
-
-### Environment Setup
 ```bash
-# Generate 256-bit key
-export SPACE_MASTER_KEY=$(openssl rand -hex 32)
-
-# Or use specific key
-export SPACE_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-# Verify
-echo ${#SPACE_MASTER_KEY}  # Should be 64
+export SPACE_MASTER_KEY=$(openssl rand -hex 32)   # 64 hex characters
 ```
 
-### Policy Usage
 ```rust
-// Enable encryption
-let policy = Policy::encrypted();
+use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
+use common::Policy;
+use nvram_sim::NvramLog;
 
-// Or manually
-let mut policy = Policy::default();
-policy.encryption = EncryptionPolicy::XtsAes256 { key_version: None };
-
-// Write encrypted data
-let capsule_id = pipeline.write_capsule_with_policy(data, &policy)?;
-
-// Read (auto-decrypts)
-let data = pipeline.read_capsule(capsule_id)?;
+let pipeline = WritePipeline::new(CapsuleRegistry::open("space.db")?, NvramLog::open("space.nvram")?);
+let id = pipeline.write_capsule_with_policy(&data, &Policy::encrypted()).await?;
+let plaintext = pipeline.read_capsule(id).await?;
 ```
 
----
+To pass a key explicitly instead of reading the environment, use `WritePipeline::with_key_manager(registry, nvram, key_manager)`.
 
-## Testing
+## Tests
+
 ```bash
-# Run all encryption tests
-cargo test -p encryption
-
-# Run with output
-cargo test -p encryption -- --nocapture
-
-# Run integration tests
-cargo test -p capsule-registry
-
-# All tests
-cargo test --workspace
+cargo test -p encryption                                    # unit tests for XTS, MAC, key manager, providers
+cargo test -p pipeline                                      # XtsEncryptor / NoopEncryptor
+cargo test -p capsule-registry --test proptest_pipeline     # includes prop_roundtrip_encrypted
 ```
-
-**Test Coverage:** 72+ passing tests (encryption crate + pipeline encryption tests)
-
----
 
 ## Performance
 
-| Operation | Overhead | Notes |
-|-----------|----------|-------|
-| Write | +5% | Encryption + MAC |
-| Read | +9% | Verification + decryption |
-| Dedup | 0% | Works with encryption |
-| Memory | <5 MB | Key cache + buffers |
+These numbers are measured end to end through `Pipeline` on 512 MiB of random data, so compression was skipped. Setup: release build, `NvramBackend`, Ryzen 9 5900X, NVMe, Windows 11.
 
-**Throughput:**
-- Write: ~2.0 GB/s (with encryption)
-- Read: ~3.2 GB/s (with decryption)
+| | Write | Read |
+|---|---|---|
+| Plaintext | 273 MB/s | 954 MB/s |
+| Encrypted (XTS + MAC) | 205 MB/s | 334 MB/s |
 
----
+Writes are dominated by an fsync per 4 MiB segment and the sidecar rewrite. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. There's no end-to-end benchmark in the repo yet ([#102](https://github.com/saworbit/SPACE/issues/102)). The closest is the per-stage microbenchmark:
 
-## Security Properties
-
-| Property | Provided By | Strength |
-|----------|-------------|----------|
-| Confidentiality | XTS-AES-256 | 256-bit |
-| Integrity | BLAKE3-MAC | 128-bit |
-| Deduplication | Deterministic tweaks | Preserved |
-| Key Derivation | HKDF (HMAC-SHA256) | Cryptographic |
-
----
-
-## Troubleshooting
-
-**Key manager not initialized:**
 ```bash
-export SPACE_MASTER_KEY=$(openssl rand -hex 32)
+cargo bench -p capsule-registry --bench pipeline -- encrypt_xts_segment
 ```
 
-**Integrity check failed:**
-- Data corrupted
-- Wrong key
-- Metadata tampered
+## Not implemented
 
-**Dedup not working:**
-- Check compression policy matches
-- Verify content hashes identical
-
----
-
-## Future Work
-
-- [x] Garbage collection (refcount decrements + metadata reclamation)
-- [ ] Bloom filter optimization for MAC
-- [x] Post-quantum key exchange (Kyber hybrid toggle)
-- [ ] Background re-encryption for key rotation
-- [ ] Encrypted search (future)
-
----
-
-© 2025 Shane Wall. Licensed under MIT OR Apache 2.0.
+- **Post-quantum key wrapping:** `CryptoProfile::HybridKyber` exists, and `Policy::validate` rejects it when dedupe is on. There's no ML-KEM code, though: segments written under it are encrypted exactly like `Classical`, and the `pq_ciphertext` / `pq_nonce` fields stay `None`.
+- **KMS and Vault providers:** stubs that return errors.
+- **Re-encryption** of existing segments after a key rotation.

@@ -23,20 +23,24 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 `cargo check --workspace` and `cargo test --workspace` pass on this branch.
 
 - Capsule create / read / stream through the registry pipeline
-- Compression (LZ4 / Zstd), BLAKE3 content-addressed dedup, and XTS-AES-256 encryption
+- Compression (LZ4 / Zstd) and BLAKE3 content-addressed dedup
+- XTS-AES-256 encryption with a BLAKE3 MAC through the library API. `spacectl` and the S3 view don't turn it on yet ([#82](https://github.com/saworbit/SPACE/issues/82)).
 - Modular pipeline (`pipeline`): the registry write and read path
-- Basic S3 PUT / GET / DELETE
+- Basic S3 PUT / GET / HEAD / DELETE. Keys can't contain `/`, objects are buffered in memory, and the key map is lost on restart; see [the S3 quick start](docs/guides/QUICKSTART_S3.md).
 - `spacectl` for local create, read, list, and `serve-s3`
 - Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)
 
 The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`.
 
+Known gaps are tracked in [GitHub issues](https://github.com/saworbit/SPACE/issues).
+
 ## Quick start
+
+Requires Rust 1.89 or newer.
 
 ```bash
 git clone https://github.com/saworbit/SPACE.git
 cd SPACE
-git checkout core-reset
 cargo test --workspace
 cargo run -p spacectl -- --help
 ```
