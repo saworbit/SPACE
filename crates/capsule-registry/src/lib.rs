@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 
-
 use common::*;
 use encryption::keymanager::MASTER_KEY_SIZE;
 use encryption::KeyManager;
@@ -15,7 +14,6 @@ mod consensus;
 mod metadata_ops;
 mod store;
 
-
 const DEFAULT_PAGE_SIZE: usize = 1024;
 
 pub mod dedup; // NEW
@@ -26,7 +24,6 @@ pub mod pipeline;
 pub mod scrub_executor;
 
 pub use error::{CompressionError, DedupError, PipelineError};
-
 
 pub mod modular_pipeline {
     use std::sync::{Arc, Mutex};
@@ -342,12 +339,10 @@ impl CapsuleRegistry {
             KeyManager::from_env().unwrap_or_else(|_| KeyManager::new([0u8; MASTER_KEY_SIZE]));
         let key_manager = Arc::new(Mutex::new(key_manager));
 
-        
-
         Ok(Self {
             store,
             raft,
-            
+
             key_manager,
         })
     }
@@ -450,7 +445,6 @@ impl CapsuleRegistry {
     }
 
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        
         self.store.get_content(hash).ok().flatten()
     }
 
@@ -459,10 +453,7 @@ impl CapsuleRegistry {
             hash: hash.clone(),
             segment: seg_id,
         })? {
-            OpResult::Ok => {
-                
-                Ok(())
-            }
+            OpResult::Ok => Ok(()),
             other => anyhow::bail!("unexpected raft response: {:?}", other),
         }
     }
@@ -472,10 +463,7 @@ impl CapsuleRegistry {
             hash: hash.clone(),
             segment: seg_id,
         })? {
-            OpResult::Ok => {
-                
-                Ok(true)
-            }
+            OpResult::Ok => Ok(true),
             OpResult::NotFound => Ok(false),
             other => anyhow::bail!("unexpected raft response: {:?}", other),
         }
@@ -530,8 +518,7 @@ impl CapsuleRegistry {
     pub fn key_manager(&self) -> &Arc<Mutex<KeyManager>> {
         &self.key_manager
     }
-
-    }
+}
 
 impl Default for CapsuleRegistry {
     fn default() -> Self {
@@ -544,10 +531,8 @@ impl Clone for CapsuleRegistry {
         Self {
             store: Arc::clone(&self.store),
             raft: self.raft.clone(),
-            
+
             key_manager: Arc::clone(&self.key_manager),
         }
     }
 }
-
-

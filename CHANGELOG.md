@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Corrected SECURITY.md's hardening summary, CONTRIBUTING.md, README.md, ARCHITECTURE.md and docs/guides/BUILD.md.
   - Issues: #103, #104, #105, #110.
 
+### Fixed
+
+- CI now checks rustfmt, clippy with `-D warnings`, and the build on Rust 1.89. The tree is rustfmt-clean (#107).
+- The Dockerfile builds on `rust:1.89-bookworm`, and the workspace declares `rust-version = "1.89"` (#100).
+- Dependabot no longer opens bincode major bumps. A test pins the `space.db` record encoding (#113).
+- Removed `scripts/`. Each script was broken and duplicated a cargo test or the S3 quick start (#101).
+
 The remaining entries in this section describe the pre-reset tree (foundry, federation, mesh, web UI, and the other removed crates). That code is on `archive/pre-reset-2026-10`. See [RESET.md](RESET.md).
 
 ### Changed

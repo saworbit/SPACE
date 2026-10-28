@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use capsule_registry::modular_pipeline::{
     DefaultPolicyEvaluator, NoopEncryptor, NullKeyring, RegistryPlainPipeline,

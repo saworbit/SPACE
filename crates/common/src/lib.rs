@@ -338,5 +338,3 @@ pub enum Event {
         segments: usize,
     },
 }
-
-

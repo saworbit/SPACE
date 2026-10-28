@@ -7,9 +7,7 @@ use clap::{Parser, Subcommand};
 use common::CapsuleId;
 use common::{Policy, SegmentId};
 
-
 use nvram_sim::NvramLog;
-
 
 use std::fs;
 use std::io::{self, Write};
@@ -17,10 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Once;
 
-
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
-
 
 const NVRAM_PATH: &str = "space.nvram";
 const REGISTRY_DB_PATH: &str = "space.db";
@@ -91,7 +87,6 @@ struct Cli {
     command: Commands,
 }
 
-
 fn open_registry_and_nvram_for_zone(zone: Option<&str>) -> Result<(CapsuleRegistry, NvramLog)> {
     let registry_path = registry_path_for_zone(zone);
     let nvram_path = nvram_path_for_zone(zone);
@@ -146,7 +141,6 @@ fn load_policy_file(path: &PathBuf) -> Result<Policy> {
     serde_yaml::from_str(&text).map_err(|err| anyhow!(err))
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -200,8 +194,6 @@ async fn main() -> Result<()> {
             )?;
 
             println!("{}", capsule_id.as_uuid());
-
-            
         }
         Commands::Read { capsule_id } => {
             let uuid = capsule_id.parse()?;

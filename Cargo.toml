@@ -16,6 +16,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Highest rust-version among locked dependencies; CI checks the build on it.
+rust-version = "1.89"
 authors = ["Shane Wall <shane@adaptive-storage.dev>"]
 license = "MIT OR Apache-2.0"
 

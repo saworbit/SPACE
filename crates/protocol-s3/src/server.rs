@@ -13,26 +13,20 @@ use tracing::info;
 
 use crate::{handlers::*, S3View};
 
-
 pub struct S3Server {
     s3_view: Arc<S3View>,
     port: u16,
-    
 }
 
 impl S3Server {
     pub fn new(s3_view: S3View, port: u16) -> Self {
-        
         Self {
             s3_view: Arc::new(s3_view),
             port,
-            
         }
     }
 
     pub async fn run(self) -> Result<()> {
-        
-
         // Build router with S3-compatible endpoints
         #[allow(unused_mut)]
         let mut app = Router::new()
@@ -50,10 +44,6 @@ impl S3Server {
             // Add middleware
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http());
-
-        
-
-        
 
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -76,8 +66,4 @@ impl S3Server {
 
         Ok(())
     }
-
-    
 }
-
-
