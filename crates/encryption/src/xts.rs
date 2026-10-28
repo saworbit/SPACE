@@ -28,7 +28,7 @@ use xts_mode::Xts128;
 const XTS_BLOCK_SIZE: usize = 16;
 
 /// Minimum data size for XTS (one block)
-const MIN_SECTOR_SIZE: usize = XTS_BLOCK_SIZE;
+pub const MIN_SECTOR_SIZE: usize = XTS_BLOCK_SIZE;
 
 // Hardware feature detection (e.g. AES-NI) is handled internally by the `aes`
 // crate via the `cpufeatures` integration, so we can rely on it directly.

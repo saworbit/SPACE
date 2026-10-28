@@ -12,7 +12,7 @@ use common::{
     SegmentId,
 };
 use compression::Lz4ZstdCompressor;
-use dedup::Blake3Deduper;
+use dedup::{verify_content_hash, Blake3Deduper, VerifyOutcome};
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,7 @@ use tracing::instrument;
 
 use encryption::{
     compute_mac, derive_tweak_from_hash, encrypt_segment, keymanager::MASTER_KEY_SIZE,
-    EncryptionMetadata, KeyManager,
+    xts::MIN_SECTOR_SIZE, EncryptionMetadata, KeyManager,
 };
 /// Minimal encryptor that performs no-op transformations.
 #[derive(Default, Clone)]
@@ -31,9 +31,16 @@ impl Encryptor for NoopEncryptor {
     fn encrypt(
         &self,
         data: Cow<'_, [u8]>,
-        _policy: &EncryptionPolicy,
+        policy: &EncryptionPolicy,
         _segment: SegmentId,
     ) -> Result<(Vec<u8>, EncryptionSummary)> {
+        // Handing back plaintext for a policy that asks for encryption would
+        // store it unprotected and label it encrypted (#84).
+        if policy.is_enabled() {
+            return Err(anyhow!(
+                "encryption requested but no key is configured (set SPACE_MASTER_KEY)"
+            ));
+        }
         let summary = EncryptionSummary::new("noop");
         Ok((data.into_owned(), summary))
     }
@@ -404,6 +411,68 @@ impl CapsuleCatalog for InMemoryCatalog {
     }
 }
 
+/// Dedup key domain for a segment. Encrypted and plaintext segments must
+/// never share storage, so encryption is part of the domain next to the
+/// compression algorithm (#83). Unencrypted keys are unchanged.
+fn dedup_domain<'a>(compression_algo: &'a str, encryption: &EncryptionPolicy) -> Cow<'a, str> {
+    if encryption.is_enabled() {
+        Cow::Owned(format!("{compression_algo}+xts-aes-256"))
+    } else {
+        Cow::Borrowed(compression_algo)
+    }
+}
+
+/// Turn stored segment bytes back into plaintext. The streaming and range
+/// read paths share this so both apply the same integrity checks.
+fn decode_segment<C: Compressor, E: Encryptor>(
+    compressor: &C,
+    encryptor: &E,
+    capsule_encryption: &EncryptionPolicy,
+    seg_id: SegmentId,
+    metadata: &Segment,
+    raw: Vec<u8>,
+) -> Result<Vec<u8>> {
+    let stored = if metadata.encrypted {
+        let ctx = DecryptContext::from_segment(metadata);
+        let mut plain = encryptor
+            .decrypt(&raw, capsule_encryption, seg_id, &ctx)
+            .map_err(|e| anyhow!("Decryption failed for segment {:?}: {}", seg_id, e))?;
+        // Segments shorter than one XTS block are zero-padded on write.
+        if !metadata.compressed {
+            if let Some(plain_len) = metadata.plain_len {
+                plain.truncate(plain_len as usize);
+            }
+        }
+        plain
+    } else {
+        // The segment sidecar is not authenticated. A capsule that requires
+        // encryption must never be served from a segment marked plaintext,
+        // and plaintext segments are checked against their content hash (#95).
+        if capsule_encryption.is_enabled() {
+            return Err(anyhow!(
+                "segment {:?} is stored unencrypted but its capsule requires encryption",
+                seg_id
+            ));
+        }
+        if let Some(expected) = &metadata.content_hash {
+            if verify_content_hash(expected, &raw, &metadata.compression_algo)
+                == VerifyOutcome::Mismatched
+            {
+                return Err(anyhow!("content hash mismatch for segment {:?}", seg_id));
+            }
+        }
+        raw
+    };
+
+    if metadata.compressed {
+        compressor
+            .decompress(&stored, metadata.compression_algo.as_str())
+            .map_err(|e| anyhow!("Decompression failed for segment {:?}: {}", seg_id, e))
+    } else {
+        Ok(stored)
+    }
+}
+
 /// Pipeline orchestrator that composes the modular traits.
 pub struct Pipeline<C, D, E, S, Eval, K, R>
 where
@@ -496,12 +565,24 @@ where
             }
             let chunk = &data[start..end];
             let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
-            // Domain-separate the dedup key by compression algorithm so
-            // segments with identical stored bytes under different
-            // compression treatments cannot collide.
-            let hash = self
-                .deduper
-                .hash_content_with_algo(view.as_ref(), summary.algorithm.as_str());
+            // XTS needs one full block. A compressed view shorter than that is
+            // stored uncompressed instead, so `plain_len` is the exact length
+            // to strip the block padding back to on read (#94).
+            let (view, summary) = if encryption_policy.is_enabled()
+                && summary.compressed
+                && view.len() < MIN_SECTOR_SIZE
+            {
+                self.compressor.compress(chunk, &CompressionPolicy::None)?
+            } else {
+                (view, summary)
+            };
+            // Domain-separate the dedup key by compression algorithm and
+            // encryption so segments with identical stored bytes under
+            // different treatments cannot collide.
+            let hash = self.deduper.hash_content_with_algo(
+                view.as_ref(),
+                &dedup_domain(summary.algorithm.as_str(), &encryption_policy),
+            );
 
             if let Some(existing) = self.catalog.lookup_content(&hash) {
                 let mut metadata = self.storage.metadata(existing).await?;
@@ -524,11 +605,16 @@ where
                         .as_ref()
                         .map(|keyring| keyring.derive_key(capsule_id, seg_id))
                         .transpose()?;
-                    let (encrypted, summary) = self.encryptor.encrypt(
-                        Cow::Borrowed(view.as_ref()),
-                        &encryption_policy,
-                        seg_id,
-                    )?;
+                    let plaintext = if view.len() < MIN_SECTOR_SIZE {
+                        let mut padded = view.to_vec();
+                        padded.resize(MIN_SECTOR_SIZE, 0);
+                        Cow::Owned(padded)
+                    } else {
+                        Cow::Borrowed(view.as_ref())
+                    };
+                    let (encrypted, summary) =
+                        self.encryptor
+                            .encrypt(plaintext, &encryption_policy, seg_id)?;
                     (encrypted, summary)
                 } else {
                     (view.into_owned(), EncryptionSummary::new("none"))
@@ -550,7 +636,7 @@ where
                     key_version: encryption_summary.key_version,
                     tweak_nonce: encryption_summary.tweak_nonce,
                     integrity_tag: encryption_summary.integrity_tag,
-                    encrypted: encryption_policy.is_enabled(),
+                    encrypted: encryption_summary.is_encrypted(),
                     pq_ciphertext: None,
                     pq_nonce: None,
                 };
@@ -605,24 +691,16 @@ where
                 let raw = storage_stream.read(seg_id).await
                     .map_err(|e| anyhow!("Failed to read segment {:?}: {}", seg_id, e))?;
 
-                let decrypted = if metadata.encrypted {
-                    let ctx = DecryptContext::from_segment(&metadata);
-                    encryptor_stream
-                        .decrypt(&raw, &encryption_policy, seg_id, &ctx)
-                        .map_err(|e| anyhow!("Decryption failed for segment {:?}: {}", seg_id, e))?
-                } else {
-                    raw
-                };
+                let plain = decode_segment(
+                    &compressor_stream,
+                    &encryptor_stream,
+                    &encryption_policy,
+                    seg_id,
+                    &metadata,
+                    raw,
+                )?;
 
-                let decompressed = if metadata.compressed {
-                    compressor_stream
-                        .decompress(&decrypted, metadata.compression_algo.as_str())
-                        .map_err(|e| anyhow!("Decompression failed for segment {:?}: {}", seg_id, e))?
-                } else {
-                    decrypted
-                };
-
-                yield Bytes::from(decompressed);
+                yield Bytes::from(plain);
             }
         };
 
@@ -682,19 +760,14 @@ where
             }
 
             let raw = self.storage.read(*seg_id).await?;
-            let decrypted = if metadata.encrypted {
-                let ctx = DecryptContext::from_segment(&metadata);
-                self.encryptor
-                    .decrypt(&raw, &capsule.policy.encryption, *seg_id, &ctx)?
-            } else {
-                raw
-            };
-            let decompressed = if metadata.compressed {
-                self.compressor
-                    .decompress(&decrypted, metadata.compression_algo.as_str())?
-            } else {
-                decrypted
-            };
+            let decompressed = decode_segment(
+                &self.compressor,
+                &self.encryptor,
+                &capsule.policy.encryption,
+                *seg_id,
+                &metadata,
+                raw,
+            )?;
 
             let seg_len = decompressed.len() as u64;
             let seg_end = cursor + seg_len;
@@ -1704,5 +1777,210 @@ mod tests {
         let id = pipeline.write_capsule(&data, &policy).await.unwrap();
         let output = pipeline.read_capsule(id).await.unwrap();
         assert_eq!(output, data);
+    }
+
+    // ── Encryption integrity ──────────────────────────────────────────
+
+    type XtsInMemoryPipeline = Pipeline<
+        Lz4ZstdCompressor,
+        Blake3Deduper,
+        XtsEncryptor,
+        InMemoryBackend,
+        DefaultPolicyEvaluator,
+        KeyManagerKeyring,
+        InMemoryCatalog,
+    >;
+
+    fn xts_pipeline() -> XtsInMemoryPipeline {
+        let km = Arc::new(Mutex::new(KeyManager::new([7u8; MASTER_KEY_SIZE])));
+        Pipeline::new(
+            Lz4ZstdCompressor,
+            Blake3Deduper::default(),
+            XtsEncryptor::new(Arc::clone(&km)),
+            InMemoryBackend::new(),
+            DefaultPolicyEvaluator,
+            Some(KeyManagerKeyring::new(km)),
+            InMemoryCatalog::default(),
+        )
+    }
+
+    fn encrypted_policy() -> Policy {
+        Policy {
+            encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+            ..Policy::default()
+        }
+    }
+
+    fn with_segment_size(policy: Policy, segment_size: usize) -> Policy {
+        let mut policy = policy;
+        policy.layout.strategy = common::LayoutStrategy::Fixed { segment_size };
+        policy
+    }
+
+    #[tokio::test]
+    async fn encrypted_and_plaintext_writes_never_share_segments() {
+        let mut p = xts_pipeline();
+        let data = b"ALPHA-SECRET-PAYLOAD-0123456789";
+
+        let plain = p.write_capsule(data, &Policy::default()).await.unwrap();
+        let enc = p.write_capsule(data, &encrypted_policy()).await.unwrap();
+        let plain_segs = p.catalog.lookup_capsule(plain).unwrap().segments;
+        let enc_segs = p.catalog.lookup_capsule(enc).unwrap().segments;
+        assert_ne!(plain_segs, enc_segs);
+        for seg in &enc_segs {
+            assert!(p.storage.metadata(*seg).await.unwrap().encrypted);
+        }
+
+        // The other order: a plaintext write must not reuse an encrypted segment.
+        let other = b"BRAVO-SECRET-PAYLOAD-0123456789";
+        let enc = p.write_capsule(other, &encrypted_policy()).await.unwrap();
+        let plain = p.write_capsule(other, &Policy::default()).await.unwrap();
+        assert_ne!(
+            p.catalog.lookup_capsule(enc).unwrap().segments,
+            p.catalog.lookup_capsule(plain).unwrap().segments
+        );
+        assert_eq!(p.read_capsule(enc).await.unwrap(), other);
+        assert_eq!(p.read_capsule(plain).await.unwrap(), other);
+    }
+
+    #[tokio::test]
+    async fn encrypted_write_without_key_fails_and_stores_nothing() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let result = p
+            .write_capsule(b"BRAVO-SECRET-PAYLOAD", &encrypted_policy())
+            .await;
+        assert!(result.is_err());
+        assert!(p.storage.segment_ids().await.unwrap().is_empty());
+        assert!(p.catalog.capsules().is_empty());
+    }
+
+    #[tokio::test]
+    async fn encrypted_writes_handle_segments_shorter_than_a_block() {
+        let mut p = xts_pipeline();
+        let policy = with_segment_size(encrypted_policy(), 64);
+
+        for len in [1usize, 5, 15, 16, 17, 64, 64 * 2 + 5] {
+            let data: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+            let id = p
+                .write_capsule(&data, &policy)
+                .await
+                .unwrap_or_else(|e| panic!("write of {len} bytes failed: {e}"));
+            assert_eq!(p.read_capsule(id).await.unwrap(), data, "len {len}");
+            assert_eq!(p.read_range(id, 0, len).await.unwrap(), data, "len {len}");
+        }
+
+        // A short tail read on its own.
+        let data: Vec<u8> = (0..64 * 2 + 5).map(|i| (i * 13 + 1) as u8).collect();
+        let id = p.write_capsule(&data, &policy).await.unwrap();
+        assert_eq!(p.read_range(id, 128, 5).await.unwrap(), &data[128..]);
+    }
+
+    /// Run-length "compressor" whose output is 5 bytes for any uniform
+    /// input, far below one XTS block. The built-in LZ4 and Zstd frames are
+    /// never that short.
+    #[derive(Clone, Default)]
+    struct TinyRle;
+
+    use common::traits::CompressionSummary;
+
+    impl Compressor for TinyRle {
+        fn compress<'a>(
+            &'a self,
+            data: &'a [u8],
+            policy: &CompressionPolicy,
+        ) -> Result<(Cow<'a, [u8]>, CompressionSummary)> {
+            let uniform = data.windows(2).all(|w| w[0] == w[1]);
+            if matches!(policy, CompressionPolicy::None) || data.len() <= 5 || !uniform {
+                let mut summary = CompressionSummary::new(data.len(), data.len(), "identity");
+                summary.compressed = false;
+                return Ok((Cow::Borrowed(data), summary));
+            }
+            let mut out = vec![data[0]];
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            let summary = CompressionSummary::new(data.len(), out.len(), "rle");
+            Ok((Cow::Owned(out), summary))
+        }
+
+        fn decompress(&self, data: &[u8], algorithm: &str) -> Result<Vec<u8>> {
+            match (algorithm, data) {
+                ("identity", _) => Ok(data.to_vec()),
+                ("rle", [byte, a, b, c, d]) => {
+                    Ok(vec![*byte; u32::from_le_bytes([*a, *b, *c, *d]) as usize])
+                }
+                _ => Err(anyhow!("bad {algorithm} frame of {} bytes", data.len())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn encrypted_segments_that_compress_below_a_block_roundtrip() {
+        let km = Arc::new(Mutex::new(KeyManager::new([7u8; MASTER_KEY_SIZE])));
+        let mut p = Pipeline::new(
+            TinyRle,
+            Blake3Deduper::default(),
+            XtsEncryptor::new(Arc::clone(&km)),
+            InMemoryBackend::new(),
+            DefaultPolicyEvaluator,
+            Some(KeyManagerKeyring::new(km)),
+            InMemoryCatalog::default(),
+        );
+        let policy = Policy {
+            compression: CompressionPolicy::LZ4 { level: 1 },
+            ..with_segment_size(encrypted_policy(), 256)
+        };
+        let data = vec![0xAAu8; 256 * 2 + 3];
+        let id = p.write_capsule(&data, &policy).await.unwrap();
+        assert_eq!(p.read_capsule(id).await.unwrap(), data);
+
+        // Plaintext writes still use the short frame.
+        let plain = Policy {
+            compression: CompressionPolicy::LZ4 { level: 1 },
+            ..with_segment_size(Policy::default(), 256)
+        };
+        let id = p.write_capsule(&data, &plain).await.unwrap();
+        let seg = p.catalog.lookup_capsule(id).unwrap().segments[0];
+        assert!(p.storage.metadata(seg).await.unwrap().compressed);
+        assert_eq!(p.read_capsule(id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn read_rejects_corrupted_plaintext_segment() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = Policy {
+            compression: CompressionPolicy::None,
+            ..Policy::default()
+        };
+        let data: Vec<u8> = (0..4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let id = p.write_capsule(&data, &policy).await.unwrap();
+        let seg = p.catalog.lookup_capsule(id).unwrap().segments[0];
+
+        let mut raw = p.storage.read(seg).await.unwrap();
+        raw[2048] ^= 0x01;
+        let mut txn = p.storage.begin_txn().await.unwrap();
+        txn.append(seg, &raw).await.unwrap();
+        txn.commit().await.unwrap();
+
+        assert!(p.read_capsule(id).await.is_err());
+        assert!(p.read_range(id, 0, 16).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_rejects_plaintext_flag_on_encrypted_capsule() {
+        let mut p = xts_pipeline();
+        let data = b"CHARLIE-SECRET-PAYLOAD-0123456789".repeat(10);
+        let id = p.write_capsule(&data, &encrypted_policy()).await.unwrap();
+        let seg = p.catalog.lookup_capsule(id).unwrap().segments[0];
+
+        let mut meta = p.storage.metadata(seg).await.unwrap();
+        meta.encrypted = false;
+        meta.compressed = false;
+        let mut txn = p.storage.begin_txn().await.unwrap();
+        txn.set_segment_metadata(seg, meta).await.unwrap();
+        txn.commit().await.unwrap();
+
+        assert!(p.read_capsule(id).await.is_err());
+        assert!(p.read_range(id, 0, 16).await.is_err());
     }
 }

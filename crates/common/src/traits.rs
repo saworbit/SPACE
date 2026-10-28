@@ -68,6 +68,12 @@ impl EncryptionSummary {
             integrity_tag: None,
         }
     }
+
+    /// Whether the encryptor actually transformed the data.
+    /// `Segment::encrypted` is set from this, not from the requested policy.
+    pub fn is_encrypted(&self) -> bool {
+        !matches!(self.algorithm.as_str(), "none" | "noop")
+    }
 }
 
 /// Deduplication statistics gathered while processing capsules.

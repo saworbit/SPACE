@@ -1,10 +1,8 @@
 use anyhow::{anyhow, Result};
 
 use common::*;
-use encryption::keymanager::MASTER_KEY_SIZE;
-use encryption::KeyManager;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::consensus::RaftNode;
 use crate::metadata_ops::{MetadataOp, OpResult};
@@ -197,7 +195,9 @@ pub mod modular_pipeline {
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
-        if let Ok(manager) = KeyManager::from_env() {
+        // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
+        // fallback to the plain pipeline (#84).
+        if let Some(manager) = KeyManager::from_env_if_set()? {
             let km = Arc::new(Mutex::new(manager));
             let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
@@ -218,7 +218,9 @@ pub mod modular_pipeline {
         storage: AutoFsBackend,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
-        if let Ok(manager) = KeyManager::from_env() {
+        // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
+        // fallback to the plain pipeline (#84).
+        if let Some(manager) = KeyManager::from_env_if_set()? {
             let km = Arc::new(Mutex::new(manager));
             let pipeline = build_fs_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::FsEncrypted(pipeline))
@@ -320,7 +322,6 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
     raft: RaftNode,
-    key_manager: Arc<Mutex<KeyManager>>,
 }
 
 impl CapsuleRegistry {
@@ -335,16 +336,7 @@ impl CapsuleRegistry {
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
         let raft = RaftNode::new(Arc::clone(&store));
 
-        let key_manager =
-            KeyManager::from_env().unwrap_or_else(|_| KeyManager::new([0u8; MASTER_KEY_SIZE]));
-        let key_manager = Arc::new(Mutex::new(key_manager));
-
-        Ok(Self {
-            store,
-            raft,
-
-            key_manager,
-        })
+        Ok(Self { store, raft })
     }
 
     fn collect_capsules_paginated(&self, page_size: usize) -> Result<Vec<Capsule>> {
@@ -514,10 +506,6 @@ impl CapsuleRegistry {
     pub fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
         self.store.list_content().unwrap_or_default()
     }
-
-    pub fn key_manager(&self) -> &Arc<Mutex<KeyManager>> {
-        &self.key_manager
-    }
 }
 
 impl Default for CapsuleRegistry {
@@ -531,8 +519,6 @@ impl Clone for CapsuleRegistry {
         Self {
             store: Arc::clone(&self.store),
             raft: self.raft.clone(),
-
-            key_manager: Arc::clone(&self.key_manager),
         }
     }
 }

@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
         Commands::Create { file } => {
             let data = fs::read(&file)?;
             let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::new(registry, nvram);
+            let pipeline = WritePipeline::open(registry, nvram)?;
             let id = pipeline.write_capsule(&data).await?;
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {} bytes", data.len());
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
             let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::new(registry, nvram);
+            let pipeline = WritePipeline::open(registry, nvram)?;
             let data = pipeline.read_capsule(id).await?;
             io::stdout().write_all(&data)?;
         }
