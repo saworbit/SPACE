@@ -18,11 +18,12 @@ Source:
 
 1. **Segment:** split the input into chunks of the layout policy's size (4 MiB by default).
 2. **Compress:** LZ4 or Zstd, skipped for high-entropy data. Produces the bytes to store and an algorithm label.
-3. **Hash:** `content_hash = hash_content_with_algo(stored_bytes, algo)`. This is the dedup key.
+3. **Hash:** `content_hash = hash_content_with_algo(stored_bytes, algo)`, with `+xts-aes-256` appended to `algo` when the policy enables encryption. This is the dedup key.
 4. **Dedup check:** look up `content_hash` in the registry's content index.
    - **Hit:** increment the existing segment's `ref_count` and reuse its `SegmentId`. Nothing is encrypted or written.
    - **Miss:** continue.
 5. **Encrypt** (if the policy enables it):
+   - a segment under 16 bytes is stored uncompressed and zero-padded to 16 bytes;
    - tweak = first 16 bytes of `BLAKE3(stored_bytes)`;
    - XTS-AES-256 with the current key version;
    - 16-byte BLAKE3 keyed MAC over the ciphertext and the encryption metadata.
@@ -33,16 +34,13 @@ Source:
 
 1. Look up the capsule and walk its segment IDs.
 2. Read each segment's bytes and metadata record.
-3. If the record says `encrypted`, verify the MAC using the recorded key version and tweak, then decrypt.
+3. If the record says `encrypted`, verify the MAC using the recorded key version and tweak, then decrypt and strip any padding. Otherwise verify `content_hash`, and refuse the segment if the capsule's policy requires encryption.
 4. If the record says `compressed`, decompress with the recorded algorithm.
 5. Yield the plaintext, one segment at a time.
 
 ## Caveats
 
-- **The dedup key ignores encryption.** A write with an encryption policy can reuse a segment that an earlier unencrypted write stored in plaintext. Including the encryption mode and key version in the hash domain would fix this ([#83](https://github.com/saworbit/SPACE/issues/83)).
 - **Equality is visible.** Deterministic encryption means anyone who can read the disk can tell which segments are identical, though not what they contain.
-- **Small segments:** segments under 16 bytes can't be encrypted, so the write fails ([#94](https://github.com/saworbit/SPACE/issues/94)).
-- **Integrity:** only encrypted segments are verified on read ([#95](https://github.com/saworbit/SPACE/issues/95)).
 - **HybridKyber:** `Policy::validate` rejects `CryptoProfile::HybridKyber` together with `dedupe = true`, because a per-capsule key wrap would make shared segments unreadable. The ML-KEM wrap itself isn't implemented on this branch.
 
 ## Flow diagram

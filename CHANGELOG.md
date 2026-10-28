@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A set but invalid `SPACE_MASTER_KEY` is now a startup error, and an encrypted write with no key fails instead of storing plaintext marked encrypted. Removed the all-zero and fixed fallback keys (#84).
+- Encrypted and plaintext writes no longer dedup onto each other's segments. The dedup key now includes the encryption mode (#83).
+- Encrypted writes of objects or tail segments under 16 bytes now work. Short segments are zero-padded to one XTS block (#94).
+- Reads now verify the content hash of unencrypted segments and refuse a plaintext segment for a capsule that requires encryption. Deep scrub reports an encrypted segment with no MAC tag as a MAC failure. Capsules written through the #83 bug now fail to read instead of returning unprotected data (#95).
 - CI now checks rustfmt, clippy with `-D warnings`, and the build on Rust 1.89. The tree is rustfmt-clean (#107).
 - The Dockerfile builds on `rust:1.89-bookworm`, and the workspace declares `rust-version = "1.89"` (#100).
 - Dependabot no longer opens bincode major bumps. A test pins the `space.db` record encoding (#113).
