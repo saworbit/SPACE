@@ -23,7 +23,7 @@ async fn streaming_upload_round_trip() {
 
     let app = Router::new()
         .route(
-            "/:bucket/:key",
+            "/{bucket}/{key}",
             put(handlers::put_object).get(handlers::get_object),
         )
         .with_state(view);
