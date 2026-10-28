@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Entries below this heading describe the pre-reset tree (foundry, federation, mesh, web UI, and the other removed crates). That code is on `archive/pre-reset-2026-10`. See [RESET.md](RESET.md).
+### Changed
+
+- Docs now describe the single-node core as it actually behaves. Known gaps link to their GitHub issues.
+  - Rewrote the S3 quick start and the streaming reads guide.
+  - Rewrote the encryption, dedup and encrypted-dedup implementation docs. The throughput figures there are now measured numbers.
+  - Corrected capsule.md: write order, tweak derivation, recovery behaviour, and features removed in the reset.
+  - Corrected SECURITY.md's hardening summary, CONTRIBUTING.md, README.md, ARCHITECTURE.md and docs/guides/BUILD.md.
+  - Issues: #103, #104, #105, #110.
+
+The remaining entries in this section describe the pre-reset tree (foundry, federation, mesh, web UI, and the other removed crates). That code is on `archive/pre-reset-2026-10`. See [RESET.md](RESET.md).
 
 ### Changed
 

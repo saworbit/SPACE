@@ -1,172 +1,152 @@
-# 🚀 SPACE S3 Protocol View - Quick Start
+# S3 Quick Start
 
-## What This Proves
+This walkthrough runs the S3-compatible view on one node, stores a few objects, and then reads one of them back through `spacectl` by its capsule ID. Everything below was run against the post-reset `main` branch.
 
-**Same capsule, different views.** This demo shows SPACE's core innovation:
-- Write data via CLI → creates a capsule
-- Read same data via S3 API → no copy, just a different protocol view
+The S3 view is alpha. See [Current limitations](#current-limitations) before pointing a real client at it.
 
 ## Prerequisites
 
-```bash
-# Rust 1.83+
-rustup update
+- Rust 1.89 or newer. The committed `Cargo.lock` needs it ([#100](https://github.com/saworbit/SPACE/issues/100)).
+- `curl`
 
-# Build the project
-cargo build --release
+```bash
+cargo build --release -p spacectl
 ```
 
-## Demo: One Capsule, Two Views
-
-### Terminal 1: Start the S3 Server
+## 1. Start the server
 
 ```bash
 ./target/release/spacectl serve-s3 --port 8080
 ```
 
-> Optional: run with the modular pipeline + filesystem storage backend (required for Phase 6 tiering).
->
-> ```bash
-> cargo build --release --features modular_pipeline
-> export SPACE_STORAGE_ROOT=./space.storage
-> export SPACE_COLD_ROOT=./space.cold
-> ./target/release/spacectl serve-s3 --port 8080 --modular
-> ```
+`--port` (or `-p`) defaults to 8080. The server stores its data in the current directory:
 
-You should see:
-```
-🚀 SPACE S3 Protocol View listening on http://0.0.0.0:8080
-📦 Ready to serve capsules via S3 API
-```
+| Path | Contents |
+|------|----------|
+| `space.db/` | sled database: capsule records and the content-hash index |
+| `space.nvram` | append-only segment log |
+| `space.nvram.segments` | JSON map of segment offsets, lengths, compression and encryption metadata |
 
-### Terminal 2: Test the S3 API
-
-#### 1. PUT an object (create capsule)
+Set `SPACE_STORAGE_ROOT` to store segments as files under a directory instead of the NVRAM log. The registry stays in `./space.db`.
 
 ```bash
-curl -X PUT http://localhost:8080/demo-bucket/hello.txt \
+SPACE_STORAGE_ROOT=./space.storage ./target/release/spacectl serve-s3 --port 8080
+```
+
+Startup prints `Starting SPACE S3 Protocol View...`, then log lines including:
+
+```
+INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://0.0.0.0:8080
+```
+
+The server listens on all interfaces with no authentication ([#90](https://github.com/saworbit/SPACE/issues/90)). Run it only on a machine and network you trust.
+
+## 2. PUT an object
+
+```bash
+curl -i -X PUT http://localhost:8080/demo-bucket/hello.txt \
   -d "Hello from SPACE! This is stored as a capsule."
 ```
 
-**Response:**
+The response is `200 OK`, and the ETag is the new capsule's ID:
+
 ```
-ETag: "550e8400-e29b-41d4-a716-446655440000"
+HTTP/1.1 200 OK
+etag: "f1eec31a-8966-4ca1-9538-187d6529383b"
 ```
 
-#### 2. GET the object back
+## 3. GET and HEAD
 
 ```bash
 curl http://localhost:8080/demo-bucket/hello.txt
 ```
 
-**Output:**
 ```
 Hello from SPACE! This is stored as a capsule.
 ```
-
-#### 3. HEAD to get metadata
 
 ```bash
 curl -I http://localhost:8080/demo-bucket/hello.txt
 ```
 
-**Output:**
 ```
 HTTP/1.1 200 OK
-content-length: 47
+content-length: 46
 content-type: text/plain
-etag: "550e8400-e29b-41d4-a716-446655440000"
+etag: "f1eec31a-8966-4ca1-9538-187d6529383b"
+last-modified: Wed, 28 Oct 2026 19:17:00 GMT
 ```
 
-#### 4. LIST objects in bucket
+The content type is guessed from the key's extension.
+
+## 4. List a bucket
 
 ```bash
 curl http://localhost:8080/demo-bucket
 ```
 
-**Output:**
 ```json
-{
-  "name": "demo-bucket",
-  "contents": [
-    {
-      "key": "demo-bucket/hello.txt",
-      "size": 47,
-      "content_type": "text/plain",
-      "etag": "\"550e8400-e29b-41d4-a716-446655440000\""
-    }
-  ]
-}
+{"name":"demo-bucket","prefix":null,"contents":[{"key":"demo-bucket/hello.txt","size":46,"last_modified":1793215020,"content_type":"text/plain","etag":"\"f1eec31a-8966-4ca1-9538-187d6529383b\""}]}
 ```
 
-#### 5. Upload a binary file
+The listing is JSON, not S3's `ListBucketResult` XML, and each `key` includes the bucket name ([#89](https://github.com/saworbit/SPACE/issues/89)).
+
+## 5. Round-trip a binary file
 
 ```bash
 dd if=/dev/urandom of=test.bin bs=1M count=5
-curl -X PUT http://localhost:8080/demo-bucket/data.bin \
-  --data-binary @test.bin
-
-curl http://localhost:8080/demo-bucket/data.bin > downloaded.bin
-diff test.bin downloaded.bin  # Should be identical
+curl -X PUT http://localhost:8080/demo-bucket/data.bin --data-binary @test.bin
+curl -o downloaded.bin http://localhost:8080/demo-bucket/data.bin
+cmp test.bin downloaded.bin && echo identical
 ```
 
-## Test with AWS CLI (Optional)
+Use `--data-binary`. Plain `-d` strips newlines.
 
-While SPACE S3 isn't feature-complete, you can test basic operations:
+## 6. Read the same capsule through spacectl
+
+The S3 view and `spacectl` share one capsule store. Stop the server first: sled allows only one process to open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
 
 ```bash
-# Configure fake credentials (not used yet)
-export AWS_ACCESS_KEY_ID=test
-export AWS_SECRET_ACCESS_KEY=test
-
-# Use with custom endpoint
-aws s3 --endpoint-url http://localhost:8080 \
-  cp localfile.txt s3://demo-bucket/uploaded.txt
-
-aws s3 --endpoint-url http://localhost:8080 \
-  ls s3://demo-bucket/
+./target/release/spacectl list
+./target/release/spacectl read f1eec31a-8966-4ca1-9538-187d6529383b
 ```
 
-## Architecture Validation
+The bucket/key → capsule map lives only in the server's memory. After a restart, every capsule is still in `spacectl list`, but S3 GETs return 404 until the objects are written again ([#85](https://github.com/saworbit/SPACE/issues/85)).
 
-This demo proves:
+## Using an S3 SDK
 
-✅ **Universal Namespace** - Each S3 object maps to exactly one CapsuleId
-✅ **Protocol Views** - Same data accessible via HTTP/REST (S3) and CLI
-✅ **No Data Duplication** - PUT creates one capsule, GET reads that same capsule
-✅ **Metadata Mapping** - S3 keys are resolved to capsules at runtime
+With path-style addressing, boto3's `put_object`, `get_object`, `head_object` and `delete_object` work. Credentials are ignored.
 
+```python
+import boto3
+from botocore.config import Config
+
+s3 = boto3.client("s3", endpoint_url="http://localhost:8080",
+                  aws_access_key_id="x", aws_secret_access_key="x", region_name="us-east-1",
+                  config=Config(s3={"addressing_style": "path"}))
+s3.put_object(Bucket="demo-bucket", Key="k.txt", Body=b"hi")
+print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
+```
+
+`list_objects_v2` fails, and so does `upload_file` above the 8 MiB multipart threshold ([#89](https://github.com/saworbit/SPACE/issues/89)). The AWS CLI hasn't been tested.
+
+## Current limitations
+
+- Keys can't contain `/` ([#88](https://github.com/saworbit/SPACE/issues/88)).
+- No multipart upload, and listing isn't S3 XML ([#89](https://github.com/saworbit/SPACE/issues/89)).
+- Whole objects are buffered in memory on PUT and GET, and `Range` is ignored ([#99](https://github.com/saworbit/SPACE/issues/99)).
+- DELETE and overwrites don't free storage ([#86](https://github.com/saworbit/SPACE/issues/86)).
+- Objects are never encrypted, even with `SPACE_MASTER_KEY` set ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- Error responses are plain text, not S3 XML error codes.
 
 ## Troubleshooting
 
-**Server won't start:**
+**Port already in use:** pick another port with `--port 9000`. To see what holds the port, run `lsof -i :8080` on Linux/macOS or `netstat -ano | findstr :8080` on Windows.
+
+**`spacectl` fails with "could not acquire lock" on `space.db`** (`list` panics; the other commands print an error): a `serve-s3` process is still running in that directory.
+
+**Start from an empty store (deletes all data):**
+
 ```bash
-# Check if port is in use
-lsof -i :8080
-
-# Try a different port
-./target/release/spacectl serve-s3 --port 9000
+rm -rf space.db space.nvram space.nvram.segments
 ```
-
-**Can't write objects:**
-```bash
-# Check NVRAM log is writable
-ls -la space.nvram*
-
-# Clean slate (deletes all data!)
-rm space.nvram* space.db
-```
-
-## Performance Notes
-
-Current MVP is **NOT** production-ready:
-- No caching layer
-- No connection pooling
-- No multipart upload support
-- Limited error handling
-
-But it **does prove the concept** - one capsule, infinite protocol views!
-
----
-
-**🎯 Mission Accomplished:** You've proven SPACE's universal namespace works across protocols.

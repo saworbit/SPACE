@@ -1,5 +1,7 @@
 # Building SPACE
 
+Requires Rust 1.89 or newer (the committed `Cargo.lock` needs it).
+
 ```bash
 cargo test --workspace
 cargo build --release -p spacectl
