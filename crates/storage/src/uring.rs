@@ -20,7 +20,6 @@ enum UringCommand {
         data: Vec<u8>,
         resp: oneshot::Sender<Result<()>>,
     },
-    Shutdown,
 }
 
 /// io_uring-backed filesystem storage backend (Linux-only).
@@ -40,7 +39,8 @@ impl UringBackend {
 
         let (tx, rx) = mpsc::unbounded_channel();
         std::thread::spawn(move || {
-            let _ = tokio_uring::start(async move {
+            // Runs until every sender is dropped.
+            tokio_uring::start(async move {
                 run_uring_actor(rx).await;
             });
         });
@@ -190,19 +190,19 @@ impl StorageTransaction for UringTransaction {
         Box::pin(async { Ok(()) })
     }
 
-    fn commit(self) -> BoxFuture<'static, Result<()>> {
+    fn commit(mut self) -> BoxFuture<'static, Result<()>> {
         Box::pin(async move {
-            for (segment, data) in self.staged_segments {
+            for (segment, data) in std::mem::take(&mut self.staged_segments) {
                 self.backend.write_bytes(segment, data).await?;
             }
 
-            for (segment, metadata) in self.staged_metadata {
+            for (segment, metadata) in std::mem::take(&mut self.staged_metadata) {
                 let path = self.backend.metadata_path(segment);
                 let bytes = serde_json::to_vec_pretty(&metadata)?;
                 Self::atomic_write(&path, &bytes).await?;
             }
 
-            for segment in self.deleted {
+            for segment in std::mem::take(&mut self.deleted) {
                 self.delete_segment_files(segment).await?;
             }
 
@@ -283,7 +283,6 @@ async fn run_uring_actor(mut rx: mpsc::UnboundedReceiver<UringCommand>) {
                 let result = write_atomic(&path, data).await;
                 let _ = resp.send(result);
             }
-            UringCommand::Shutdown => break,
         }
     }
 }
@@ -321,7 +320,7 @@ async fn write_atomic(path: &Path, data: Vec<u8>) -> Result<()> {
         .await
         .with_context(|| format!("create {}", tmp.display()))?;
     let len = data.len();
-    let (res, _buf) = file.write_at(data, 0).await;
+    let (res, _buf) = file.write_at(data, 0).submit().await;
     let written = res?;
     if written != len {
         return Err(anyhow!("short write: {} != {}", written, len));
