@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - S3 DELETE and overwrites delete the capsule the key pointed at. Added `spacectl delete` (#86).
 - S3 keys may contain `/` (#88).
 - S3 listings are `ListBucketResult` XML (V1 and V2) with prefix, delimiter, `max-keys`, paging and `encoding-type=url`, and keys no longer include the bucket name. Errors are S3 XML (`NoSuchKey`, `NoSuchBucket`), and GET sends `Content-Length`, `ETag` and `Last-Modified`. Multipart upload is still missing (#89).
+- S3 PUT and `spacectl create` store objects one segment at a time as the data arrives, and S3 GET and `spacectl read` stream them back, so memory no longer grows with object size. GET honours a single `Range` with `206 Partial Content`. A failed or dropped upload releases its segments, and an overwrite waits for GETs still reading the old object (#99).
 - A set but invalid `SPACE_MASTER_KEY` is now a startup error, and an encrypted write with no key fails instead of storing plaintext marked encrypted. Removed the all-zero and fixed fallback keys (#84).
 - Encrypted and plaintext writes no longer dedup onto each other's segments. The dedup key now includes the encryption mode (#83).
 - Encrypted writes of objects or tail segments under 16 bytes now work. Short segments are zero-padded to one XTS block (#94).

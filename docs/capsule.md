@@ -432,7 +432,7 @@ client bytes
 
 - **Trust segment metadata, not policy.** Steps 4, 5, 6 branch on `segment.encrypted`, `segment.compressed`, `segment.compression_algo` — not on `capsule.policy`. A Capsule's policy describes how it was *written*; segment metadata describes how it actually *is*. Through dedup, a capsule can reference segments written under a different compression policy, so relying on `capsule.policy` would corrupt the read.
 
-- **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. The S3 view doesn't use range reads yet ([#99](https://github.com/saworbit/SPACE/issues/99)).
+- **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. S3 GET uses them for `Range` requests.
 
 - **Every segment is verified.** Encrypted segments are checked by MAC, unencrypted ones by their `content_hash`. A capsule whose policy requires encryption is never served from a segment marked unencrypted, so clearing the sidecar's `encrypted` flag doesn't skip verification.
 
@@ -475,7 +475,7 @@ Segments still referenced by other Capsules remain.
 
 ### Race-freedom
 
-The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle (write, delete, GC) runs under one async mutex, so they never interleave. A second process can't open the same store at all, because sled locks `space.db`.
+The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle runs under one async mutex. A streaming write takes it once per segment, so other writes and deletes can run between its segments. Each segment a write uses holds a reference from the moment it is stored, and GC refuses to run while a write is open. A second process can't open the same store at all, because sled locks `space.db`.
 
 ---
 

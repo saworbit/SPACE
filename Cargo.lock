@@ -2296,6 +2296,7 @@ dependencies = [
  "capsule-registry",
  "clap",
  "common",
+ "futures",
  "nvram-sim",
  "protocol-s3",
  "serde_json",

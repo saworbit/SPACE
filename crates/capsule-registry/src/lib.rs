@@ -30,11 +30,14 @@ pub mod modular_pipeline {
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
-        pipeline_with_nvram, pipeline_with_nvram_xts, DefaultPipeline, DefaultPolicyEvaluator,
-        InMemoryPipeline, KeyManagerKeyring, NoopEncryptor, NullKeyring, NvramPipeline,
-        NvramPipelineWithEncryption, Pipeline, PipelineBuilder, XtsEncryptor,
+        pipeline_with_nvram, pipeline_with_nvram_xts, CapsuleWrite, DefaultPipeline,
+        DefaultPolicyEvaluator, InMemoryPipeline, KeyManagerKeyring, NoopEncryptor, NullKeyring,
+        NvramPipeline, NvramPipelineWithEncryption, Pipeline, PipelineBuilder, XtsEncryptor,
     };
     pub use storage::{AutoFsBackend, InMemoryBackend, NvramBackend};
+    use tokio::io::{AsyncRead, AsyncReadExt};
+    use tokio::sync::Mutex as TokioMutex;
+    use tracing::warn;
 
     pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
         path: P,
@@ -123,6 +126,56 @@ pub mod modular_pipeline {
             }
         }
 
+        pub fn begin_write(&mut self, policy: &Policy) -> Result<CapsuleWrite> {
+            match self {
+                Self::Encrypted(p) => p.begin_write(policy),
+                Self::Plain(p) => p.begin_write(policy),
+                Self::FsEncrypted(p) => p.begin_write(policy),
+                Self::FsPlain(p) => p.begin_write(policy),
+            }
+        }
+
+        pub async fn write_chunk(&mut self, write: &mut CapsuleWrite, chunk: &[u8]) -> Result<()> {
+            match self {
+                Self::Encrypted(p) => p.write_chunk(write, chunk).await,
+                Self::Plain(p) => p.write_chunk(write, chunk).await,
+                Self::FsEncrypted(p) => p.write_chunk(write, chunk).await,
+                Self::FsPlain(p) => p.write_chunk(write, chunk).await,
+            }
+        }
+
+        pub async fn finish_write(&mut self, write: CapsuleWrite) -> Result<CapsuleId> {
+            match self {
+                Self::Encrypted(p) => p.finish_write(write).await,
+                Self::Plain(p) => p.finish_write(write).await,
+                Self::FsEncrypted(p) => p.finish_write(write).await,
+                Self::FsPlain(p) => p.finish_write(write).await,
+            }
+        }
+
+        pub async fn abort_write(&mut self, write: CapsuleWrite) -> Result<()> {
+            match self {
+                Self::Encrypted(p) => p.abort_write(write).await,
+                Self::Plain(p) => p.abort_write(write).await,
+                Self::FsEncrypted(p) => p.abort_write(write).await,
+                Self::FsPlain(p) => p.abort_write(write).await,
+            }
+        }
+
+        pub async fn read_range_stream(
+            &self,
+            id: CapsuleId,
+            offset: u64,
+            len: u64,
+        ) -> Result<DataStream> {
+            match self {
+                Self::Encrypted(p) => p.read_range_stream(id, offset, len).await,
+                Self::Plain(p) => p.read_range_stream(id, offset, len).await,
+                Self::FsEncrypted(p) => p.read_range_stream(id, offset, len).await,
+                Self::FsPlain(p) => p.read_range_stream(id, offset, len).await,
+            }
+        }
+
         pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
             match self {
                 Self::Encrypted(p) => p.read_capsule(id).await,
@@ -165,6 +218,104 @@ pub mod modular_pipeline {
                 Self::Plain(p) => p.garbage_collect().await,
                 Self::FsEncrypted(p) => p.garbage_collect().await,
                 Self::FsPlain(p) => p.garbage_collect().await,
+            }
+        }
+    }
+
+    /// Write a capsule from `reader` one segment at a time, so memory stays
+    /// near one segment however long the input is (#99). The pipeline is
+    /// locked only while a segment is stored, never while the reader waits.
+    /// If this future is dropped part way, the write is aborted in the
+    /// background. Returns the capsule and its size.
+    pub async fn write_from_reader<Rd>(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+        reader: Rd,
+        policy: &Policy,
+    ) -> Result<(CapsuleId, u64)>
+    where
+        Rd: AsyncRead + Send,
+    {
+        let write = pipeline.lock().await.begin_write(policy)?;
+        let chunk_size = write.chunk_size();
+        let mut open = OpenWrite {
+            pipeline: Arc::clone(pipeline),
+            write: Some(write),
+        };
+        tokio::pin!(reader);
+        let mut chunk = Vec::with_capacity(chunk_size);
+        let mut size = 0u64;
+        loop {
+            chunk.clear();
+            if let Err(err) = reader
+                .as_mut()
+                .take(chunk_size as u64)
+                .read_to_end(&mut chunk)
+                .await
+            {
+                open.abort().await;
+                return Err(err.into());
+            }
+            if chunk.is_empty() {
+                break;
+            }
+            size += chunk.len() as u64;
+            let stored = pipeline
+                .lock()
+                .await
+                .write_chunk(open.write_mut(), &chunk)
+                .await;
+            if let Err(err) = stored {
+                open.abort().await;
+                return Err(err);
+            }
+            if chunk.len() < chunk_size {
+                break;
+            }
+        }
+
+        let mut handle = pipeline.lock().await;
+        let write = open.take();
+        Ok((handle.finish_write(write).await?, size))
+    }
+
+    /// Aborts the write in the background if dropped before it ends.
+    struct OpenWrite {
+        pipeline: Arc<TokioMutex<RegistryPipelineHandle>>,
+        write: Option<CapsuleWrite>,
+    }
+
+    impl OpenWrite {
+        fn write_mut(&mut self) -> &mut CapsuleWrite {
+            self.write.as_mut().expect("write is open")
+        }
+
+        fn take(&mut self) -> CapsuleWrite {
+            self.write.take().expect("write is open")
+        }
+
+        async fn abort(mut self) {
+            let write = self.take();
+            if let Err(err) = self.pipeline.lock().await.abort_write(write).await {
+                warn!("failed to release the segments of an aborted write: {err:#}");
+            }
+        }
+    }
+
+    impl Drop for OpenWrite {
+        fn drop(&mut self) {
+            let Some(write) = self.write.take() else {
+                return;
+            };
+            let pipeline = Arc::clone(&self.pipeline);
+            match tokio::runtime::Handle::try_current() {
+                Ok(runtime) => {
+                    runtime.spawn(async move {
+                        if let Err(err) = pipeline.lock().await.abort_write(write).await {
+                            warn!("failed to release the segments of a dropped write: {err:#}");
+                        }
+                    });
+                }
+                Err(_) => warn!("a write was dropped outside a runtime; its segments stay"),
             }
         }
     }

@@ -243,3 +243,56 @@ async fn buckets_can_be_created_and_listed_empty() {
     let (status, _, _) = app.send("GET", "/fresh?list-type=2", b"").await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn range_requests_get_partial_content() {
+    let app = App::new("range");
+    app.send("PUT", "/demo/digits.txt", b"0123456789").await;
+
+    let get = |range: &'static str| {
+        let router = app.router.clone();
+        async move {
+            let request = Request::builder()
+                .uri("/demo/digits.txt")
+                .header(header::RANGE, range)
+                .body(Body::empty())
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let headers = response.headers().clone();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                headers,
+                String::from_utf8_lossy(&bytes).into_owned(),
+            )
+        }
+    };
+
+    for (range, body, content_range) in [
+        ("bytes=2-4", "234", "bytes 2-4/10"),
+        ("bytes=7-", "789", "bytes 7-9/10"),
+        ("bytes=-3", "789", "bytes 7-9/10"),
+        ("bytes=5-100", "56789", "bytes 5-9/10"),
+    ] {
+        let (status, headers, got) = get(range).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT, "{range}");
+        assert_eq!(got, body, "{range}");
+        assert_eq!(headers[header::CONTENT_RANGE], content_range, "{range}");
+        assert_eq!(headers[header::CONTENT_LENGTH], body.len().to_string());
+    }
+
+    let (status, headers, xml) = get("bytes=10-").await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes */10");
+    assert_eq!(tags(&xml, "Code"), ["InvalidRange"]);
+
+    // A range the server doesn't serve is ignored, as RFC 9110 allows.
+    for ignored in ["bytes=0-1,4-5", "bytes=x-y"] {
+        let (status, headers, got) = get(ignored).await;
+        assert_eq!((status, got.as_str()), (StatusCode::OK, "0123456789"));
+        assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+    }
+}

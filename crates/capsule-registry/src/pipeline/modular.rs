@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use common::traits::DataStream;
 use common::{CapsuleId, Policy};
 use encryption::KeyManager;
 use nvram_sim::NvramLog;
+use tokio::io::AsyncRead;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::modular_pipeline::RegistryPipelineHandle;
@@ -43,16 +45,24 @@ impl ModularPipeline {
     pub async fn default_policy(&self) -> Policy {
         self.handle.lock().await.default_policy()
     }
+
+    pub async fn write_reader<Rd: AsyncRead + Send>(
+        &self,
+        reader: Rd,
+        policy: &Policy,
+    ) -> Result<(CapsuleId, u64)> {
+        crate::modular_pipeline::write_from_reader(&self.handle, reader, policy).await
+    }
+
+    pub async fn read_stream(&self, id: CapsuleId) -> Result<DataStream> {
+        self.handle.lock().await.read_capsule_stream(id).await
+    }
 }
 
 #[async_trait]
 impl PipelineStrategy for ModularPipeline {
     async fn write_capsule(&self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-        let bytes = data.to_vec();
-        let policy = policy.clone();
-        let handle = Arc::clone(&self.handle);
-        let mut guard = handle.lock().await;
-        guard.write_capsule(&bytes, &policy).await
+        self.handle.lock().await.write_capsule(data, policy).await
     }
 
     async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>> {
