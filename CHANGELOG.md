@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reads now verify the content hash of unencrypted segments and refuse a plaintext segment for a capsule that requires encryption. Deep scrub reports an encrypted segment with no MAC tag as a MAC failure. Capsules written through the #83 bug now fail to read instead of returning unprotected data (#95).
 - CI now checks rustfmt, clippy with `-D warnings`, and the build on Rust 1.89. The tree is rustfmt-clean (#107).
 - The Dockerfile builds on `rust:1.89-bookworm`, and the workspace declares `rust-version = "1.89"` (#100).
+- The `uring` feature of `storage` builds again, now against tokio-uring 0.5, and CI runs clippy on it. Updated rand to 0.10.3 (#115, #116).
 - Dependabot no longer opens bincode major bumps. A test pins the `space.db` record encoding (#113).
 - Removed `scripts/`. Each script was broken and duplicated a cargo test or the S3 quick start (#101).
 
