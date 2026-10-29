@@ -229,9 +229,9 @@ pub struct Policy {
 
 Presets (`Policy::default()`, `text_optimized()`, `precompressed()`, `edge_optimized()`, `encrypted()`, `encrypted_compressed()`) provide named bundles for common workloads. Custom policies are constructed field-by-field.
 
-On this branch only `compression`, `encryption` and `layout` change what the write path does:
+On this branch only `compression`, `dedupe`, `encryption` and `layout` change what the write path does:
 
-- `dedupe` is ignored ([#87](https://github.com/saworbit/SPACE/issues/87)).
+- With `dedupe = false`, every segment is new, and its hash is not registered, so later writes can't attach to it.
 - `compact_interval_secs`, `erasure_profile`, `federation` and `transform` are stored, but nothing reads them.
 - `CryptoProfile::HybridKyber` only affects `Policy::validate`; there's no ML-KEM code.
 - `spacectl create` and S3 PUT always use `Policy::default()`, which has encryption disabled ([#82](https://github.com/saworbit/SPACE/issues/82)).
@@ -358,13 +358,13 @@ client bytes
 
 ### Stage-by-stage
 
-**1. Segmentation.** The write pipeline splits the input into chunks. Default chunk size is 4 MiB (`SEGMENT_SIZE`). `LayoutPolicy` can set another size, either `Fixed { segment_size }` or a zone size with `ZnsGraph { zone_size_mib }`. `AdaptiveEntropy`, `Learned` and `QuantumReady` all fall back to 4 MiB, so there's no variable-size chunking. No upper bound is enforced ([#109](https://github.com/saworbit/SPACE/issues/109)).
+**1. Segmentation.** The write pipeline splits the input into chunks. Default chunk size is 4 MiB (`SEGMENT_SIZE`). `LayoutPolicy` can set another size, either `Fixed { segment_size }` or a zone size with `ZnsGraph { zone_size_mib }`. `AdaptiveEntropy`, `Learned` and `QuantumReady` all fall back to 4 MiB, so there's no variable-size chunking. `Policy::validate` rejects a size of 0 or above 16 MiB (`MAX_SEGMENT_SIZE`), which keeps each segment within the XTS data unit limit.
 
 **2. Compression.** Driven by `policy.compression`. Returns both the compressed bytes and the **algorithm string** (e.g., `"lz4:1"`, `"zstd:3"`, `"identity"`). The algorithm string is critical for step 3.
 
 **3. Hash.** `hash_content_with_algo(compressed_bytes, algorithm_string)` produces a `ContentHash` that mixes the algorithm into the BLAKE3 input. This prevents cross-policy dedup collisions ([§10.4](#104-dedup-keys-need-algorithm-domain-separation)).
 
-**4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed. The hash domain includes the encryption mode, so encrypted and plaintext writes never share a segment. The lookup ignores `policy.dedupe` ([#87](https://github.com/saworbit/SPACE/issues/87)).
+**4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed. The hash domain includes the encryption mode, so encrypted and plaintext writes never share a segment. With `policy.dedupe = false` the lookup is skipped.
 
 **5. Encrypt.** Runs only when the policy enables encryption. XTS-AES-256, with the tweak taken from the first 16 bytes of a plain BLAKE3 hash of the compressed segment (not the algorithm-separated `content_hash`). Encryption is deterministic: the same compressed bytes under the same key version give the same ciphertext. This is the property that lets encryption preserve dedup ([§10.2](#102-deterministic-encryption-preserves-dedup)). XTS needs at least 16 bytes, so a shorter segment is stored uncompressed and zero-padded to 16 bytes. The read strips the padding using `plain_len`.
 

@@ -24,7 +24,6 @@ Dedup happens before encryption, and the hash is taken over the pre-encryption b
 
 ## Known gaps
 
-- `Policy.dedupe = false` is ignored; every write deduplicates ([#87](https://github.com/saworbit/SPACE/issues/87)).
 - The hash domain includes the encryption mode, so an encrypted write never reuses a plaintext segment. It doesn't include the key version, so data written after a key rotation can reuse segments encrypted under the old key ([#98](https://github.com/saworbit/SPACE/issues/98)).
 - Chunks are fixed-size. Inserting bytes near the start of a file shifts every later chunk boundary, so an edited file shares little with the original. There is no content-defined chunking.
 - `deduped_bytes` counts compressed bytes.
