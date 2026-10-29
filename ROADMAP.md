@@ -16,7 +16,7 @@ See [RESET.md](RESET.md) for why the hard restart happened and what was kept.
 
 - Modular pipeline as the default path.
 - Automatic background GC and working reference counting.
-- S3 view: multipart, range requests, proper error codes, encryption-transparent.
+- S3 view: multipart upload.
 - spacectl polish (progress, doctor, config, completions).
 - Property tests and basic benchmarks for the pipeline.
 - External review of the encryption crate when the core is stable.

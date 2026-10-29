@@ -477,6 +477,33 @@ fn decode_segment<C: Compressor, E: Encryptor>(
     }
 }
 
+/// An open capsule write: `begin_write`, then `write_chunk` for each chunk,
+/// then `finish_write` or `abort_write`. Every chunk but the last is exactly
+/// `chunk_size()` bytes, so a capsule is cut into the same segments however
+/// it is written, and dedups the same way.
+pub struct CapsuleWrite {
+    capsule_id: CapsuleId,
+    policy: Policy,
+    chunk_size: usize,
+    compression_policy: Option<CompressionPolicy>,
+    encryption_policy: EncryptionPolicy,
+    dedupe: bool,
+    segments: Vec<SegmentId>,
+    stats: DedupStats,
+    size: u64,
+    ended: bool,
+}
+
+impl CapsuleWrite {
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    pub fn capsule_id(&self) -> CapsuleId {
+        self.capsule_id
+    }
+}
+
 /// Pipeline orchestrator that composes the modular traits.
 pub struct Pipeline<C, D, E, S, Eval, K, R>
 where
@@ -496,6 +523,8 @@ where
     keyring: Option<K>,
     stats: DedupStats,
     catalog: R,
+    /// Writes begun and not yet finished or aborted.
+    open_writes: usize,
 }
 
 impl<C, D, E, S, Eval, K, R> Pipeline<C, D, E, S, Eval, K, R>
@@ -526,159 +555,202 @@ where
             keyring,
             stats: DedupStats::default(),
             catalog,
+            open_writes: 0,
         }
     }
 
     #[instrument(skip_all)]
     pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
-        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        let capsule_id = CapsuleId::new();
-        let compression_policy = self
-            .evaluator
-            .evaluate_compression(policy, &data[..data.len().min(1024)])?;
-        // `Policy::validate` keeps this between 1 byte and 16 MiB.
-        let chunk_size = policy.layout.strategy.default_segment_size();
-        let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
-        let dedupe = self.evaluator.evaluate_dedup(policy)?;
-
-        let mut segment_ids = Vec::new();
-        let mut dedup_stats = DedupStats::new();
-
-        let mut cursor = 0u64;
-        let planned_segments: Vec<(u64, u64)> = data
-            .chunks(chunk_size)
-            .map(|chunk| {
-                let length = chunk.len() as u64;
-                let start = cursor;
-                cursor += length;
-                (start, length)
-            })
-            .collect();
-
-        for (offset, length) in planned_segments {
-            let start = offset as usize;
-            let end = start.saturating_add(length as usize);
-            if end > data.len() {
-                return Err(anyhow!(
-                    "zone plan refers beyond input data: {} > {}",
-                    end,
-                    data.len()
-                ));
-            }
-            let chunk = &data[start..end];
-            let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
-            // XTS needs one full block. A compressed view shorter than that is
-            // stored uncompressed instead, so `plain_len` is the exact length
-            // to strip the block padding back to on read (#94).
-            let (view, summary) = if encryption_policy.is_enabled()
-                && summary.compressed
-                && view.len() < MIN_SECTOR_SIZE
-            {
-                self.compressor.compress(chunk, &CompressionPolicy::None)?
-            } else {
-                (view, summary)
-            };
-            // Domain-separate the dedup key by compression algorithm and
-            // encryption so segments with identical stored bytes under
-            // different treatments cannot collide.
-            let hash = self.deduper.hash_content_with_algo(
-                view.as_ref(),
-                &dedup_domain(summary.algorithm.as_str(), &encryption_policy),
-            );
-
-            // With dedupe off, never reuse a segment, and never register one
-            // for later writes to attach to (#87).
-            let existing = if dedupe {
-                self.catalog.lookup_content(&hash)
-            } else {
-                None
-            };
-            if let Some(existing) = existing {
-                let mut metadata = self.storage.metadata(existing).await?;
-                metadata.ref_count += 1;
-                metadata.deduplicated = metadata.ref_count > 1;
-                let mut txn = self.storage.begin_txn().await?;
-                txn.set_segment_metadata(existing, metadata).await?;
-                txn.commit().await?;
-                self.deduper.update_stats(summary.output_size as u64, true);
-                self.stats.record(summary.output_size as u64, true);
-                dedup_stats.record(summary.output_size as u64, true);
-                segment_ids.push(existing);
-            } else {
-                let mut txn = self.storage.begin_txn().await?;
-                let seg_id = self.catalog.allocate_segment()?;
-
-                let (payload, encryption_summary) = if encryption_policy.is_enabled() {
-                    let _key = self
-                        .keyring
-                        .as_ref()
-                        .map(|keyring| keyring.derive_key(capsule_id, seg_id))
-                        .transpose()?;
-                    let plaintext = if view.len() < MIN_SECTOR_SIZE {
-                        let mut padded = view.to_vec();
-                        padded.resize(MIN_SECTOR_SIZE, 0);
-                        Cow::Owned(padded)
-                    } else {
-                        Cow::Borrowed(view.as_ref())
-                    };
-                    let (encrypted, summary) =
-                        self.encryptor
-                            .encrypt(plaintext, &encryption_policy, seg_id)?;
-                    (encrypted, summary)
-                } else {
-                    (view.into_owned(), EncryptionSummary::new("none"))
-                };
-
-                txn.append(seg_id, &payload).await?;
-                let metadata = Segment {
-                    id: seg_id,
-                    offset: 0,
-                    len: u32::try_from(payload.len()).context("segment too large")?,
-                    plain_len: Some(
-                        u32::try_from(summary.original_size).context("segment too large")?,
-                    ),
-                    compressed: summary.compressed,
-                    compression_algo: summary.algorithm.clone(),
-                    content_hash: Some(hash.clone()),
-                    ref_count: 1,
-                    deduplicated: false,
-                    access_count: 0,
-                    encryption_version: encryption_summary.encryption_version,
-                    key_version: encryption_summary.key_version,
-                    tweak_nonce: encryption_summary.tweak_nonce,
-                    integrity_tag: encryption_summary.integrity_tag,
-                    encrypted: encryption_summary.is_encrypted(),
-                    pq_ciphertext: None,
-                    pq_nonce: None,
-                };
-                txn.set_segment_metadata(seg_id, metadata).await?;
-                txn.commit().await?;
-
-                if dedupe {
-                    self.catalog.register_content(hash.clone(), seg_id)?;
-                    self.deduper.register_content(hash, seg_id)?;
-                }
-                self.deduper.update_stats(summary.output_size as u64, false);
-                self.stats.record(summary.output_size as u64, false);
-                dedup_stats.record(summary.output_size as u64, false);
-                segment_ids.push(seg_id);
+        let mut write = self.begin_write(policy)?;
+        for chunk in data.chunks(write.chunk_size()) {
+            if let Err(err) = self.write_chunk(&mut write, chunk).await {
+                self.abort_after_error(write).await;
+                return Err(err);
             }
         }
+        self.finish_write(write).await
+    }
 
-        self.catalog.create_capsule(
-            capsule_id,
-            data.len() as u64,
-            policy,
-            segment_ids,
-            &dedup_stats,
-        )?;
+    /// Start a write that takes the capsule one chunk at a time, so the
+    /// caller never holds more than one segment of it (#99).
+    pub fn begin_write(&mut self, policy: &Policy) -> Result<CapsuleWrite> {
+        policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let write = CapsuleWrite {
+            capsule_id: CapsuleId::new(),
+            policy: policy.clone(),
+            // `Policy::validate` keeps this between 1 byte and 16 MiB.
+            chunk_size: policy.layout.strategy.default_segment_size(),
+            compression_policy: None,
+            encryption_policy: self.evaluator.evaluate_encryption(policy)?,
+            dedupe: self.evaluator.evaluate_dedup(policy)?,
+            segments: Vec::new(),
+            stats: DedupStats::new(),
+            size: 0,
+            ended: false,
+        };
+        self.open_writes += 1;
+        Ok(write)
+    }
 
-        Ok(capsule_id)
+    /// Store the next chunk of an open write as one segment. Every chunk but
+    /// the last must be exactly `chunk_size()` bytes. Empty chunks are ignored.
+    pub async fn write_chunk(&mut self, write: &mut CapsuleWrite, chunk: &[u8]) -> Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        if write.ended || chunk.len() > write.chunk_size {
+            return Err(anyhow!(
+                "chunks must be {} bytes; only the last may be shorter",
+                write.chunk_size
+            ));
+        }
+        write.ended = chunk.len() < write.chunk_size;
+        let compression_policy = match &write.compression_policy {
+            Some(policy) => policy.clone(),
+            None => {
+                let policy = self
+                    .evaluator
+                    .evaluate_compression(&write.policy, &chunk[..chunk.len().min(1024)])?;
+                write.compression_policy = Some(policy.clone());
+                policy
+            }
+        };
+
+        let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
+        // XTS needs one full block. A compressed view shorter than that is
+        // stored uncompressed instead, so `plain_len` is the exact length
+        // to strip the block padding back to on read (#94).
+        let (view, summary) = if write.encryption_policy.is_enabled()
+            && summary.compressed
+            && view.len() < MIN_SECTOR_SIZE
+        {
+            self.compressor.compress(chunk, &CompressionPolicy::None)?
+        } else {
+            (view, summary)
+        };
+        // Domain-separate the dedup key by compression algorithm and
+        // encryption so segments with identical stored bytes under
+        // different treatments cannot collide.
+        let hash = self.deduper.hash_content_with_algo(
+            view.as_ref(),
+            &dedup_domain(summary.algorithm.as_str(), &write.encryption_policy),
+        );
+
+        // With dedupe off, never reuse a segment, and never register one
+        // for later writes to attach to (#87).
+        let existing = if write.dedupe {
+            self.catalog.lookup_content(&hash)
+        } else {
+            None
+        };
+        if let Some(existing) = existing {
+            let mut metadata = self.storage.metadata(existing).await?;
+            metadata.ref_count += 1;
+            metadata.deduplicated = metadata.ref_count > 1;
+            let mut txn = self.storage.begin_txn().await?;
+            txn.set_segment_metadata(existing, metadata).await?;
+            txn.commit().await?;
+            self.deduper.update_stats(summary.output_size as u64, true);
+            self.stats.record(summary.output_size as u64, true);
+            write.stats.record(summary.output_size as u64, true);
+            write.segments.push(existing);
+        } else {
+            let mut txn = self.storage.begin_txn().await?;
+            let seg_id = self.catalog.allocate_segment()?;
+
+            let (payload, encryption_summary) = if write.encryption_policy.is_enabled() {
+                let _key = self
+                    .keyring
+                    .as_ref()
+                    .map(|keyring| keyring.derive_key(write.capsule_id, seg_id))
+                    .transpose()?;
+                let plaintext = if view.len() < MIN_SECTOR_SIZE {
+                    let mut padded = view.to_vec();
+                    padded.resize(MIN_SECTOR_SIZE, 0);
+                    Cow::Owned(padded)
+                } else {
+                    Cow::Borrowed(view.as_ref())
+                };
+                let (encrypted, summary) =
+                    self.encryptor
+                        .encrypt(plaintext, &write.encryption_policy, seg_id)?;
+                (encrypted, summary)
+            } else {
+                (view.into_owned(), EncryptionSummary::new("none"))
+            };
+
+            txn.append(seg_id, &payload).await?;
+            let metadata = Segment {
+                id: seg_id,
+                offset: 0,
+                len: u32::try_from(payload.len()).context("segment too large")?,
+                plain_len: Some(u32::try_from(summary.original_size).context("segment too large")?),
+                compressed: summary.compressed,
+                compression_algo: summary.algorithm.clone(),
+                content_hash: Some(hash.clone()),
+                ref_count: 1,
+                deduplicated: false,
+                access_count: 0,
+                encryption_version: encryption_summary.encryption_version,
+                key_version: encryption_summary.key_version,
+                tweak_nonce: encryption_summary.tweak_nonce,
+                integrity_tag: encryption_summary.integrity_tag,
+                encrypted: encryption_summary.is_encrypted(),
+                pq_ciphertext: None,
+                pq_nonce: None,
+            };
+            txn.set_segment_metadata(seg_id, metadata).await?;
+            txn.commit().await?;
+            // Recorded before anything else can fail, so an abort releases it.
+            write.segments.push(seg_id);
+
+            if write.dedupe {
+                self.catalog.register_content(hash.clone(), seg_id)?;
+                self.deduper.register_content(hash, seg_id)?;
+            }
+            self.deduper.update_stats(summary.output_size as u64, false);
+            self.stats.record(summary.output_size as u64, false);
+            write.stats.record(summary.output_size as u64, false);
+        }
+
+        write.size += chunk.len() as u64;
+        Ok(())
+    }
+
+    /// Record the capsule. If that fails, the write's segments are released.
+    pub async fn finish_write(&mut self, write: CapsuleWrite) -> Result<CapsuleId> {
+        if let Err(err) = self.catalog.create_capsule(
+            write.capsule_id,
+            write.size,
+            &write.policy,
+            write.segments.clone(),
+            &write.stats,
+        ) {
+            self.abort_after_error(write).await;
+            return Err(err);
+        }
+        self.open_writes = self.open_writes.saturating_sub(1);
+        Ok(write.capsule_id)
+    }
+
+    /// Give up on an open write and release the segments it holds.
+    pub async fn abort_write(&mut self, write: CapsuleWrite) -> Result<()> {
+        self.open_writes = self.open_writes.saturating_sub(1);
+        self.release_segments(&write.segments).await
+    }
+
+    async fn abort_after_error(&mut self, write: CapsuleWrite) {
+        if let Err(err) = self.abort_write(write).await {
+            tracing::warn!("failed to release the segments of a failed write: {err:#}");
+        }
     }
 
     pub fn stats(&self) -> DedupStats {
         self.stats.clone()
+    }
+
+    pub fn catalog(&self) -> &R {
+        &self.catalog
     }
 
     pub async fn read_capsule_stream(&self, id: CapsuleId) -> Result<DataStream>
@@ -691,16 +763,51 @@ where
         K: Keyring + Send + Sync + 'static,
         R: CapsuleCatalog + Send + Sync + 'static,
     {
+        self.read_range_stream(id, 0, u64::MAX).await
+    }
+
+    /// Stream up to `len` bytes of a capsule from `offset`, one segment at a
+    /// time. Segments before `offset` are skipped without being read.
+    pub async fn read_range_stream(
+        &self,
+        id: CapsuleId,
+        offset: u64,
+        len: u64,
+    ) -> Result<DataStream>
+    where
+        C: Compressor + Clone + Send + Sync + 'static,
+        D: Deduper + Send + Sync + 'static,
+        E: Encryptor + Clone + Send + Sync + 'static,
+        S: StorageBackend + Clone + Send + Sync + 'static,
+        Eval: PolicyEvaluator + Send + Sync + 'static,
+        K: Keyring + Send + Sync + 'static,
+        R: CapsuleCatalog + Send + Sync + 'static,
+    {
         let capsule = self.catalog.lookup_capsule(id)?;
+        let end = offset.saturating_add(len).min(capsule.size);
         let storage_stream = self.storage.clone();
         let encryptor_stream = self.encryptor.clone();
         let compressor_stream = self.compressor.clone();
         let encryption_policy = capsule.policy.encryption.clone();
 
         let stream = try_stream! {
+            let mut cursor = 0u64;
             for seg_id in capsule.segments {
+                if cursor >= end {
+                    break;
+                }
                 let metadata = storage_stream.metadata(seg_id).await
                     .map_err(|e| anyhow!("Failed to fetch metadata for segment {:?}: {}", seg_id, e))?;
+                let seg_len_hint = metadata
+                    .plain_len
+                    .map(u64::from)
+                    .or_else(|| (!metadata.compressed).then_some(metadata.len as u64));
+                if let Some(seg_len) = seg_len_hint {
+                    if cursor + seg_len <= offset {
+                        cursor += seg_len;
+                        continue;
+                    }
+                }
 
                 let raw = storage_stream.read(seg_id).await
                     .map_err(|e| anyhow!("Failed to read segment {:?}: {}", seg_id, e))?;
@@ -714,7 +821,13 @@ where
                     raw,
                 )?;
 
-                yield Bytes::from(plain);
+                let seg_end = cursor + plain.len() as u64;
+                if seg_end > offset {
+                    let from = offset.saturating_sub(cursor) as usize;
+                    let to = (end.min(seg_end) - cursor) as usize;
+                    yield Bytes::from(plain).slice(from..to);
+                }
+                cursor = seg_end;
             }
         };
 
@@ -808,8 +921,15 @@ where
 
     pub async fn delete_capsule(&mut self, id: CapsuleId) -> Result<()> {
         let capsule = self.catalog.lookup_capsule(id)?;
+        self.release_segments(&capsule.segments).await?;
+        self.catalog.delete_capsule(id)?;
+        Ok(())
+    }
 
-        for seg_id in &capsule.segments {
+    /// Drop one reference to each segment. The last reference deletes the
+    /// segment and unregisters its hash.
+    async fn release_segments(&mut self, segments: &[SegmentId]) -> Result<()> {
+        for seg_id in segments {
             let metadata = self.storage.metadata(*seg_id).await?;
             let mut updated = metadata.clone();
 
@@ -826,12 +946,16 @@ where
                 }
             }
         }
-
-        self.catalog.delete_capsule(id)?;
         Ok(())
     }
 
     pub async fn garbage_collect(&mut self) -> Result<usize> {
+        // An open write holds segments that no capsule references yet.
+        if self.open_writes > 0 {
+            return Err(anyhow!(
+                "garbage collection can't run while a write is open"
+            ));
+        }
         let referenced: HashSet<SegmentId> = self
             .catalog
             .capsules()
@@ -2043,5 +2167,127 @@ mod tests {
             assert!(p.write_capsule(b"data", &policy).await.is_err());
         }
         assert!(p.storage.segment_ids().await.unwrap().is_empty());
+    }
+
+    fn small_segments(segment_size: usize) -> Policy {
+        let mut policy = Policy::default();
+        policy.layout.strategy = common::LayoutStrategy::Fixed { segment_size };
+        policy
+    }
+
+    fn noise(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = (seed << 1) | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn chunked_writes_cut_the_same_segments_as_write_capsule() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = small_segments(1000);
+        let data = noise(3500, 1);
+
+        let whole = p.write_capsule(&data, &policy).await.unwrap();
+        let mut write = p.begin_write(&policy).unwrap();
+        assert_eq!(write.chunk_size(), 1000);
+        for chunk in data.chunks(1000) {
+            p.write_chunk(&mut write, chunk).await.unwrap();
+        }
+        p.write_chunk(&mut write, &[]).await.unwrap();
+        let chunked = p.finish_write(write).await.unwrap();
+
+        let whole_segs = p.catalog.lookup_capsule(whole).unwrap().segments;
+        assert_eq!(whole_segs.len(), 4);
+        assert_eq!(
+            p.catalog.lookup_capsule(chunked).unwrap().segments,
+            whole_segs
+        );
+        assert_eq!(p.catalog.lookup_capsule(chunked).unwrap().size, 3500);
+        assert_eq!(p.read_capsule(chunked).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn only_the_last_chunk_may_be_short() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = small_segments(1000);
+
+        let mut write = p.begin_write(&policy).unwrap();
+        assert!(p.write_chunk(&mut write, &[1; 1001]).await.is_err());
+        p.write_chunk(&mut write, &[1; 500]).await.unwrap();
+        assert!(p.write_chunk(&mut write, &[2; 1000]).await.is_err());
+        p.abort_write(write).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn aborting_a_write_releases_its_segments() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = small_segments(1000);
+        let kept = noise(1000, 2);
+        let existing = p.write_capsule(&kept, &policy).await.unwrap();
+        let shared = p.catalog.lookup_capsule(existing).unwrap().segments[0];
+
+        let mut write = p.begin_write(&policy).unwrap();
+        p.write_chunk(&mut write, &kept).await.unwrap();
+        p.write_chunk(&mut write, &noise(1000, 3)).await.unwrap();
+        assert_eq!(p.storage.metadata(shared).await.unwrap().ref_count, 2);
+        assert_eq!(p.storage.segment_ids().await.unwrap().len(), 2);
+
+        p.abort_write(write).await.unwrap();
+        assert_eq!(p.storage.metadata(shared).await.unwrap().ref_count, 1);
+        assert_eq!(p.storage.segment_ids().await.unwrap(), vec![shared]);
+        assert_eq!(p.catalog.content_entries().len(), 1);
+        assert_eq!(p.catalog.capsules().len(), 1);
+        assert_eq!(p.read_capsule(existing).await.unwrap(), kept);
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_waits_for_open_writes() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let policy = small_segments(1000);
+
+        let mut write = p.begin_write(&policy).unwrap();
+        p.write_chunk(&mut write, &noise(1000, 4)).await.unwrap();
+        assert!(p.garbage_collect().await.is_err());
+        let id = p.finish_write(write).await.unwrap();
+
+        assert_eq!(p.garbage_collect().await.unwrap(), 0);
+        assert_eq!(p.read_capsule(id).await.unwrap(), noise(1000, 4));
+    }
+
+    #[tokio::test]
+    async fn range_streams_match_read_range() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let data = noise(3500, 5);
+        let id = p.write_capsule(&data, &small_segments(1000)).await.unwrap();
+
+        for (offset, len) in [
+            (0, 3500),
+            (0, 1),
+            (999, 2),
+            (1000, 1000),
+            (1500, 1700),
+            (3499, 10),
+            (3500, 1),
+            (4000, 5),
+            (0, 0),
+            (10, u64::MAX),
+        ] {
+            let mut stream = p.read_range_stream(id, offset, len).await.unwrap();
+            let mut got = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                got.extend_from_slice(&chunk.unwrap());
+            }
+            let expected = p
+                .read_range(id, offset, len.min(usize::MAX as u64) as usize)
+                .await
+                .unwrap();
+            assert_eq!(got, expected, "offset {offset} len {len}");
+        }
     }
 }

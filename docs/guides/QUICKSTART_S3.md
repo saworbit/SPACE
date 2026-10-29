@@ -85,11 +85,11 @@ The content type is guessed from the key's extension.
 curl http://localhost:8080/demo-bucket
 ```
 
-```json
-{"name":"demo-bucket","prefix":null,"contents":[{"key":"demo-bucket/hello.txt","size":46,"last_modified":1793215020,"content_type":"text/plain","etag":"\"f1eec31a-8966-4ca1-9538-187d6529383b\""}]}
+```xml
+<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>demo-bucket</Name><Prefix></Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated><Marker></Marker><Contents><Key>hello.txt</Key><LastModified>2026-10-28T19:17:00.000Z</LastModified><ETag>&quot;f1eec31a-8966-4ca1-9538-187d6529383b&quot;</ETag><Size>46</Size><StorageClass>STANDARD</StorageClass></Contents></ListBucketResult>
 ```
 
-The listing is JSON, not S3's `ListBucketResult` XML, and each `key` includes the bucket name ([#89](https://github.com/saworbit/SPACE/issues/89)).
+This is S3's `ListBucketResult`. Add `?list-type=2` for ListObjectsV2. `prefix`, `delimiter`, `max-keys` and paging work. Keys may contain `/`. A PUT creates its bucket if needed, and `curl -X PUT http://localhost:8080/new-bucket` creates an empty one.
 
 ## 5. Round-trip a binary file
 
@@ -111,11 +111,11 @@ The S3 view and `spacectl` share one capsule store. Stop the server first: sled 
 ./target/release/spacectl read f1eec31a-8966-4ca1-9538-187d6529383b
 ```
 
-The bucket/key → capsule map lives only in the server's memory. After a restart, every capsule is still in `spacectl list`, but S3 GETs return 404 until the objects are written again ([#85](https://github.com/saworbit/SPACE/issues/85)).
+Buckets and keys are stored in `space.db` too, so objects are still there after the server restarts. `spacectl delete <id>` removes a capsule. An S3 key that pointed at it then returns `NoSuchKey`.
 
 ## Using an S3 SDK
 
-With path-style addressing, boto3's `put_object`, `get_object`, `head_object` and `delete_object` work. Credentials are ignored.
+With path-style addressing, boto3's `create_bucket`, `head_bucket`, `put_object`, `get_object`, `head_object`, `delete_object`, `list_objects` and `list_objects_v2` work, paginators included. Ranged GETs work, so `download_file` does too. Credentials are ignored.
 
 ```python
 import boto3
@@ -128,16 +128,13 @@ s3.put_object(Bucket="demo-bucket", Key="k.txt", Body=b"hi")
 print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ```
 
-`list_objects_v2` fails, and so does `upload_file` above the 8 MiB multipart threshold ([#89](https://github.com/saworbit/SPACE/issues/89)). The AWS CLI hasn't been tested.
+`upload_file` fails above the 8 MiB multipart threshold, because there is no multipart upload. The AWS CLI hasn't been tested.
 
 ## Current limitations
 
-- Keys can't contain `/` ([#88](https://github.com/saworbit/SPACE/issues/88)).
-- No multipart upload, and listing isn't S3 XML ([#89](https://github.com/saworbit/SPACE/issues/89)).
-- Whole objects are buffered in memory on PUT and GET, and `Range` is ignored ([#99](https://github.com/saworbit/SPACE/issues/99)).
-- DELETE and overwrites don't free storage ([#86](https://github.com/saworbit/SPACE/issues/86)).
+- No multipart upload.
+- DELETE and overwrites free the old capsule, but its bytes stay in `space.nvram` until compaction, and nothing runs compaction yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
-- Error responses are plain text, not S3 XML error codes.
 
 ## Troubleshooting
 

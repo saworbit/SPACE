@@ -92,7 +92,7 @@ The single rule that resolves every "is this still the same Capsule?" question:
 
 The boundary is **what initiated the change**:
 
-- **Protocol-layer mutations** (a client overwriting a file at `/foo.txt`, rewriting block offset 4096 of `vol0`, PUT-ing a new object body to `s3://bucket/key`) produce a **new** Capsule with a new `CapsuleId`. The view's metadata is updated to point at the new Capsule; the old one is dereferenced and may be GC'd. (The S3 view doesn't dereference the old capsule yet; it stays in the store, [#86](https://github.com/saworbit/SPACE/issues/86).) The Capsule abstraction is *not* in-place mutable from the protocol surface.
+- **Protocol-layer mutations** (a client overwriting a file at `/foo.txt`, rewriting block offset 4096 of `vol0`, PUT-ing a new object body to `s3://bucket/key`) produce a **new** Capsule with a new `CapsuleId`. The view's metadata is updated to point at the new Capsule; the old one is dereferenced and may be GC'd. The S3 view deletes the old capsule as soon as the key points at the new one. Its bytes stay in the log until compaction. The Capsule abstraction is *not* in-place mutable from the protocol surface.
 - **Storage-layer transformations** (PODMS swarm migration, key rotation, compression transcoding, tier promotion/demotion) **preserve** `CapsuleId` and logical content while rewriting the on-disk representation. Audit log continuity is preserved; references at the view layer remain valid.
 
 This is what makes federated migration tractable: you can move a Capsule from `us-west` to `eu-central` (with re-encryption under the destination's key) without touching any file path, S3 key, or block volume that points at it.
@@ -432,7 +432,7 @@ client bytes
 
 - **Trust segment metadata, not policy.** Steps 4, 5, 6 branch on `segment.encrypted`, `segment.compressed`, `segment.compression_algo` — not on `capsule.policy`. A Capsule's policy describes how it was *written*; segment metadata describes how it actually *is*. Through dedup, a capsule can reference segments written under a different compression policy, so relying on `capsule.policy` would corrupt the read.
 
-- **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. The S3 view doesn't use range reads yet ([#99](https://github.com/saworbit/SPACE/issues/99)).
+- **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. S3 GET uses them for `Range` requests.
 
 - **Every segment is verified.** Encrypted segments are checked by MAC, unencrypted ones by their `content_hash`. A capsule whose policy requires encryption is never served from a segment marked unencrypted, so clearing the sidecar's `encrypted` flag doesn't skip verification.
 
@@ -459,7 +459,7 @@ Segment lifecycle:
 
 ### Delete path
 
-`Pipeline::delete_capsule(capsule_id)` is library-only: neither `spacectl` nor the S3 view calls it ([#86](https://github.com/saworbit/SPACE/issues/86)). It:
+`Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`, S3 DELETE, and S3 overwrites. It:
 
 1. Looks up the Capsule.
 2. For each `SegmentId` in `capsule.segments`: if `ref_count > 1`, decrements it; otherwise deletes the segment record and unregisters its hash.
@@ -475,7 +475,7 @@ Segments still referenced by other Capsules remain.
 
 ### Race-freedom
 
-The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle (write, delete, GC) runs under one async mutex, so they never interleave. A second process can't open the same store at all, because sled locks `space.db`.
+The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle runs under one async mutex. A streaming write takes it once per segment, so other writes and deletes can run between its segments. Each segment a write uses holds a reference from the moment it is stored, and GC refuses to run while a write is open. A second process can't open the same store at all, because sled locks `space.db`.
 
 ---
 

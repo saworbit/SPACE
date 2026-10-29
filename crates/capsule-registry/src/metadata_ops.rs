@@ -16,6 +16,19 @@ pub enum MetadataOp {
         hash: ContentHash,
         segment: SegmentId,
     },
+    PutBucket {
+        bucket: String,
+        created_at: u64,
+    },
+    PutObject {
+        bucket: String,
+        key: String,
+        capsule: CapsuleId,
+    },
+    DeleteObject {
+        bucket: String,
+        key: String,
+    },
 }
 
 /// State machine responses surfaced to callers.
@@ -26,5 +39,7 @@ pub enum OpResult {
     Ok,
     CapsuleFound(Capsule),
     NotFound,
+    /// The capsule an S3 key pointed at before the operation.
+    Replaced(Option<CapsuleId>),
     Error(String),
 }

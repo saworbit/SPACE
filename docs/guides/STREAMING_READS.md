@@ -1,6 +1,6 @@
 # Streaming Reads and Paginated Listings
 
-The pipeline can read a capsule one segment at a time, so a reader holds roughly one segment (4 MiB by default) in memory instead of the whole object. That holds for library callers today. Neither user-facing path uses the streaming read yet: S3 GET and `spacectl read` both buffer the whole capsule ([#99](https://github.com/saworbit/SPACE/issues/99)).
+The pipeline can read a capsule one segment at a time, so a reader holds roughly one segment (4 MiB by default) in memory instead of the whole object. S3 GET and `spacectl read` both read this way, and S3 PUT and `spacectl create` write this way.
 
 ## Streaming a capsule
 
@@ -42,11 +42,15 @@ pub async fn download(
 }
 ```
 
-The stream doesn't borrow the handle, so the lock is released before the body is sent.
+The stream doesn't borrow the handle, so the lock is released before the body is sent. A delete can then run while the body is still going out. The S3 view holds off deleting a capsule until its last GET is done.
 
 ## Range reads
 
-`read_range(id, offset, len)` returns the bytes in `[offset, offset + len)`, clamped to the capsule size. It uses each segment's `plain_len` to skip segments that end before `offset`. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs at most two segment reads. S3 doesn't call it yet ([#99](https://github.com/saworbit/SPACE/issues/99)).
+`read_range(id, offset, len)` returns the bytes in `[offset, offset + len)`, clamped to the capsule size. It uses each segment's `plain_len` to skip segments that end before `offset`. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs at most two segment reads. `read_range_stream(id, offset, len)` does the same one segment at a time, and S3 GET uses it for `Range` requests.
+
+## Streaming writes
+
+`begin_write`, then `write_chunk` once per segment, then `finish_write` (or `abort_write`) stores a capsule one segment at a time. Every chunk but the last is exactly one segment long, so the capsule gets the same segments, and the same dedup, as `write_capsule` would give it. `modular_pipeline::write_from_reader` drives this from any `AsyncRead`. It locks the pipeline only while a segment is stored, and aborts the write if its future is dropped. S3 PUT and `spacectl create` use it.
 
 ## Paginated listings
 

@@ -1,9 +1,8 @@
-use axum::{routing::put, Router};
 use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
 use futures::stream;
 use nvram_sim::NvramLog;
-use protocol_s3::{handlers, S3View};
+use protocol_s3::{server, S3View};
 use reqwest::{Client, StatusCode};
 use std::{fs, path::Path, sync::Arc};
 use tokio::net::TcpListener;
@@ -19,12 +18,7 @@ async fn streaming_upload_round_trip() {
     let nvram = NvramLog::open(&log_path).unwrap();
     let view = Arc::new(S3View::new(registry, nvram).expect("open S3 view"));
 
-    let app = Router::new()
-        .route(
-            "/{bucket}/{key}",
-            put(handlers::put_object).get(handlers::get_object),
-        )
-        .with_state(view);
+    let app = server::router(view);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
