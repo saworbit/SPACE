@@ -10,7 +10,7 @@ use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
-use protocol_s3::S3View;
+use protocol_s3::{ListQuery, S3View};
 use std::{fs, path::Path};
 use uuid::Uuid;
 
@@ -77,7 +77,7 @@ async fn scenario_empty_bucket_put_object_retrieved_unchanged() {
             .unwrap();
 
     // Then: GET returns exact bytes
-    let got = collect_stream(h.s3.get_object("docs", "greeting.txt").await.unwrap()).await;
+    let got = collect_stream(h.s3.get_object("docs", "greeting.txt").await.unwrap().body).await;
     assert_eq!(got, data, "GET must return the original payload unchanged");
 
     // And: HEAD reports correct metadata
@@ -103,14 +103,17 @@ async fn scenario_existing_object_delete_becomes_inaccessible() {
         .unwrap();
 
     // When: DELETE
-    h.s3.delete_object("tmp", "ephemeral.bin").unwrap();
+    h.s3.delete_object("tmp", "ephemeral.bin").await.unwrap();
 
     // Then: GET fails
     let result = h.s3.get_object("tmp", "ephemeral.bin").await;
     assert!(result.is_err(), "GET after DELETE must fail");
 
     // And: LIST is empty
-    let list = h.s3.list_objects("tmp").unwrap();
+    let list =
+        h.s3.list_objects("tmp", &ListQuery::default())
+            .unwrap()
+            .objects;
     assert!(
         list.is_empty(),
         "bucket must be empty after last object deleted"
@@ -138,8 +141,14 @@ async fn scenario_multi_bucket_lists_are_isolated() {
         .unwrap();
 
     // When/Then: each bucket lists only its own objects
-    let alpha = h.s3.list_objects("alpha").unwrap();
-    let beta = h.s3.list_objects("beta").unwrap();
+    let alpha =
+        h.s3.list_objects("alpha", &ListQuery::default())
+            .unwrap()
+            .objects;
+    let beta =
+        h.s3.list_objects("beta", &ListQuery::default())
+            .unwrap()
+            .objects;
 
     assert_eq!(alpha.len(), 2, "alpha bucket must have exactly 2 objects");
     assert_eq!(beta.len(), 1, "beta bucket must have exactly 1 object");
@@ -167,7 +176,7 @@ async fn scenario_overwrite_replaces_content() {
         .unwrap();
 
     // Then: GET returns the updated content
-    let got = collect_stream(h.s3.get_object("repo", "config.toml").await.unwrap()).await;
+    let got = collect_stream(h.s3.get_object("repo", "config.toml").await.unwrap().body).await;
     assert_eq!(
         got, updated,
         "GET after overwrite must return the new payload"

@@ -33,7 +33,7 @@ Dedup happens before encryption, and the hash is taken over the pre-encryption b
 - Each segment's `ref_count` lives in its metadata record in `space.nvram.segments`.
 - `Pipeline::delete_capsule` decrements the count for each of the capsule's segments. When a count reaches zero it removes the segment record and unregisters the hash. The bytes stay in the log until `NvramLog::compact()` rewrites it.
 - `Pipeline::garbage_collect` removes segments that no capsule references, such as leftovers from failed or interrupted writes.
-- `spacectl` and the S3 view never call delete, GC or compaction, and nothing runs them in the background ([#86](https://github.com/saworbit/SPACE/issues/86), [#97](https://github.com/saworbit/SPACE/issues/97)).
+- `spacectl delete`, S3 DELETE and S3 overwrites call `delete_capsule`. Nothing runs GC or compaction ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ## Using it
 

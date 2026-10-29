@@ -101,6 +101,12 @@ enum Commands {
     },
     /// List all capsules
     List,
+    /// Delete a capsule. Segments no other capsule shares are freed. An S3
+    /// key that pointed at it then reads as missing.
+    Delete {
+        /// Capsule UUID
+        capsule_id: String,
+    },
     /// Start S3-compatible HTTP server
     ServeS3 {
         /// Port to listen on
@@ -150,6 +156,13 @@ async fn main() -> Result<()> {
             let pipeline = WritePipeline::open(registry, nvram)?;
             let data = pipeline.read_capsule(id).await?;
             io::stdout().write_all(&data)?;
+        }
+        Commands::Delete { capsule_id } => {
+            let id = CapsuleId::from_uuid(capsule_id.parse()?);
+            let (registry, nvram) = open_registry_and_nvram()?;
+            let pipeline = WritePipeline::open(registry, nvram)?;
+            pipeline.delete_capsule(id).await?;
+            println!("Capsule deleted: {}", id.as_uuid());
         }
         Commands::List => {
             let registry = open_registry()?;

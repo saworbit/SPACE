@@ -92,7 +92,7 @@ The single rule that resolves every "is this still the same Capsule?" question:
 
 The boundary is **what initiated the change**:
 
-- **Protocol-layer mutations** (a client overwriting a file at `/foo.txt`, rewriting block offset 4096 of `vol0`, PUT-ing a new object body to `s3://bucket/key`) produce a **new** Capsule with a new `CapsuleId`. The view's metadata is updated to point at the new Capsule; the old one is dereferenced and may be GC'd. (The S3 view doesn't dereference the old capsule yet; it stays in the store, [#86](https://github.com/saworbit/SPACE/issues/86).) The Capsule abstraction is *not* in-place mutable from the protocol surface.
+- **Protocol-layer mutations** (a client overwriting a file at `/foo.txt`, rewriting block offset 4096 of `vol0`, PUT-ing a new object body to `s3://bucket/key`) produce a **new** Capsule with a new `CapsuleId`. The view's metadata is updated to point at the new Capsule; the old one is dereferenced and may be GC'd. The S3 view deletes the old capsule as soon as the key points at the new one. Its bytes stay in the log until compaction. The Capsule abstraction is *not* in-place mutable from the protocol surface.
 - **Storage-layer transformations** (PODMS swarm migration, key rotation, compression transcoding, tier promotion/demotion) **preserve** `CapsuleId` and logical content while rewriting the on-disk representation. Audit log continuity is preserved; references at the view layer remain valid.
 
 This is what makes federated migration tractable: you can move a Capsule from `us-west` to `eu-central` (with re-encryption under the destination's key) without touching any file path, S3 key, or block volume that points at it.
@@ -459,7 +459,7 @@ Segment lifecycle:
 
 ### Delete path
 
-`Pipeline::delete_capsule(capsule_id)` is library-only: neither `spacectl` nor the S3 view calls it ([#86](https://github.com/saworbit/SPACE/issues/86)). It:
+`Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`, S3 DELETE, and S3 overwrites. It:
 
 1. Looks up the Capsule.
 2. For each `SegmentId` in `capsule.segments`: if `ref_count > 1`, decrements it; otherwise deletes the segment record and unregisters its hash.

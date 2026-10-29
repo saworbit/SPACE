@@ -38,6 +38,20 @@ impl MetadataStateMachine {
                 }
                 Ok(OpResult::NotFound)
             }
+            MetadataOp::PutBucket { bucket, created_at } => {
+                self.store.put_bucket(&bucket, created_at)?;
+                Ok(OpResult::Ok)
+            }
+            MetadataOp::PutObject {
+                bucket,
+                key,
+                capsule,
+            } => Ok(OpResult::Replaced(
+                self.store.put_object(&bucket, &key, capsule)?,
+            )),
+            MetadataOp::DeleteObject { bucket, key } => {
+                Ok(OpResult::Replaced(self.store.delete_object(&bucket, &key)?))
+            }
         }
     }
 }

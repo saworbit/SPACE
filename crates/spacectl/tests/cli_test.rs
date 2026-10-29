@@ -67,6 +67,33 @@ fn locked_store_is_an_error_not_a_panic() {
 }
 
 #[test]
+fn delete_removes_the_capsule() {
+    let dir = scratch_dir("delete");
+    std::fs::write(dir.join("a.txt"), b"delete me").unwrap();
+    let out = spacectl(&dir, &["create", "-f", "a.txt"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let id = stdout
+        .lines()
+        .next()
+        .unwrap()
+        .trim_start_matches("Capsule created: ");
+
+    let out = spacectl(&dir, &["delete", id]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!spacectl(&dir, &["read", id]).status.success());
+    let list = spacectl(&dir, &["list"]);
+    assert_eq!(String::from_utf8(list.stdout).unwrap(), "(no capsules)\n");
+    assert!(!spacectl(&dir, &["delete", id]).status.success());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn removed_flags_and_commands_are_rejected() {
     let dir = scratch_dir("removed");
     for args in [&["put", "file.txt"][..], &["--token", "secret", "list"][..]] {

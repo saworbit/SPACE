@@ -2,7 +2,7 @@ use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
-use protocol_s3::S3View;
+use protocol_s3::{ListQuery, S3View};
 use std::{fs, path::Path};
 use uuid::Uuid;
 
@@ -32,7 +32,11 @@ async fn test_s3_put_and_get() {
     println!("PUT: Created capsule {:?}", capsule_id);
 
     // GET object
-    let retrieved_stream = s3.get_object("test-bucket", "hello.txt").await.unwrap();
+    let retrieved_stream = s3
+        .get_object("test-bucket", "hello.txt")
+        .await
+        .unwrap()
+        .body;
     let retrieved = collect_stream(retrieved_stream).await;
     assert_eq!(retrieved, test_data);
     println!("GET: Retrieved {} bytes", retrieved.len());
@@ -45,16 +49,19 @@ async fn test_s3_put_and_get() {
     println!("HEAD: Verified metadata");
 
     // LIST objects
-    let objects = s3.list_objects("test-bucket").unwrap();
+    let objects = s3
+        .list_objects("test-bucket", &ListQuery::default())
+        .unwrap()
+        .objects;
     assert_eq!(objects.len(), 1);
-    assert_eq!(objects[0].key(), "test-bucket/hello.txt");
+    assert_eq!(objects[0].key(), "hello.txt");
     println!("LIST: Found {} objects", objects.len());
 
     // DELETE object
-    s3.delete_object("test-bucket", "hello.txt").unwrap();
+    s3.delete_object("test-bucket", "hello.txt").await.unwrap();
     let result = s3.get_object("test-bucket", "hello.txt").await;
     assert!(result.is_err());
-    println!("DELETE: Object removed from key map");
+    println!("DELETE: Object and capsule removed");
 
     // Cleanup
     cleanup_paths(&log_path);
@@ -97,17 +104,23 @@ async fn test_s3_multiple_objects() {
     .unwrap();
 
     // List bucket1
-    let bucket1_objects = s3.list_objects("bucket1").unwrap();
+    let bucket1_objects = s3
+        .list_objects("bucket1", &ListQuery::default())
+        .unwrap()
+        .objects;
     assert_eq!(bucket1_objects.len(), 2);
     println!("Bucket1 has {} objects", bucket1_objects.len());
 
     // List bucket2
-    let bucket2_objects = s3.list_objects("bucket2").unwrap();
+    let bucket2_objects = s3
+        .list_objects("bucket2", &ListQuery::default())
+        .unwrap()
+        .objects;
     assert_eq!(bucket2_objects.len(), 1);
     println!("Bucket2 has {} objects", bucket2_objects.len());
 
     // Verify content
-    let data_stream = s3.get_object("bucket1", "file2.txt").await.unwrap();
+    let data_stream = s3.get_object("bucket1", "file2.txt").await.unwrap().body;
     let data = collect_stream(data_stream).await;
     assert_eq!(data, b"Content 2");
 
@@ -138,7 +151,7 @@ async fn test_s3_large_object() {
         .unwrap();
     println!("PUT: Stored large object");
 
-    let retrieved_stream = s3.get_object("test", "large.bin").await.unwrap();
+    let retrieved_stream = s3.get_object("test", "large.bin").await.unwrap().body;
     let retrieved = collect_stream(retrieved_stream).await;
     assert_eq!(retrieved.len(), large_data.len());
     assert_eq!(retrieved, large_data);
