@@ -43,6 +43,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Clippy on the io_uring backend
+        run: cargo clippy -p storage --features uring --all-targets -- -D warnings
+
       - name: Test workspace
         run: cargo test --workspace -- --test-threads=2
 
