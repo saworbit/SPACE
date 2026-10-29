@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `spacectl list` and `serve-s3` report a locked store as an error instead of panicking (#92).
 - Removed `spacectl put`. It skipped the pipeline, wrote zones nothing else could read, and leaked data on a reused `--id` (#93).
 - `serve-s3` listens on 127.0.0.1 unless given `--bind`, and no longer sends permissive CORS headers. Removed the unenforced `--token` flag (#90).
+- Added `cargo bench -p capsule-registry --bench end_to_end`, which times whole writes and reads, plain and encrypted, so the throughput figures in ENCRYPTION_IMPLEMENTATION.md can be reproduced (#102).
 - A set but invalid `SPACE_MASTER_KEY` is now a startup error, and an encrypted write with no key fails instead of storing plaintext marked encrypted. Removed the all-zero and fixed fallback keys (#84).
 - Encrypted and plaintext writes no longer dedup onto each other's segments. The dedup key now includes the encryption mode (#83).
 - Encrypted writes of objects or tail segments under 16 bytes now work. Short segments are zero-padded to one XTS block (#94).

@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "runtime_overhead"
 harness = false
+
+[[bench]]
+name = "end_to_end"
+harness = false

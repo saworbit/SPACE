@@ -157,7 +157,13 @@ These numbers are measured end to end through `Pipeline` on 512 MiB of random da
 | Plaintext | 273 MB/s | 954 MB/s |
 | Encrypted (XTS + MAC) | 205 MB/s | 334 MB/s |
 
-Writes are dominated by an fsync per 4 MiB segment and the sidecar rewrite. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. There's no end-to-end benchmark in the repo yet ([#102](https://github.com/saworbit/SPACE/issues/102)). The closest is the per-stage microbenchmark:
+Writes are dominated by an fsync per 4 MiB segment and the sidecar rewrite. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. The end-to-end benchmark writes and reads 64 MiB of random data the same way, plain and encrypted:
+
+```bash
+cargo bench -p capsule-registry --bench end_to_end
+```
+
+For one stage on its own, use the per-stage microbenchmark:
 
 ```bash
 cargo bench -p capsule-registry --bench pipeline -- encrypt_xts_segment
