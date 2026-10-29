@@ -26,7 +26,7 @@ pub mod modular_pipeline {
     use std::sync::{Arc, Mutex};
 
     use anyhow::Result;
-    use common::{traits::DataStream, CapsuleId, Policy};
+    use common::{traits::DataStream, CapsuleId, EncryptionPolicy, Policy};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
@@ -91,6 +91,18 @@ pub mod modular_pipeline {
     }
 
     impl RegistryPipelineHandle {
+        /// Policy for writes that don't name one. With a master key
+        /// configured, that is the default policy with encryption on.
+        pub fn default_policy(&self) -> Policy {
+            match self {
+                Self::Encrypted(_) | Self::FsEncrypted(_) => Policy {
+                    encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+                    ..Policy::default()
+                },
+                Self::Plain(_) | Self::FsPlain(_) => Policy::default(),
+            }
+        }
+
         pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
             policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
             match self {

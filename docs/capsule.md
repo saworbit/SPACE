@@ -198,7 +198,7 @@ pub struct Segment {
 | Field | Set by | Read by |
 |---|---|---|
 | `id`, `offset`, `len` | Append to backend log | Reader (where to seek, how much to read) |
-| `plain_len` | Write pipeline (segment size before compression; `None` for `spacectl put`) | Range-read planner (skip segments outside range without decompressing) |
+| `plain_len` | Write pipeline (segment size before compression) | Range-read planner (skip segments outside range without decompressing) |
 | `compressed`, `compression_algo` | Write pipeline | Reader (choose decompressor); scrub (verify content_hash with same algo) |
 | `content_hash` | Dedup stage, pre-encryption | Dedup lookup; scrub (unencrypted deep verification) |
 | `ref_count` | Inc on dedup hit / new capsule; dec on delete | Delete path (removes the segment at the last reference); GC |
@@ -234,7 +234,7 @@ On this branch only `compression`, `dedupe`, `encryption` and `layout` change wh
 - With `dedupe = false`, every segment is new, and its hash is not registered, so later writes can't attach to it.
 - `compact_interval_secs`, `erasure_profile`, `federation` and `transform` are stored, but nothing reads them.
 - `CryptoProfile::HybridKyber` only affects `Policy::validate`; there's no ML-KEM code.
-- `spacectl create` and S3 PUT always use `Policy::default()`, which has encryption disabled ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- `spacectl create` and S3 PUT use `Policy::default()`, with encryption turned on when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` takes a YAML policy instead.
 
 ### 3.7 `Event`
 

@@ -4,7 +4,7 @@ This document covers how SPACE encrypts segments on the post-reset `main` branch
 
 **Status:**
 - The encryption path works through the library API.
-- `spacectl create` and S3 PUT always write with the default policy, which has encryption disabled, so they never encrypt ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- `spacectl create` and S3 PUT encrypt by default when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` picks another policy.
 - The crate hasn't had an external review.
 
 ## Where the code lives

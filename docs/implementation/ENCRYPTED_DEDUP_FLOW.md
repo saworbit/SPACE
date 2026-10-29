@@ -5,7 +5,7 @@ SPACE deduplicates segments even when they're stored encrypted. Two properties m
 - The dedup index is keyed on a hash of the *pre-encryption* bytes, so the index never deals with ciphertext.
 - The XTS tweak is derived from the segment's own bytes. Identical compressed segments therefore encrypt to identical ciphertext under the same key version, and a shared segment can be decrypted by any capsule that references it.
 
-This describes the post-reset `main` branch. Encryption is only reachable through the library API for now ([#82](https://github.com/saworbit/SPACE/issues/82)).
+This describes the post-reset `main` branch. `spacectl create` and S3 PUT encrypt by default when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` picks another policy.
 
 Source:
 

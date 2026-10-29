@@ -3,7 +3,6 @@ use bytes::Bytes;
 use capsule_registry::modular_pipeline::{registry_pipeline_from_log, RegistryPipelineHandle};
 use capsule_registry::CapsuleRegistry;
 use common::CapsuleId;
-use common::Policy;
 use futures::{Stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
@@ -94,12 +93,11 @@ impl S3View {
             .context("failed to read streaming body into buffer bridge")?;
 
         let data_len = buffer.len();
-        let capsule_id = self
-            .pipeline
-            .lock()
-            .await
-            .write_capsule(&buffer, &Policy::default())
-            .await?;
+        let capsule_id = {
+            let mut handle = self.pipeline.lock().await;
+            let policy = handle.default_policy();
+            handle.write_capsule(&buffer, &policy).await?
+        };
 
         // Map S3 key to capsule
         let full_key = format!("{}/{}", bucket, key);
