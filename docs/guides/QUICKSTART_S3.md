@@ -36,10 +36,10 @@ SPACE_STORAGE_ROOT=./space.storage ./target/release/spacectl serve-s3 --port 808
 Startup prints `Starting SPACE S3 Protocol View...`, then log lines including:
 
 ```
-INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://0.0.0.0:8080
+INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://127.0.0.1:8080
 ```
 
-The server listens on all interfaces with no authentication ([#90](https://github.com/saworbit/SPACE/issues/90)). Run it only on a machine and network you trust.
+The server has no authentication, so it listens on loopback only. `--bind 0.0.0.0` exposes it on every interface; do that only on a network you trust.
 
 ## 2. PUT an object
 
@@ -136,7 +136,7 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 - No multipart upload, and listing isn't S3 XML ([#89](https://github.com/saworbit/SPACE/issues/89)).
 - Whole objects are buffered in memory on PUT and GET, and `Range` is ignored ([#99](https://github.com/saworbit/SPACE/issues/99)).
 - DELETE and overwrites don't free storage ([#86](https://github.com/saworbit/SPACE/issues/86)).
-- Objects are never encrypted, even with `SPACE_MASTER_KEY` set ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
 - Error responses are plain text, not S3 XML error codes.
 
 ## Troubleshooting

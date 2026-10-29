@@ -421,14 +421,23 @@ impl Policy {
         if self.crypto_profile == CryptoProfile::HybridKyber && self.dedupe {
             return Err(PolicyError::HybridKyberDedupConflict);
         }
+        let size = self.layout.strategy.default_segment_size();
+        if size == 0 || size > MAX_SEGMENT_SIZE {
+            return Err(PolicyError::SegmentSizeOutOfRange { size });
+        }
         Ok(())
     }
 }
+
+/// Largest segment a layout may ask for. XTS encrypts each segment as one
+/// data unit, and IEEE 1619 caps a data unit at 2^20 blocks (16 MiB).
+pub const MAX_SEGMENT_SIZE: usize = 16 * 1024 * 1024;
 
 /// Errors produced by [`Policy::validate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyError {
     HybridKyberDedupConflict,
+    SegmentSizeOutOfRange { size: usize },
 }
 
 impl std::fmt::Display for PolicyError {
@@ -441,6 +450,11 @@ impl std::fmt::Display for PolicyError {
                  so a cross-capsule dedup hit would derive the wrong key on read and the \
                  segment would fail to decrypt. Set policy.dedupe = false when using \
                  HybridKyber, or switch crypto_profile to Classical."
+            ),
+            PolicyError::SegmentSizeOutOfRange { size } => write!(
+                f,
+                "segment size {size} is out of range: it must be between 1 byte and \
+                 {MAX_SEGMENT_SIZE} bytes (16 MiB)"
             ),
         }
     }
@@ -494,6 +508,40 @@ mod tests {
             policy.validate().unwrap_err(),
             PolicyError::HybridKyberDedupConflict
         );
+    }
+
+    #[test]
+    fn segment_size_must_be_between_one_byte_and_16_mib() {
+        let with_layout = |strategy| Policy {
+            layout: LayoutPolicy {
+                strategy,
+                ..LayoutPolicy::default()
+            },
+            ..Policy::default()
+        };
+        let fixed = |segment_size| with_layout(LayoutStrategy::Fixed { segment_size });
+
+        assert!(fixed(1).validate().is_ok());
+        assert!(fixed(MAX_SEGMENT_SIZE).validate().is_ok());
+        assert_eq!(
+            fixed(0).validate().unwrap_err(),
+            PolicyError::SegmentSizeOutOfRange { size: 0 }
+        );
+        assert_eq!(
+            fixed(MAX_SEGMENT_SIZE + 1).validate().unwrap_err(),
+            PolicyError::SegmentSizeOutOfRange {
+                size: MAX_SEGMENT_SIZE + 1
+            }
+        );
+        let zone = |zone_size_mib| {
+            with_layout(LayoutStrategy::ZnsGraph {
+                zone_size_mib,
+                graph_radius: 1,
+            })
+        };
+        assert!(zone(16).validate().is_ok());
+        assert!(zone(32).validate().is_err());
+        assert!(Policy::default().validate().is_ok());
     }
 
     #[test]

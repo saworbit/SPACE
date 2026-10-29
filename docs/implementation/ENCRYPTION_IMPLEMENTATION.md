@@ -4,7 +4,7 @@ This document covers how SPACE encrypts segments on the post-reset `main` branch
 
 **Status:**
 - The encryption path works through the library API.
-- `spacectl create` and S3 PUT always write with the default policy, which has encryption disabled, so they never encrypt ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- `spacectl create` and S3 PUT encrypt by default when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` picks another policy.
 - The crate hasn't had an external review.
 
 ## Where the code lives
@@ -68,19 +68,17 @@ Rotation is in memory only: every constructor starts at version 1, so a restart 
 - `KeyManager`'s `Drop` zeroizes the master key and the salt.
 - `XtsEncryptor` clones the key pair for each segment; the clones zeroize when dropped.
 
-### Fallbacks to know about
+### Missing or invalid keys
 
-These are tracked in [#84](https://github.com/saworbit/SPACE/issues/84):
-
-- If `SPACE_MASTER_KEY` is missing or invalid, `WritePipeline::new` and the registry pipeline builders quietly choose the plaintext pipeline (`NoopEncryptor`).
-- `CapsuleRegistry::open` falls back to an all-zero master key.
-- `EnvKeyProvider` falls back to a fixed key when its variable is unset.
+- If `SPACE_MASTER_KEY` is unset, the registry pipeline builders choose the plaintext pipeline (`NoopEncryptor`). A write whose policy asks for encryption then fails instead of storing plaintext.
+- If `SPACE_MASTER_KEY` is set but invalid, building the pipeline fails.
+- `EnvKeyProvider` fails when its variable is unset. There is no fallback key.
 
 ## XTS-AES-256
 
 - Built on the `xts-mode` and `aes` crates. `aes` uses AES-NI when the CPU supports it.
 - Each segment is encrypted as a single XTS data unit with one tweak. The ciphertext is the same length as the input.
-- Input must be at least 16 bytes, or encryption fails with `InvalidCiphertextLength`. Encrypted writes of 1–15 byte objects, or of objects whose last segment is under 16 bytes, therefore fail ([#94](https://github.com/saworbit/SPACE/issues/94)).
+- Input must be at least 16 bytes. The pipeline stores a shorter segment uncompressed and zero-pads it to 16 bytes; the read strips the padding using `plain_len`.
 - **Tweak:** `derive_tweak_from_hash(blake3(compressed_segment))`, the first 16 bytes of a plain BLAKE3 hash of the bytes being encrypted. This is not the dedup `content_hash`, which also mixes in the compression algorithm. The tweak is stored in the segment's `tweak_nonce`.
 - **Deterministic:** the same compressed bytes under the same key version always produce the same ciphertext. That is what lets encrypted segments be shared between capsules. It also means anyone who can read the disk can see which segments are equal.
 
@@ -95,19 +93,18 @@ tag     = BLAKE3_keyed(mac_key, ciphertext || encryption_version (u16 LE) || key
 - Each metadata field is included only when it's set.
 - `verify_mac` compares tags with `subtle::ConstantTimeEq` and runs before decryption.
 - The MAC does **not** cover the segment ID, the capsule ID, the `encrypted` / `compressed` flags, or `wrapped_segment_key`.
-- Whether a segment gets verified at all depends on the `encrypted` flag in the segment sidecar. Clearing that flag skips verification, and unencrypted segments aren't integrity-checked on read ([#95](https://github.com/saworbit/SPACE/issues/95)).
+- The `encrypted` flag lives in the unauthenticated segment sidecar. Clearing it doesn't skip verification: unencrypted segments are checked against `content_hash` on read, and a capsule whose policy requires encryption refuses a segment marked unencrypted.
 
 ## Write path
 
 `Pipeline::write_capsule` handles each chunk of the input (4 MiB by default) as follows:
 
 1. **Compress.** The chunk is stored as `identity` (uncompressed) if the first 1 KiB has entropy of 7.5 bits/byte or more, or if compression doesn't make it smaller.
-2. **Hash.** `content_hash = hash_content_with_algo(compressed, algo)`.
+2. **Hash.** `content_hash = hash_content_with_algo(compressed, algo)`, with `+xts-aes-256` appended to `algo` when the policy enables encryption.
 3. **Dedup lookup.**
    - **Hit:** increment the existing segment's `ref_count` and reuse it. Nothing is encrypted or written.
-   - The lookup ignores the encryption policy, so an encrypted write can reuse a plaintext segment ([#83](https://github.com/saworbit/SPACE/issues/83)).
 4. **Miss:** if the policy enables encryption, `XtsEncryptor::encrypt` produces the ciphertext, tweak, key version and MAC tag. The bytes are appended to the log, the segment metadata is written with those fields, and `content_hash` is registered.
-   - `encrypted` is set from the *policy*. With `NoopEncryptor` (no key loaded), the stored bytes are plaintext but still marked encrypted ([#84](https://github.com/saworbit/SPACE/issues/84)).
+   - `encrypted` is set from what the encryptor did. `NoopEncryptor` (no key loaded) refuses a policy that enables encryption.
 5. **Record the capsule.** Once every chunk is stored, the capsule record is created with its list of segment IDs.
 
 ## Read path
@@ -119,7 +116,8 @@ For each segment of the capsule:
    - build the MAC metadata from the segment record (`tweak_nonce`, `key_version`, `encryption_version`, length);
    - load that key version;
    - verify the MAC;
-   - decrypt.
+   - decrypt, then strip any padding back to `plain_len`.
+   Otherwise refuse the segment if the capsule's policy requires encryption, and verify `content_hash`.
 3. If `segment.compressed` is set, decompress according to `compression_algo`.
 
 The read path uses the segment record's flags, never `capsule.policy`. If a segment has no `tweak_nonce`, the reader falls back to deriving a tweak from `content_hash`. That gives a different value from the one the writer used, so verification fails; segments written by the pipeline always record a tweak.
@@ -159,7 +157,13 @@ These numbers are measured end to end through `Pipeline` on 512 MiB of random da
 | Plaintext | 273 MB/s | 954 MB/s |
 | Encrypted (XTS + MAC) | 205 MB/s | 334 MB/s |
 
-Writes are dominated by an fsync per 4 MiB segment and the sidecar rewrite. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. There's no end-to-end benchmark in the repo yet ([#102](https://github.com/saworbit/SPACE/issues/102)). The closest is the per-stage microbenchmark:
+Writes are dominated by an fsync per 4 MiB segment and the sidecar rewrite. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. The end-to-end benchmark writes and reads 64 MiB of random data the same way, plain and encrypted:
+
+```bash
+cargo bench -p capsule-registry --bench end_to_end
+```
+
+For one stage on its own, use the per-stage microbenchmark:
 
 ```bash
 cargo bench -p capsule-registry --bench pipeline -- encrypt_xts_segment

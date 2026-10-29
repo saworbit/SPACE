@@ -1,16 +1,14 @@
 use anyhow::{anyhow, Result};
 
 use common::*;
-use encryption::keymanager::MASTER_KEY_SIZE;
-use encryption::KeyManager;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::consensus::RaftNode;
+use crate::metadata_log::MetadataLog;
 use crate::metadata_ops::{MetadataOp, OpResult};
 use crate::store::{MetadataStore, SledStore};
 
-mod consensus;
+mod metadata_log;
 mod metadata_ops;
 mod store;
 
@@ -18,7 +16,6 @@ const DEFAULT_PAGE_SIZE: usize = 1024;
 
 pub mod dedup; // NEW
 pub mod error;
-pub mod gc;
 pub mod pipeline;
 
 pub mod scrub_executor;
@@ -29,7 +26,7 @@ pub mod modular_pipeline {
     use std::sync::{Arc, Mutex};
 
     use anyhow::Result;
-    use common::{traits::DataStream, CapsuleId, Policy};
+    use common::{traits::DataStream, CapsuleId, EncryptionPolicy, Policy};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
@@ -94,6 +91,18 @@ pub mod modular_pipeline {
     }
 
     impl RegistryPipelineHandle {
+        /// Policy for writes that don't name one. With a master key
+        /// configured, that is the default policy with encryption on.
+        pub fn default_policy(&self) -> Policy {
+            match self {
+                Self::Encrypted(_) | Self::FsEncrypted(_) => Policy {
+                    encryption: EncryptionPolicy::XtsAes256 { key_version: None },
+                    ..Policy::default()
+                },
+                Self::Plain(_) | Self::FsPlain(_) => Policy::default(),
+            }
+        }
+
         pub async fn write_capsule(&mut self, data: &[u8], policy: &Policy) -> Result<CapsuleId> {
             policy.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
             match self {
@@ -197,7 +206,9 @@ pub mod modular_pipeline {
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
-        if let Ok(manager) = KeyManager::from_env() {
+        // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
+        // fallback to the plain pipeline (#84).
+        if let Some(manager) = KeyManager::from_env_if_set()? {
             let km = Arc::new(Mutex::new(manager));
             let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
@@ -218,7 +229,9 @@ pub mod modular_pipeline {
         storage: AutoFsBackend,
         registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
-        if let Ok(manager) = KeyManager::from_env() {
+        // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
+        // fallback to the plain pipeline (#84).
+        if let Some(manager) = KeyManager::from_env_if_set()? {
             let km = Arc::new(Mutex::new(manager));
             let pipeline = build_fs_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::FsEncrypted(pipeline))
@@ -319,8 +332,7 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
 
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
-    raft: RaftNode,
-    key_manager: Arc<Mutex<KeyManager>>,
+    log: MetadataLog,
 }
 
 impl CapsuleRegistry {
@@ -333,18 +345,9 @@ impl CapsuleRegistry {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
-        let raft = RaftNode::new(Arc::clone(&store));
+        let log = MetadataLog::new(Arc::clone(&store));
 
-        let key_manager =
-            KeyManager::from_env().unwrap_or_else(|_| KeyManager::new([0u8; MASTER_KEY_SIZE]));
-        let key_manager = Arc::new(Mutex::new(key_manager));
-
-        Ok(Self {
-            store,
-            raft,
-
-            key_manager,
-        })
+        Ok(Self { store, log })
     }
 
     fn collect_capsules_paginated(&self, page_size: usize) -> Result<Vec<Capsule>> {
@@ -377,9 +380,9 @@ impl CapsuleRegistry {
         if self.store.get_capsule(&capsule.id)?.is_some() {
             anyhow::bail!("Capsule collision (extremely unlikely)");
         }
-        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
             OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
@@ -391,9 +394,9 @@ impl CapsuleRegistry {
         if self.store.get_capsule(&capsule.id)?.is_some() {
             return Ok(false);
         }
-        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
             OpResult::Ok => Ok(true),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
@@ -438,9 +441,9 @@ impl CapsuleRegistry {
     pub fn add_segment(&self, capsule_id: CapsuleId, seg_id: SegmentId) -> Result<()> {
         let mut capsule = self.lookup(capsule_id)?;
         capsule.segments.push(seg_id);
-        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
             OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
@@ -449,23 +452,23 @@ impl CapsuleRegistry {
     }
 
     pub fn register_content(&self, hash: ContentHash, seg_id: SegmentId) -> Result<()> {
-        match self.raft.propose(MetadataOp::RegisterContent {
+        match self.log.apply(MetadataOp::RegisterContent {
             hash: hash.clone(),
             segment: seg_id,
         })? {
             OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
     pub fn deregister_content(&self, hash: &ContentHash, seg_id: SegmentId) -> Result<bool> {
-        match self.raft.propose(MetadataOp::DeregisterContent {
+        match self.log.apply(MetadataOp::DeregisterContent {
             hash: hash.clone(),
             segment: seg_id,
         })? {
             OpResult::Ok => Ok(true),
             OpResult::NotFound => Ok(false),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
@@ -475,9 +478,9 @@ impl CapsuleRegistry {
             Err(_) => return Ok(()), // Capsule deleted before dedup update; treat as noop
         };
         capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
-        match self.raft.propose(MetadataOp::PutCapsule(capsule))? {
+        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
             OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
@@ -487,10 +490,10 @@ impl CapsuleRegistry {
     }
 
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        match self.raft.propose(MetadataOp::DeleteCapsule(id))? {
+        match self.log.apply(MetadataOp::DeleteCapsule(id))? {
             OpResult::CapsuleFound(capsule) => Ok(capsule),
             OpResult::NotFound => Err(anyhow!("Capsule not found")),
-            other => anyhow::bail!("unexpected raft response: {:?}", other),
+            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
         }
     }
 
@@ -514,10 +517,6 @@ impl CapsuleRegistry {
     pub fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
         self.store.list_content().unwrap_or_default()
     }
-
-    pub fn key_manager(&self) -> &Arc<Mutex<KeyManager>> {
-        &self.key_manager
-    }
 }
 
 impl Default for CapsuleRegistry {
@@ -530,9 +529,7 @@ impl Clone for CapsuleRegistry {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
-            raft: self.raft.clone(),
-
-            key_manager: Arc::clone(&self.key_manager),
+            log: self.log.clone(),
         }
     }
 }

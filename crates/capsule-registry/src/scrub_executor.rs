@@ -18,9 +18,10 @@
 //!
 //! - **Deep scrub**: reads the raw stored bytes and applies the strongest
 //!   integrity check available for each segment:
-//!   1. Encrypted segments (`encrypted == true`, `integrity_tag` set, key
-//!      manager provided): BLAKE3-MAC verification via
-//!      `encryption::verify_mac`. Detects both bitrot and tampering.
+//!   1. Encrypted segments (`encrypted == true`, key manager provided):
+//!      BLAKE3-MAC verification via `encryption::verify_mac`. Detects both
+//!      bitrot and tampering. A missing `integrity_tag` is a MAC failure,
+//!      since the read path rejects such a segment too.
 //!   2. Unencrypted segments with a `content_hash`: re-computes BLAKE3 of the
 //!      stored (compressed) bytes and compares against the recorded hash.
 //!   3. Segments with neither a MAC tag nor a content hash are recorded as
@@ -293,13 +294,18 @@ impl<B: StorageBackend> ScrubExecutor<B> {
         if meta.encrypted {
             // Fast synchronous checks before the CPU-intensive MAC verify.
             let Some(integrity_tag) = meta.integrity_tag else {
-                // No MAC was ever stored — the segment was encrypted before
-                // MAC support was added. Stable condition: record as Ok.
-                debug!(
+                // The read path refuses an encrypted segment without a tag,
+                // so scrub must not pass it. Otherwise deleting the tag from
+                // the unauthenticated sidecar would hide tampering (#95).
+                warn!(
                     segment_id = seg_id.0,
-                    "scrub: encrypted segment has no integrity tag; nothing to verify"
+                    "scrub: encrypted segment has no integrity tag"
                 );
-                return (ScrubResult::Ok, bytes_read, false);
+                return (
+                    ScrubResult::MacMismatch { segment: seg_id },
+                    bytes_read,
+                    false,
+                );
             };
 
             let Some(ref km) = self.key_manager else {
@@ -986,10 +992,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encrypted_segment_without_integrity_tag_is_ok_not_skipped() {
-        // No MAC was ever stored  -  there is nothing to verify. This is a
-        // stable (not transient) condition, so it should be recorded as Ok
-        // and consume its scheduling slot.
+    async fn encrypted_segment_without_integrity_tag_is_a_mac_failure() {
+        // A missing tag is a definitive failure, not a pass and not a
+        // transient skip, so it consumes its scheduling slot.
         let mut backend = InMemoryBackend::new();
         let seg_id = SegmentId(1);
         let data = b"old ciphertext without mac";
@@ -1016,7 +1021,8 @@ mod tests {
             "should be counted as checked (stable condition)"
         );
         assert_eq!(report.segments_skipped, 0);
-        assert!(report.errors.is_empty());
+        assert_eq!(report.mac_failures, 1);
+        assert_eq!(report.errors.len(), 1);
 
         // Because it was recorded, a second cycle should find nothing due.
         let config_no_retry = ScrubConfig {
@@ -1028,7 +1034,7 @@ mod tests {
             .await;
         assert_eq!(
             second.segments_checked, 0,
-            "stable-Ok segment must not be re-checked immediately"
+            "a definitive result must not be re-checked immediately"
         );
     }
 

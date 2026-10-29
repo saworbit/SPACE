@@ -3,19 +3,11 @@ use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::S3View;
-use std::{fs, path::Path, sync::Once};
+use std::{fs, path::Path};
 use uuid::Uuid;
-
-fn init_native_pipeline() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
-    });
-}
 
 #[tokio::test]
 async fn test_s3_put_and_get() {
-    init_native_pipeline();
     // Setup
     let (log_path, meta_path) = temp_paths("test_s3");
     cleanup_paths(&log_path);
@@ -23,7 +15,7 @@ async fn test_s3_put_and_get() {
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let s3 = S3View::new(registry, nvram);
+    let s3 = S3View::new(registry, nvram).expect("open S3 view");
 
     // Test data
     let test_data = b"Hello from S3 view! This is capsule storage.".to_vec();
@@ -73,14 +65,13 @@ async fn test_s3_put_and_get() {
 
 #[tokio::test]
 async fn test_s3_multiple_objects() {
-    init_native_pipeline();
     let (log_path, meta_path) = temp_paths("test_s3_multi");
     cleanup_paths(&log_path);
     cleanup_paths(&meta_path);
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let s3 = S3View::new(registry, nvram);
+    let s3 = S3View::new(registry, nvram).expect("open S3 view");
 
     // Create multiple objects
     s3.put_object(
@@ -129,14 +120,13 @@ async fn test_s3_multiple_objects() {
 
 #[tokio::test]
 async fn test_s3_large_object() {
-    init_native_pipeline();
     let (log_path, meta_path) = temp_paths("test_s3_large");
     cleanup_paths(&log_path);
     cleanup_paths(&meta_path);
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let s3 = S3View::new(registry, nvram);
+    let s3 = S3View::new(registry, nvram).expect("open S3 view");
 
     // Create 10MB object (will span multiple 4MB segments)
     let large_data = generate_large_payload(10_000_000);
