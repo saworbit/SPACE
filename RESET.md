@@ -34,7 +34,7 @@ The registry write path is the modular pipeline in the `pipeline` crate. The old
 ## Next steps
 
 - Automatic background GC and solid reference counting.
-- S3 multipart, range requests, and clearer errors.
+- S3 multipart and range requests.
 - spacectl UX for the local create / read / list / serve-s3 flow.
 - Keep the feature set small until someone outside the original author is actually using it.
 

@@ -26,8 +26,8 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 - Compression (LZ4 / Zstd) and BLAKE3 content-addressed dedup
 - XTS-AES-256 encryption with a BLAKE3 MAC. `spacectl create` and S3 PUT turn it on when `SPACE_MASTER_KEY` is set.
 - Modular pipeline (`pipeline`): the registry write and read path
-- Basic S3 PUT / GET / HEAD / DELETE. Keys can't contain `/`, objects are buffered in memory, and the key map is lost on restart; see [the S3 quick start](docs/guides/QUICKSTART_S3.md).
-- `spacectl` for local create, read, list, and `serve-s3`
+- Basic S3: buckets, PUT / GET / HEAD / DELETE, and ListObjects. Objects are buffered in memory; see [the S3 quick start](docs/guides/QUICKSTART_S3.md).
+- `spacectl` for local create, read, list, delete, and `serve-s3`
 - Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)
 
 The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`.

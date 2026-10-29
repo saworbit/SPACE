@@ -681,6 +681,10 @@ where
         self.stats.clone()
     }
 
+    pub fn catalog(&self) -> &R {
+        &self.catalog
+    }
+
     pub async fn read_capsule_stream(&self, id: CapsuleId) -> Result<DataStream>
     where
         C: Compressor + Clone + Send + Sync + 'static,

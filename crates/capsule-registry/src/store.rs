@@ -27,6 +27,24 @@ pub trait MetadataStore: Send + Sync {
     fn delete_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>>;
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>>;
 
+    /// S3 view namespace. Buckets map to their creation time, and each
+    /// bucket and key maps to the capsule the key points at (#85).
+    fn put_bucket(&self, bucket: &str, created_at: u64) -> Result<()>;
+    fn get_bucket(&self, bucket: &str) -> Result<Option<u64>>;
+    fn get_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>>;
+    fn put_object(&self, bucket: &str, key: &str, id: CapsuleId) -> Result<Option<CapsuleId>>;
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>>;
+    /// Keys in `bucket` that start with `prefix` and sort after
+    /// `start_after`, in byte order.
+    fn list_objects(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, CapsuleId)>>;
+
+    /// Covers capsules, content and the segment counter, not the S3 namespace.
     #[allow(dead_code)]
     fn create_snapshot(&self) -> Result<Vec<u8>>;
     #[allow(dead_code)]
@@ -204,6 +222,22 @@ pub struct SledStore {
     capsules: sled::Tree,
     content: sled::Tree,
     counters: sled::Tree,
+    buckets: sled::Tree,
+    objects: sled::Tree,
+}
+
+/// Store key for an S3 object. Bucket names can't contain NUL, so the
+/// separator keeps every bucket's keys apart.
+fn object_key(bucket: &str, key: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bucket.len() + 1 + key.len());
+    out.extend_from_slice(bucket.as_bytes());
+    out.push(0);
+    out.extend_from_slice(key.as_bytes());
+    out
+}
+
+fn decode_capsule_id(bytes: Option<sled::IVec>) -> Result<Option<CapsuleId>> {
+    Ok(bytes.map(|v| bincode::deserialize(&v)).transpose()?)
 }
 
 impl SledStore {
@@ -212,6 +246,8 @@ impl SledStore {
         let capsules = db.open_tree("capsules")?;
         let content = db.open_tree("content")?;
         let counters = db.open_tree("counters")?;
+        let buckets = db.open_tree("s3_buckets")?;
+        let objects = db.open_tree("s3_objects")?;
 
         // Initialize the segment counter if it doesn't exist yet.
         let _ = counters.compare_and_swap(
@@ -225,6 +261,8 @@ impl SledStore {
             capsules,
             content,
             counters,
+            buckets,
+            objects,
         })
     }
 
@@ -368,6 +406,77 @@ impl MetadataStore for SledStore {
         Ok(entries)
     }
 
+    fn put_bucket(&self, bucket: &str, created_at: u64) -> Result<()> {
+        // Keep the first creation time when the bucket already exists.
+        let _ = self.buckets.compare_and_swap(
+            bucket.as_bytes(),
+            None as Option<&[u8]>,
+            Some(bincode::serialize(&created_at)?),
+        )?;
+        self.flush()
+    }
+
+    fn get_bucket(&self, bucket: &str) -> Result<Option<u64>> {
+        Ok(self
+            .buckets
+            .get(bucket.as_bytes())?
+            .map(|v| bincode::deserialize(&v))
+            .transpose()?)
+    }
+
+    fn get_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
+        decode_capsule_id(self.objects.get(object_key(bucket, key))?)
+    }
+
+    fn put_object(&self, bucket: &str, key: &str, id: CapsuleId) -> Result<Option<CapsuleId>> {
+        let previous = self
+            .objects
+            .insert(object_key(bucket, key), bincode::serialize(&id)?)?;
+        self.flush()?;
+        decode_capsule_id(previous)
+    }
+
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
+        let previous = self.objects.remove(object_key(bucket, key))?;
+        self.flush()?;
+        decode_capsule_id(previous)
+    }
+
+    fn list_objects(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, CapsuleId)>> {
+        let scan = object_key(bucket, prefix);
+        let start = match start_after {
+            Some(after) => {
+                // The smallest key that sorts after `after`.
+                let mut after = object_key(bucket, after);
+                after.push(0);
+                after.max(scan.clone())
+            }
+            None => scan.clone(),
+        };
+
+        let mut out = Vec::new();
+        for entry in self.objects.range(start..) {
+            if out.len() >= limit {
+                break;
+            }
+            let (k, v) = entry?;
+            if !k.starts_with(&scan) {
+                break;
+            }
+            let key = std::str::from_utf8(&k[bucket.len() + 1..])
+                .context("S3 key is not UTF-8")?
+                .to_string();
+            out.push((key, bincode::deserialize(&v)?));
+        }
+        Ok(out)
+    }
+
     fn create_snapshot(&self) -> Result<Vec<u8>> {
         let header = SnapshotHeader {
             next_segment_id: self.current_segment_counter()?,
@@ -481,6 +590,12 @@ mod tests {
         assert_eq!(decoded.segments, capsule.segments);
         assert_eq!(decoded.created_at, capsule.created_at);
         assert_eq!(decoded.deduped_bytes, capsule.deduped_bytes);
+    }
+
+    #[test]
+    fn s3_object_keys_keep_their_on_disk_encoding() {
+        assert_eq!(object_key("demo", "dir/a.txt"), b"demo\0dir/a.txt");
+        assert_eq!(object_key("demo", ""), b"demo\0");
     }
 
     #[test]
