@@ -178,7 +178,10 @@ impl Encryptor for XtsEncryptor {
         _segment: SegmentId,
         ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
-        let ciphertext_len = ctx.ciphertext_len.unwrap_or(data.len() as u32);
+        let ciphertext_len = match ctx.ciphertext_len {
+            Some(len) => len,
+            None => u32::try_from(data.len()).context("ciphertext too large")?,
+        };
         let (metadata, key_pair) =
             self.build_mac_metadata(ctx, ciphertext_len, ctx.integrity_tag, Some(policy))?;
         encryption::verify_mac(data, &metadata, key_pair.key1(), key_pair.key2())
@@ -196,15 +199,16 @@ impl Encryptor for XtsEncryptor {
         _segment: SegmentId,
         ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
-        let (metadata, key_pair) = self.build_mac_metadata(ctx, data.len() as u32, None, None)?;
+        let len = u32::try_from(data.len()).context("ciphertext too large")?;
+        let (metadata, key_pair) = self.build_mac_metadata(ctx, len, None, None)?;
         let tag = encryption::compute_mac(data, &metadata, key_pair.key1(), key_pair.key2())
             .context("failed to compute MAC")?;
         Ok(tag.to_vec())
     }
 
     fn verify_mac(&self, data: &[u8], _segment: SegmentId, ctx: &DecryptContext) -> Result<()> {
-        let (metadata, key_pair) =
-            self.build_mac_metadata(ctx, data.len() as u32, ctx.integrity_tag, None)?;
+        let len = u32::try_from(data.len()).context("ciphertext too large")?;
+        let (metadata, key_pair) = self.build_mac_metadata(ctx, len, ctx.integrity_tag, None)?;
         encryption::verify_mac(data, &metadata, key_pair.key1(), key_pair.key2())
             .context("MAC verification failed")?;
         Ok(())
@@ -533,11 +537,10 @@ where
         let compression_policy = self
             .evaluator
             .evaluate_compression(policy, &data[..data.len().min(1024)])?;
+        // `Policy::validate` keeps this between 1 byte and 16 MiB.
         let chunk_size = policy.layout.strategy.default_segment_size();
-        if chunk_size == 0 {
-            return Err(anyhow!("segment size must be non-zero"));
-        }
         let encryption_policy = self.evaluator.evaluate_encryption(policy)?;
+        let dedupe = self.evaluator.evaluate_dedup(policy)?;
 
         let mut segment_ids = Vec::new();
         let mut dedup_stats = DedupStats::new();
@@ -584,7 +587,14 @@ where
                 &dedup_domain(summary.algorithm.as_str(), &encryption_policy),
             );
 
-            if let Some(existing) = self.catalog.lookup_content(&hash) {
+            // With dedupe off, never reuse a segment, and never register one
+            // for later writes to attach to (#87).
+            let existing = if dedupe {
+                self.catalog.lookup_content(&hash)
+            } else {
+                None
+            };
+            if let Some(existing) = existing {
                 let mut metadata = self.storage.metadata(existing).await?;
                 metadata.ref_count += 1;
                 metadata.deduplicated = metadata.ref_count > 1;
@@ -624,8 +634,10 @@ where
                 let metadata = Segment {
                     id: seg_id,
                     offset: 0,
-                    len: payload.len() as u32,
-                    plain_len: Some(summary.original_size as u32),
+                    len: u32::try_from(payload.len()).context("segment too large")?,
+                    plain_len: Some(
+                        u32::try_from(summary.original_size).context("segment too large")?,
+                    ),
                     compressed: summary.compressed,
                     compression_algo: summary.algorithm.clone(),
                     content_hash: Some(hash.clone()),
@@ -643,8 +655,10 @@ where
                 txn.set_segment_metadata(seg_id, metadata).await?;
                 txn.commit().await?;
 
-                self.catalog.register_content(hash.clone(), seg_id)?;
-                self.deduper.register_content(hash, seg_id)?;
+                if dedupe {
+                    self.catalog.register_content(hash.clone(), seg_id)?;
+                    self.deduper.register_content(hash, seg_id)?;
+                }
                 self.deduper.update_stats(summary.output_size as u64, false);
                 self.stats.record(summary.output_size as u64, false);
                 dedup_stats.record(summary.output_size as u64, false);
@@ -1982,5 +1996,52 @@ mod tests {
 
         assert!(p.read_capsule(id).await.is_err());
         assert!(p.read_range(id, 0, 16).await.is_err());
+    }
+
+    // ── Policy enforcement ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn dedupe_off_writes_get_their_own_segments() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        let nodedup = Policy {
+            dedupe: false,
+            ..Policy::default()
+        };
+        let data = [42u8; 100_000];
+
+        let w = p.write_capsule(&data, &Policy::default()).await.unwrap();
+        let x = p.write_capsule(&data, &nodedup).await.unwrap();
+        let y = p.write_capsule(&data, &nodedup).await.unwrap();
+        let w_segs = p.catalog.lookup_capsule(w).unwrap().segments;
+        let x_segs = p.catalog.lookup_capsule(x).unwrap().segments;
+        let y_segs = p.catalog.lookup_capsule(y).unwrap().segments;
+        assert_ne!(
+            x_segs, w_segs,
+            "dedupe-off write reused an existing segment"
+        );
+        assert_ne!(x_segs, y_segs);
+
+        // A later dedupe-on write attaches to the dedupe-on segment, never to
+        // an opted-out one.
+        let z = p.write_capsule(&data, &Policy::default()).await.unwrap();
+        assert_eq!(p.catalog.lookup_capsule(z).unwrap().segments, w_segs);
+        for seg in x_segs.iter().chain(&y_segs) {
+            assert_eq!(p.storage.metadata(*seg).await.unwrap().ref_count, 1);
+        }
+
+        for id in [w, x, y, z] {
+            assert_eq!(p.read_capsule(id).await.unwrap(), data);
+        }
+    }
+
+    #[tokio::test]
+    async fn write_rejects_out_of_range_segment_size() {
+        let mut p: InMemoryPipeline = PipelineBuilder::new().build();
+        for segment_size in [0, common::MAX_SEGMENT_SIZE + 1] {
+            let mut policy = Policy::default();
+            policy.layout.strategy = common::LayoutStrategy::Fixed { segment_size };
+            assert!(p.write_capsule(b"data", &policy).await.is_err());
+        }
+        assert!(p.storage.segment_ids().await.unwrap().is_empty());
     }
 }
