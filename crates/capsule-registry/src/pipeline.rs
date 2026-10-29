@@ -38,9 +38,11 @@ impl WritePipeline {
         Self { inner }
     }
 
+    /// Write with the pipeline's default policy: encrypted when a master
+    /// key is configured.
     pub async fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
-        self.write_capsule_with_policy(data, &Policy::default())
-            .await
+        let policy = self.inner.default_policy().await;
+        self.write_capsule_with_policy(data, &policy).await
     }
 
     pub async fn write_capsule_with_policy(

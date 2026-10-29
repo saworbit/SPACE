@@ -24,7 +24,7 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 
 - Capsule create / read / stream through the registry pipeline
 - Compression (LZ4 / Zstd) and BLAKE3 content-addressed dedup
-- XTS-AES-256 encryption with a BLAKE3 MAC through the library API. `spacectl` and the S3 view don't turn it on yet ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- XTS-AES-256 encryption with a BLAKE3 MAC. `spacectl create` and S3 PUT turn it on when `SPACE_MASTER_KEY` is set.
 - Modular pipeline (`pipeline`): the registry write and read path
 - Basic S3 PUT / GET / HEAD / DELETE. Keys can't contain `/`, objects are buffered in memory, and the key map is lost on restart; see [the S3 quick start](docs/guides/QUICKSTART_S3.md).
 - `spacectl` for local create, read, list, and `serve-s3`

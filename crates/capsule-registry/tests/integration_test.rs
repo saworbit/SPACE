@@ -283,3 +283,33 @@ mod modular_pipeline_integration {
         let _ = fs::remove_file(meta_path);
     }
 }
+
+#[tokio::test]
+async fn write_capsule_encrypts_by_default_when_a_key_is_configured() {
+    let base = std::env::temp_dir().join("space_registry_integration");
+    let _ = fs::create_dir_all(&base);
+    let unique = Uuid::new_v4();
+    let log_path = base.join(format!("default_policy_{unique}.log"));
+    let meta_path = base.join(format!("default_policy_{unique}.metadata"));
+
+    let registry = CapsuleRegistry::open(&meta_path).unwrap();
+    let nvram = NvramLog::open(&log_path).unwrap();
+    let key_manager = encryption::KeyManager::new([7u8; 32]);
+    let pipeline = WritePipeline::with_key_manager(registry.clone(), nvram, key_manager);
+
+    let secret = b"TOP-SECRET-MARKER\n";
+    let id = pipeline.write_capsule(secret).await.unwrap();
+    assert!(registry.lookup(id).unwrap().policy.encryption.is_enabled());
+    assert_eq!(pipeline.read_capsule(id).await.unwrap(), secret);
+
+    let stored = fs::read(&log_path).unwrap();
+    assert!(
+        !stored.windows(secret.len()).any(|w| w == secret),
+        "plaintext found in the log"
+    );
+
+    drop(pipeline);
+    cleanup_path(log_path.to_string_lossy().as_ref());
+    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
+    let _ = fs::remove_dir_all(&meta_path);
+}

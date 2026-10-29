@@ -39,6 +39,10 @@ impl ModularPipeline {
             handle: Arc::new(TokioMutex::new(handle)),
         })
     }
+
+    pub async fn default_policy(&self) -> Policy {
+        self.handle.lock().await.default_policy()
+    }
 }
 
 #[async_trait]
