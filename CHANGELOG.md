@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Policy.dedupe = false` is now honoured. Those writes get their own segments and don't register their hashes (#87).
+- `Policy::validate` rejects segment sizes of 0 or above 16 MiB, and segment lengths are converted to `u32` with `try_from` (#109).
+- Removed pre-reset leftovers: the stray `src/Cargo.toml`, the unused `SPACE_DISABLE_MODULAR_PIPELINE` test lines, the unused `prometheus` and `num_cpus` workspace deps, and `GarbageCollector`. `RaftNode` is now `MetadataLog`. `S3View::new` builds the same pipeline as `serve-s3`, so the S3 tests cover the production path (#106).
+- `spacectl create` and S3 PUT encrypt by default when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` takes a YAML policy (#82).
+- `spacectl` logs go to stderr, coloured only on a terminal, at `warn` by default except for `serve-s3` (#91).
+- `spacectl list` and `serve-s3` report a locked store as an error instead of panicking (#92).
+- Removed `spacectl put`. It skipped the pipeline, wrote zones nothing else could read, and leaked data on a reused `--id` (#93).
+- `serve-s3` listens on 127.0.0.1 unless given `--bind`, and no longer sends permissive CORS headers. Removed the unenforced `--token` flag (#90).
+- Added `cargo bench -p capsule-registry --bench end_to_end`, which times whole writes and reads, plain and encrypted, so the throughput figures in ENCRYPTION_IMPLEMENTATION.md can be reproduced (#102).
+- A set but invalid `SPACE_MASTER_KEY` is now a startup error, and an encrypted write with no key fails instead of storing plaintext marked encrypted. Removed the all-zero and fixed fallback keys (#84).
+- Encrypted and plaintext writes no longer dedup onto each other's segments. The dedup key now includes the encryption mode (#83).
+- Encrypted writes of objects or tail segments under 16 bytes now work. Short segments are zero-padded to one XTS block (#94).
+- Reads now verify the content hash of unencrypted segments and refuse a plaintext segment for a capsule that requires encryption. Deep scrub reports an encrypted segment with no MAC tag as a MAC failure. Capsules written through the #83 bug now fail to read instead of returning unprotected data (#95).
 - CI now checks rustfmt, clippy with `-D warnings`, and the build on Rust 1.89. The tree is rustfmt-clean (#107).
 - The Dockerfile builds on `rust:1.89-bookworm`, and the workspace declares `rust-version = "1.89"` (#100).
 - Dependabot no longer opens bincode major bumps. A test pins the `space.db` record encoding (#113).

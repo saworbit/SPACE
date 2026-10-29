@@ -5,63 +5,35 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use clap::{Parser, Subcommand};
 
 use common::CapsuleId;
-use common::{Policy, SegmentId};
+use common::Policy;
 
 use nvram_sim::NvramLog;
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::Once;
 
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 const NVRAM_PATH: &str = "space.nvram";
 const REGISTRY_DB_PATH: &str = "space.db";
 const LIST_PAGE_SIZE: usize = 256;
 
-fn sanitize_zone_component(zone: &str) -> String {
-    let mut out = String::with_capacity(zone.len());
-    for ch in zone.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "default".into()
-    } else {
-        out
-    }
-}
-
-fn registry_path_for_zone(zone: Option<&str>) -> PathBuf {
-    match zone {
-        Some(zone) => PathBuf::from(format!("space.{}.db", sanitize_zone_component(zone))),
-        None => PathBuf::from(REGISTRY_DB_PATH),
-    }
-}
-
-fn nvram_path_for_zone(zone: Option<&str>) -> PathBuf {
-    match zone {
-        Some(zone) => PathBuf::from(format!("space.{}.nvram", sanitize_zone_component(zone))),
-        None => PathBuf::from(NVRAM_PATH),
-    }
-}
-
-fn init_tracing() {
+/// Logs go to stderr so they never mix with capsule bytes or IDs on stdout.
+/// Colour is used only when stderr is a terminal.
+fn init_tracing(default_level: &str) {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         let env_filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
         let format = std::env::var("SPACE_LOG_FORMAT").unwrap_or_else(|_| "compact".to_string());
 
         if format.eq_ignore_ascii_case("json") {
             tracing_subscriber::fmt()
                 .with_env_filter(env_filter.clone())
+                .with_writer(io::stderr)
                 .with_target(true)
                 .json()
                 .flatten_event(true)
@@ -69,6 +41,8 @@ fn init_tracing() {
         } else {
             tracing_subscriber::fmt()
                 .with_env_filter(env_filter)
+                .with_writer(io::stderr)
+                .with_ansi(io::stderr().is_terminal())
                 .with_target(true)
                 .compact()
                 .init();
@@ -80,23 +54,32 @@ fn init_tracing() {
 #[command(name = "spacectl")]
 #[command(about = "SPACE storage control utility", long_about = None)]
 struct Cli {
-    /// Bearer token for authenticated control-plane calls (optional)
-    #[arg(long)]
-    token: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
 
-fn open_registry_and_nvram_for_zone(zone: Option<&str>) -> Result<(CapsuleRegistry, NvramLog)> {
-    let registry_path = registry_path_for_zone(zone);
-    let nvram_path = nvram_path_for_zone(zone);
-    let registry = CapsuleRegistry::open(&registry_path)?;
-    let nvram = NvramLog::open(&nvram_path)?;
-    Ok((registry, nvram))
+/// sled allows one process per store, so a second spacectl (or a running
+/// serve-s3) in the same directory fails to open it.
+fn open_registry() -> Result<CapsuleRegistry> {
+    CapsuleRegistry::open(REGISTRY_DB_PATH).map_err(|err| {
+        let locked = err
+            .chain()
+            .any(|cause| cause.to_string().contains("could not acquire lock"));
+        if locked {
+            anyhow!(
+                "{REGISTRY_DB_PATH} is locked by another process. Only one spacectl \
+                 command, or one serve-s3, can use a store at a time."
+            )
+        } else {
+            err.context(format!("failed to open {REGISTRY_DB_PATH}"))
+        }
+    })
 }
 
 fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
-    open_registry_and_nvram_for_zone(None)
+    let registry = open_registry()?;
+    let nvram = NvramLog::open(NVRAM_PATH)?;
+    Ok((registry, nvram))
 }
 
 #[derive(Subcommand)]
@@ -106,20 +89,10 @@ enum Commands {
         /// Input file path
         #[arg(short, long)]
         file: String,
-    },
-    /// Store a local file as a capsule without running it through the pipeline.
-    Put {
-        /// Input file path
-        file: String,
-        /// Optional capsule UUID to use (default: generate).
-        #[arg(long)]
-        id: Option<String>,
-        /// Optional YAML policy file to attach.
+        /// YAML policy file. Without one, the capsule is encrypted when
+        /// SPACE_MASTER_KEY is set and stored unencrypted otherwise.
         #[arg(long)]
         policy_file: Option<PathBuf>,
-        /// Optional zone name (backed by `space.<zone>.db` / `space.<zone>.nvram`).
-        #[arg(long)]
-        zone: Option<String>,
     },
     /// Read capsule contents
     Read {
@@ -133,6 +106,10 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "8080")]
         port: u16,
+        /// Address to listen on. The server has no authentication, so it
+        /// listens on loopback unless told otherwise.
+        #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+        bind: IpAddr,
     },
 }
 
@@ -143,68 +120,39 @@ fn load_policy_file(path: &PathBuf) -> Result<Policy> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
     let cli = Cli::parse();
-    let token = cli
-        .token
-        .clone()
-        .or_else(|| std::env::var("SPACE_AUTH_TOKEN").ok());
-    if let Some(token) = token {
-        // Surface the token to any future HTTP clients without changing existing flows.
-        std::env::set_var("SPACE_AUTH_TOKEN", &token);
-    }
+    let default_level = match cli.command {
+        Commands::ServeS3 { .. } => "info",
+        _ => "warn",
+    };
+    init_tracing(default_level);
 
     match cli.command {
-        Commands::Create { file } => {
+        Commands::Create { file, policy_file } => {
             let data = fs::read(&file)?;
             let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::new(registry, nvram);
-            let id = pipeline.write_capsule(&data).await?;
+            let pipeline = WritePipeline::open(registry, nvram)?;
+            let id = match policy_file {
+                Some(path) => {
+                    let policy = load_policy_file(&path)
+                        .with_context(|| format!("invalid policy file {}", path.display()))?;
+                    pipeline.write_capsule_with_policy(&data, &policy).await?
+                }
+                None => pipeline.write_capsule(&data).await?,
+            };
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {} bytes", data.len());
-        }
-        Commands::Put {
-            file,
-            id,
-            policy_file,
-            zone,
-        } => {
-            let data = fs::read(&file)?;
-            let uuid = match id {
-                Some(id) => Uuid::parse_str(&id).with_context(|| format!("invalid UUID: {id}"))?,
-                None => Uuid::new_v4(),
-            };
-            let capsule_id = CapsuleId::from_uuid(uuid);
-
-            let policy = match policy_file {
-                Some(path) => load_policy_file(&path)?,
-                None => Policy::default(),
-            };
-
-            let (registry, nvram) = open_registry_and_nvram_for_zone(zone.as_deref())?;
-            let registry = Arc::new(registry);
-            let nvram = Arc::new(nvram);
-            let seg_id: SegmentId = registry.alloc_segment()?;
-            nvram.append(seg_id, &data)?;
-            registry.create_capsule_with_segments(
-                capsule_id,
-                data.len() as u64,
-                vec![seg_id],
-                policy.clone(),
-            )?;
-
-            println!("{}", capsule_id.as_uuid());
         }
         Commands::Read { capsule_id } => {
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
             let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::new(registry, nvram);
+            let pipeline = WritePipeline::open(registry, nvram)?;
             let data = pipeline.read_capsule(id).await?;
             io::stdout().write_all(&data)?;
         }
         Commands::List => {
-            let registry = CapsuleRegistry::new();
+            let registry = open_registry()?;
             let mut cursor = None;
             let mut printed = false;
 
@@ -242,12 +190,12 @@ async fn main() -> Result<()> {
                 println!("(no capsules)");
             }
         }
-        Commands::ServeS3 { port } => {
+        Commands::ServeS3 { port, bind } => {
             use protocol_s3::{server::S3Server, S3View};
 
             println!("Starting SPACE S3 Protocol View...");
 
-            let registry = CapsuleRegistry::new();
+            let registry = open_registry()?;
             let s3_view = if let Ok(storage_root) = std::env::var("SPACE_STORAGE_ROOT") {
                 let storage_root = PathBuf::from(storage_root);
                 let storage = storage::AutoFsBackend::open(&storage_root).await?;
@@ -259,10 +207,31 @@ async fn main() -> Result<()> {
                 S3View::new_modular(handle)
             };
 
-            let server = S3Server::new(s3_view, port);
+            let server = S3Server::new(s3_view, SocketAddr::new(bind, port));
             server.run().await?;
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_s3_listens_on_loopback_by_default() {
+        let cli = Cli::try_parse_from(["spacectl", "serve-s3"]).unwrap();
+        let Commands::ServeS3 { port, bind } = cli.command else {
+            panic!("expected serve-s3");
+        };
+        assert_eq!(port, 8080);
+        assert_eq!(bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+        let cli = Cli::try_parse_from(["spacectl", "serve-s3", "--bind", "0.0.0.0"]).unwrap();
+        let Commands::ServeS3 { bind, .. } = cli.command else {
+            panic!("expected serve-s3");
+        };
+        assert_eq!(bind, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    }
 }

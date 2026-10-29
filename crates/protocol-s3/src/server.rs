@@ -5,24 +5,27 @@ use axum::{
     Router,
 };
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::{handlers::*, S3View};
 
+/// The server has no authentication and sends no CORS headers, so browsers
+/// on other origins can't call it. Bind it to a non-loopback address only on
+/// a trusted network.
 pub struct S3Server {
     s3_view: Arc<S3View>,
-    port: u16,
+    addr: SocketAddr,
 }
 
 impl S3Server {
-    pub fn new(s3_view: S3View, port: u16) -> Self {
+    pub fn new(s3_view: S3View, addr: SocketAddr) -> Self {
         Self {
             s3_view: Arc::new(s3_view),
-            port,
+            addr,
         }
     }
 
@@ -42,11 +45,10 @@ impl S3Server {
             // Add state
             .with_state(self.s3_view)
             // Add middleware
-            .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http());
 
-        let addr = format!("0.0.0.0:{}", self.port);
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        let addr = self.addr;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
 
         info!("🚀 SPACE S3 Protocol View listening on http://{}", addr);
         info!("📦 Ready to serve capsules via S3 API");
@@ -54,11 +56,11 @@ impl S3Server {
         info!("Try:");
         info!(
             "  curl -X PUT http://localhost:{}/demo-bucket/hello.txt -d 'Hello SPACE!'",
-            self.port
+            addr.port()
         );
         info!(
             "  curl http://localhost:{}/demo-bucket/hello.txt",
-            self.port
+            addr.port()
         );
         info!("");
 

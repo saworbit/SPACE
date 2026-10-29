@@ -42,20 +42,21 @@ impl MetadataStateMachine {
     }
 }
 
-/// Single-node metadata log. Proposals apply immediately on this process.
+/// Single-node metadata log. Every registry mutation goes through `apply`,
+/// which runs it against the local store right away. Nothing is replicated.
 #[derive(Clone)]
-pub struct RaftNode {
+pub struct MetadataLog {
     fsm: MetadataStateMachine,
 }
 
-impl RaftNode {
+impl MetadataLog {
     pub fn new(store: Arc<dyn MetadataStore>) -> Self {
         Self {
             fsm: MetadataStateMachine::new(store),
         }
     }
 
-    pub fn propose(&self, op: MetadataOp) -> Result<OpResult> {
+    pub fn apply(&self, op: MetadataOp) -> Result<OpResult> {
         self.fsm.apply(op)
     }
 }

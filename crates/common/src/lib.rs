@@ -22,8 +22,8 @@ pub mod stub;
 pub mod traits;
 pub use policy::{
     ArtifactVerification, CompressionPolicy, CryptoProfile, EncryptionPolicy, FederationPolicy,
-    FederationStrategy, LayoutPolicy, LayoutStrategy, MerkleAlgo, Policy, ResourceLimits,
-    TransferPriority, TransformDef, TransformTrigger,
+    FederationStrategy, LayoutPolicy, LayoutStrategy, MerkleAlgo, Policy, PolicyError,
+    ResourceLimits, TransferPriority, TransformDef, TransformTrigger, MAX_SEGMENT_SIZE,
 };
 pub use stub::StorageStub;
 

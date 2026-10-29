@@ -41,23 +41,21 @@ This describes the post-reset `main` branch. None of it has been professionally 
 
 - Segments can be encrypted with XTS-AES-256 and authenticated with a 16-byte BLAKE3 keyed MAC. The MAC is checked in constant time before decryption.
 - Per-version keys are derived from a 32-byte master key with HKDF-HMAC-SHA256 and zeroized on drop. See [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md).
-- Encryption is only reachable through the library API. `spacectl create` and the S3 view always write unencrypted, even with `SPACE_MASTER_KEY` set ([#82](https://github.com/saworbit/SPACE/issues/82)).
+- `spacectl create` and S3 PUT encrypt by default when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` picks another policy.
 - The master key comes from `SPACE_MASTER_KEY` (64 hex characters). `SPACE_MASTER_KEY_FILE` isn't supported; the library API does have a `FileKeyProvider`.
-- A missing or malformed `SPACE_MASTER_KEY` doesn't fail. Writes go through the plaintext pipeline, and some code paths fall back to an all-zero or fixed key ([#84](https://github.com/saworbit/SPACE/issues/84)).
+- A malformed `SPACE_MASTER_KEY` is a startup error. With no key set, writes whose policy asks for encryption fail.
 - Encryption is deterministic so that dedup keeps working. Identical segments produce identical ciphertext, which reveals that they're equal.
-- Dedup can attach an encrypted capsule to an existing plaintext segment ([#83](https://github.com/saworbit/SPACE/issues/83)).
 - Key rotation isn't persisted across restarts ([#98](https://github.com/saworbit/SPACE/issues/98)).
 
 ### Integrity
 
-- Only encrypted segments are verified on read. Unencrypted segments are returned as stored.
-- Whether a segment counts as encrypted is decided by a flag in an unauthenticated JSON sidecar ([#95](https://github.com/saworbit/SPACE/issues/95)).
+- Every segment is verified on read: encrypted ones by MAC, unencrypted ones by content hash.
+- Whether a segment counts as encrypted is a flag in an unauthenticated JSON sidecar. A capsule whose policy requires encryption refuses a segment marked unencrypted.
 - Deep scrub verifies content hashes and MACs when it runs, but nothing runs it automatically ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### Network exposure
 
-- `spacectl serve-s3` listens on 0.0.0.0 with no authentication and permissive CORS. Anyone who can reach the port can read, write and delete objects ([#90](https://github.com/saworbit/SPACE/issues/90)).
-- `--token` and `SPACE_AUTH_TOKEN` are accepted but not enforced.
+- `spacectl serve-s3` has no authentication. It listens on 127.0.0.1 unless started with `--bind`, and sends no CORS headers, so web pages on other origins can't call it. Anyone who can reach the port can read, write and delete objects.
 - There's no TLS.
 - S3 request and response bodies are buffered in memory, so large or concurrent transfers can exhaust it ([#99](https://github.com/saworbit/SPACE/issues/99)).
 

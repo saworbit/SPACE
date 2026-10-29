@@ -22,12 +22,6 @@ impl EnvKeyProvider {
     pub fn new(var: impl Into<String>) -> Self {
         Self { var: var.into() }
     }
-
-    fn default_key_material() -> String {
-        // Dev-only fallback (per Phase 7 spec): deterministic 32-byte key.
-        // NOTE: This is intentionally not cryptographically strong.
-        "00000000000000000000000000000000".to_string()
-    }
 }
 
 impl Default for EnvKeyProvider {
@@ -42,8 +36,14 @@ pub type EnvProvider = EnvKeyProvider;
 #[async_trait]
 impl KeyProvider for EnvKeyProvider {
     async fn fetch_master_key(&self) -> Result<Zeroizing<Vec<u8>>> {
-        let key_material =
-            std::env::var(&self.var).unwrap_or_else(|_| Self::default_key_material());
+        // No fallback key: a missing variable must not silently encrypt
+        // under a fixed, public key (#84).
+        let key_material = std::env::var(&self.var).map_err(|_| {
+            EncryptionError::InvalidConfiguration(format!(
+                "{} environment variable not set",
+                self.var
+            ))
+        })?;
         let bytes = parse_key_material(&key_material, &format!("env:{}", self.var))?;
         Ok(Zeroizing::new(bytes))
     }
@@ -169,4 +169,35 @@ fn trim_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
         }
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    fn block_on<F: Future>(fut: F) -> F::Output {
+        let mut fut = std::pin::pin!(fut);
+        match fut.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(out) => out,
+            Poll::Pending => panic!("env provider should not suspend"),
+        }
+    }
+
+    #[test]
+    fn env_provider_errors_when_variable_is_unset() {
+        let provider = EnvKeyProvider::new("SPACE_TEST_KEY_PROVIDER_UNSET");
+        std::env::remove_var("SPACE_TEST_KEY_PROVIDER_UNSET");
+        assert!(block_on(provider.fetch_master_key()).is_err());
+    }
+
+    #[test]
+    fn env_provider_reads_hex_key() {
+        let provider = EnvKeyProvider::new("SPACE_TEST_KEY_PROVIDER_SET");
+        std::env::set_var("SPACE_TEST_KEY_PROVIDER_SET", "07".repeat(32));
+        let key = block_on(provider.fetch_master_key()).unwrap();
+        std::env::remove_var("SPACE_TEST_KEY_PROVIDER_SET");
+        assert_eq!(key.as_slice(), &[7u8; MASTER_KEY_SIZE]);
+    }
 }

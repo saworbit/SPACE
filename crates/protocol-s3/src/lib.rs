@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use capsule_registry::modular_pipeline::RegistryPipelineHandle;
-use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
+use capsule_registry::modular_pipeline::{registry_pipeline_from_log, RegistryPipelineHandle};
+use capsule_registry::CapsuleRegistry;
 use common::CapsuleId;
-use common::Policy;
 use futures::{Stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use std::collections::HashMap;
@@ -48,28 +47,24 @@ impl ObjectMapping {
 }
 
 /// S3 Protocol View - provides S3-compatible access to capsules
-enum PipelineBackend {
-    Legacy(Arc<WritePipeline>),
-    Modular(Arc<TokioMutex<RegistryPipelineHandle>>),
-}
-
 pub struct S3View {
-    pipeline: PipelineBackend,
+    pipeline: Arc<TokioMutex<RegistryPipelineHandle>>,
     // Maps "bucket/key" -> CapsuleId
     key_map: Arc<RwLock<HashMap<String, ObjectMapping>>>,
 }
 
 impl S3View {
-    pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        Self {
-            pipeline: PipelineBackend::Legacy(Arc::new(WritePipeline::new(registry, nvram))),
-            key_map: Arc::new(RwLock::new(HashMap::new())),
-        }
+    /// Open a view over an NVRAM log. This builds the same registry pipeline
+    /// as `serve-s3`, so it fails when `SPACE_MASTER_KEY` is set but invalid.
+    pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Result<Self> {
+        Ok(Self::new_modular(registry_pipeline_from_log(
+            nvram, registry,
+        )?))
     }
 
     pub fn new_modular(handle: RegistryPipelineHandle) -> Self {
         Self {
-            pipeline: PipelineBackend::Modular(Arc::new(TokioMutex::new(handle))),
+            pipeline: Arc::new(TokioMutex::new(handle)),
             key_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -97,20 +92,11 @@ impl S3View {
             .await
             .context("failed to read streaming body into buffer bridge")?;
 
-        let payload = Arc::new(buffer);
-        let data_len = payload.len();
-        let capsule_id = match &self.pipeline {
-            PipelineBackend::Legacy(pipeline) => {
-                let pipeline = Arc::clone(pipeline);
-                pipeline.write_capsule(payload.as_slice()).await?
-            }
-            PipelineBackend::Modular(pipeline) => {
-                let payload = Arc::clone(&payload);
-                let mut handle = pipeline.lock().await;
-                handle
-                    .write_capsule(payload.as_slice(), &Policy::default())
-                    .await?
-            }
+        let data_len = buffer.len();
+        let capsule_id = {
+            let mut handle = self.pipeline.lock().await;
+            let policy = handle.default_policy();
+            handle.write_capsule(&buffer, &policy).await?
         };
 
         // Map S3 key to capsule
@@ -149,16 +135,12 @@ impl S3View {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Key not found: {}", full_key))?;
 
-        let data = match &self.pipeline {
-            PipelineBackend::Legacy(pipeline) => {
-                let pipeline = Arc::clone(pipeline);
-                pipeline.read_capsule(mapping.capsule_id).await?
-            }
-            PipelineBackend::Modular(pipeline) => {
-                let handle = pipeline.lock().await;
-                handle.read_capsule(mapping.capsule_id).await?
-            }
-        };
+        let data = self
+            .pipeline
+            .lock()
+            .await
+            .read_capsule(mapping.capsule_id)
+            .await?;
 
         let cursor = std::io::Cursor::new(data);
         Ok(ReaderStream::new(cursor))

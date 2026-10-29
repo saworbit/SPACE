@@ -202,6 +202,16 @@ impl KeyManager {
         info
     }
 
+    /// Like [`KeyManager::from_env`], but an unset `SPACE_MASTER_KEY` is
+    /// `Ok(None)`. A variable that is set but invalid is still an error, so
+    /// a typo in the key never falls back to unencrypted storage (#84).
+    pub fn from_env_if_set() -> Result<Option<Self>> {
+        if std::env::var_os("SPACE_MASTER_KEY").is_none() {
+            return Ok(None);
+        }
+        Self::from_env().map(Some)
+    }
+
     /// Create from environment variable
     ///
     /// Reads master key from SPACE_MASTER_KEY env var (hex-encoded)
@@ -696,5 +706,27 @@ mod tests {
         let key_tpm = via_tpm.get_key(1).unwrap().to_bytes();
 
         assert_eq!(key_new, key_tpm);
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_env_if_set() {
+        let original = std::env::var("SPACE_MASTER_KEY").ok();
+
+        std::env::remove_var("SPACE_MASTER_KEY");
+        let unset = KeyManager::from_env_if_set();
+        std::env::set_var("SPACE_MASTER_KEY", "not-valid-hex!");
+        let invalid = KeyManager::from_env_if_set();
+        std::env::set_var("SPACE_MASTER_KEY", "07".repeat(MASTER_KEY_SIZE));
+        let valid = KeyManager::from_env_if_set();
+
+        match original {
+            Some(val) => std::env::set_var("SPACE_MASTER_KEY", val),
+            None => std::env::remove_var("SPACE_MASTER_KEY"),
+        }
+
+        assert!(matches!(unset, Ok(None)));
+        assert!(invalid.is_err(), "a set but invalid key must be an error");
+        assert!(matches!(valid, Ok(Some(_))));
     }
 }

@@ -18,9 +18,14 @@ pub struct WritePipeline {
 }
 
 impl WritePipeline {
+    /// Fails when `SPACE_MASTER_KEY` is set but invalid.
+    pub fn open(registry: CapsuleRegistry, nvram: NvramLog) -> Result<Self> {
+        let inner = ModularPipeline::open(nvram, registry)?;
+        Ok(Self { inner })
+    }
+
     pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        let inner = ModularPipeline::open(nvram, registry).expect("open modular pipeline");
-        Self { inner }
+        Self::open(registry, nvram).expect("open modular pipeline")
     }
 
     pub fn with_key_manager(
@@ -33,9 +38,11 @@ impl WritePipeline {
         Self { inner }
     }
 
+    /// Write with the pipeline's default policy: encrypted when a master
+    /// key is configured.
     pub async fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
-        self.write_capsule_with_policy(data, &Policy::default())
-            .await
+        let policy = self.inner.default_policy().await;
+        self.write_capsule_with_policy(data, &policy).await
     }
 
     pub async fn write_capsule_with_policy(
