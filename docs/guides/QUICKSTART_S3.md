@@ -115,7 +115,7 @@ Buckets and keys are stored in `space.db` too, so objects are still there after 
 
 ## Using an S3 SDK
 
-With path-style addressing, boto3's `create_bucket`, `head_bucket`, `put_object`, `get_object`, `head_object`, `delete_object`, `list_objects` and `list_objects_v2` work, paginators included. Credentials are ignored.
+With path-style addressing, boto3's `create_bucket`, `head_bucket`, `put_object`, `get_object`, `head_object`, `delete_object`, `list_objects` and `list_objects_v2` work, paginators included. Ranged GETs work, so `download_file` does too. Credentials are ignored.
 
 ```python
 import boto3
@@ -133,7 +133,6 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ## Current limitations
 
 - No multipart upload.
-- Whole objects are buffered in memory on PUT and GET, and `Range` is ignored ([#99](https://github.com/saworbit/SPACE/issues/99)).
 - DELETE and overwrites free the old capsule, but its bytes stay in `space.nvram` until compaction, and nothing runs compaction yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
 

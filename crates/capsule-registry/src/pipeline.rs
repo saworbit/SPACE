@@ -1,7 +1,9 @@
 use anyhow::Result;
+use common::traits::DataStream;
 use common::{CapsuleId, Policy};
 use encryption::KeyManager;
 use nvram_sim::NvramLog;
+use tokio::io::AsyncRead;
 
 use crate::CapsuleRegistry;
 
@@ -38,11 +40,30 @@ impl WritePipeline {
         Self { inner }
     }
 
-    /// Write with the pipeline's default policy: encrypted when a master
-    /// key is configured.
+    /// Encrypted when a master key is configured.
+    pub async fn default_policy(&self) -> Policy {
+        self.inner.default_policy().await
+    }
+
+    /// Write with the pipeline's default policy.
     pub async fn write_capsule(&self, data: &[u8]) -> Result<CapsuleId> {
         let policy = self.inner.default_policy().await;
         self.write_capsule_with_policy(data, &policy).await
+    }
+
+    /// Write from a reader one segment at a time. Returns the capsule and
+    /// its size.
+    pub async fn write_reader<Rd: AsyncRead + Send>(
+        &self,
+        reader: Rd,
+        policy: &Policy,
+    ) -> Result<(CapsuleId, u64)> {
+        self.inner.write_reader(reader, policy).await
+    }
+
+    /// Read a capsule one segment at a time.
+    pub async fn read_stream(&self, id: CapsuleId) -> Result<DataStream> {
+        self.inner.read_stream(id).await
     }
 
     pub async fn write_capsule_with_policy(

@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 use common::CapsuleId;
 use common::Policy;
+use futures::StreamExt;
 
 use nvram_sim::NvramLog;
 
@@ -135,27 +136,32 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Create { file, policy_file } => {
-            let data = fs::read(&file)?;
+            // Read one segment at a time rather than the whole file (#99).
+            let input = tokio::fs::File::open(&file)
+                .await
+                .with_context(|| format!("can't open {file}"))?;
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::open(registry, nvram)?;
-            let id = match policy_file {
-                Some(path) => {
-                    let policy = load_policy_file(&path)
-                        .with_context(|| format!("invalid policy file {}", path.display()))?;
-                    pipeline.write_capsule_with_policy(&data, &policy).await?
-                }
-                None => pipeline.write_capsule(&data).await?,
+            let policy = match policy_file {
+                Some(path) => load_policy_file(&path)
+                    .with_context(|| format!("invalid policy file {}", path.display()))?,
+                None => pipeline.default_policy().await,
             };
+            let (id, size) = pipeline.write_reader(input, &policy).await?;
             println!("Capsule created: {}", id.as_uuid());
-            println!("Size: {} bytes", data.len());
+            println!("Size: {size} bytes");
         }
         Commands::Read { capsule_id } => {
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
             let (registry, nvram) = open_registry_and_nvram()?;
             let pipeline = WritePipeline::open(registry, nvram)?;
-            let data = pipeline.read_capsule(id).await?;
-            io::stdout().write_all(&data)?;
+            let mut stream = pipeline.read_stream(id).await?;
+            let mut stdout = io::stdout().lock();
+            while let Some(chunk) = stream.next().await {
+                stdout.write_all(&chunk?)?;
+            }
+            stdout.flush()?;
         }
         Commands::Delete { capsule_id } => {
             let id = CapsuleId::from_uuid(capsule_id.parse()?);

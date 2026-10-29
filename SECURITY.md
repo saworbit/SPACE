@@ -57,7 +57,6 @@ This describes the post-reset `main` branch. None of it has been professionally 
 
 - `spacectl serve-s3` has no authentication. It listens on 127.0.0.1 unless started with `--bind`, and sends no CORS headers, so web pages on other origins can't call it. Anyone who can reach the port can read, write and delete objects.
 - There's no TLS.
-- S3 request and response bodies are buffered in memory, so large or concurrent transfers can exhaust it ([#99](https://github.com/saworbit/SPACE/issues/99)).
 
 ### Code practices
 

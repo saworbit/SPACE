@@ -2,7 +2,7 @@ use anyhow::Error;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderName, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tracing::{error, info};
 
-use crate::{ListPage, ListQuery, ObjectMapping, S3Error, S3View};
+use crate::{ByteRange, ListPage, ListQuery, ObjectMapping, S3Error, S3View};
 
 pub type AppState = Arc<S3View>;
 
@@ -35,6 +35,7 @@ impl IntoResponse for S3Error {
                 bucket.as_str(),
             ),
             S3Error::InvalidArgument(_) => (StatusCode::BAD_REQUEST, "InvalidArgument", ""),
+            S3Error::InvalidRange(_) => (StatusCode::RANGE_NOT_SATISFIABLE, "InvalidRange", ""),
             S3Error::Internal(err) => {
                 error!("request failed: {err:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "InternalError", "")
@@ -45,7 +46,16 @@ impl IntoResponse for S3Error {
             xml_escape(&self.to_string()),
             xml_escape(resource)
         );
-        (status, [(header::CONTENT_TYPE, "application/xml")], body).into_response()
+        let mut response =
+            (status, [(header::CONTENT_TYPE, "application/xml")], body).into_response();
+        if let S3Error::InvalidRange(size) = self {
+            insert(
+                response.headers_mut(),
+                header::CONTENT_RANGE,
+                format!("bytes */{size}"),
+            );
+        }
+        response
     }
 }
 
@@ -74,20 +84,40 @@ pub async fn put_object(
     }
 }
 
-/// GET /{bucket}/{key}
+/// GET /{bucket}/{key}, honouring a single `Range: bytes=` range (#99).
 pub async fn get_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    request_headers: HeaderMap,
 ) -> Response {
     info!("GET /{}/{}", bucket, key);
 
-    match s3.get_object(&bucket, &key).await {
-        Ok(object) => (
-            StatusCode::OK,
-            object_headers(&object.meta),
-            Body::from_stream(object.body),
-        )
-            .into_response(),
+    let range = request_headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(ByteRange::parse);
+    match s3.get_object_range(&bucket, &key, range).await {
+        Ok(object) => {
+            let mut headers = object_headers(&object.meta);
+            let status = match object.range {
+                Some((first, last)) => {
+                    let size = object.meta.size;
+                    insert(
+                        &mut headers,
+                        header::CONTENT_LENGTH,
+                        (last - first + 1).to_string(),
+                    );
+                    insert(
+                        &mut headers,
+                        header::CONTENT_RANGE,
+                        format!("bytes {first}-{last}/{size}"),
+                    );
+                    StatusCode::PARTIAL_CONTENT
+                }
+                None => StatusCode::OK,
+            };
+            (status, headers, Body::from_stream(object.body)).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -285,16 +315,29 @@ fn element(out: &mut String, name: &str, text: &str) {
     let _ = write!(out, "<{name}>{}</{name}>", xml_escape(text));
 }
 
-fn object_headers(meta: &ObjectMapping) -> [(HeaderName, String); 4] {
-    [
-        (header::CONTENT_LENGTH, meta.size.to_string()),
-        (header::CONTENT_TYPE, meta.content_type.clone()),
-        (header::ETAG, etag(meta.capsule_id)),
-        (
-            header::LAST_MODIFIED,
-            httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs(meta.created_at)),
-        ),
-    ]
+fn object_headers(meta: &ObjectMapping) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    insert(&mut headers, header::CONTENT_LENGTH, meta.size.to_string());
+    insert(
+        &mut headers,
+        header::CONTENT_TYPE,
+        meta.content_type.clone(),
+    );
+    insert(&mut headers, header::ETAG, etag(meta.capsule_id));
+    insert(
+        &mut headers,
+        header::LAST_MODIFIED,
+        httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs(meta.created_at)),
+    );
+    insert(&mut headers, header::ACCEPT_RANGES, "bytes".to_string());
+    headers
+}
+
+/// Every value set here is built from ASCII, so it is always a valid header.
+fn insert(headers: &mut HeaderMap, name: HeaderName, value: String) {
+    if let Ok(value) = HeaderValue::try_from(value) {
+        headers.insert(name, value);
+    }
 }
 
 /// The ETag is the capsule ID, not an MD5 of the body.
