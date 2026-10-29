@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Policy.dedupe = false` is now honoured. Those writes get their own segments and don't register their hashes (#87).
 - `Policy::validate` rejects segment sizes of 0 or above 16 MiB, and segment lengths are converted to `u32` with `try_from` (#109).
+- Removed pre-reset leftovers: the stray `src/Cargo.toml`, the unused `SPACE_DISABLE_MODULAR_PIPELINE` test lines, the unused `prometheus` and `num_cpus` workspace deps, and `GarbageCollector`. `RaftNode` is now `MetadataLog`. `S3View::new` builds the same pipeline as `serve-s3`, so the S3 tests cover the production path (#106).
 - A set but invalid `SPACE_MASTER_KEY` is now a startup error, and an encrypted write with no key fails instead of storing plaintext marked encrypted. Removed the all-zero and fixed fallback keys (#84).
 - Encrypted and plaintext writes no longer dedup onto each other's segments. The dedup key now includes the encryption mode (#83).
 - Encrypted writes of objects or tail segments under 16 bytes now work. Short segments are zero-padded to one XTS block (#94).

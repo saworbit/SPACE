@@ -3,15 +3,7 @@ use common::Policy;
 use nvram_sim::NvramLog;
 use std::fs;
 use std::path::Path;
-use std::sync::Once;
 use uuid::Uuid;
-
-fn init_native_pipeline() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
-    });
-}
 
 fn setup_paths(prefix: &str) -> (String, String) {
     let base = std::env::temp_dir().join("space_registry_tests");
@@ -32,8 +24,6 @@ fn setup_paths(prefix: &str) -> (String, String) {
 
 #[tokio::test]
 async fn refcounts_increase_and_decrease_with_capsules() {
-    init_native_pipeline();
-
     let (log_path, meta_path) = setup_paths("refcount");
 
     let registry = CapsuleRegistry::open(meta_path.as_str()).unwrap();
@@ -84,8 +74,6 @@ async fn refcounts_increase_and_decrease_with_capsules() {
 
 #[tokio::test]
 async fn garbage_collect_reclaims_orphan_segments() {
-    init_native_pipeline();
-
     let (log_path, meta_path) = setup_paths("gc_sweep");
 
     let registry = CapsuleRegistry::open(meta_path.as_str()).unwrap();
@@ -153,8 +141,6 @@ mod modular_pipeline_gc {
 
     #[tokio::test]
     async fn modular_pipeline_handles_key_rotation() {
-        std::env::remove_var("SPACE_DISABLE_MODULAR_PIPELINE");
-
         let log_path = "modular_gc.log";
         let segments_path = format!("{}.segments", log_path);
         let _ = fs::remove_file(log_path);
@@ -202,7 +188,5 @@ mod modular_pipeline_gc {
 
         let _ = fs::remove_file(log_path);
         let _ = fs::remove_file(segments_path.as_str());
-
-        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
     }
 }
