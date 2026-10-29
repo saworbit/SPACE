@@ -469,7 +469,7 @@ Segments still referenced by other Capsules remain.
 
 ### Garbage collection
 
-`Pipeline::garbage_collect()` removes segments that no Capsule references, or whose `ref_count` is 0, and unregisters their hashes. Unreferenced segments are typically left over from a failed or interrupted write. `capsule_registry::gc::GarbageCollector` is an older variant that nothing uses.
+`Pipeline::garbage_collect()` removes segments that no Capsule references, or whose `ref_count` is 0, and unregisters their hashes. Unreferenced segments are typically left over from a failed or interrupted write.
 
 **Bytes remain in the log** until compaction (`NvramLog::compact()`) rewrites it. The two-step design keeps deletion cheap (touch one record) and bulk reclamation infrequent. Nothing runs GC or compaction automatically yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 

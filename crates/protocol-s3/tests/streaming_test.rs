@@ -11,15 +11,13 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn streaming_upload_round_trip() {
-    std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
-
     let (log_path, meta_path) = temp_paths("streaming_upload");
     cleanup_paths(&log_path);
     cleanup_paths(&meta_path);
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let view = Arc::new(S3View::new(registry, nvram));
+    let view = Arc::new(S3View::new(registry, nvram).expect("open S3 view"));
 
     let app = Router::new()
         .route(

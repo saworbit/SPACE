@@ -11,17 +11,10 @@ use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::S3View;
-use std::{fs, path::Path, sync::Once};
+use std::{fs, path::Path};
 use uuid::Uuid;
 
 // ── Test infrastructure ─────────────────────────────────────────
-
-fn init_native_pipeline() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        std::env::set_var("SPACE_DISABLE_MODULAR_PIPELINE", "1");
-    });
-}
 
 struct TestHarness {
     s3: S3View,
@@ -31,7 +24,6 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(prefix: &str) -> Self {
-        init_native_pipeline();
         let base = std::env::temp_dir().join("space_behavior_tests");
         let _ = fs::create_dir_all(&base);
         let unique = format!("{}_{}", prefix, Uuid::new_v4());
@@ -48,7 +40,7 @@ impl TestHarness {
 
         let registry = CapsuleRegistry::open(&meta_path).unwrap();
         let nvram = NvramLog::open(&log_path).unwrap();
-        let s3 = S3View::new(registry, nvram);
+        let s3 = S3View::new(registry, nvram).expect("open S3 view");
 
         Self {
             s3,

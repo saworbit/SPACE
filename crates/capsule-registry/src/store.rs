@@ -33,7 +33,7 @@ pub trait MetadataStore: Send + Sync {
     fn restore_snapshot(&self, data: &[u8]) -> Result<()>;
 }
 
-/// Snapshot payload persisted for Raft state machine checkpoints.
+/// Snapshot payload for metadata store checkpoints.
 #[derive(Serialize, Deserialize)]
 #[allow(dead_code)]
 struct SnapshotHeader {
