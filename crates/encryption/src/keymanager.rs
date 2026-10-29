@@ -284,7 +284,7 @@ impl KeyManager {
     /// Uses getrandom for cryptographically secure randomness
     #[cfg(test)]
     pub fn generate() -> Result<Self> {
-        use rand::Rng;
+        use rand::RngExt;
         let mut rng = rand::rng();
         let mut master_key = [0u8; MASTER_KEY_SIZE];
         rng.fill(&mut master_key);
