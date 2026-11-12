@@ -20,14 +20,11 @@ These are high-impact areas where new contributors can make meaningful progress:
 
 ## Licensing
 
-SPACE is dual-licensed under **MIT OR Apache 2.0**. This means:
+SPACE is licensed under the [Business Source License 1.1](LICENSE). It's source-available: anyone can read, change and redistribute it, and use it in production for noncommercial purposes. Commercial production use needs a commercial license from the licensor. Each version becomes available under the Apache License 2.0 four years after it is first published.
 
-- **All contributions will be licensed under the same terms** (MIT OR Apache 2.0)
-- By submitting a pull request, you agree to license your contributions under both licenses
-- Users can choose which license they prefer when using SPACE
-- This follows the same approach as the Rust programming language and many other Rust projects
+Versions up to commit `a54ed95` (13 November 2026) were released under MIT OR Apache-2.0, and copies of them stay under those terms.
 
-See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for the full license texts.
+By submitting a pull request, you agree that your contribution is licensed under the same terms, and you grant the licensor, Shane Wall, a perpetual, irrevocable right to license your contribution under other terms, including commercial licenses.
 
 ## Getting Started
 - Install the latest stable Rust toolchain (`rustup default stable`). The committed `Cargo.lock` needs Rust 1.89 or newer.
@@ -45,7 +42,7 @@ CI on pull requests runs the checks below (see `.github/workflows/ci.yml`).
 | Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Workspace tests | `cargo test --workspace` |
 | Build on rust-version | `cargo +1.89 check --workspace --locked` |
-| License field | `license = "MIT OR Apache-2.0"` in the root `Cargo.toml` |
+| License field | `license = "BUSL-1.1"` in the root `Cargo.toml` |
 
 ## Dependency Changes
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.

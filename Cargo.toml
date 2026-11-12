@@ -19,7 +19,7 @@ edition = "2021"
 # Highest rust-version among locked dependencies; CI checks the build on it.
 rust-version = "1.89"
 authors = ["Shane Wall <shane@adaptive-storage.dev>"]
-license = "MIT OR Apache-2.0"
+license = "BUSL-1.1"
 
 [workspace.dependencies]
 uuid = { version = "^1.18.1", features = ["v4", "serde"] }
