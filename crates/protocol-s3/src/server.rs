@@ -4,11 +4,34 @@ use axum::{routing::get, Router};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
+use tokio::task::JoinHandle;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::{handlers::*, S3View};
+
+/// Run [`S3View::reclaim`] now and then every `every`, until the task is
+/// aborted. A failed pass is logged and the next one runs on schedule.
+pub fn spawn_reclaim(s3_view: Arc<S3View>, every: Duration) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(every);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            match s3_view.reclaim().await {
+                Ok(report) if report.collected > 0 || report.compacted.is_some() => info!(
+                    collected = report.collected,
+                    compacted_bytes = report.compacted,
+                    "reclaimed space"
+                ),
+                Ok(_) => debug!("nothing worth reclaiming"),
+                Err(err) => warn!("reclaim pass failed: {err:#}"),
+            }
+        }
+    })
+}
 
 /// The S3 routes. Keys may contain '/', so the key is a wildcard (#88).
 pub fn router(s3_view: Arc<S3View>) -> Router {
@@ -38,6 +61,7 @@ pub fn router(s3_view: Arc<S3View>) -> Router {
 pub struct S3Server {
     s3_view: Arc<S3View>,
     addr: SocketAddr,
+    reclaim_every: Option<Duration>,
 }
 
 impl S3Server {
@@ -45,10 +69,21 @@ impl S3Server {
         Self {
             s3_view: Arc::new(s3_view),
             addr,
+            reclaim_every: None,
         }
     }
 
+    /// Run a reclaim pass at startup and then every `every` while the
+    /// server runs ([`spawn_reclaim`]). `None`, the default, runs none.
+    pub fn reclaim_every(mut self, every: Option<Duration>) -> Self {
+        self.reclaim_every = every;
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
+        let _reclaim = self
+            .reclaim_every
+            .map(|every| AbortOnDrop(spawn_reclaim(Arc::clone(&self.s3_view), every)));
         let app = router(self.s3_view);
 
         let addr = self.addr;
@@ -71,5 +106,14 @@ impl S3Server {
         axum::serve(listener, app).await?;
 
         Ok(())
+    }
+}
+
+/// Stops the reclaim task when the server stops.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }

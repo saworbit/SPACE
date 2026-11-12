@@ -72,6 +72,9 @@ struct Shared {
     refs_known: AtomicBool,
     /// Held while a compaction runs, so only one runs at a time.
     compacting: Mutex<()>,
+    /// Called by `read` once it has looked up the segment's offset.
+    #[cfg(test)]
+    read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 #[derive(Clone)]
@@ -223,6 +226,8 @@ impl NvramLog {
                 id_floor: AtomicU64::new(id_floor),
                 refs_known: AtomicBool::new(refs_known),
                 compacting: Mutex::new(()),
+                #[cfg(test)]
+                read_hook: Mutex::new(None),
             }),
             path,
             data_start: opened.data_start,
@@ -280,6 +285,24 @@ impl NvramLog {
             .values()
             .map(|e| u64::from(e.segment.len))
             .sum()
+    }
+
+    /// Bytes in the log file.
+    pub fn size(&self) -> u64 {
+        *self.shared.next_offset.read().unwrap()
+    }
+
+    /// Bytes compaction would free now: everything in the file but its
+    /// `FILE` record and the records of segments with references.
+    pub fn reclaimable_bytes(&self) -> u64 {
+        let end = *self.shared.next_offset.read().unwrap();
+        let map = self.shared.segment_map.read().unwrap();
+        let live: u64 = map
+            .values()
+            .filter(|e| e.segment.ref_count > 0)
+            .map(|e| e.record_end() - e.record_offset)
+            .sum();
+        end.saturating_sub(self.data_start + live)
     }
 
     /// List all known segments with their metadata.
@@ -411,6 +434,9 @@ impl NvramLog {
     }
 
     pub fn read(&self, seg_id: SegmentId) -> Result<Vec<u8>> {
+        // The file lock first: compaction swaps the file and the offsets
+        // under it, so an offset is only good for the file it was read with.
+        let mut file = self.shared.file.write().unwrap();
         let segment = self
             .shared
             .segment_map
@@ -419,8 +445,14 @@ impl NvramLog {
             .get(&seg_id)
             .map(|e| e.segment.clone())
             .ok_or_else(|| anyhow!("Segment not found"))?;
+        #[cfg(test)]
+        {
+            let hook = self.shared.read_hook.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
 
-        let mut file = self.shared.file.write().unwrap();
         file.seek(SeekFrom::Start(segment.offset))?;
 
         let mut buffer = vec![0u8; segment.len as usize];
@@ -1196,10 +1228,23 @@ mod tests {
     }
 
     #[test]
+    fn reclaimable_bytes_is_what_compaction_frees() {
+        let tmp = TempLog::new("reclaimable");
+        let log = half_live(&tmp);
+        assert_eq!(log.size(), tmp.len());
+        let expected = log.reclaimable_bytes();
+        assert!(expected > 0);
+        assert_eq!(log.compact().unwrap(), expected);
+        assert_eq!(log.reclaimable_bytes(), 0);
+        assert_eq!(log.size(), tmp.len());
+    }
+
+    #[test]
     fn a_log_with_nothing_to_reclaim_is_left_alone() {
         let tmp = TempLog::new("nothing");
         let log = tmp.open();
         commit_described(&log, 1, b"live");
+        assert_eq!(log.reclaimable_bytes(), 0);
         let before = tmp.len();
         assert_eq!(log.compact().unwrap(), 0);
         assert_eq!(log.file_header().generation, 0);
@@ -1281,6 +1326,60 @@ mod tests {
             sorted_ids(&log),
             [SegmentId(1), SegmentId(10), SegmentId(11)]
         );
+    }
+
+    #[test]
+    fn a_read_never_uses_an_offset_from_another_generation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        // Segment 4 is live behind dead ones, so compaction moves it.
+        let tmp = TempLog::new("read_race");
+        let log = tmp.open();
+        for i in 1..=4 {
+            commit_described(&log, i, &payload(i));
+        }
+        drop(log);
+        let log = tmp.open();
+        log.recount_references(&[(SegmentId(2), 1), (SegmentId(4), 1)].into());
+
+        // Once the read has looked up the offset, let a whole compaction run
+        // before it touches the file, if one can.
+        let (looked_up, wait_lookup) = mpsc::channel::<()>();
+        let (compacted, wait_compacted) = mpsc::channel::<()>();
+        let (looked_up, wait_compacted) = (Mutex::new(looked_up), Mutex::new(wait_compacted));
+        *log.shared.read_hook.lock().unwrap() = Some(Arc::new(move || {
+            let _ = looked_up.lock().unwrap().send(());
+            let _ = wait_compacted
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_millis(300));
+        }));
+
+        let reader = {
+            let log = log.clone();
+            std::thread::spawn(move || log.read(SegmentId(4)))
+        };
+        wait_lookup.recv().unwrap();
+        *log.shared.read_hook.lock().unwrap() = None;
+        let (done, wait_done) = mpsc::channel();
+        let compactor = {
+            let log = log.clone();
+            std::thread::spawn(move || done.send(log.compact().map(|_| ())).unwrap())
+        };
+        // The read holds the file, so the compaction has to wait for it.
+        if wait_done.recv_timeout(Duration::from_millis(150)).is_ok() {
+            compacted.send(()).unwrap();
+        }
+
+        let read = reader.join().unwrap();
+        assert!(
+            matches!(&read, Ok(bytes) if *bytes == payload(4)),
+            "the read used an offset from the old generation: {read:?}"
+        );
+        compactor.join().unwrap();
+        assert_eq!(log.file_header().generation, 1);
+        assert_eq!(log.read(SegmentId(4)).unwrap(), payload(4));
     }
 
     #[test]

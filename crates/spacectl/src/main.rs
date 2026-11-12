@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Context, Result};
-use capsule_registry::modular_pipeline;
+use anyhow::{anyhow, bail, Context, Result};
+use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle};
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 
 use clap::{Parser, Subcommand};
@@ -15,6 +15,7 @@ use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Once;
+use std::time::Duration;
 
 use tracing_subscriber::EnvFilter;
 
@@ -83,6 +84,23 @@ fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
     Ok((registry, nvram))
 }
 
+/// The store's pipeline, as `serve-s3` opens it: segments under
+/// `SPACE_STORAGE_ROOT` when that's set, in `space.nvram` otherwise.
+async fn open_store(registry: CapsuleRegistry) -> Result<RegistryPipelineHandle> {
+    match std::env::var("SPACE_STORAGE_ROOT") {
+        Ok(root) => {
+            let storage = storage::AutoFsBackend::open(PathBuf::from(root)).await?;
+            modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)
+        }
+        Err(_) => modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry),
+    }
+}
+
+fn plural(n: impl Into<u64>, one: &str, many: &str) -> String {
+    let n = n.into();
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Create a new capsule from data
@@ -108,6 +126,12 @@ enum Commands {
         /// Capsule UUID
         capsule_id: String,
     },
+    /// Remove segments no capsule references, such as those an interrupted
+    /// write left behind. In space.nvram their bytes stay until `compact`.
+    Gc,
+    /// Reclaim the bytes of segments no capsule references by writing a new
+    /// generation of space.nvram.
+    Compact,
     /// Start S3-compatible HTTP server
     ServeS3 {
         /// Port to listen on
@@ -117,6 +141,12 @@ enum Commands {
         /// listens on loopback unless told otherwise.
         #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
         bind: IpAddr,
+        /// Seconds between passes that reclaim space: compacting space.nvram
+        /// once a quarter of it is reclaimable, or deleting unreferenced
+        /// segments under SPACE_STORAGE_ROOT. The first runs at startup. 0
+        /// turns them off.
+        #[arg(long, default_value_t = 300, value_name = "SECONDS")]
+        reclaim_interval: u64,
     },
 }
 
@@ -170,6 +200,50 @@ async fn main() -> Result<()> {
             pipeline.delete_capsule(id).await?;
             println!("Capsule deleted: {}", id.as_uuid());
         }
+        Commands::Gc => {
+            let mut store = open_store(open_registry()?).await?;
+            let collected = store.garbage_collect().await?;
+            println!(
+                "Removed {}",
+                plural(
+                    collected as u64,
+                    "unreferenced segment",
+                    "unreferenced segments"
+                )
+            );
+            if let Some(log) = store.data_log() {
+                let reclaimable = log.reclaimable_bytes();
+                if reclaimable > 0 {
+                    println!(
+                        "{} of space.nvram can be reclaimed; run `spacectl compact`",
+                        plural(reclaimable, "byte", "bytes")
+                    );
+                }
+            }
+        }
+        Commands::Compact => {
+            let store = open_store(open_registry()?).await?;
+            let Some(log) = store.data_log() else {
+                bail!(
+                    "segments under SPACE_STORAGE_ROOT are files of their own, so there is \
+                     nothing to compact; `spacectl gc` deletes the unreferenced ones"
+                );
+            };
+            let before = log.size();
+            match log.compact()? {
+                0 => println!("Nothing to reclaim"),
+                reclaimed => {
+                    println!(
+                        "Reclaimed {} of {before}",
+                        plural(reclaimed, "byte", "bytes")
+                    );
+                    println!(
+                        "space.nvram is now generation {}",
+                        log.file_header().generation
+                    );
+                }
+            }
+        }
         Commands::List => {
             let registry = open_registry()?;
             let mut cursor = None;
@@ -209,24 +283,20 @@ async fn main() -> Result<()> {
                 println!("(no capsules)");
             }
         }
-        Commands::ServeS3 { port, bind } => {
+        Commands::ServeS3 {
+            port,
+            bind,
+            reclaim_interval,
+        } => {
             use protocol_s3::{server::S3Server, S3View};
 
             println!("Starting SPACE S3 Protocol View...");
 
-            let registry = open_registry()?;
-            let s3_view = if let Ok(storage_root) = std::env::var("SPACE_STORAGE_ROOT") {
-                let storage_root = PathBuf::from(storage_root);
-                let storage = storage::AutoFsBackend::open(&storage_root).await?;
-                let handle =
-                    modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)?;
-                S3View::new_modular(handle)
-            } else {
-                let handle = modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry)?;
-                S3View::new_modular(handle)
-            };
-
-            let server = S3Server::new(s3_view, SocketAddr::new(bind, port));
+            let s3_view = S3View::new_modular(open_store(open_registry()?).await?);
+            let reclaim_every =
+                (reclaim_interval > 0).then(|| Duration::from_secs(reclaim_interval));
+            let server =
+                S3Server::new(s3_view, SocketAddr::new(bind, port)).reclaim_every(reclaim_every);
             server.run().await?;
         }
     }
@@ -241,11 +311,26 @@ mod tests {
     #[test]
     fn serve_s3_listens_on_loopback_by_default() {
         let cli = Cli::try_parse_from(["spacectl", "serve-s3"]).unwrap();
-        let Commands::ServeS3 { port, bind } = cli.command else {
+        let Commands::ServeS3 {
+            port,
+            bind,
+            reclaim_interval,
+        } = cli.command
+        else {
             panic!("expected serve-s3");
         };
         assert_eq!(port, 8080);
         assert_eq!(bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(reclaim_interval, 300);
+
+        let cli = Cli::try_parse_from(["spacectl", "serve-s3", "--reclaim-interval", "0"]).unwrap();
+        let Commands::ServeS3 {
+            reclaim_interval, ..
+        } = cli.command
+        else {
+            panic!("expected serve-s3");
+        };
+        assert_eq!(reclaim_interval, 0);
 
         let cli = Cli::try_parse_from(["spacectl", "serve-s3", "--bind", "0.0.0.0"]).unwrap();
         let Commands::ServeS3 { bind, .. } = cli.command else {
