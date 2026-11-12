@@ -276,6 +276,13 @@ pub trait StorageBackend: Send + Sync {
     fn used_bytes(&self) -> BoxFuture<'_, Result<u64>> {
         Box::pin(async { Ok(0) })
     }
+
+    /// Check a segment's stored bytes against a checksum the backend keeps
+    /// of its own, without needing a key. `Ok(None)` means the backend keeps
+    /// none, which is the default; `Ok(Some(false))` means it didn't match.
+    fn verify_stored(&self, _segment: SegmentId) -> BoxFuture<'_, Result<Option<bool>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Evaluates policy directives for a given capsule write.

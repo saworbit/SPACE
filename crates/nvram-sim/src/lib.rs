@@ -461,6 +461,41 @@ impl NvramLog {
         Ok(buffer)
     }
 
+    /// Check a segment's record against its own checksums: the frame and
+    /// descriptor against `head_sum`, the stored bytes against `body_sum`.
+    /// They're unkeyed, so this catches media damage but not tampering, and
+    /// needs no key. Ok(false) means a checksum didn't match.
+    pub fn verify_record(&self, seg_id: SegmentId) -> Result<bool> {
+        let mut file = self.shared.file.write().unwrap();
+        let entry = self
+            .shared
+            .segment_map
+            .read()
+            .unwrap()
+            .get(&seg_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Segment not found: {:?}", seg_id))?;
+        let mut record = vec![0u8; (entry.record_end() - entry.record_offset) as usize];
+        file.seek(SeekFrom::Start(entry.record_offset))?;
+        file.read_exact(&mut record)?;
+        drop(file);
+
+        let Some(frame_bytes) = record.get(..format::FRAME_LEN) else {
+            return Ok(false);
+        };
+        let Ok(frame) = format::Frame::parse(frame_bytes.try_into().unwrap()) else {
+            return Ok(false);
+        };
+        if frame.record_len() != record.len() as u64 {
+            return Ok(false);
+        }
+        let head_end = frame.head_len() as usize;
+        Ok(frame
+            .verify_head(&record[format::FRAME_LEN..head_end])
+            .is_ok()
+            && frame.verify_body(&record[head_end..]).is_ok())
+    }
+
     /// Get segment metadata without reading data.
     pub fn get_segment_metadata(&self, seg_id: SegmentId) -> Result<Segment> {
         self.shared
@@ -1104,6 +1139,32 @@ mod tests {
         assert!(err.to_string().contains("read-only"), "{err}");
         // Nothing was truncated.
         assert_eq!(tmp.len(), bytes.len() as u64);
+    }
+
+    #[test]
+    fn verify_record_catches_a_flipped_byte_in_any_record() {
+        let tmp = TempLog::new("verify");
+        let log = tmp.open();
+        for i in 1..=3 {
+            commit_described(&log, i, &payload(i));
+        }
+        for i in 1..=3 {
+            assert!(log.verify_record(SegmentId(i)).unwrap());
+        }
+        let middle = log.get_segment_metadata(SegmentId(2)).unwrap();
+        drop(log);
+
+        // A body byte of the middle record: open checks only the last body.
+        let mut bytes = std::fs::read(&tmp.path).unwrap();
+        bytes[middle.offset as usize + 3] ^= 0x10;
+        std::fs::write(&tmp.path, &bytes).unwrap();
+
+        let log = tmp.open();
+        assert!(log.damage().is_empty());
+        assert!(log.verify_record(SegmentId(1)).unwrap());
+        assert!(!log.verify_record(SegmentId(2)).unwrap());
+        assert!(log.verify_record(SegmentId(3)).unwrap());
+        assert!(log.verify_record(SegmentId(9)).is_err());
     }
 
     #[test]

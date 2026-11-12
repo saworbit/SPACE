@@ -16,7 +16,7 @@ These are high-impact areas where new contributors can make meaningful progress:
 4. **`spacectl` UX** — Add progress bars for large operations, improve error messages, add `--json` output mode
 5. **Metrics** — Nothing emits metrics yet. Add them: per-stage latency histograms, dedup hit rates, GC effectiveness
 6. **Structured error types** — Replace string errors with typed errors that include recovery guidance
-7. **Background GC** — Help make garbage collection automatic with tunable aggressiveness
+7. **Reclaim tuning** — `serve-s3` reclaims space on a timer (`--reclaim-interval`), but the compaction threshold (a quarter of `space.nvram`, and at least 4 MiB) is fixed. Make it configurable
 
 ## Licensing
 

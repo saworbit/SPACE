@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -275,7 +275,7 @@ Scanning a file, the reader validates each record's magic, `head_sum` and length
 - If no valid record exists anywhere after P (the reader searches forward for the magic and checks `head_sum`), it's a torn tail from an interrupted append. The file is truncated to P and the bytes dropped are logged.
 - If a valid record follows, it's corruption in the middle of the file. The store opens read-only and the damaged ranges are reported (`NvramLog::damage()` today; `spacectl doctor` should also name the capsules whose segments fall in them).
 
-Known limitation: the forward search can be fooled by a complete record embedded in the bytes of the torn record, when they hold one. That happens with a SPACE data log stored as an uncompressed, unencrypted capsule, or a name crafted to contain a record (names are written as is). The result is a false damage report and a read-only open, or for the journal a refusal to open, never silent data loss. `BATCH` sub-records carry no magic so that every batch doesn't trip it (§5.7).
+Known limitation: the forward search can be fooled by a complete record embedded in the bytes of the torn record, when they hold one. That happens with a SPACE data log stored as an uncompressed, unencrypted capsule, or a name crafted to contain a record (names are written as is). The result is a false damage report and a read-only open, or for the journal a refusal to open, never silent data loss ([#137](https://github.com/saworbit/SPACE/issues/137)). `BATCH` sub-records carry no magic so that every batch doesn't trip it (§5.7).
 
 ### 8.2 Data log
 
@@ -309,7 +309,7 @@ A crash before the rename leaves `space.nvram.compact` behind, which open delete
 
 ### 9.2 Journal
 
-Under churn the journal grows with dead manifests. Journal compaction writes `space.journal.compact` with a `FILE` record at `generation + 1`, then `NAMESPACE`, `CAPSULE` and `BIND` records for the live state, renames it into place, and sets `journal_applied` to the new generation and end offset. It isn't needed for a while; the `generation` field exists so it can be added without a format change.
+Under churn the journal grows with dead manifests. Journal compaction writes `space.journal.compact` with a `FILE` record at `generation + 1`, then `NAMESPACE`, `CAPSULE` and `BIND` records for the live state, renames it into place, and sets `journal_applied` to the new generation and end offset. It isn't needed for a while; the `generation` field exists so it can be added without a format change ([#136](https://github.com/saworbit/SPACE/issues/136)).
 
 ## 10. Other backends
 
@@ -391,12 +391,17 @@ Suggested PRs:
    - `serve-s3` runs a pass at startup and every `--reclaim-interval` seconds (default 300). It compacts once a quarter of the log, and at least one default segment, is reclaimable, without the pipeline lock. `spacectl gc` and `spacectl compact` run each step on demand.
    - `NvramLog::read` now takes the file lock before it looks up the offset. Looking it up first let a compaction swap the file in between, so the read used an offset from the old generation. The read's MAC or content-hash check would have rejected the bytes.
    - Scrub, which #97 also asks to schedule, isn't part of this.
+6. Schedule scrub, with `spacectl scrub` (the last of #97). **Done**:
+   - Light scrub of the data log checks each record's `head_sum` and `body_sum` (`StorageBackend::verify_stored`, `NvramLog::verify_record`), as §8.1 says scrub verifies earlier bodies. It needs no key, so it covers encrypted segments too. A length check, all light scrub did before, can't fail in the data log.
+   - `serve-s3` runs `ScrubExecutor::spawn_background` with the pipeline's key, without the pipeline lock: light daily, deep weekly, at most 64 MiB/s by default. The schedule lives in memory, so every start begins with a deep scrub.
+   - On a live store, a segment deleted during a cycle isn't reported as a read error, and the schedule forgets deleted segments.
+   - A cycle that reaches `max_segments_per_cycle` lets the rest follow a second later. Before, they waited for the next interval.
 
 ## 15. Tests
 
 - Truncate the last record of each file at every byte offset. Open must succeed, and the state must equal the last commit before it.
 - Flip a byte in the middle of the data log. Open must go read-only, and `doctor` must name the affected capsules.
-- Proptest: random sequences of writes, dedup writes, deletes, S3 puts, overwrites and deletes. Then delete `space.db`, reopen, and compare capsules, refs, content index and names with the originals. This becomes an invariant in `capsule.md` §11: **rebuild(journal, data log) == index.**
+- Proptest: random sequences of writes, dedup writes, deletes, S3 puts, overwrites and deletes. Then delete `space.db`, reopen, and compare capsules, refs, content index and names with the originals. This becomes an invariant in `capsule.md` §11: **rebuild(journal, data log) == index.** ([#139](https://github.com/saworbit/SPACE/issues/139))
 - Inject a crash at each step of compaction. Reopen must succeed with no manual step.
 - `digest == blake3::hash(input)` for every proptest payload.
 
@@ -407,5 +412,5 @@ Suggested PRs:
 3. **ETag.** Should it be the digest in hex, or an MD5 computed alongside it? Some S3 tools compare a single-part ETag with the body's MD5; today's UUID ETag already fails that check.
 4. **Checkpoint.** Should the first implementation include the checkpoint, or always scan?
 5. **Names.** Generic namespaces (as drafted), or S3-specific record kinds? *Generic, as implemented in PR 3.*
-6. **Deleting a named capsule.** `spacectl delete` of a capsule an S3 key points at: keep today's behaviour (the key reads as missing), or make `DROP` also remove bindings? *Today's behaviour, for now. Removing bindings would need an index from capsules to the names that point at them.*
+6. **Deleting a named capsule.** `spacectl delete` of a capsule an S3 key points at: keep today's behaviour (the key reads as missing), or make `DROP` also remove bindings? *Today's behaviour, for now. Removing bindings would need an index from capsules to the names that point at them ([#138](https://github.com/saworbit/SPACE/issues/138)).*
 7. **Frame sums.** BLAKE3 (no new dependency) or CRC32C (cheaper per segment)?

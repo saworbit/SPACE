@@ -164,18 +164,24 @@ async fn under_a_storage_root_a_pass_deletes_unreferenced_segments() {
     assert!(got == old, "GET in flight returned the wrong bytes");
 
     // Once the GET is done, releasing the old capsule deletes its segments.
+    // The release runs in the background and deletes one segment at a time,
+    // so wait for all of them.
     drop(object);
-    let probe = raw.clone();
-    let first = old_segments[0];
+    let mut remaining = old_segments.clone();
     for _ in 0..300 {
-        if probe.metadata(first).await.is_err() {
+        let mut still = Vec::new();
+        for seg in remaining {
+            if raw.metadata(seg).await.is_ok() {
+                still.push(seg);
+            }
+        }
+        remaining = still;
+        if remaining.is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    for seg in &old_segments {
-        assert!(raw.metadata(*seg).await.is_err(), "segment {seg:?} stayed");
-    }
+    assert!(remaining.is_empty(), "segments {remaining:?} stayed");
     assert_eq!(view.reclaim().await.unwrap().collected, 0);
     assert_eq!(
         collect(view.get_object("b", "k").await.unwrap()).await,

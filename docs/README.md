@@ -9,7 +9,7 @@ This branch is the single-node core. Start with the repository [README](../READM
 - [S3 quick start](guides/QUICKSTART_S3.md)
 - [Streaming reads](guides/STREAMING_READS.md)
 - [NVRAM log](nvram-sim.md)
-- [On-disk format](on-disk-format.md) — draft, not implemented
+- [On-disk format](on-disk-format.md) — format 1: the data log and the capsule journal (the checkpoint and journal compaction, [#136](https://github.com/saworbit/SPACE/issues/136), aren't implemented)
 - [Encryption](encryption.md)
 - [Dedup implementation](implementation/DEDUP_IMPLEMENTATION.md)
 - [Encryption implementation](implementation/ENCRYPTION_IMPLEMENTATION.md)
