@@ -4,10 +4,20 @@ use common::{
     FederationStrategy, LayoutPolicy, Policy, SegmentId,
 };
 use serde::{Deserialize, Serialize};
-use sled::Db;
+use sled::transaction::{
+    ConflictableTransactionError, ConflictableTransactionResult, TransactionError,
+    TransactionalTree,
+};
+use sled::{Db, Transactional};
+use std::collections::HashMap;
+
+use crate::journal::JournalPosition;
+use common::format::JournalRecord;
 use std::io::{BufWriter, Cursor, Write};
 
 const NEXT_SEGMENT_KEY: &[u8] = b"next_segment_id";
+/// Key in the counters tree for the journal position the index has reached.
+const JOURNAL_POSITION_KEY: &[u8] = b"journal_position";
 
 /// Abstraction over the metadata storage backend.
 /// Allows swapping Sled for other engines (e.g., RocksDB, in-memory) without
@@ -15,16 +25,32 @@ const NEXT_SEGMENT_KEY: &[u8] = b"next_segment_id";
 pub trait MetadataStore: Send + Sync {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
     fn put_capsule(&self, capsule: &Capsule) -> Result<()>;
-    fn delete_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
     fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>>;
     #[allow(dead_code)]
     fn add_deduped_bytes(&self, id: &CapsuleId, bytes: u64) -> Result<()>;
 
     fn allocate_segment_id(&self) -> Result<SegmentId>;
+    /// Raise the segment counter to at least `floor`.
+    fn ensure_segment_floor(&self, floor: u64) -> Result<()>;
+
+    /// Apply one journal record, or a whole batch, and record `position`, in
+    /// one transaction.
+    fn apply_journal(&self, record: &JournalRecord, position: &JournalPosition) -> Result<()>;
+    /// Record `position` without applying anything.
+    fn set_journal_position(&self, position: &JournalPosition) -> Result<()>;
+    fn journal_position(&self) -> Result<Option<JournalPosition>>;
+    /// Empty everything the journal rebuilds: capsules, the content index,
+    /// ref counts, and the journal position.
+    fn clear_index(&self) -> Result<()>;
+    fn has_capsules(&self) -> Result<bool>;
+    /// How many capsule entries reference each segment.
+    fn segment_refs(&self) -> Result<std::collections::HashMap<SegmentId, u32>>;
+    /// Remove `hash` from the content index if it points at `segment` and no
+    /// capsule references `segment`.
+    fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool>;
 
     fn get_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>>;
     fn put_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<()>;
-    fn delete_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>>;
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>>;
 
     /// S3 view namespace. Buckets map to their creation time, and each
@@ -171,6 +197,7 @@ impl From<CapsuleLegacy> for Capsule {
             created_at: value.created_at,
             policy: value.policy.into(),
             deduped_bytes: value.deduped_bytes,
+            digest: None,
         }
     }
 }
@@ -184,6 +211,7 @@ impl From<CapsuleLegacyV2> for Capsule {
             created_at: value.created_at,
             policy: value.policy.into(),
             deduped_bytes: value.deduped_bytes,
+            digest: None,
         }
     }
 }
@@ -221,6 +249,10 @@ pub struct SledStore {
     db: Db,
     capsules: sled::Tree,
     content: sled::Tree,
+    /// Segment id to the number of capsule entries that reference it.
+    refs: sled::Tree,
+    /// Segment id to its content-index key, for segments the index holds.
+    indexed: sled::Tree,
     counters: sled::Tree,
     buckets: sled::Tree,
     objects: sled::Tree,
@@ -245,6 +277,8 @@ impl SledStore {
         let db = sled::open(path)?;
         let capsules = db.open_tree("capsules")?;
         let content = db.open_tree("content")?;
+        let refs = db.open_tree("refs")?;
+        let indexed = db.open_tree("indexed")?;
         let counters = db.open_tree("counters")?;
         let buckets = db.open_tree("s3_buckets")?;
         let objects = db.open_tree("s3_objects")?;
@@ -260,6 +294,8 @@ impl SledStore {
             db,
             capsules,
             content,
+            refs,
+            indexed,
             counters,
             buckets,
             objects,
@@ -296,16 +332,6 @@ impl MetadataStore for SledStore {
         self.capsules.insert(key, val)?;
         self.flush()?;
         Ok(())
-    }
-
-    fn delete_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>> {
-        let key = bincode::serialize(id)?;
-        let removed = self.capsules.remove(key)?;
-        self.flush()?;
-        match removed {
-            Some(bytes) => Ok(Some(decode_capsule(&bytes)?)),
-            None => Ok(None),
-        }
     }
 
     fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>> {
@@ -369,6 +395,96 @@ impl MetadataStore for SledStore {
         Ok(SegmentId(next))
     }
 
+    fn ensure_segment_floor(&self, floor: u64) -> Result<()> {
+        self.counters
+            .fetch_and_update(NEXT_SEGMENT_KEY, |existing| -> Option<Vec<u8>> {
+                let current: u64 = existing
+                    .and_then(|ivec| bincode::deserialize(ivec).ok())
+                    .unwrap_or(0);
+                bincode::serialize(&current.max(floor)).ok()
+            })?;
+        Ok(())
+    }
+
+    fn apply_journal(&self, record: &JournalRecord, position: &JournalPosition) -> Result<()> {
+        let position = bincode::serialize(position)?;
+        let result = (
+            &self.capsules,
+            &self.content,
+            &self.refs,
+            &self.indexed,
+            &self.counters,
+        )
+            .transaction(|(capsules, content, refs, indexed, counters)| {
+                let trees = IndexTrees {
+                    capsules,
+                    content,
+                    refs,
+                    indexed,
+                };
+                apply_record(record, &trees)?;
+                counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
+                Ok(())
+            });
+        match result {
+            Ok(()) => Ok(()),
+            Err(TransactionError::Abort(err)) => Err(err),
+            Err(TransactionError::Storage(err)) => Err(err.into()),
+        }
+    }
+
+    fn set_journal_position(&self, position: &JournalPosition) -> Result<()> {
+        self.counters
+            .insert(JOURNAL_POSITION_KEY, bincode::serialize(position)?)?;
+        Ok(())
+    }
+
+    fn journal_position(&self) -> Result<Option<JournalPosition>> {
+        Ok(self
+            .counters
+            .get(JOURNAL_POSITION_KEY)?
+            .map(|v| bincode::deserialize(&v))
+            .transpose()?)
+    }
+
+    fn clear_index(&self) -> Result<()> {
+        self.capsules.clear()?;
+        self.content.clear()?;
+        self.refs.clear()?;
+        self.indexed.clear()?;
+        self.counters.remove(JOURNAL_POSITION_KEY)?;
+        self.flush()
+    }
+
+    fn has_capsules(&self) -> Result<bool> {
+        Ok(!self.capsules.is_empty())
+    }
+
+    fn segment_refs(&self) -> Result<HashMap<SegmentId, u32>> {
+        let mut out = HashMap::new();
+        for entry in self.refs.iter() {
+            let (key, value) = entry?;
+            out.insert(bincode::deserialize(&key)?, bincode::deserialize(&value)?);
+        }
+        Ok(out)
+    }
+
+    fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
+        let seg_key = bincode::serialize(&segment)?;
+        if self.refs.contains_key(&seg_key)? {
+            return Ok(false);
+        }
+        let key = bincode::serialize(hash)?;
+        let removed = self
+            .content
+            .compare_and_swap(&key, Some(seg_key.clone()), None as Option<Vec<u8>>)?
+            .is_ok();
+        if removed {
+            self.indexed.remove(seg_key)?;
+        }
+        Ok(removed)
+    }
+
     fn get_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>> {
         let key = bincode::serialize(hash)?;
         match self.content.get(key)? {
@@ -383,16 +499,6 @@ impl MetadataStore for SledStore {
         self.content.insert(key, val)?;
         self.flush()?;
         Ok(())
-    }
-
-    fn delete_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>> {
-        let key = bincode::serialize(hash)?;
-        let removed = self.content.remove(key)?;
-        self.flush()?;
-        match removed {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
-            None => Ok(None),
-        }
     }
 
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>> {
@@ -538,6 +644,89 @@ impl MetadataStore for SledStore {
     }
 }
 
+/// The trees a journal record changes, inside one transaction.
+struct IndexTrees<'a> {
+    capsules: &'a TransactionalTree,
+    content: &'a TransactionalTree,
+    refs: &'a TransactionalTree,
+    indexed: &'a TransactionalTree,
+}
+
+fn abort<E: std::fmt::Display>(err: E) -> ConflictableTransactionError<anyhow::Error> {
+    ConflictableTransactionError::Abort(anyhow!("{err}"))
+}
+
+fn ser<T: Serialize>(value: &T) -> ConflictableTransactionResult<Vec<u8>, anyhow::Error> {
+    bincode::serialize(value).map_err(abort)
+}
+
+fn read_count(
+    refs: &TransactionalTree,
+    key: &[u8],
+) -> ConflictableTransactionResult<u32, anyhow::Error> {
+    match refs.get(key)? {
+        Some(v) => bincode::deserialize(&v).map_err(abort),
+        None => Ok(0),
+    }
+}
+
+/// Apply a journal record's effects (`docs/on-disk-format.md` §7). Replaying
+/// a record that's already applied changes nothing: a `CAPSULE` for a
+/// capsule that exists, or a `DROP` for one that doesn't, is skipped.
+fn apply_record(
+    record: &JournalRecord,
+    t: &IndexTrees<'_>,
+) -> ConflictableTransactionResult<(), anyhow::Error> {
+    match record {
+        JournalRecord::Capsule(manifest) => {
+            let key = ser(&manifest.capsule_id)?;
+            if t.capsules.get(&key)?.is_some() {
+                return Ok(());
+            }
+            t.capsules.insert(key, ser(&manifest.to_capsule())?)?;
+            for entry in &manifest.entries {
+                let seg_key = ser(&entry.segment_id)?;
+                let count = read_count(t.refs, &seg_key)?;
+                t.refs
+                    .insert(seg_key.clone(), ser(&count.saturating_add(1))?)?;
+                if manifest.dedupe && entry.content_hash != [0u8; 32] {
+                    let hash_key = ser(&ContentHash::from_bytes(&entry.content_hash))?;
+                    if t.content.get(&hash_key)?.is_none() {
+                        t.content.insert(hash_key.clone(), seg_key.clone())?;
+                        t.indexed.insert(seg_key, hash_key)?;
+                    }
+                }
+            }
+        }
+        JournalRecord::Drop(id) => {
+            let Some(bytes) = t.capsules.remove(ser(id)?)? else {
+                return Ok(());
+            };
+            let capsule = decode_capsule_bytes(&bytes).map_err(abort)?;
+            for segment in &capsule.segments {
+                let seg_key = ser(segment)?;
+                let count = read_count(t.refs, &seg_key)?;
+                if count > 1 {
+                    t.refs.insert(seg_key, ser(&(count - 1))?)?;
+                    continue;
+                }
+                t.refs.remove(seg_key.clone())?;
+                if let Some(hash_key) = t.indexed.remove(seg_key.clone())? {
+                    if t.content.get(&hash_key)?.as_deref() == Some(seg_key.as_slice()) {
+                        t.content.remove(hash_key)?;
+                    }
+                }
+            }
+        }
+        JournalRecord::Batch(records) => {
+            for record in records {
+                apply_record(record, t)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,12 +745,14 @@ mod tests {
             created_at: 1_700_000_000,
             policy: Policy::default(),
             deduped_bytes: 7,
+            digest: Some([0xAB; 32]),
         }
     }
 
-    // Byte-for-byte encodings written by the current release. A change here
-    // means existing space.db stores can no longer be read without a
-    // migration, so update these only together with one (#113).
+    // Byte-for-byte encodings of the index records. space.db is an index of
+    // the capsule journal, so a change here only needs a rebuild: bump
+    // `journal::INDEX_VERSION` with it, and stores rebuild their index on open
+    // (#113).
     const CAPSULE_ID_HEX: &str = "100000000000000000112233445566778899aabbccddeeff";
     const CAPSULE_HEX: &str = concat!(
         "100000000000000000112233445566778899aabbccddeeff0010000000000000",
@@ -569,6 +760,7 @@ mod tests {
         "01000000010000000101100e0000000000000000000000000000000000000000",
         "00400000000000060000000000000002000000000000003333333f0000000000",
         "000000000000000000000000000000000700000000000000",
+        "01abababababababababababababababababababababababababababababababab",
     );
     const SEGMENT_ID_HEX: &str = "2a00000000000000";
 

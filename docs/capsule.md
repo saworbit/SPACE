@@ -284,13 +284,19 @@ Each `SEGMENT` record carries the segment's write-once descriptor (compression, 
 
 ### 4.3 Capsule registry
 
-The registry is a Sled-backed KV store holding:
+The registry has two parts:
 
-- `Capsule` records keyed by `CapsuleId`
-- A content-hash index: `ContentHash → SegmentId` for dedup lookup
-- A counter for allocating `SegmentId`s
+- **The capsule journal**, `space.journal` next to `space.db`. An append-only file of framed records: a `CAPSULE` manifest commits each write, and a `DROP` commits each delete ([on-disk-format.md](on-disk-format.md) §5–§7). It's the durable record of which capsules exist.
+- **A sled index of the journal**, in `space.db`:
+  - `Capsule` records keyed by `CapsuleId`
+  - the content-hash index, `ContentHash → SegmentId`, for dedup lookup
+  - per-segment reference counts, and which segment each indexed hash belongs to
+  - the journal position the index has reached
+  - a counter for allocating `SegmentId`s
 
-Each update is a single sled insert followed by a flush. Segment metadata isn't in the registry: the descriptor is written once, in the segment's record in the NVRAM log, through `StorageBackend::begin_txn()…commit()`, and ref counts are held in memory. The two stores are committed separately; see [§9.3](#93-metadata-commits).
+Each journal record is applied to the index in one sled transaction that also records the new position. On open, records past that position are replayed; an index that doesn't match the journal, or a missing `space.db`, is rebuilt from it. S3 buckets and keys are still stored only in sled.
+
+Segment metadata isn't in the registry: the descriptor is written once, in the segment's record in the NVRAM log, through `StorageBackend::begin_txn()…commit()`, and the log's in-memory ref counts are set from the index when a pipeline opens. See [§9.3](#93-metadata-commits) for the commit order.
 
 ### 4.4 Storage backends
 
@@ -350,7 +356,7 @@ client bytes
     │
     ▼  (after every segment)
 ┌─────────────────┐
-│ 8. Capsule      │  registry: insert Capsule { id, size, segments, policy, ... }
+│ 8. Capsule      │  journal: append CAPSULE manifest, fsync; index applies it
 └─────────────────┘
 ```
 
@@ -368,14 +374,14 @@ client bytes
 
 **6. MAC.** BLAKE3-keyed MAC over the ciphertext plus the encryption metadata (encryption version, key version, tweak, ciphertext length). The MAC key is derived from both XTS subkeys. The first 16 bytes of the keyed hash become the `integrity_tag`.
 
-**7. Append.** The segment's record (descriptor and bytes) is appended to the NVRAM log through a storage transaction and fsynced, and then the content hash is registered in sled.
+**7. Append.** The segment's record (descriptor and bytes) is appended to the NVRAM log through a storage transaction and fsynced. Its content hash goes into the registry's in-memory pending index, where other writes can dedup against it; it reaches the durable index only when its capsule commits.
 
-**8. Capsule.** After the last segment, the capsule record is inserted into sled.
+**8. Capsule.** After the last segment, the pipeline builds the capsule's manifest: its id, size, a BLAKE3 digest of the logical bytes (computed as the chunks went by), flags, the write-time policy, and one entry per segment with its plain length and content hash. Appending that `CAPSULE` record to the journal and fsyncing it commits the write; the index then applies it.
 
 ### Important properties of the write path
 
 - **Determinism**: write the same bytes under the same policy twice → same content hash → dedup hit on the second write. This is observable as `Capsule.deduped_bytes > 0` in the second Capsule.
-- **No partially visible capsules**: the capsule record is inserted only after every segment is stored, so a failed or interrupted write never shows up in `list` or `read`. Any segments it had already stored stay behind, unreferenced, until GC runs ([#97](https://github.com/saworbit/SPACE/issues/97)).
+- **No partially visible capsules**: the `CAPSULE` record is appended only after every segment is stored, so a failed or interrupted write never shows up in `list` or `read`. Any segments it had already stored stay behind, unreferenced and out of the content index, until compaction runs ([#97](https://github.com/saworbit/SPACE/issues/97)).
 - **Order-independent dedup**: which Capsule "owns" a segment doesn't matter; ref counting makes the relationship symmetric.
 
 The implementation is `Pipeline::write_capsule` in [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs). `capsule_registry::pipeline::WritePipeline` and `capsule_registry::modular_pipeline::RegistryPipelineHandle` wrap it.
@@ -459,9 +465,10 @@ Segment lifecycle:
 
 `Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`, S3 DELETE, and S3 overwrites. It:
 
-1. Looks up the Capsule.
-2. For each `SegmentId` in `capsule.segments`: if `ref_count > 1`, decrements it; otherwise deletes the segment record and unregisters its hash.
-3. Removes the Capsule record from the registry.
+1. Commits the delete: appends a `DROP` record to the journal and fsyncs it. Applying it removes the capsule record, decrements each segment's reference count in the index, and removes a segment's hash from the content index when its count reaches zero.
+2. For each `SegmentId` in `capsule.segments`: if the in-memory `ref_count` is above 1, decrements it; otherwise drops the segment from the log's map.
+
+The delete commits first, so a crash part way through step 2 leaves only in-memory counts, which the next open sets again from the index.
 
 Segments still referenced by other Capsules remain.
 
@@ -582,11 +589,12 @@ Two contracts worth emphasizing:
 
 There's no transaction spanning the two stores. A write commits in this order:
 
-1. For each new segment: append its record (descriptor and bytes) and fsync, then register its hash in sled.
+1. For each new segment: append its record (descriptor and bytes) and fsync, then put its hash in the in-memory pending index.
 2. For each dedup hit: increment the segment's ref count in memory. Nothing is written.
-3. After the last segment: insert the capsule record into sled, then flush.
+3. After the last segment: append the `CAPSULE` record to the journal and fsync it. This is the commit point.
+4. Apply the record to the sled index in one transaction: the capsule record, reference counts, content-index entries for its segments, and the new journal position.
 
-A crash before step 3 leaves no visible capsule. It does leave stored segments with no capsule pointing at them. Ref counts aren't stored, and opening a pipeline recounts them from the capsules in sled, so a crash can't leave an inflated count behind. The orphaned segments come back with no references, and compaction reclaims them; nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97)). Each individual sled insert is crash-safe.
+A crash before step 3 leaves no visible capsule, and nothing in the durable content index points at its segments. They come back with no references, and compaction reclaims them; nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97)). A crash between steps 3 and 4 is repaired on the next open, which replays the journal past the index's position. The log's in-memory ref counts are set from the index whenever a pipeline opens, so no crash leaves a count wrong.
 
 ### 9.4 PODMS swarm behavior (archived)
 
@@ -757,7 +765,14 @@ Tested by `prop_no_cross_policy_dedup_collision`. This is the regression test fo
 seg.ref_count == count(capsules referencing seg.id)
 seg.ref_count == 0 ⟹ seg eligible for GC
 ```
-Holds across restarts: ref counts aren't stored, and opening a pipeline recounts them from the capsules in sled, so a dedup hit from a write that never finished leaves no extra reference. Tested by `an_interrupted_dedup_write_leaves_no_extra_reference` in [data_log_test.rs](../crates/capsule-registry/tests/data_log_test.rs).
+Holds across restarts: ref counts aren't stored, and opening a pipeline sets them from the index's per-segment counts, which only committed capsules contribute to, so a dedup hit from a write that never finished leaves no extra reference. Tested by `an_interrupted_dedup_write_leaves_no_extra_reference` in [data_log_test.rs](../crates/capsule-registry/tests/data_log_test.rs).
+
+### Index rebuild
+
+```
+rebuild(journal) == index
+```
+Deleting `space.db` and reopening gives the same capsules, reference counts and content index, and a stale index catches up by replaying the journal past its position. Tested by `losing_the_index_rebuilds_it_from_the_journal` and `records_the_index_missed_are_replayed_on_open` in [journal_test.rs](../crates/capsule-registry/tests/journal_test.rs).
 
 ### Crash recovery
 
@@ -787,7 +802,9 @@ never on capsule.policy
 | **Damaged bytes inside the log** | `open()` finds bytes that aren't a valid record, with valid records after them | The log opens read-only and `NvramLog::damage()` lists the ranges. Segments outside them still read; capsules with a segment inside can't be read. |
 | **Crash mid-compaction** | `.compacting` marker present | `open()` refuses to open the log. Verify or restore the data, then delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)). |
 | **Crash mid-append** | `open()` finds a last record that fails its checksums, with nothing valid after it | Truncated away; it belonged to a write that never committed. Segments the interrupted write had already stored stay, with no references, until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). |
-| **Sled corruption** | Sled checksum failure on read | Restore `space.db` from backup. There's no audit log to replay. |
+| **Lost or corrupt `space.db`** | `space.db` missing, or sled fails to open it | Delete it and reopen: the index is rebuilt from `space.journal`. S3 buckets and keys are stored only in sled until they move to the journal, so they're lost. |
+| **Journal record cut short** | `open()` finds a last journal record that fails its checks | Truncated away; it was a commit that never completed, so its write or delete didn't happen. |
+| **Damage inside the journal** | Invalid bytes with valid journal records after them | The registry refuses to open: the capsules recorded in the damaged range can't be recovered from it. |
 | **Wrong key on read** | MAC verify fails | Read fails with auth error. No plaintext is exposed. |
 | **Key version no longer wanted** | n/a: every version is re-derived from the master key on demand | Old versions can't be retired while the master key is kept, and losing the master key loses every version. |
 | **Dedup-hit-then-GC race** | Cannot occur: write, delete and GC run under the pipeline handle's lock | n/a |
@@ -812,7 +829,8 @@ never on capsule.policy
 | **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted). |
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |
-| **Registry** | The Sled-backed metadata store: Capsules, content-hash index, segment ID counter. |
+| **Registry** | The capsule journal and its sled index: capsules, content-hash index, reference counts, segment ID counter. |
+| **Capsule journal** | `space.journal`: the append-only record of capsule writes (`CAPSULE`) and deletes (`DROP`). The sled index is rebuilt from it. |
 | **NVRAM log** | The primary durable backend. Append-only log of framed segment records. |
 | **Compaction** | Rewriting the live segments of an NVRAM log to reclaim space from GC'd segments. |
 | **PODMS** | Policy-Orchestrated Disaggregated Mesh Scaling. The distributed mode, archived in the reset. |

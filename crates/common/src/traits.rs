@@ -7,6 +7,7 @@ use futures::future::BoxFuture;
 use futures::Stream;
 use hex;
 
+use crate::format::CapsuleManifest;
 use crate::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
     SegmentId,
@@ -308,14 +309,8 @@ pub trait CapsuleCatalog: Send + Sync {
 
     fn lookup_capsule(&self, id: CapsuleId) -> Result<Capsule>;
 
-    fn create_capsule(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        policy: &Policy,
-        segments: Vec<SegmentId>,
-        stats: &DedupStats,
-    ) -> Result<()>;
+    /// Commit a capsule from its manifest (`docs/on-disk-format.md` §5.3).
+    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()>;
 
     fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule>;
 

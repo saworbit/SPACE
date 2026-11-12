@@ -7,23 +7,24 @@
 //! rebuilds the segment map; there is no sidecar to lose (#96).
 //!
 //! Ref counts aren't stored. They live in memory, start at 1 for every
-//! scanned segment, and are set from the registry's capsules with
+//! scanned segment, and are set from the registry with
 //! [`NvramLog::recount_references`] when a pipeline opens the log.
+
+pub mod record_file;
 
 use anyhow::{anyhow, bail, Result};
 
 use common::format::{
-    self, FileHeader, FileKind, Frame, SegmentDescriptor, FILE_VERSION, FORMAT_VERSION, FRAME_LEN,
-    MAGIC, SEGMENT_VERSION,
+    self, FileHeader, FileKind, SegmentDescriptor, FORMAT_VERSION, SEGMENT_VERSION,
 };
 use common::*;
+pub use record_file::Damage;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 /// A segment in the log: its in-memory metadata (`offset` and `len` locate
@@ -38,14 +39,6 @@ impl Entry {
     fn record_end(&self) -> u64 {
         self.segment.offset + u64::from(self.segment.len)
     }
-}
-
-/// A byte range that held no valid record when the log was opened, with
-/// valid records after it. A log with damage opens read-only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Damage {
-    pub start: u64,
-    pub end: u64,
 }
 
 /// What [`NvramLog::recount_references`] found.
@@ -78,13 +71,6 @@ pub struct NvramLog {
     damage: Arc<Vec<Damage>>,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
@@ -93,242 +79,6 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 
 fn compacting_marker(path: &Path) -> PathBuf {
     sibling(path, ".compacting")
-}
-
-/// Make a newly created file's directory entry durable. Windows has no
-/// portable way to fsync a directory, so this is a no-op there.
-fn sync_parent_dir(path: &Path) {
-    #[cfg(unix)]
-    {
-        let parent = match path.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p,
-            _ => Path::new("."),
-        };
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-}
-
-/// The outcome of reading a record's frame and header at some offset.
-enum Probe {
-    Valid(Frame, Vec<u8>),
-    Invalid(String),
-}
-
-fn probe(file: &mut File, pos: u64, file_len: u64) -> std::io::Result<Probe> {
-    if file_len.saturating_sub(pos) < FRAME_LEN as u64 {
-        return Ok(Probe::Invalid("frame cut short".into()));
-    }
-    let mut frame_bytes = [0u8; FRAME_LEN];
-    file.seek(SeekFrom::Start(pos))?;
-    file.read_exact(&mut frame_bytes)?;
-    let frame = match Frame::parse(&frame_bytes) {
-        Ok(frame) => frame,
-        Err(err) => return Ok(Probe::Invalid(err.to_string())),
-    };
-    if pos + frame.record_len() > file_len {
-        return Ok(Probe::Invalid(
-            "record runs past the end of the file".into(),
-        ));
-    }
-    let mut header = vec![0u8; frame.header_len as usize];
-    file.read_exact(&mut header)?;
-    if let Err(err) = frame.verify_head(&header) {
-        return Ok(Probe::Invalid(err.to_string()));
-    }
-    Ok(Probe::Valid(frame, header))
-}
-
-/// Offset of the first valid record at or after `from`, if any.
-fn find_next_record(file: &mut File, from: u64, file_len: u64) -> std::io::Result<Option<u64>> {
-    const CHUNK: usize = 1 << 20;
-    let mut base = from;
-    let mut buf = vec![0u8; CHUNK + MAGIC.len() - 1];
-    while base < file_len {
-        let want = ((file_len - base) as usize).min(buf.len());
-        file.seek(SeekFrom::Start(base))?;
-        file.read_exact(&mut buf[..want])?;
-        let window = &buf[..want];
-        let mut candidates = Vec::new();
-        for (i, w) in window.windows(MAGIC.len()).enumerate() {
-            if w == MAGIC {
-                candidates.push(base + i as u64);
-            }
-        }
-        for candidate in candidates {
-            if let Probe::Valid(..) = probe(file, candidate, file_len)? {
-                return Ok(Some(candidate));
-            }
-        }
-        if want < buf.len() {
-            break;
-        }
-        // Overlap by MAGIC.len() - 1 so a magic split across chunks is seen.
-        base += CHUNK as u64;
-    }
-    Ok(None)
-}
-
-struct Scan {
-    entries: HashMap<SegmentId, Entry>,
-    /// Where the next record goes.
-    end: u64,
-    /// Offset and reason of a record cut short at the end of the file.
-    torn_tail: Option<(u64, String)>,
-    damage: Vec<Damage>,
-}
-
-/// Turn a record with a valid head into a map entry. Returns `Ok(Err(..))`
-/// when the record is the last in the file and its body fails its checksum:
-/// an append cut short, not damage.
-fn check_record(
-    file: &mut File,
-    pos: u64,
-    frame: &Frame,
-    header: &[u8],
-    is_last: bool,
-) -> Result<std::result::Result<Option<Entry>, String>> {
-    match frame.kind {
-        format::kind::SEGMENT => {
-            if frame.version != SEGMENT_VERSION {
-                bail!(
-                    "SEGMENT record at offset {pos} has layout version {}, which this build \
-                     can't read",
-                    frame.version
-                );
-            }
-            let desc = SegmentDescriptor::decode(header)
-                .map_err(|err| anyhow!("SEGMENT record at offset {pos}: {err}"))?;
-            let body_offset = pos + frame.head_len();
-            // A torn write can only be the last record: every earlier one
-            // was fsynced before the next was appended. Earlier bodies are
-            // verified by reads (MAC or content hash) and by scrub.
-            if is_last {
-                let mut body = vec![0u8; frame.body_len as usize];
-                file.seek(SeekFrom::Start(body_offset))?;
-                file.read_exact(&mut body)?;
-                if let Err(err) = frame.verify_body(&body) {
-                    return Ok(Err(err.to_string()));
-                }
-            }
-            Ok(Ok(Some(Entry {
-                segment: desc.to_segment(body_offset, frame.body_len),
-                record_offset: pos,
-            })))
-        }
-        format::kind::FILE => bail!("unexpected FILE record at offset {pos}"),
-        _ if frame.is_ignorable() => Ok(Ok(None)),
-        other => bail!(
-            "record at offset {pos} has kind {other:#04x}, which this build can't read and \
-             mustn't skip"
-        ),
-    }
-}
-
-fn scan(file: &mut File, start: u64, file_len: u64) -> Result<Scan> {
-    let mut entries: HashMap<SegmentId, Entry> = HashMap::new();
-    let mut damage = Vec::new();
-    let mut pos = start;
-    while pos < file_len {
-        let reason = match probe(file, pos, file_len)? {
-            Probe::Valid(frame, header) => {
-                let end = pos + frame.record_len();
-                match check_record(file, pos, &frame, &header, end == file_len)? {
-                    Ok(entry) => {
-                        if let Some(entry) = entry {
-                            let id = entry.segment.id;
-                            if entries.insert(id, entry).is_some() {
-                                warn!(
-                                    segment = id.0,
-                                    offset = pos,
-                                    "segment id appears twice in the data log; keeping the later record"
-                                );
-                            }
-                        }
-                        pos = end;
-                        continue;
-                    }
-                    Err(reason) => reason,
-                }
-            }
-            Probe::Invalid(reason) => reason,
-        };
-        // `pos` doesn't start a valid record. If one follows, the bytes in
-        // between are damage; if none does, this is a torn tail.
-        match find_next_record(file, pos + 1, file_len)? {
-            None => {
-                return Ok(Scan {
-                    entries,
-                    end: pos,
-                    torn_tail: Some((pos, reason)),
-                    damage,
-                })
-            }
-            Some(next) => {
-                warn!(
-                    start = pos,
-                    end = next,
-                    reason = reason.as_str(),
-                    "data log is damaged"
-                );
-                damage.push(Damage {
-                    start: pos,
-                    end: next,
-                });
-                pos = next;
-            }
-        }
-    }
-    Ok(Scan {
-        entries,
-        end: pos,
-        torn_tail: None,
-        damage,
-    })
-}
-
-fn not_format_one(path: &Path, why: impl std::fmt::Display) -> anyhow::Error {
-    anyhow!(
-        "'{}' isn't an on-disk format {FORMAT_VERSION} data log ({why}). Stores written \
-         before format {FORMAT_VERSION} can't be opened; see docs/on-disk-format.md §13.",
-        path.display()
-    )
-}
-
-fn read_file_header(file: &mut File, path: &Path, file_len: u64) -> Result<(FileHeader, u64)> {
-    let (frame, header) = match probe(file, 0, file_len)? {
-        Probe::Valid(frame, header) => (frame, header),
-        Probe::Invalid(reason) => return Err(not_format_one(path, reason)),
-    };
-    if frame.kind != format::kind::FILE {
-        return Err(not_format_one(path, "it doesn't start with a FILE record"));
-    }
-    if frame.version != FILE_VERSION {
-        bail!(
-            "'{}' has a FILE record with layout version {}, which this build can't read",
-            path.display(),
-            frame.version
-        );
-    }
-    let header = FileHeader::decode(&header).map_err(|err| not_format_one(path, err))?;
-    if header.file_kind != FileKind::DataLog {
-        bail!(
-            "'{}' is a {:?} file, not a data log",
-            path.display(),
-            header.file_kind
-        );
-    }
-    if header.format != FORMAT_VERSION {
-        bail!(
-            "'{}' is store format {}; this build reads format {FORMAT_VERSION}",
-            path.display(),
-            header.format
-        );
-    }
-    Ok((header, frame.record_len()))
 }
 
 impl NvramLog {
@@ -368,74 +118,52 @@ impl NvramLog {
             );
         }
 
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        let mut file_len = file.metadata()?.len();
-
-        let new_record_len = (FRAME_LEN + FileHeader::LEN) as u64;
-        let (header, data_start) = if file_len < new_record_len {
-            // Either a new log, or one whose creation was cut short before
-            // its FILE record was whole. Neither can hold a segment.
-            let mut prefix = vec![0u8; file_len as usize];
-            file.seek(SeekFrom::Start(0))?;
-            file.read_exact(&mut prefix)?;
-            let torn_creation = prefix.iter().all(|b| *b == 0)
-                || MAGIC.starts_with(&prefix[..prefix.len().min(MAGIC.len())]);
-            if !torn_creation {
-                return Err(not_format_one(
-                    &path,
-                    "it's too short to hold a FILE record",
-                ));
+        let mut entries: HashMap<SegmentId, Entry> = HashMap::new();
+        let opened = record_file::open(&path, FileKind::DataLog, |pos, frame, header| match frame
+            .kind
+        {
+            format::kind::SEGMENT => {
+                if frame.version != SEGMENT_VERSION {
+                    bail!(
+                        "SEGMENT record at offset {pos} has layout version {}, which this \
+                             build can't read",
+                        frame.version
+                    );
+                }
+                let desc = SegmentDescriptor::decode(header)
+                    .map_err(|err| anyhow!("SEGMENT record at offset {pos}: {err}"))?;
+                let entry = Entry {
+                    segment: desc.to_segment(pos + frame.head_len(), frame.body_len),
+                    record_offset: pos,
+                };
+                let id = entry.segment.id;
+                if entries.insert(id, entry).is_some() {
+                    warn!(
+                        segment = id.0,
+                        offset = pos,
+                        "segment id appears twice in the data log; keeping the later record"
+                    );
+                }
+                Ok(())
             }
-            if file_len > 0 {
-                warn!(
-                    path = %path.display(),
-                    bytes = file_len,
-                    "replacing a FILE record cut short when the data log was created"
-                );
+            _ if frame.is_ignorable() => Ok(()),
+            other => {
+                bail!("record at offset {pos} has kind {other:#04x}, which a data log can't hold")
             }
-            let header = FileHeader::new(FileKind::DataLog, now_secs());
-            let record = header.encode_record();
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            file.write_all(&record)?;
-            file.sync_all()?;
-            sync_parent_dir(&path);
-            file_len = record.len() as u64;
-            (header, file_len)
-        } else {
-            read_file_header(&mut file, &path, file_len)?
-        };
+        })?;
 
-        let scan = scan(&mut file, data_start, file_len)?;
-        if let Some((cut, reason)) = &scan.torn_tail {
-            warn!(
-                path = %path.display(),
-                offset = cut,
-                bytes = file_len - cut,
-                reason = reason.as_str(),
-                "dropping a record cut short at the end of the data log"
-            );
-            file.set_len(*cut)?;
-            file.sync_all()?;
-        }
-
-        let refs_known = scan.entries.is_empty();
+        let refs_known = entries.is_empty();
         Ok(Self {
             shared: Arc::new(Shared {
-                file: RwLock::new(file),
-                segment_map: RwLock::new(scan.entries),
-                next_offset: RwLock::new(scan.end),
+                file: RwLock::new(opened.file),
+                segment_map: RwLock::new(entries),
+                next_offset: RwLock::new(opened.end),
                 refs_known: AtomicBool::new(refs_known),
             }),
             path,
-            header,
-            data_start,
-            damage: Arc::new(scan.damage),
+            header: opened.header,
+            data_start: opened.data_start,
+            damage: Arc::new(opened.damage),
         })
     }
 
@@ -772,6 +500,17 @@ impl NvramLog {
         Ok(NvramTransaction::new(self.clone()))
     }
 
+    /// The highest segment id in the map, if any.
+    pub fn max_segment_id(&self) -> Option<SegmentId> {
+        self.shared
+            .segment_map
+            .read()
+            .unwrap()
+            .keys()
+            .max()
+            .copied()
+    }
+
     pub fn list_segment_ids(&self) -> Vec<SegmentId> {
         self.shared
             .segment_map
@@ -934,7 +673,9 @@ impl Drop for NvramTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::format::FRAME_LEN;
     use std::sync::atomic::AtomicUsize;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TempLog {
         path: PathBuf,

@@ -24,7 +24,7 @@ use std::fmt;
 
 use uuid::Uuid;
 
-use crate::{ContentHash, Segment, SegmentId};
+use crate::{Capsule, CapsuleId, ContentHash, Policy, Segment, SegmentId};
 
 /// First four bytes of every record.
 pub const MAGIC: [u8; 4] = *b"SPCR";
@@ -45,12 +45,20 @@ pub mod kind {
     pub const FILE: u8 = 0x00;
     /// One segment: descriptor in the header, stored bytes in the body.
     pub const SEGMENT: u8 = 0x01;
+    /// A capsule's manifest; commits a write.
+    pub const CAPSULE: u8 = 0x10;
+    /// Commits a delete.
+    pub const DROP: u8 = 0x11;
+    /// Several journal records applied all or nothing.
+    pub const BATCH: u8 = 0x1F;
 }
 
 /// Layout version of the `FILE` header.
 pub const FILE_VERSION: u8 = 1;
 /// Layout version of the `SEGMENT` header.
 pub const SEGMENT_VERSION: u8 = 1;
+/// Layout version of the `CAPSULE`, `DROP` and `BATCH` headers.
+pub const JOURNAL_VERSION: u8 = 1;
 
 const SUM_LEN: usize = 16;
 
@@ -624,6 +632,229 @@ impl SegmentDescriptor {
     }
 }
 
+const CAPSULE_DEDUPE: u32 = 1 << 0;
+const CAPSULE_REQUIRES_ENCRYPTION: u32 = 1 << 1;
+
+/// One segment of a capsule, in logical byte order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManifestEntry {
+    pub segment_id: SegmentId,
+    /// Logical bytes this segment contributes.
+    pub plain_len: u32,
+    /// The segment's content hash; all zero means none.
+    pub content_hash: [u8; 32],
+}
+
+impl ManifestEntry {
+    /// Encoded size of one entry.
+    pub const LEN: usize = 44;
+}
+
+/// A capsule's manifest: the `CAPSULE` journal record that commits a write
+/// (`docs/on-disk-format.md` §5.3).
+#[derive(Debug, Clone)]
+pub struct CapsuleManifest {
+    pub capsule_id: CapsuleId,
+    /// Unix seconds.
+    pub created_at: u64,
+    /// Logical bytes; the sum of the entries' `plain_len`.
+    pub size: u64,
+    /// BLAKE3 of the logical bytes.
+    pub digest: [u8; 32],
+    /// The capsule's segments go in the content index.
+    pub dedupe: bool,
+    /// Never serve this capsule from a segment that isn't encrypted.
+    pub requires_encryption: bool,
+    pub deduped_bytes: u64,
+    /// The write-time policy. Informational: nothing here is decided from it.
+    pub policy: Policy,
+    pub entries: Vec<ManifestEntry>,
+}
+
+impl CapsuleManifest {
+    /// The registry's record of this capsule.
+    pub fn to_capsule(&self) -> Capsule {
+        Capsule {
+            id: self.capsule_id,
+            size: self.size,
+            segments: self.entries.iter().map(|e| e.segment_id).collect(),
+            created_at: self.created_at,
+            policy: self.policy.clone(),
+            deduped_bytes: self.deduped_bytes,
+            digest: Some(self.digest),
+        }
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, FormatError> {
+        let policy = serde_json::to_vec(&self.policy)
+            .map_err(|_| FormatError::Invalid("policy can't be encoded as JSON"))?;
+        let policy_len =
+            u32::try_from(policy.len()).map_err(|_| FormatError::Invalid("policy too long"))?;
+        let count = u32::try_from(self.entries.len())
+            .map_err(|_| FormatError::Invalid("too many manifest entries"))?;
+        let mut flags = 0u32;
+        if self.dedupe {
+            flags |= CAPSULE_DEDUPE;
+        }
+        if self.requires_encryption {
+            flags |= CAPSULE_REQUIRES_ENCRYPTION;
+        }
+        let mut w = Writer::new();
+        w.bytes(self.capsule_id.as_uuid().as_bytes());
+        w.u64(self.created_at);
+        w.u64(self.size);
+        w.bytes(&self.digest);
+        w.u32(flags);
+        w.u64(self.deduped_bytes);
+        w.u32(policy_len);
+        w.bytes(&policy);
+        w.u32(count);
+        for entry in &self.entries {
+            w.u64(entry.segment_id.0);
+            w.u32(entry.plain_len);
+            w.bytes(&entry.content_hash);
+        }
+        Ok(w.0)
+    }
+
+    fn decode(header: &[u8]) -> Result<Self, FormatError> {
+        let mut r = Reader::new(header);
+        let capsule_id = CapsuleId::from_uuid(Uuid::from_bytes(r.array()?));
+        let created_at = r.u64()?;
+        let size = r.u64()?;
+        let digest = r.array()?;
+        let flags = r.u32()?;
+        if flags & !(CAPSULE_DEDUPE | CAPSULE_REQUIRES_ENCRYPTION) != 0 {
+            return Err(FormatError::Invalid("unknown CAPSULE flag"));
+        }
+        let deduped_bytes = r.u64()?;
+        let policy_len = r.u32()? as usize;
+        let policy = serde_json::from_slice(r.take(policy_len)?)
+            .map_err(|_| FormatError::Invalid("policy isn't valid JSON"))?;
+        let count = r.u32()? as usize;
+        if r.buf.len() != count.saturating_mul(ManifestEntry::LEN) {
+            return Err(FormatError::Invalid(
+                "entry count doesn't match the header length",
+            ));
+        }
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(ManifestEntry {
+                segment_id: SegmentId(r.u64()?),
+                plain_len: r.u32()?,
+                content_hash: r.array()?,
+            });
+        }
+        r.finish()?;
+        let total: u64 = entries.iter().map(|e| u64::from(e.plain_len)).sum();
+        if total != size {
+            return Err(FormatError::Invalid(
+                "capsule size isn't the sum of its entries",
+            ));
+        }
+        Ok(Self {
+            capsule_id,
+            created_at,
+            size,
+            digest,
+            dedupe: flags & CAPSULE_DEDUPE != 0,
+            requires_encryption: flags & CAPSULE_REQUIRES_ENCRYPTION != 0,
+            deduped_bytes,
+            policy,
+            entries,
+        })
+    }
+}
+
+/// A record in the capsule journal.
+#[derive(Debug, Clone)]
+pub enum JournalRecord {
+    /// Commits a write.
+    Capsule(Box<CapsuleManifest>),
+    /// Commits a delete.
+    Drop(CapsuleId),
+    /// Records applied in order, all or nothing. Never nested.
+    Batch(Vec<JournalRecord>),
+}
+
+impl JournalRecord {
+    fn kind(&self) -> u8 {
+        match self {
+            Self::Capsule(_) => kind::CAPSULE,
+            Self::Drop(_) => kind::DROP,
+            Self::Batch(_) => kind::BATCH,
+        }
+    }
+
+    fn encode_header(&self) -> Result<Vec<u8>, FormatError> {
+        match self {
+            Self::Capsule(manifest) => manifest.encode(),
+            Self::Drop(id) => Ok(id.as_uuid().as_bytes().to_vec()),
+            Self::Batch(records) => {
+                let count = u32::try_from(records.len())
+                    .map_err(|_| FormatError::Invalid("batch too large"))?;
+                let mut w = Writer::new();
+                w.u32(count);
+                for record in records {
+                    if matches!(record, Self::Batch(_)) {
+                        return Err(FormatError::Invalid("batches can't nest"));
+                    }
+                    w.bytes(&record.encode_record()?);
+                }
+                Ok(w.0)
+            }
+        }
+    }
+
+    /// The whole record: frame and header. Journal records have no body.
+    pub fn encode_record(&self) -> Result<Vec<u8>, FormatError> {
+        encode_head(self.kind(), JOURNAL_VERSION, 0, &self.encode_header()?, &[])
+    }
+
+    /// Decode a journal record from a frame and header whose head checksum
+    /// has been verified.
+    pub fn decode(frame: &Frame, header: &[u8]) -> Result<Self, FormatError> {
+        if !matches!(frame.kind, kind::CAPSULE | kind::DROP | kind::BATCH) {
+            return Err(FormatError::UnknownKind(frame.kind));
+        }
+        if frame.version != JOURNAL_VERSION {
+            return Err(FormatError::UnsupportedVersion {
+                kind: frame.kind,
+                version: frame.version,
+            });
+        }
+        if frame.body_len != 0 {
+            return Err(FormatError::Invalid("journal records have no body"));
+        }
+        match frame.kind {
+            kind::CAPSULE => Ok(Self::Capsule(Box::new(CapsuleManifest::decode(header)?))),
+            kind::DROP => {
+                let mut r = Reader::new(header);
+                let id = CapsuleId::from_uuid(Uuid::from_bytes(r.array()?));
+                r.finish()?;
+                Ok(Self::Drop(id))
+            }
+            _ => {
+                let mut r = Reader::new(header);
+                let count = r.u32()? as usize;
+                let mut records = Vec::with_capacity(count.min(1024));
+                for _ in 0..count {
+                    let frame_bytes: [u8; FRAME_LEN] = r.array()?;
+                    let sub = Frame::parse(&frame_bytes)?;
+                    let sub_header = r.take(sub.header_len as usize)?;
+                    sub.verify_head(sub_header)?;
+                    if sub.kind == kind::BATCH {
+                        return Err(FormatError::Invalid("batches can't nest"));
+                    }
+                    records.push(Self::decode(&sub, sub_header)?);
+                }
+                r.finish()?;
+                Ok(Self::Batch(records))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,6 +1007,97 @@ mod tests {
         ));
         frame[0] = b'X';
         assert_eq!(Frame::parse(&frame), Err(FormatError::BadMagic));
+    }
+
+    fn sample_manifest() -> CapsuleManifest {
+        CapsuleManifest {
+            capsule_id: CapsuleId::from_uuid(Uuid::from_u128(7)),
+            created_at: 1_700_000_000,
+            size: 150,
+            digest: [3u8; 32],
+            dedupe: true,
+            requires_encryption: true,
+            deduped_bytes: 50,
+            policy: Policy::default(),
+            entries: vec![
+                ManifestEntry {
+                    segment_id: SegmentId(1),
+                    plain_len: 100,
+                    content_hash: [1u8; 32],
+                },
+                ManifestEntry {
+                    segment_id: SegmentId(1),
+                    plain_len: 50,
+                    content_hash: [1u8; 32],
+                },
+            ],
+        }
+    }
+
+    fn decode_record(bytes: &[u8]) -> Result<JournalRecord, FormatError> {
+        let frame = frame_of(bytes);
+        assert_eq!(frame.record_len(), bytes.len() as u64);
+        frame.verify_head(&bytes[FRAME_LEN..])?;
+        JournalRecord::decode(&frame, &bytes[FRAME_LEN..])
+    }
+
+    #[test]
+    fn capsule_manifest_round_trips_with_documented_layout() {
+        let manifest = sample_manifest();
+        let bytes = JournalRecord::Capsule(Box::new(manifest.clone()))
+            .encode_record()
+            .unwrap();
+        let header = &bytes[FRAME_LEN..];
+        assert_eq!(&header[0..16], manifest.capsule_id.as_uuid().as_bytes());
+        assert_eq!(&header[32..64], &[3u8; 32]);
+        assert_eq!(&header[64..68], &3u32.to_le_bytes());
+        let policy_len = u32::from_le_bytes(header[76..80].try_into().unwrap()) as usize;
+        assert_eq!(header.len(), 84 + policy_len + 2 * ManifestEntry::LEN);
+
+        let JournalRecord::Capsule(back) = decode_record(&bytes).unwrap() else {
+            panic!("not a CAPSULE record");
+        };
+        assert_eq!(back.capsule_id, manifest.capsule_id);
+        assert_eq!(back.size, 150);
+        assert_eq!(back.digest, manifest.digest);
+        assert!(back.dedupe && back.requires_encryption);
+        assert_eq!(back.deduped_bytes, 50);
+        assert_eq!(back.entries, manifest.entries);
+
+        let capsule = back.to_capsule();
+        assert_eq!(capsule.segments, vec![SegmentId(1), SegmentId(1)]);
+        assert_eq!(capsule.digest, Some([3u8; 32]));
+    }
+
+    #[test]
+    fn a_manifest_whose_size_disagrees_with_its_entries_is_rejected() {
+        let mut manifest = sample_manifest();
+        manifest.size = 151;
+        let bytes = JournalRecord::Capsule(Box::new(manifest))
+            .encode_record()
+            .unwrap();
+        assert!(matches!(
+            decode_record(&bytes),
+            Err(FormatError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn batches_round_trip_and_never_nest() {
+        let id = CapsuleId::from_uuid(Uuid::from_u128(9));
+        let batch = JournalRecord::Batch(vec![
+            JournalRecord::Capsule(Box::new(sample_manifest())),
+            JournalRecord::Drop(id),
+        ]);
+        let JournalRecord::Batch(records) = decode_record(&batch.encode_record().unwrap()).unwrap()
+        else {
+            panic!("not a BATCH record");
+        };
+        assert!(matches!(records[0], JournalRecord::Capsule(_)));
+        assert!(matches!(records[1], JournalRecord::Drop(d) if d == id));
+
+        let nested = JournalRecord::Batch(vec![batch]);
+        assert!(nested.encode_record().is_err());
     }
 
     #[test]

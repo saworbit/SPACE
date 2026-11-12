@@ -196,9 +196,16 @@ mod modular_pipeline_integration {
 
     #[tokio::test]
     async fn registry_pipeline_lifecycle() {
-        let log_path = "modular_registry_lifecycle.log".to_string();
+        // A fresh directory per run: a journal left by an earlier run would
+        // belong to another store than this run's new data log.
+        let dir = std::env::temp_dir()
+            .join("space_registry_integration")
+            .join(format!("lifecycle_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("space.nvram").to_string_lossy().to_string();
         let segments_path = format!("{}.segments", log_path);
-        let meta_path = "modular_registry_lifecycle.metadata";
+        let meta_string = dir.join("space.db").to_string_lossy().to_string();
+        let meta_path = meta_string.as_str();
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(&segments_path);
         let _ = fs::remove_file(meta_path);
@@ -231,9 +238,16 @@ mod modular_pipeline_integration {
 
     #[tokio::test]
     async fn registry_pipeline_garbage_collects_orphans() {
-        let log_path = "modular_registry_gc.log".to_string();
+        // A fresh directory per run: a journal left by an earlier run would
+        // belong to another store than this run's new data log.
+        let dir = std::env::temp_dir()
+            .join("space_registry_integration")
+            .join(format!("gc_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("space.nvram").to_string_lossy().to_string();
         let segments_path = format!("{}.segments", log_path);
-        let meta_path = "modular_registry_gc.metadata";
+        let meta_string = dir.join("space.db").to_string_lossy().to_string();
+        let meta_path = meta_string.as_str();
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(&segments_path);
         let _ = fs::remove_file(meta_path);
