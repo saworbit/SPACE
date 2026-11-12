@@ -15,6 +15,7 @@ use std::convert::TryInto;
 use uuid::Uuid;
 
 pub mod erasure;
+pub mod format;
 pub mod policy;
 pub mod qos;
 pub mod scrub;

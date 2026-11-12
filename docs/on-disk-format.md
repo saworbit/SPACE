@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft for discussion. Nothing here is implemented.** It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`; see §14 for how it stands in until the journal exists. The journal, checkpoint and generation-swap compaction are not implemented. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -118,13 +118,13 @@ Header (the descriptor):
 | Offset | Size | Field | From `Segment` today |
 |---|---|---|---|
 | 0 | 8 | `segment_id` | `id` |
-| 8 | 4 | `plain_len` | `plain_len` (now required) |
+| 8 | 4 | `plain_len` | `plain_len` (now required; a segment stored as is uses its stored length) |
 | 12 | 2 | `flags` | Bit 0 `COMPRESSED`, bit 1 `ENCRYPTED` |
 | 14 | 2 | `encryption_version` | 0 unless `ENCRYPTED` |
 | 16 | 4 | `key_version` | 0 unless `ENCRYPTED` |
 | 20 | 16 | `tweak` | `tweak_nonce`; zero unless `ENCRYPTED` |
 | 36 | 16 | `integrity_tag` | MAC; zero unless `ENCRYPTED` |
-| 52 | 32 | `content_hash` | `content_hash` as raw bytes (now required) |
+| 52 | 32 | `content_hash` | `content_hash` as raw bytes. All zero means none: only a segment appended without a descriptor (`StorageBackend::append`, tests) has none. Every pipeline write sets it. |
 | 84 | 2 + n | `compression_algo` | `str`, exactly as mixed into `content_hash` (`identity`, `lz4:1`, `zstd:3`) |
 
 Body: the stored bytes, so `body_len` is today's `Segment.len`.
@@ -248,7 +248,7 @@ sled holds `journal_applied = (generation, offset)`. Each journal record, or eac
 | `NAMESPACE` | Create the bucket (`s3_buckets`). |
 | `BIND` / `UNBIND` | Set or clear the name (`s3_objects`). |
 
-A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live (`put --id` on an existing id, #93); if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
+A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
 
 **Rebuild** is: clear the sled trees and replay the journal from the start. `spacectl doctor --rebuild-index` does exactly that, and losing `space.db` costs one replay.
 
@@ -258,10 +258,12 @@ This fixes the ref-count drift in #97. A dedup hit writes nothing until its caps
 
 ### 8.1 Torn tails and corruption
 
-Scanning a file, the reader validates each record (magic, `head_sum`, lengths within the file, `body_sum`). At the first record that fails, at offset P:
+Scanning a file, the reader validates each record's magic, `head_sum` and lengths within the file. It checks `body_sum` only for the last record in the file: a torn append can only be the last record, because each one is fsynced before the next is appended, and reading every body would mean reading the whole log on every open. Earlier bodies are verified when read (MAC or content hash) and by scrub. At the first record that fails, at offset P:
 
 - If no valid record exists anywhere after P (the reader searches forward for the magic and checks `head_sum`), it's a torn tail from an interrupted append. The file is truncated to P and the bytes dropped are logged.
-- If a valid record follows, it's corruption in the middle of the file. The store opens read-only and `spacectl doctor` reports the damaged range and the capsules whose segments fall in it.
+- If a valid record follows, it's corruption in the middle of the file. The store opens read-only and the damaged ranges are reported (`NvramLog::damage()` today; `spacectl doctor` should also name the capsules whose segments fall in them).
+
+Known limitation: the forward search can be fooled by a complete record embedded in a segment's plaintext body, for example a SPACE data log stored as an uncompressed, unencrypted capsule, when the record in front of it is torn. The result is a false damage report and a read-only open, never silent data loss.
 
 ### 8.2 Data log
 
@@ -344,7 +346,11 @@ Format 1 is new. The current data log has no `FILE` record, so open fails with a
 
 Suggested PRs:
 
-1. Codec, framed `SEGMENT` records and scan-on-open. Closes #96.
+1. Codec, framed `SEGMENT` records and scan-on-open. Closes #96. **Done.** Until the journal exists:
+   - Ref counts are held in memory only. Scanned segments start at 1, and opening a registry pipeline recounts them from the capsule records in sled, which already removes the ref-count inflation of #97. Compaction refuses to run until they've been recounted.
+   - `Segment` keeps all its fields; `ref_count`, `deduplicated` and `access_count` just aren't written. `set_segment_metadata` on a stored segment changes only the in-memory copy.
+   - Compaction is still the in-place rewrite guarded by a marker, now `space.nvram.compacting`.
+   - Losing `space.db` still loses the capsule records. The data survives in the log, but nothing can say which segments make up which capsule until the journal lands.
 2. Journal (`FILE`, `CAPSULE`, `DROP`, `BATCH`), derived refs, pins, digest. Fixes the ref-count half of #97; orphans become `refs == 0`.
 3. `NAMESPACE`, `BIND`, `UNBIND`; the S3 view moves onto the journal.
 4. Compaction by generation swap. Closes #108. Then schedule GC and compaction (the rest of #97).

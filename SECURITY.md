@@ -50,7 +50,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 ### Integrity
 
 - Every segment is verified on read: encrypted ones by MAC, unencrypted ones by content hash.
-- Whether a segment counts as encrypted is a flag in an unauthenticated JSON sidecar. A capsule whose policy requires encryption refuses a segment marked unencrypted.
+- Whether a segment counts as encrypted is a flag in the segment's descriptor in the data log, protected by a checksum but not a MAC. A capsule whose policy requires encryption refuses a segment marked unencrypted.
 - Deep scrub verifies content hashes and MACs when it runs, but nothing runs it automatically ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### Network exposure

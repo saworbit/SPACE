@@ -23,10 +23,11 @@ pub mod scrub_executor;
 pub use error::{CompressionError, DedupError, PipelineError};
 
 pub mod modular_pipeline {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use anyhow::Result;
-    use common::{traits::DataStream, CapsuleId, EncryptionPolicy, Policy};
+    use common::{traits::DataStream, CapsuleId, EncryptionPolicy, Policy, SegmentId};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
@@ -37,7 +38,7 @@ pub mod modular_pipeline {
     pub use storage::{AutoFsBackend, InMemoryBackend, NvramBackend};
     use tokio::io::{AsyncRead, AsyncReadExt};
     use tokio::sync::Mutex as TokioMutex;
-    use tracing::warn;
+    use tracing::{info, warn};
 
     pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
         path: P,
@@ -374,6 +375,7 @@ pub mod modular_pipeline {
             let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
         } else {
+            recount_references(&storage, &registry)?;
             Ok(RegistryPipelineHandle::Plain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -409,11 +411,42 @@ pub mod modular_pipeline {
         }
     }
 
+    /// Ref counts aren't stored in the data log (docs/on-disk-format.md §2),
+    /// so set them from the capsules the registry holds before the pipeline
+    /// serves any write or delete.
+    fn recount_references(storage: &NvramBackend, registry: &crate::CapsuleRegistry) -> Result<()> {
+        let mut counts: HashMap<SegmentId, u32> = HashMap::new();
+        // Not `capsules()`, which turns a listing error into an empty list:
+        // that would zero every count.
+        for capsule in registry.collect_capsules_paginated(crate::DEFAULT_PAGE_SIZE)? {
+            for seg in capsule.segments {
+                let count = counts.entry(seg).or_insert(0);
+                *count = count.saturating_add(1);
+            }
+        }
+        let report = storage.log().recount_references(&counts);
+        if let Some(first) = report.missing.first() {
+            warn!(
+                missing = report.missing.len(),
+                first = first.0,
+                "capsules reference segments the data log doesn't hold; those capsules can't be read"
+            );
+        }
+        if !report.orphans.is_empty() {
+            info!(
+                orphans = report.orphans.len(),
+                "the data log holds segments no capsule references; compaction reclaims them"
+            );
+        }
+        Ok(())
+    }
+
     fn build_nvram_encrypted_pipeline(
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryEncryptedPipeline> {
+        recount_references(&storage, &registry)?;
         Ok(Pipeline::new(
             compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),

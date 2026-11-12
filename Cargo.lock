@@ -503,6 +503,7 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "bytes",
  "chrono",
  "futures",
@@ -1539,8 +1540,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "common",
- "serde_json",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -30,8 +30,8 @@ Dedup happens before encryption, and the hash is taken over the pre-encryption b
 
 ## Reference counting, deletion and GC
 
-- Each segment's `ref_count` lives in its metadata record in `space.nvram.segments`.
-- `Pipeline::delete_capsule` decrements the count for each of the capsule's segments. When a count reaches zero it removes the segment record and unregisters the hash. The bytes stay in the log until `NvramLog::compact()` rewrites it.
+- Each segment's `ref_count` is held in memory and never written. Opening a pipeline recounts it from the capsules in `space.db`, so a crash can't leave a count too high or too low.
+- `Pipeline::delete_capsule` decrements the count for each of the capsule's segments. When a count reaches zero it drops the segment from the log's in-memory map and unregisters the hash. The segment's record stays in the log until `NvramLog::compact()` rewrites it; reopening the log in the meantime maps it again, with no references.
 - `Pipeline::garbage_collect` removes segments that no capsule references, such as leftovers from failed or interrupted writes.
 - `spacectl delete`, S3 DELETE and S3 overwrites call `delete_capsule`. Nothing runs GC or compaction ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
@@ -65,12 +65,12 @@ let (segment_refs, unique_segments) = registry.get_dedup_stats();
 These numbers come from a test pass on a Ryzen 9 5900X running Windows 11:
 
 - Creating the same 10 MiB random file twice through `spacectl create` added 0 bytes to `space.nvram` the second time.
-- Each segment costs about 490 bytes in `space.nvram.segments`, which is pretty-printed JSON.
 - For hashing throughput on its own, run `cargo bench -p capsule-registry --bench pipeline -- dedup_hash_blake3`.
 
 ## Scaling limits
 
-- The whole `space.nvram.segments` file is rewritten on every append and every ref-count change, which costs about 1.4 MB per write at 3,000 segments ([#96](https://github.com/saworbit/SPACE/issues/96)).
+- Each segment's metadata is written once, in its record in `space.nvram`: a 48-byte frame and a descriptor of about 90 bytes. Dedup hits and deletes write nothing to the log.
+- Opening a pipeline walks every capsule in `space.db` to recount references, and opening the log reads every record's header. Both grow with the store.
 - Content lookups are point reads in sled.
 
 ## Tests

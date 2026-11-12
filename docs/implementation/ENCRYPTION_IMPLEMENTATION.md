@@ -93,7 +93,7 @@ tag     = BLAKE3_keyed(mac_key, ciphertext || encryption_version (u16 LE) || key
 - Each metadata field is included only when it's set.
 - `verify_mac` compares tags with `subtle::ConstantTimeEq` and runs before decryption.
 - The MAC does **not** cover the segment ID, the capsule ID, the `encrypted` / `compressed` flags, or `wrapped_segment_key`.
-- The `encrypted` flag lives in the unauthenticated segment sidecar. Clearing it doesn't skip verification: unencrypted segments are checked against `content_hash` on read, and a capsule whose policy requires encryption refuses a segment marked unencrypted.
+- The `encrypted` flag lives in the segment's descriptor in the log, which a checksum protects but the MAC doesn't. Clearing it doesn't skip verification: unencrypted segments are checked against `content_hash` on read, and a capsule whose policy requires encryption refuses a segment marked unencrypted.
 
 ## Write path
 
@@ -103,7 +103,7 @@ tag     = BLAKE3_keyed(mac_key, ciphertext || encryption_version (u16 LE) || key
 2. **Hash.** `content_hash = hash_content_with_algo(compressed, algo)`, with `+xts-aes-256` appended to `algo` when the policy enables encryption.
 3. **Dedup lookup.**
    - **Hit:** increment the existing segment's `ref_count` and reuse it. Nothing is encrypted or written.
-4. **Miss:** if the policy enables encryption, `XtsEncryptor::encrypt` produces the ciphertext, tweak, key version and MAC tag. The bytes are appended to the log, the segment metadata is written with those fields, and `content_hash` is registered.
+4. **Miss:** if the policy enables encryption, `XtsEncryptor::encrypt` produces the ciphertext, tweak, key version and MAC tag. The segment's record, holding the bytes and a descriptor with those fields, is appended to the log, and `content_hash` is registered.
    - `encrypted` is set from what the encryptor did. `NoopEncryptor` (no key loaded) refuses a policy that enables encryption.
 5. **Record the capsule.** Once every chunk is stored, the capsule record is created with its list of segment IDs.
 
@@ -157,7 +157,7 @@ These numbers are measured end to end through `Pipeline` on 512 MiB of random da
 | Plaintext | 273 MB/s | 954 MB/s |
 | Encrypted (XTS + MAC) | 205 MB/s | 334 MB/s |
 
-Writes are dominated by an fsync per 4 MiB segment and the sidecar rewrite. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. The end-to-end benchmark writes and reads 64 MiB of random data the same way, plain and encrypted:
+These figures predate on-disk format 1, when every write also rewrote the whole JSON sidecar; writes no longer do that, and they haven't been re-measured since. Writes are dominated by an fsync per 4 MiB segment. Reads pay for single-threaded XTS, a separate MAC pass, and buffer copies. The end-to-end benchmark writes and reads 64 MiB of random data the same way, plain and encrypted:
 
 ```bash
 cargo bench -p capsule-registry --bench end_to_end

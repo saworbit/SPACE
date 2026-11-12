@@ -255,28 +255,37 @@ mod modular_pipeline_integration {
             .unwrap();
         drop(pipeline);
 
+        // Drop the capsule record without releasing its segment, as a crash
+        // between the two would.
         let capsule = registry.lookup(capsule_id).unwrap();
         let seg_id = capsule.segments[0];
-        let log = NvramLog::open(&log_path).unwrap();
-        let mut metadata = log.get_segment_metadata(seg_id).unwrap();
-        metadata.ref_count = 0;
-        metadata.deduplicated = false;
-        log.update_segment_metadata(seg_id, metadata.clone())
-            .unwrap();
         registry.delete_capsule(capsule_id).unwrap();
-        drop(log);
 
-        let mut pipeline =
-            registry_nvram_pipeline_with_encryption(&log_path, registry.clone(), key_manager)
-                .unwrap();
+        // Opening a pipeline recounts references, so the segment is an
+        // orphan with none.
+        let log = NvramLog::open(&log_path).unwrap();
+        let mut pipeline = capsule_registry::modular_pipeline::registry_pipeline_from_log_with_key(
+            log.clone(),
+            registry.clone(),
+            key_manager,
+        )
+        .unwrap();
+        let metadata = log.get_segment_metadata(seg_id).unwrap();
+        assert_eq!(metadata.ref_count, 0);
 
         let reclaimed = pipeline.garbage_collect().await.unwrap();
         assert_eq!(reclaimed, 1);
-        let log = NvramLog::open(&log_path).unwrap();
         assert!(log.get_segment_metadata(seg_id).is_err());
         if let Some(hash) = metadata.content_hash {
             assert!(registry.lookup_content(&hash).is_none());
         }
+
+        // The record stays in the file until compaction drops it.
+        drop(pipeline);
+        log.compact().unwrap();
+        drop(log);
+        let log = NvramLog::open(&log_path).unwrap();
+        assert!(log.get_segment_metadata(seg_id).is_err());
 
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(segments_path);

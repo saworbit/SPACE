@@ -24,8 +24,9 @@ cargo build --release -p spacectl
 | Path | Contents |
 |------|----------|
 | `space.db/` | sled database: capsule records and the content-hash index |
-| `space.nvram` | append-only segment log |
-| `space.nvram.segments` | JSON map of segment offsets, lengths, compression and encryption metadata |
+| `space.nvram` | append-only segment log; each segment's compression and encryption metadata is stored with its bytes ([on-disk format](../on-disk-format.md)) |
+
+A store created before on-disk format 1 has a `space.nvram.segments` file as well. This version refuses to open it.
 
 Set `SPACE_STORAGE_ROOT` to store segments as files under a directory instead of the NVRAM log. The registry stays in `./space.db`.
 

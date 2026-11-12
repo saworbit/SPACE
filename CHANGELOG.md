@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the NVRAM log uses on-disk format 1 ([docs/on-disk-format.md](docs/on-disk-format.md)). It starts with a `FILE` record, and each segment is a framed record holding its metadata next to its bytes, with checksums over both. `space.nvram.segments` is gone. A store written before this is refused with a message saying so (#96).
 - Docs now describe the single-node core as it actually behaves. Known gaps link to their GitHub issues.
   - Rewrote the S3 quick start and the streaming reads guide.
   - Rewrote the encryption, dedup and encrypted-dedup implementation docs. The throughput figures there are now measured numbers.
@@ -18,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Losing `space.nvram.segments` no longer loses every capsule, because there is no such file: opening the log rebuilds its segment map by scanning it. A record cut short by a crash is truncated away on open. Bytes that aren't a valid record but have valid records after them open the log read-only, and `NvramLog::damage()` lists them (#96).
+- A crash part way through a write no longer leaves ref counts too high. Ref counts aren't stored; opening a pipeline recounts them from the capsules in `space.db`. Compaction refuses to run until they've been recounted (part of #97).
 - `Policy.dedupe = false` is now honoured. Those writes get their own segments and don't register their hashes (#87).
 - `Policy::validate` rejects segment sizes of 0 or above 16 MiB, and segment lengths are converted to `u32` with `try_from` (#109).
 - Removed pre-reset leftovers: the stray `src/Cargo.toml`, the unused `SPACE_DISABLE_MODULAR_PIPELINE` test lines, the unused `prometheus` and `num_cpus` workspace deps, and `GarbageCollector`. `RaftNode` is now `MetadataLog`. `S3View::new` builds the same pipeline as `serve-s3`, so the S3 tests cover the production path (#106).

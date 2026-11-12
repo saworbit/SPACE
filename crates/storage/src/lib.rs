@@ -185,6 +185,11 @@ impl NvramBackend {
     pub fn from_log(log: NvramLog) -> Self {
         Self { log }
     }
+
+    /// The data log this backend stores segments in.
+    pub fn log(&self) -> &NvramLog {
+        &self.log
+    }
 }
 
 pub struct NvramStorageTransaction {

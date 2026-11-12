@@ -250,7 +250,7 @@ A Capsule's existence is split across two persistence layers:
 
 | Store | Holds | Format | Crate |
 |---|---|---|---|
-| **NVRAM log** | Segment bytes + segment metadata | Append-only log + JSON sidecar | [`nvram-sim`](../crates/nvram-sim/) |
+| **NVRAM log** | Segment bytes + segment metadata | Append-only log of framed records ([on-disk format](on-disk-format.md)) | [`nvram-sim`](../crates/nvram-sim/) |
 | **Capsule registry** | Capsule records + content hash index | Sled (embedded KV) | [`capsule-registry`](../crates/capsule-registry/) |
 
 The split is deliberate: segment bytes are bulky and want streaming I/O; capsule metadata is small and wants point lookups + transactions. Fusing them would mean either slow lookups or slow appends.
@@ -260,29 +260,27 @@ The split is deliberate: segment bytes are bulky and want streaming I/O; capsule
 The NVRAM log is the **primary** durable store. Segments are appended; nothing is ever rewritten in place (except during compaction, which is its own atomic operation).
 
 ```
-{path}                          # Append-only segment data, no per-record header
-  ├─ [offset 0]      Segment 0 bytes (len bytes)
-  ├─ [offset N]      Segment 1 bytes
+{path}                          # On-disk format 1 data log
+  ├─ FILE record                  format version, store id
+  ├─ SEGMENT record               48-byte frame + descriptor + stored bytes
+  ├─ SEGMENT record
   └─ ...
 
-{path}.segments                 # Segment metadata sidecar (pretty-printed JSON)
-  {
-    "0": { "id": 0, "offset": 0, "len": 42, "content_hash": "…", "ref_count": 1, … },
-    "1": { … },
-    …
-  }
-
-{path}.segments.tmp             # Staging file for the atomic rename
-{path}.segments.compacting      # Marker present while compact() runs
+{path}.compacting               # Marker present while compact() runs
 ```
 
-**Crash safety**:
-- `save_segment_map()` writes the whole sidecar to `.segments.tmp`, then renames it over `.segments`. A crash before the rename leaves the old sidecar intact. Neither the file nor its directory is fsynced, so after a power loss the sidecar can lag behind the data, which is fsynced ([#96](https://github.com/saworbit/SPACE/issues/96)).
-- `open()` promotes `.segments.tmp` only when `.segments` is missing; otherwise a leftover `.tmp` is ignored. If `.segments.compacting` exists, `open()` refuses to open the log.
-- The log has no record framing, so the sidecar is the only map of the data. Losing it makes every segment unreadable ([#96](https://github.com/saworbit/SPACE/issues/96)).
-- See [§10.6](#106-atomic-metadata-via-tmp--rename) for why this pattern.
+Each `SEGMENT` record carries the segment's write-once descriptor (compression, content hash, encryption fields) next to its bytes, with checksums over both. The byte layouts are in [on-disk-format.md](on-disk-format.md) §4–§5.
 
-**Compaction** (`NvramLog::compact()`) reclaims bytes from deleted segments. It copies the live segments to the start of the same file and truncates the rest, holding all live data in memory while it runs. Nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
+**Opening and crash safety**:
+- There is no sidecar. `open()` scans the log and rebuilds the segment map from the records.
+- A record cut short at the end of the file, from an append a crash interrupted, fails its checksums with nothing valid after it. `open()` truncates it away. That write never committed: segments are fsynced before their hashes are registered or a capsule refers to them.
+- Bytes that hold no valid record but have valid records after them are damage. The log then opens read-only, and `NvramLog::damage()` lists the ranges. Records outside them still read.
+- Only the last record's body is checksummed on open; earlier bodies are verified when read (MAC or content hash) and by scrub.
+- Ref counts aren't stored. They're held in memory and recounted from the registry's capsules whenever a pipeline opens the log.
+- If `{path}.compacting` exists, `open()` refuses to open the log.
+- A log written before format 1 (with a `.segments` sidecar) is refused; see [on-disk-format.md](on-disk-format.md) §13.
+
+**Compaction** (`NvramLog::compact()`) reclaims bytes from deleted and orphaned segments. It copies the live records, unchanged, to just after the `FILE` record and truncates the rest, holding all live data in memory while it runs. It refuses to run until ref counts have been recounted, so it can't mistake a live segment for a dead one. Nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
 
 ### 4.3 Capsule registry
 
@@ -292,7 +290,7 @@ The registry is a Sled-backed KV store holding:
 - A content-hash index: `ContentHash → SegmentId` for dedup lookup
 - A counter for allocating `SegmentId`s
 
-Each update is a single sled insert followed by a flush. Segment metadata isn't in the registry: it lives in the NVRAM sidecar and is changed through `StorageBackend::begin_txn()…commit()`. The two stores are committed separately; see [§9.3](#93-metadata-commits).
+Each update is a single sled insert followed by a flush. Segment metadata isn't in the registry: the descriptor is written once, in the segment's record in the NVRAM log, through `StorageBackend::begin_txn()…commit()`, and ref counts are held in memory. The two stores are committed separately; see [§9.3](#93-metadata-commits).
 
 ### 4.4 Storage backends
 
@@ -370,7 +368,7 @@ client bytes
 
 **6. MAC.** BLAKE3-keyed MAC over the ciphertext plus the encryption metadata (encryption version, key version, tweak, ciphertext length). The MAC key is derived from both XTS subkeys. The first 16 bytes of the keyed hash become the `integrity_tag`.
 
-**7. Append.** Bytes are appended to the NVRAM log and fsynced. The segment record is written to the sidecar through a storage transaction, and then the content hash is registered in sled.
+**7. Append.** The segment's record (descriptor and bytes) is appended to the NVRAM log through a storage transaction and fsynced, and then the content hash is registered in sled.
 
 **8. Capsule.** After the last segment, the capsule record is inserted into sled.
 
@@ -434,7 +432,7 @@ client bytes
 
 - **Range reads skip work.** With `segment.plain_len` set, `read_range` skips segments that end before the requested range. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs one or two segment reads (up to 8 MiB), not 4 KiB. S3 GET uses them for `Range` requests.
 
-- **Every segment is verified.** Encrypted segments are checked by MAC, unencrypted ones by their `content_hash`. A capsule whose policy requires encryption is never served from a segment marked unencrypted, so clearing the sidecar's `encrypted` flag doesn't skip verification.
+- **Every segment is verified.** Encrypted segments are checked by MAC, unencrypted ones by their `content_hash`. A capsule whose policy requires encryption is never served from a segment marked unencrypted, so clearing a segment's `encrypted` flag doesn't skip verification.
 
 - **MAC before decrypt.** The MAC tag is verified against the ciphertext *before* decryption. If the ciphertext was tampered with, decryption never runs — we don't process untrusted input through the AES core.
 
@@ -542,7 +540,7 @@ capsule-registry ─ CapsuleRegistry (sled metadata). WritePipeline and
 storage          ─ StorageBackend implementations: InMemory, Nvram, TokioFs, AutoFs, Cached.
                    Optional io_uring (`uring` feature) on Linux.
 
-nvram-sim        ─ NvramLog: append-only log + JSON sidecar, compaction.
+nvram-sim        ─ NvramLog: append-only log of framed records, scan on open, compaction.
 
 dedup            ─ hash_content, hash_content_with_algo, verify_content_hash.
                    Blake3Deduper.
@@ -584,11 +582,11 @@ Two contracts worth emphasizing:
 
 There's no transaction spanning the two stores. A write commits in this order:
 
-1. For each new segment: append the bytes (fsynced), write the segment record (sidecar rewrite, not fsynced), then register its hash in sled.
-2. For each dedup hit: write the segment record with the incremented `ref_count`.
+1. For each new segment: append its record (descriptor and bytes) and fsync, then register its hash in sled.
+2. For each dedup hit: increment the segment's ref count in memory. Nothing is written.
 3. After the last segment: insert the capsule record into sled, then flush.
 
-A crash before step 3 leaves no visible capsule. It does leave stored segments with no capsule pointing at them, and ref-count increments on shared segments that nothing will ever decrement. GC can clear the unreferenced segments, but not the inflated counts ([#97](https://github.com/saworbit/SPACE/issues/97)). Each individual sled insert is crash-safe.
+A crash before step 3 leaves no visible capsule. It does leave stored segments with no capsule pointing at them. Ref counts aren't stored, and opening a pipeline recounts them from the capsules in sled, so a crash can't leave an inflated count behind. The orphaned segments come back with no references, and compaction reclaims them; nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97)). Each individual sled insert is crash-safe.
 
 ### 9.4 PODMS swarm behavior (archived)
 
@@ -628,7 +626,7 @@ The tweak derives from the segment's own bytes, so identical segments get identi
 
 **Alternative**: rely on XTS alone, or use AES-GCM (which bundles auth).
 
-**Why**: XTS is a length-preserving cipher with no authentication — corrupting ciphertext produces corrupt plaintext silently. The MAC layer turns this into authenticated encryption. The MAC also covers the encryption metadata (version, key version, tweak, length), so those fields can't be changed undetected. It doesn't bind a segment to a Capsule (dedup deliberately shares segments). It also doesn't cover the sidecar's `encrypted` flag. Clearing that flag doesn't help an attacker: the segment then fails its content-hash check, and a capsule that requires encryption refuses it outright.
+**Why**: XTS is a length-preserving cipher with no authentication — corrupting ciphertext produces corrupt plaintext silently. The MAC layer turns this into authenticated encryption. The MAC also covers the encryption metadata (version, key version, tweak, length), so those fields can't be changed undetected. It doesn't bind a segment to a Capsule (dedup deliberately shares segments). It also doesn't cover the `encrypted` flag in the segment's descriptor, which only a checksum protects. Clearing that flag doesn't help an attacker: the segment then fails its content-hash check, and a capsule that requires encryption refuses it outright.
 
 BLAKE3 is chosen for speed (>2 GB/s on commodity x86). The MAC key is derived deterministically from both XTS subkeys: `BLAKE3(b"SPACE-BLAKE3-MAC-KEY-V1", key1, key2)`. This binds the MAC to the encryption key without requiring a separate key store entry.
 
@@ -660,13 +658,13 @@ The fix domain-separates the hash by algorithm. The two writes now produce disti
 - **Hash ciphertext**: dedup after encryption. Requires the tweak to be content-independent, which means dedup is broken or tweaks leak content. Either way, no good.
 - **Hash compressed-pre-encryption**: dedup matches stored compressed bytes; the tweak can derive deterministically from the same bytes; encryption preserves dedup. This is the only point in the pipeline where all three properties align.
 
-### 10.6 Atomic metadata via `.tmp` + rename
+### 10.6 Self-describing log records
 
-**Decision**: `NvramLog::save_segment_map` writes the new sidecar to `{path}.segments.tmp`, then atomic-renames over the live file.
+**Decision**: every segment's record carries its descriptor next to its bytes, with checksums over both. `open()` rebuilds the segment map by scanning the log.
 
-**Alternative**: overwrite in place.
+**Alternative**: a separate metadata file. Until on-disk format 1 that was a JSON sidecar, `{path}.segments`, rewritten through `.tmp` + rename on every append and every ref-count change.
 
-**Why**: a crash mid-overwrite leaves the sidecar truncated and unparseable, taking the entire segment map down. With `.tmp` + rename, a crash before rename leaves the old sidecar intact; a crash after rename leaves the new sidecar intact. The window between is the kernel's rename atomicity, which on POSIX is a single inode flip. On Windows, `std::fs::rename` replaces the destination the same way; the code also falls back to remove-then-rename if the rename reports that the target exists. Neither file is fsynced around the rename ([#96](https://github.com/saworbit/SPACE/issues/96)).
+**Why**: the sidecar was the only map of the data. Losing or corrupting that one file made every segment unreadable, and it wasn't fsynced, so after a power loss it could lag behind the data ([#96](https://github.com/saworbit/SPACE/issues/96)). It also grew with the store and was rewritten whole on every change. The descriptor never changes after a write once ref counts are derived instead of stored, so it can sit in the record and be written exactly once. See [on-disk-format.md](on-disk-format.md) §2.
 
 The `.compacting` marker covers a different failure: a crash mid-compaction, while the segment log itself is being rewritten. If the marker exists, `open()` refuses to open the log. An operator then has to verify or restore the data and delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)).
 
@@ -677,7 +675,7 @@ The `.compacting` marker covers a different failure: a crash mid-compaction, whi
 **Alternative**: smaller (better dedup granularity) or larger (less per-segment overhead).
 
 **Why**: 4 MiB is the empirical sweet spot across the workloads SPACE targets:
-- Large enough that per-segment metadata (about 490 bytes in the JSON sidecar) is about 0.01% of the segment.
+- Large enough that per-segment metadata (a 48-byte frame and a descriptor of about 90 bytes) is under 0.01% of the segment.
 - Small enough that range reads waste at most 4 MiB.
 - Small enough that dedup hits are common for many real-world files (video frames, container layers, source archives).
 - Aligned with common SSD erase block and io_uring submission sizes.
@@ -716,7 +714,7 @@ Sled gives crash-safe point updates for metadata. NVRAM log gives append through
 
 ## 11. Invariants
 
-These are the invariants the system aims to maintain. The first four are tested by the proptest harness in [crates/capsule-registry/tests/proptest_pipeline.rs](../crates/capsule-registry/tests/proptest_pipeline.rs). The rest aren't tested; where one currently breaks, that's noted under it.
+These are the invariants the system aims to maintain. The first four are tested by the proptest harness in [crates/capsule-registry/tests/proptest_pipeline.rs](../crates/capsule-registry/tests/proptest_pipeline.rs). Ref count consistency and crash recovery have tests in [data_log_test.rs](../crates/capsule-registry/tests/data_log_test.rs) and the `nvram-sim` unit tests. The rest aren't tested; where one currently breaks, that's noted under it.
 
 ### Round-trip
 
@@ -759,7 +757,7 @@ Tested by `prop_no_cross_policy_dedup_collision`. This is the regression test fo
 seg.ref_count == count(capsules referencing seg.id)
 seg.ref_count == 0 ⟹ seg eligible for GC
 ```
-Broken by a crash mid-write: a dedup hit's increment survives even though its capsule was never created ([#97](https://github.com/saworbit/SPACE/issues/97)).
+Holds across restarts: ref counts aren't stored, and opening a pipeline recounts them from the capsules in sled, so a dedup hit from a write that never finished leaves no extra reference. Tested by `an_interrupted_dedup_write_leaves_no_extra_reference` in [data_log_test.rs](../crates/capsule-registry/tests/data_log_test.rs).
 
 ### Crash recovery
 
@@ -769,7 +767,7 @@ open() succeeds
 all committed Capsules remain readable
 no Capsule is partially visible
 ```
-Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log ([#97](https://github.com/saworbit/SPACE/issues/97)). It does not hold after a crash during compaction, where `open()` refuses to start ([#108](https://github.com/saworbit/SPACE/issues/108)), or if the sidecar is lost ([#96](https://github.com/saworbit/SPACE/issues/96)).
+Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). A record the crash cut short is truncated away on open; the nvram-sim tests cut the last record at every byte offset. It does not hold after a crash during compaction, where `open()` refuses to start ([#108](https://github.com/saworbit/SPACE/issues/108)).
 
 ### Segment metadata is truth
 
@@ -786,10 +784,9 @@ never on capsule.policy
 |---|---|---|
 | **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch. Reads catch it too. | `ScrubResult::ContentCorrupted` / `MacMismatch`. Restore from backup or accept the loss (no replicas on this branch). |
 | **Truncated segment file** | Light scrub: actual_len ≠ metadata.len | `ScrubResult::MetadataMismatch`. Same as above. |
-| **Lost sidecar** | `open()` starts with an empty map; reads fail with `Segment not found` | None. The log has no framing to rebuild from ([#96](https://github.com/saworbit/SPACE/issues/96)). |
-| **Crash mid-`save_segment_map`** | `.segments.tmp` exists at `open()` | If `.segments` still exists, the stale `.tmp` is ignored and left in place. If `.segments` is missing, the `.tmp` is promoted. |
-| **Crash mid-compaction** | `.segments.compacting` marker present | `open()` refuses to open the log. Verify or restore the data, then delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)). |
-| **Crash mid-append** | None; `open()` appends after the current end of the file | Nothing truncates the log. The partial bytes, and any segments the interrupted write had already stored, stay until GC and compaction run ([#97](https://github.com/saworbit/SPACE/issues/97)). |
+| **Damaged bytes inside the log** | `open()` finds bytes that aren't a valid record, with valid records after them | The log opens read-only and `NvramLog::damage()` lists the ranges. Segments outside them still read; capsules with a segment inside can't be read. |
+| **Crash mid-compaction** | `.compacting` marker present | `open()` refuses to open the log. Verify or restore the data, then delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)). |
+| **Crash mid-append** | `open()` finds a last record that fails its checksums, with nothing valid after it | Truncated away; it belonged to a write that never committed. Segments the interrupted write had already stored stay, with no references, until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). |
 | **Sled corruption** | Sled checksum failure on read | Restore `space.db` from backup. There's no audit log to replay. |
 | **Wrong key on read** | MAC verify fails | Read fails with auth error. No plaintext is exposed. |
 | **Key version no longer wanted** | n/a: every version is re-derived from the master key on demand | Old versions can't be retired while the master key is kept, and losing the master key loses every version. |
@@ -816,7 +813,7 @@ never on capsule.policy
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |
 | **Registry** | The Sled-backed metadata store: Capsules, content-hash index, segment ID counter. |
-| **NVRAM log** | The primary durable backend. Append-only log + JSON sidecar. |
+| **NVRAM log** | The primary durable backend. Append-only log of framed segment records. |
 | **Compaction** | Rewriting the live segments of an NVRAM log to reclaim space from GC'd segments. |
 | **PODMS** | Policy-Orchestrated Disaggregated Mesh Scaling. The distributed mode, archived in the reset. |
 | **Sovereignty** | A PODMS policy attribute controlling whether a Capsule may be replicated/migrated across zones (archived). |
