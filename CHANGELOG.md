@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compaction is crash-safe, holds one buffer of data at a time rather than every live segment, and no longer blocks reads and writes while it copies. It writes the live records to the next generation of the log, `space.nvram.compact`, outside the log's locks, catches up on appends under them, and renames the new file into place. A crash at any point leaves the old log or the new one, and opening the log deletes an unfinished `space.nvram.compact`. The `.compacting` marker and its manual recovery are gone. Segments an open write or a GET still holds are kept, and segment ids compaction removes aren't handed out again, even after `space.db` is lost (#108).
 - Losing `space.db` no longer loses anything: reopening rebuilds capsules, S3 buckets and keys, and the content index from the journal.
 - A write that crashed after storing a segment no longer leaves that segment in the content index, where a later write could dedup against it after compaction removed it. Hashes reach the durable index only when the capsule that holds them commits.
 - A journal and a data log from different stores are refused, and the segment allocator stays above every id in the data log.
