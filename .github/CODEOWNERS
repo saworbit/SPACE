@@ -21,53 +21,22 @@ crates/encryption/                      @saworbit
 crates/compression/                     @saworbit
 crates/dedup/                           @saworbit
 
-# ── Block storage (Foundry) ──────────────────────────────────────
-crates/foundry/                         @saworbit
-crates/tiering/                         @saworbit
-
 # ── Protocol views ───────────────────────────────────────────────
 crates/protocol-s3/                     @saworbit
-crates/protocol-nfs/                    @saworbit
-crates/protocol-block/                  @saworbit
-crates/protocol-nvme/                   @saworbit
-crates/protocol-fuse/                   @saworbit
-crates/protocol-csi/                    @saworbit
 
-# ── Distributed / multi-node (PODMS) ────────────────────────────
-crates/federation/                      @saworbit
-crates/scaling/                         @saworbit
-crates/mesh-core/                       @saworbit
-crates/gossip-layer/                    @saworbit
-crates/podms-orchestrator/              @saworbit
-
-# ── Compute & transform ─────────────────────────────────────────
-crates/transform-engine/                @saworbit
-crates/layout-engine/                   @saworbit
-
-# ── CLI & web ────────────────────────────────────────────────────
+# ── CLI ──────────────────────────────────────────────────────────
 crates/spacectl/                        @saworbit
-crates/web-interface/                   @saworbit
-
-# ── Simulations ──────────────────────────────────────────────────
-crates/sim-nvram/                       @saworbit
-crates/sim-nvmeof/                      @saworbit
-crates/sim-other/                       @saworbit
-
-# ── Vendor forks ─────────────────────────────────────────────────
-vendor/                                 @saworbit
 
 # ── Build, CI, and tooling ───────────────────────────────────────
-xtask/                                  @saworbit
-fuzz/                                   @saworbit
 .github/                                @saworbit
 Cargo.toml                              @saworbit
 Cargo.lock                              @saworbit
 deny.toml                               @saworbit
+LICENSE                                 @saworbit
 
 # ── Security-sensitive files (require explicit review) ───────────
 SECURITY.md                             @saworbit
 crates/encryption/                      @saworbit
-docs/security/                          @saworbit
 
 # ── Documentation ────────────────────────────────────────────────
 docs/                                   @saworbit

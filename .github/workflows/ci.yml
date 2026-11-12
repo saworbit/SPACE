@@ -35,7 +35,7 @@ jobs:
 
       - name: Verify Cargo.toml license
         run: |
-          grep -q 'license = "MIT OR Apache-2.0"' Cargo.toml || { echo "Incorrect license field"; exit 1; }
+          grep -q 'license = "BUSL-1.1"' Cargo.toml || { echo "Incorrect license field"; exit 1; }
 
       - name: Check formatting
         run: cargo fmt --all -- --check

@@ -19,7 +19,6 @@ Fixes # (issue)
 - [ ] `cargo fmt --all`
 - [ ] `cargo clippy --all-targets -- -D warnings`
 - [ ] Tests pass (`cargo test --workspace`)
-- [ ] `cargo xtask audit` (if touching crates, deps, or features)
 - [ ] Docs compile: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
 
 ### Documentation
@@ -38,4 +37,4 @@ Fixes # (issue)
 - [ ] Tier identified (0 = crypto, 1 = infra, 2 = dev)
 - [ ] `cargo audit --deny warnings` clean
 - [ ] `cargo deny check bans licenses sources` clean
-- [ ] Transitive dependency count still under limit (`cargo xtask drift`)
+- [ ] `cargo tree --edges normal,build,dev` diff attached (before/after)

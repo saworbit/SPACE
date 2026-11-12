@@ -60,4 +60,6 @@ cargo run -p spacectl -- --help
 
 ## License
 
-MIT OR Apache-2.0
+SPACE is licensed under the [Business Source License 1.1](LICENSE). You can read, change and redistribute the code, and use it in production for noncommercial purposes. Commercial production use needs a commercial license from the licensor. Each version becomes available under the Apache License 2.0 four years after it is first published.
+
+Versions up to commit `a54ed95` (13 November 2026) were released under MIT OR Apache-2.0, and copies of them stay under those terms.
