@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use anyhow::{anyhow, Context, Result};
 use async_stream::try_stream;
 use bytes::Bytes;
+use common::format::{CapsuleManifest, ManifestEntry};
 use common::{
     traits::{
         CapsuleCatalog, Compressor, DataStream, DecryptContext, DedupStats, Deduper,
@@ -333,26 +334,11 @@ impl CapsuleCatalog for InMemoryCatalog {
             .ok_or_else(|| anyhow!("capsule {:?} not found", id))
     }
 
-    fn create_capsule(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        policy: &Policy,
-        segments: Vec<SegmentId>,
-        stats: &DedupStats,
-    ) -> Result<()> {
+    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let capsule = Capsule {
-            id,
-            size,
-            segments,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs(),
-            policy: policy.clone(),
-            deduped_bytes: stats.bytes_saved,
-        };
-        inner.capsules.insert(id, capsule);
+        inner
+            .capsules
+            .insert(manifest.capsule_id, manifest.to_capsule());
         Ok(())
     }
 
@@ -418,6 +404,33 @@ impl CapsuleCatalog for InMemoryCatalog {
 /// Dedup key domain for a segment. Encrypted and plaintext segments must
 /// never share storage, so encryption is part of the domain next to the
 /// compression algorithm (#83). Unencrypted keys are unchanged.
+/// A content hash as the raw bytes a manifest entry holds; all zero if it
+/// isn't a 32-byte hex hash.
+fn hash_bytes(hash: &ContentHash) -> [u8; 32] {
+    hex::decode(hash.as_str())
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        .unwrap_or([0u8; 32])
+}
+
+/// The manifest entry for a dedup hit on `segment`, which holds `plain_len`
+/// logical bytes.
+fn manifest_entry(
+    segment: SegmentId,
+    metadata: &Segment,
+    plain_len: usize,
+) -> Result<ManifestEntry> {
+    Ok(ManifestEntry {
+        segment_id: segment,
+        plain_len: u32::try_from(plain_len).context("segment too large")?,
+        content_hash: metadata
+            .content_hash
+            .as_ref()
+            .map(hash_bytes)
+            .unwrap_or([0u8; 32]),
+    })
+}
+
 fn dedup_domain<'a>(compression_algo: &'a str, encryption: &EncryptionPolicy) -> Cow<'a, str> {
     if encryption.is_enabled() {
         Cow::Owned(format!("{compression_algo}+xts-aes-256"))
@@ -489,6 +502,10 @@ pub struct CapsuleWrite {
     encryption_policy: EncryptionPolicy,
     dedupe: bool,
     segments: Vec<SegmentId>,
+    /// One per segment, in logical byte order; becomes the manifest.
+    entries: Vec<ManifestEntry>,
+    /// BLAKE3 over the logical bytes so far.
+    digest: blake3::Hasher,
     stats: DedupStats,
     size: u64,
     ended: bool,
@@ -584,6 +601,8 @@ where
             encryption_policy: self.evaluator.evaluate_encryption(policy)?,
             dedupe: self.evaluator.evaluate_dedup(policy)?,
             segments: Vec::new(),
+            entries: Vec::new(),
+            digest: blake3::Hasher::new(),
             stats: DedupStats::new(),
             size: 0,
             ended: false,
@@ -605,6 +624,7 @@ where
             ));
         }
         write.ended = chunk.len() < write.chunk_size;
+        write.digest.update(chunk);
         let compression_policy = match &write.compression_policy {
             Some(policy) => policy.clone(),
             None => {
@@ -647,6 +667,7 @@ where
             let mut metadata = self.storage.metadata(existing).await?;
             metadata.ref_count += 1;
             metadata.deduplicated = metadata.ref_count > 1;
+            let entry = manifest_entry(existing, &metadata, chunk.len())?;
             let mut txn = self.storage.begin_txn().await?;
             txn.set_segment_metadata(existing, metadata).await?;
             txn.commit().await?;
@@ -654,6 +675,7 @@ where
             self.stats.record(summary.output_size as u64, true);
             write.stats.record(summary.output_size as u64, true);
             write.segments.push(existing);
+            write.entries.push(entry);
         } else {
             let mut txn = self.storage.begin_txn().await?;
             let seg_id = self.catalog.allocate_segment()?;
@@ -703,6 +725,11 @@ where
             txn.commit().await?;
             // Recorded before anything else can fail, so an abort releases it.
             write.segments.push(seg_id);
+            write.entries.push(ManifestEntry {
+                segment_id: seg_id,
+                plain_len: u32::try_from(summary.original_size).context("segment too large")?,
+                content_hash: hash_bytes(&hash),
+            });
 
             if write.dedupe {
                 self.catalog.register_content(hash.clone(), seg_id)?;
@@ -719,13 +746,21 @@ where
 
     /// Record the capsule. If that fails, the write's segments are released.
     pub async fn finish_write(&mut self, write: CapsuleWrite) -> Result<CapsuleId> {
-        if let Err(err) = self.catalog.create_capsule(
-            write.capsule_id,
-            write.size,
-            &write.policy,
-            write.segments.clone(),
-            &write.stats,
-        ) {
+        let manifest = CapsuleManifest {
+            capsule_id: write.capsule_id,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            size: write.size,
+            digest: *write.digest.finalize().as_bytes(),
+            dedupe: write.dedupe,
+            requires_encryption: write.encryption_policy.is_enabled(),
+            deduped_bytes: write.stats.bytes_saved,
+            policy: write.policy.clone(),
+            entries: write.entries.clone(),
+        };
+        if let Err(err) = self.catalog.create_capsule(manifest) {
             self.abort_after_error(write).await;
             return Err(err);
         }
@@ -853,6 +888,14 @@ where
             let chunk = chunk?;
             output.extend_from_slice(&chunk);
         }
+        if let Some(expected) = self.catalog.lookup_capsule(id)?.digest {
+            if *blake3::hash(&output).as_bytes() != expected {
+                return Err(anyhow!(
+                    "capsule {:?} doesn't match its digest; its segments are damaged",
+                    id
+                ));
+            }
+        }
         Ok(output)
     }
 
@@ -919,11 +962,12 @@ where
         Ok(output)
     }
 
+    /// Commit the delete first, then release the capsule's references to
+    /// its segments. Ref counts are in memory, so a crash in between only
+    /// leaves counts that the next open recounts.
     pub async fn delete_capsule(&mut self, id: CapsuleId) -> Result<()> {
-        let capsule = self.catalog.lookup_capsule(id)?;
-        self.release_segments(&capsule.segments).await?;
-        self.catalog.delete_capsule(id)?;
-        Ok(())
+        let capsule = self.catalog.delete_capsule(id)?;
+        self.release_segments(&capsule.segments).await
     }
 
     /// Drop one reference to each segment. The last reference deletes the
@@ -1648,6 +1692,33 @@ mod tests {
         assert_eq!(s3.0, 2);
     }
 
+    fn test_manifest(
+        id: CapsuleId,
+        size: u64,
+        policy: &Policy,
+        segments: &[SegmentId],
+        stats: &common::traits::DedupStats,
+    ) -> CapsuleManifest {
+        CapsuleManifest {
+            capsule_id: id,
+            created_at: 0,
+            size,
+            digest: [0u8; 32],
+            dedupe: true,
+            requires_encryption: false,
+            deduped_bytes: stats.bytes_saved,
+            policy: policy.clone(),
+            entries: segments
+                .iter()
+                .map(|s| ManifestEntry {
+                    segment_id: *s,
+                    plain_len: 0,
+                    content_hash: [0u8; 32],
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn catalog_create_and_lookup_capsule() {
         use common::traits::DedupStats;
@@ -1656,7 +1727,7 @@ mod tests {
         let policy = Policy::default();
         let stats = DedupStats::new();
         catalog
-            .create_capsule(id, 100, &policy, vec![], &stats)
+            .create_capsule(test_manifest(id, 100, &policy, &[], &stats))
             .unwrap();
 
         let capsule = catalog.lookup_capsule(id).unwrap();
@@ -1681,7 +1752,7 @@ mod tests {
         let policy = Policy::default();
         let stats = DedupStats::new();
         catalog
-            .create_capsule(id, 200, &policy, vec![seg], &stats)
+            .create_capsule(test_manifest(id, 200, &policy, &[seg], &stats))
             .unwrap();
 
         let capsule = catalog.lookup_capsule(id).unwrap();
@@ -1696,7 +1767,7 @@ mod tests {
         let policy = Policy::default();
         let stats = DedupStats::new();
         catalog
-            .create_capsule(id, 50, &policy, vec![], &stats)
+            .create_capsule(test_manifest(id, 50, &policy, &[], &stats))
             .unwrap();
         assert!(catalog.lookup_capsule(id).is_ok());
 

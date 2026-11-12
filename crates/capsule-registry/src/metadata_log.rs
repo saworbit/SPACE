@@ -17,27 +17,6 @@ impl MetadataStateMachine {
 
     pub fn apply(&self, op: MetadataOp) -> Result<OpResult> {
         match op {
-            MetadataOp::PutCapsule(capsule) => {
-                self.store.put_capsule(&capsule)?;
-                Ok(OpResult::Ok)
-            }
-            MetadataOp::DeleteCapsule(id) => match self.store.delete_capsule(&id)? {
-                Some(capsule) => Ok(OpResult::CapsuleFound(capsule)),
-                None => Ok(OpResult::NotFound),
-            },
-            MetadataOp::RegisterContent { hash, segment } => {
-                self.store.put_content(&hash, segment)?;
-                Ok(OpResult::Ok)
-            }
-            MetadataOp::DeregisterContent { hash, segment } => {
-                if let Some(current) = self.store.get_content(&hash)? {
-                    if current == segment {
-                        self.store.delete_content(&hash)?;
-                        return Ok(OpResult::Ok);
-                    }
-                }
-                Ok(OpResult::NotFound)
-            }
             MetadataOp::PutBucket { bucket, created_at } => {
                 self.store.put_bucket(&bucket, created_at)?;
                 Ok(OpResult::Ok)

@@ -15,10 +15,10 @@ For each segment of the input, `Pipeline::write_capsule` (in `crates/pipeline/sr
    BLAKE3("space.dedup.v1\0algo:" || algo || "\0" || bytes)  →  hex ContentHash
    ```
    `algo` is the compressor's label (`identity`, `lz4:1`, `zstd:3`, ...). Because the algorithm is part of the hash, the same stored bytes produced by different compression settings can never collide.
-4. **Looks up** the hash in the registry's content index, a sled tree in `space.db` mapping `ContentHash → SegmentId`.
+4. **Looks up** the hash in the registry's content index, a sled tree in `space.db` mapping `ContentHash → SegmentId`, then in the in-memory pending index of segments stored by writes that haven't committed yet.
    - **Hit:** increments the segment's `ref_count`, adds its ID to the capsule, and writes nothing. The capsule's `deduped_bytes` grows by the segment's compressed size.
-   - **Miss:** allocates a new `SegmentId` (a counter in sled), encrypts if the policy says to, appends the bytes to the log, writes the segment metadata with `ref_count: 1`, and registers the hash.
-5. **Creates** the capsule record with its ordered list of segment IDs.
+   - **Miss:** allocates a new `SegmentId` (a counter in sled), encrypts if the policy says to, appends the segment's record to the log, and puts the hash in the pending index.
+5. **Commits** the capsule: appends its `CAPSULE` manifest to `space.journal`, with each segment's plain length and content hash. Applying it to the index adds the capsule record, raises each segment's reference count, and moves its hashes into the durable content index (unless the policy turned dedup off). A write that never commits leaves nothing in the durable index.
 
 Dedup happens before encryption, and the hash is taken over the pre-encryption bytes. [ENCRYPTED_DEDUP_FLOW.md](ENCRYPTED_DEDUP_FLOW.md) explains how the two fit together.
 
@@ -30,7 +30,7 @@ Dedup happens before encryption, and the hash is taken over the pre-encryption b
 
 ## Reference counting, deletion and GC
 
-- Each segment's `ref_count` is held in memory and never written. Opening a pipeline recounts it from the capsules in `space.db`, so a crash can't leave a count too high or too low.
+- Each segment's `ref_count` is held in memory and never written. Opening a pipeline sets it from the per-segment reference counts the index keeps, which only committed capsules contribute to, so a crash can't leave a count too high or too low.
 - `Pipeline::delete_capsule` decrements the count for each of the capsule's segments. When a count reaches zero it drops the segment from the log's in-memory map and unregisters the hash. The segment's record stays in the log until `NvramLog::compact()` rewrites it; reopening the log in the meantime maps it again, with no references.
 - `Pipeline::garbage_collect` removes segments that no capsule references, such as leftovers from failed or interrupted writes.
 - `spacectl delete`, S3 DELETE and S3 overwrites call `delete_capsule`. Nothing runs GC or compaction ([#97](https://github.com/saworbit/SPACE/issues/97)).
@@ -70,7 +70,7 @@ These numbers come from a test pass on a Ryzen 9 5900X running Windows 11:
 ## Scaling limits
 
 - Each segment's metadata is written once, in its record in `space.nvram`: a 48-byte frame and a descriptor of about 90 bytes. Dedup hits and deletes write nothing to the log.
-- Opening a pipeline walks every capsule in `space.db` to recount references, and opening the log reads every record's header. Both grow with the store.
+- Opening the log reads every record's header, and rebuilding the index replays the whole journal. Both grow with the store; a normal open replays only the records the index hasn't applied.
 - Content lookups are point reads in sled.
 
 ## Tests

@@ -23,7 +23,8 @@ cargo build --release -p spacectl
 
 | Path | Contents |
 |------|----------|
-| `space.db/` | sled database: capsule records and the content-hash index |
+| `space.journal` | capsule journal: one record per capsule write and delete; the durable record of which capsules exist |
+| `space.db/` | sled database: an index of the journal (capsule records, content-hash index), plus S3 buckets and keys |
 | `space.nvram` | append-only segment log; each segment's compression and encryption metadata is stored with its bytes ([on-disk format](../on-disk-format.md)) |
 
 A store created before on-disk format 1 has a `space.nvram.segments` file as well. This version refuses to open it.
@@ -146,5 +147,5 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 **Start from an empty store (deletes all data):**
 
 ```bash
-rm -rf space.db space.nvram space.nvram.segments
+rm -rf space.db space.journal space.nvram space.nvram.segments
 ```

@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`; see §14 for how it stands in until the journal exists. The journal, checkpoint and generation-swap compaction are not implemented. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`. Names (`NAMESPACE`, `BIND`, `UNBIND`), the checkpoint, journal compaction and generation-swap compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -239,7 +239,7 @@ A checkpoint file is a `FILE` record (`file_kind` 3, the data log's `store_id` a
 
 ## 7. The index: applying the journal
 
-sled holds `journal_applied = (generation, offset)`. Each journal record, or each whole `BATCH`, is applied in one sled transaction that also advances `journal_applied`. Because the journal is the durable copy, sled no longer needs to flush on every update, as it does today. On open, records after `journal_applied` are replayed.
+sled holds `journal_applied = (index_version, store_id, generation, offset)`. An index whose version, store or generation doesn't match the journal is rebuilt; bump the index version whenever an index record's encoding changes. Each journal record, or each whole `BATCH`, is applied in one sled transaction that also advances `journal_applied`. Because the journal is the durable copy, sled no longer needs to flush on every update, as it does today. On open, records after `journal_applied` are replayed.
 
 | Record | Effect on the index |
 |---|---|
@@ -351,7 +351,13 @@ Suggested PRs:
    - `Segment` keeps all its fields; `ref_count`, `deduplicated` and `access_count` just aren't written. `set_segment_metadata` on a stored segment changes only the in-memory copy.
    - Compaction is still the in-place rewrite guarded by a marker, now `space.nvram.compacting`.
    - Losing `space.db` still loses the capsule records. The data survives in the log, but nothing can say which segments make up which capsule until the journal lands.
-2. Journal (`FILE`, `CAPSULE`, `DROP`, `BATCH`), derived refs, pins, digest. Fixes the ref-count half of #97; orphans become `refs == 0`.
+2. Journal (`FILE`, `CAPSULE`, `DROP`, `BATCH`), derived refs, pins, digest. Fixes the ref-count half of #97; orphans become `refs == 0`. **Done**, with these differences from the draft:
+   - The sled `refs` tree is maintained by journal apply, as drafted. The data log's in-memory counts, which also count open writes, are set from it when a pipeline opens; there is no separate pin structure.
+   - sled also keeps an `indexed` tree, segment to content-index key, so a `DROP` that takes a segment to zero references can remove its hash.
+   - The segment allocator is still the sled counter. A pipeline open raises it above the highest id in the data log, rather than deriving it in memory (§8.3).
+   - A journal with damage inside it is refused rather than opened read-only.
+   - `read_capsule` checks the digest. Streaming and range reads, scrub and the S3 ETag don't use it yet.
+   - `BATCH` is encoded, decoded and applied, but nothing writes one until the S3 view moves onto the journal.
 3. `NAMESPACE`, `BIND`, `UNBIND`; the S3 view moves onto the journal.
 4. Compaction by generation swap. Closes #108. Then schedule GC and compaction (the rest of #97).
 

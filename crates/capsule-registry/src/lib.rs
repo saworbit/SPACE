@@ -1,13 +1,18 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
+use common::format::{CapsuleManifest, JournalRecord};
 use common::*;
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tracing::warn;
 
+use crate::journal::{Journal, JournalPosition};
 use crate::metadata_log::MetadataLog;
 use crate::metadata_ops::{MetadataOp, OpResult};
 use crate::store::{MetadataStore, SledStore};
 
+mod journal;
 mod metadata_log;
 mod metadata_ops;
 mod store;
@@ -414,17 +419,18 @@ pub mod modular_pipeline {
     /// Ref counts aren't stored in the data log (docs/on-disk-format.md §2),
     /// so set them from the capsules the registry holds before the pipeline
     /// serves any write or delete.
+    ///
+    /// It also pairs the registry's journal with the data log, and keeps the
+    /// segment allocator above every id the log holds, including ones from
+    /// writes that never committed.
     fn recount_references(storage: &NvramBackend, registry: &crate::CapsuleRegistry) -> Result<()> {
-        let mut counts: HashMap<SegmentId, u32> = HashMap::new();
-        // Not `capsules()`, which turns a listing error into an empty list:
-        // that would zero every count.
-        for capsule in registry.collect_capsules_paginated(crate::DEFAULT_PAGE_SIZE)? {
-            for seg in capsule.segments {
-                let count = counts.entry(seg).or_insert(0);
-                *count = count.saturating_add(1);
-            }
+        let log = storage.log();
+        registry.bind_store(log.store_id())?;
+        if let Some(max) = log.max_segment_id() {
+            registry.ensure_segment_floor(max.0 + 1)?;
         }
-        let report = storage.log().recount_references(&counts);
+        let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
+        let report = log.recount_references(&counts);
         if let Some(first) = report.missing.first() {
             warn!(
                 missing = report.missing.len(),
@@ -484,19 +490,8 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
         self.lookup(id)
     }
 
-    fn create_capsule(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        policy: &Policy,
-        segments: Vec<SegmentId>,
-        stats: &common::traits::DedupStats,
-    ) -> Result<()> {
-        self.create_capsule_with_segments(id, size, segments, policy.clone())?;
-        if stats.bytes_saved > 0 {
-            self.add_deduped_bytes(id, stats.bytes_saved)?;
-        }
-        Ok(())
+    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+        self.create_capsule(manifest)
     }
 
     fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
@@ -524,9 +519,19 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
     }
 }
 
+/// Capsule records and the content index, kept in sled as an index of the
+/// capsule journal (`docs/on-disk-format.md` §7). The journal sits next to
+/// the database (`space.journal` beside `space.db`) and is the durable
+/// record: losing the database costs one replay.
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
     log: MetadataLog,
+    journal: Arc<Journal>,
+    /// Content hashes of segments stored by writes that haven't committed.
+    /// Concurrent writes can dedup against them, but they reach the durable
+    /// index only when a `CAPSULE` record that holds them is applied, so a
+    /// crash can't leave an index entry for a segment compaction removes.
+    pending: Arc<Mutex<HashMap<ContentHash, SegmentId>>>,
 }
 
 impl CapsuleRegistry {
@@ -536,12 +541,99 @@ impl CapsuleRegistry {
         )
     }
 
+    /// Open the registry database at `path` and the capsule journal next to
+    /// it. Records the index hasn't applied yet are replayed; an index that
+    /// doesn't match the journal is rebuilt from it.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path_str = path.as_ref().to_string_lossy().to_string();
+        let path = path.as_ref();
+        let path_str = path.to_string_lossy().to_string();
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
         let log = MetadataLog::new(Arc::clone(&store));
+        let journal_path = Journal::path_for(path);
+        let journal = Arc::new(Journal::open(&journal_path)?);
 
-        Ok(Self { store, log })
+        let apply = |record: &JournalRecord, position: JournalPosition| {
+            store.apply_journal(record, &position)
+        };
+        match store.journal_position()? {
+            Some(position) if journal.matches(&position) => journal.replay(&position, apply)?,
+            Some(_) => {
+                warn!(
+                    journal = %journal_path.display(),
+                    "the registry index doesn't match the capsule journal; rebuilding it"
+                );
+                store.clear_index()?;
+                store.set_journal_position(&journal.start())?;
+                journal.replay(&journal.start(), apply)?;
+            }
+            None if store.has_capsules()? => bail!(
+                "'{path_str}' holds capsules but has no capsule journal position: it was written \
+                 before the capsule journal (docs/on-disk-format.md §13)"
+            ),
+            None => {
+                store.clear_index()?;
+                store.set_journal_position(&journal.start())?;
+                journal.replay(&journal.start(), apply)?;
+            }
+        }
+
+        Ok(Self {
+            store,
+            log,
+            journal,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    /// The id of the store this registry's journal belongs to.
+    pub fn store_id(&self) -> uuid::Uuid {
+        self.journal.store_id()
+    }
+
+    /// Pair the journal with a data log whose store id is `store_id`. A
+    /// journal with no records takes the log's id; one with records must
+    /// already have it.
+    pub fn bind_store(&self, store_id: uuid::Uuid) -> Result<()> {
+        if self.journal.store_id() == store_id {
+            return Ok(());
+        }
+        if !self.journal.is_empty() {
+            bail!(
+                "the capsule journal belongs to store {} but the data log belongs to store \
+                 {store_id}; they come from different stores",
+                self.journal.store_id()
+            );
+        }
+        let position = self.journal.adopt_store_id(store_id)?;
+        self.store.set_journal_position(&position)
+    }
+
+    /// How many capsule entries reference each segment, from the index.
+    pub fn segment_refs(&self) -> Result<HashMap<SegmentId, u32>> {
+        self.store.segment_refs()
+    }
+
+    /// Never allocate a segment id below `floor`.
+    pub fn ensure_segment_floor(&self, floor: u64) -> Result<()> {
+        self.store.ensure_segment_floor(floor)
+    }
+
+    /// Commit a capsule: append its `CAPSULE` record to the journal, then
+    /// apply it to the index. A capsule whose id is already live is refused.
+    pub fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+        if self.store.get_capsule(&manifest.capsule_id)?.is_some() {
+            bail!("Capsule collision (extremely unlikely)");
+        }
+        let segments: Vec<SegmentId> = manifest.entries.iter().map(|e| e.segment_id).collect();
+        let record = JournalRecord::Capsule(Box::new(manifest));
+        self.journal.commit(&record, |position| {
+            self.store.apply_journal(&record, &position)
+        })?;
+        self.pending
+            .lock()
+            .unwrap()
+            .retain(|_, seg| !segments.contains(seg));
+        Ok(())
     }
 
     fn collect_capsules_paginated(&self, page_size: usize) -> Result<Vec<Capsule>> {
@@ -570,51 +662,6 @@ impl CapsuleRegistry {
         Ok(capsules)
     }
 
-    fn insert_capsule(&self, capsule: Capsule) -> Result<()> {
-        if self.store.get_capsule(&capsule.id)?.is_some() {
-            anyhow::bail!("Capsule collision (extremely unlikely)");
-        }
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
-    }
-
-    /// Insert capsule metadata if it does not already exist.
-    ///
-    /// Returns `true` if newly inserted, or `false` if a capsule with the same ID
-    /// is already present (idempotent insert).
-    pub fn put_capsule(&self, capsule: Capsule) -> Result<bool> {
-        if self.store.get_capsule(&capsule.id)?.is_some() {
-            return Ok(false);
-        }
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(true),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
-    }
-
-    pub fn create_capsule_with_segments(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        segments: Vec<SegmentId>,
-        policy: Policy,
-    ) -> Result<()> {
-        let capsule = Capsule {
-            id,
-            size,
-            segments,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs(),
-            policy,
-            deduped_bytes: 0,
-        };
-
-        self.insert_capsule(capsule)
-    }
-
     /// Like `lookup`, but a missing capsule is `None` rather than an error.
     pub fn get_capsule(&self, id: CapsuleId) -> Result<Option<Capsule>> {
         self.store.get_capsule(&id)
@@ -637,50 +684,32 @@ impl CapsuleRegistry {
             .map_err(|err| anyhow!("failed to allocate segment id: {err}"))
     }
 
-    pub fn add_segment(&self, capsule_id: CapsuleId, seg_id: SegmentId) -> Result<()> {
-        let mut capsule = self.lookup(capsule_id)?;
-        capsule.segments.push(seg_id);
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
-    }
-
+    /// The segment holding content with this hash: a committed one from the
+    /// index, or one an open write has stored.
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        self.store.get_content(hash).ok().flatten()
+        match self.store.get_content(hash) {
+            Ok(Some(segment)) => Some(segment),
+            _ => self.pending.lock().unwrap().get(hash).copied(),
+        }
     }
 
+    /// Offer a segment an open write just stored for other writes to dedup
+    /// against. It joins the durable index when its capsule commits.
     pub fn register_content(&self, hash: ContentHash, seg_id: SegmentId) -> Result<()> {
-        match self.log.apply(MetadataOp::RegisterContent {
-            hash: hash.clone(),
-            segment: seg_id,
-        })? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        self.pending.lock().unwrap().entry(hash).or_insert(seg_id);
+        Ok(())
     }
 
+    /// Withdraw a segment from dedup: a pending one whose write gave up, or
+    /// an indexed one no capsule references any more.
     pub fn deregister_content(&self, hash: &ContentHash, seg_id: SegmentId) -> Result<bool> {
-        match self.log.apply(MetadataOp::DeregisterContent {
-            hash: hash.clone(),
-            segment: seg_id,
-        })? {
-            OpResult::Ok => Ok(true),
-            OpResult::NotFound => Ok(false),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
+        let mut pending = self.pending.lock().unwrap();
+        if pending.get(hash) == Some(&seg_id) {
+            pending.remove(hash);
+            return Ok(true);
         }
-    }
-
-    pub fn add_deduped_bytes(&self, capsule_id: CapsuleId, bytes: u64) -> Result<()> {
-        let mut capsule = match self.lookup(capsule_id) {
-            Ok(capsule) => capsule,
-            Err(_) => return Ok(()), // Capsule deleted before dedup update; treat as noop
-        };
-        capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        drop(pending);
+        self.store.deregister_unreferenced(hash, seg_id)
     }
 
     pub fn list_capsules(&self, limit: usize, cursor: Option<CapsuleId>) -> Result<Vec<CapsuleId>> {
@@ -688,12 +717,15 @@ impl CapsuleRegistry {
         Ok(capsules.into_iter().map(|c| c.id).collect())
     }
 
+    /// Commit a delete: append a `DROP` record to the journal, then apply
+    /// it. Segment bytes stay until compaction.
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        match self.log.apply(MetadataOp::DeleteCapsule(id))? {
-            OpResult::CapsuleFound(capsule) => Ok(capsule),
-            OpResult::NotFound => Err(anyhow!("Capsule not found")),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        let capsule = self.lookup(id)?;
+        let record = JournalRecord::Drop(id);
+        self.journal.commit(&record, |position| {
+            self.store.apply_journal(&record, &position)
+        })?;
+        Ok(capsule)
     }
 
     /// Create an S3 bucket. Creating one that exists is a no-op.
@@ -794,6 +826,8 @@ impl Clone for CapsuleRegistry {
         Self {
             store: Arc::clone(&self.store),
             log: self.log.clone(),
+            journal: Arc::clone(&self.journal),
+            pending: Arc::clone(&self.pending),
         }
     }
 }

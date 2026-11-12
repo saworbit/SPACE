@@ -211,6 +211,12 @@ pub struct Capsule {
     /// Capsule). Operator visibility into per-Capsule dedup effectiveness.
     #[serde(default)]
     pub deduped_bytes: u64,
+
+    /// BLAKE3 of the logical bytes, as recorded in the capsule's manifest
+    /// (`docs/on-disk-format.md` §11). `None` only for capsules recorded
+    /// without a manifest, such as in tests.
+    #[serde(default)]
+    pub digest: Option<[u8; 32]>,
 }
 
 /// Metadata record for one stored segment.

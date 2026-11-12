@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Capsule writes and deletes are committed to a capsule journal, `space.journal` next to `space.db` (on-disk format 1, §5–§7). A write appends a `CAPSULE` manifest with each segment's plain length and content hash and a BLAKE3 digest of the capsule; a delete appends a `DROP`. `space.db` is now an index of the journal: records it hasn't applied are replayed on open, and a missing or mismatched index is rebuilt. A `space.db` written before the journal is refused. Capsules record their digest, and a whole-capsule read (`read_capsule`) checks it.
 - **Breaking:** the NVRAM log uses on-disk format 1 ([docs/on-disk-format.md](docs/on-disk-format.md)). It starts with a `FILE` record, and each segment is a framed record holding its metadata next to its bytes, with checksums over both. `space.nvram.segments` is gone. A store written before this is refused with a message saying so (#96).
 - Docs now describe the single-node core as it actually behaves. Known gaps link to their GitHub issues.
   - Rewrote the S3 quick start and the streaming reads guide.
@@ -19,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Losing `space.db` no longer loses the capsule list: reopening rebuilds it from the journal. S3 buckets and keys are still stored only in sled.
+- A write that crashed after storing a segment no longer leaves that segment in the content index, where a later write could dedup against it after compaction removed it. Hashes reach the durable index only when the capsule that holds them commits.
+- A journal and a data log from different stores are refused, and the segment allocator stays above every id in the data log.
 - Losing `space.nvram.segments` no longer loses every capsule, because there is no such file: opening the log rebuilds its segment map by scanning it. A record cut short by a crash is truncated away on open. Bytes that aren't a valid record but have valid records after them open the log read-only, and `NvramLog::damage()` lists them (#96).
 - A crash part way through a write no longer leaves ref counts too high. Ref counts aren't stored; opening a pipeline recounts them from the capsules in `space.db`. Compaction refuses to run until they've been recounted (part of #97).
 - `Policy.dedupe = false` is now honoured. Those writes get their own segments and don't register their hashes (#87).
