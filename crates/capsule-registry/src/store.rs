@@ -10,6 +10,7 @@ use sled::transaction::{
 };
 use sled::{Db, Transactional};
 use std::collections::HashMap;
+use tracing::warn;
 
 use crate::journal::JournalPosition;
 use common::format::JournalRecord;
@@ -40,9 +41,11 @@ pub trait MetadataStore: Send + Sync {
     fn set_journal_position(&self, position: &JournalPosition) -> Result<()>;
     fn journal_position(&self) -> Result<Option<JournalPosition>>;
     /// Empty everything the journal rebuilds: capsules, the content index,
-    /// ref counts, and the journal position.
+    /// ref counts, names, and the journal position.
     fn clear_index(&self) -> Result<()>;
-    fn has_capsules(&self) -> Result<bool>;
+    /// Whether the index holds capsules, or S3 names from before the journal
+    /// held names.
+    fn has_records(&self) -> Result<bool>;
     /// How many capsule entries reference each segment.
     fn segment_refs(&self) -> Result<std::collections::HashMap<SegmentId, u32>>;
     /// Remove `hash` from the content index if it points at `segment` and no
@@ -53,24 +56,22 @@ pub trait MetadataStore: Send + Sync {
     fn put_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<()>;
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>>;
 
-    /// S3 view namespace. Buckets map to their creation time, and each
-    /// bucket and key maps to the capsule the key points at (#85).
-    fn put_bucket(&self, bucket: &str, created_at: u64) -> Result<()>;
-    fn get_bucket(&self, bucket: &str) -> Result<Option<u64>>;
-    fn get_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>>;
-    fn put_object(&self, bucket: &str, key: &str, id: CapsuleId) -> Result<Option<CapsuleId>>;
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>>;
-    /// Keys in `bucket` that start with `prefix` and sort after
-    /// `start_after`, in byte order.
-    fn list_objects(
+    /// Names (`docs/on-disk-format.md` §5.5–§5.6). Each namespace maps to its
+    /// creation time, and each name to the capsule it points at. Only
+    /// applying journal records changes them.
+    fn get_namespace(&self, ns: &str) -> Result<Option<u64>>;
+    fn get_name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>>;
+    /// Names in `ns` that start with `prefix` and sort after `start_after`,
+    /// in byte order.
+    fn list_names(
         &self,
-        bucket: &str,
+        ns: &str,
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, CapsuleId)>>;
 
-    /// Covers capsules, content and the segment counter, not the S3 namespace.
+    /// Covers capsules, content and the segment counter, not names.
     #[allow(dead_code)]
     fn create_snapshot(&self) -> Result<Vec<u8>>;
     #[allow(dead_code)]
@@ -254,17 +255,22 @@ pub struct SledStore {
     /// Segment id to its content-index key, for segments the index holds.
     indexed: sled::Tree,
     counters: sled::Tree,
-    buckets: sled::Tree,
-    objects: sled::Tree,
+    /// Namespace to its creation time.
+    namespaces: sled::Tree,
+    /// Namespace and name ([`name_key`]) to the capsule the name points at.
+    names: sled::Tree,
 }
 
-/// Store key for an S3 object. Bucket names can't contain NUL, so the
-/// separator keeps every bucket's keys apart.
-fn object_key(bucket: &str, key: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bucket.len() + 1 + key.len());
-    out.extend_from_slice(bucket.as_bytes());
+/// Trees that held S3 buckets and keys before names moved to the journal.
+const LEGACY_NAME_TREES: [&str; 2] = ["s3_buckets", "s3_objects"];
+
+/// Index key for a name. Namespaces can't contain NUL, so the separator
+/// keeps every namespace's names apart.
+fn name_key(ns: &str, name: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ns.len() + 1 + name.len());
+    out.extend_from_slice(ns.as_bytes());
     out.push(0);
-    out.extend_from_slice(key.as_bytes());
+    out.extend_from_slice(name.as_bytes());
     out
 }
 
@@ -280,8 +286,8 @@ impl SledStore {
         let refs = db.open_tree("refs")?;
         let indexed = db.open_tree("indexed")?;
         let counters = db.open_tree("counters")?;
-        let buckets = db.open_tree("s3_buckets")?;
-        let objects = db.open_tree("s3_objects")?;
+        let namespaces = db.open_tree("namespaces")?;
+        let names = db.open_tree("names")?;
 
         // Initialize the segment counter if it doesn't exist yet.
         let _ = counters.compare_and_swap(
@@ -297,14 +303,27 @@ impl SledStore {
             refs,
             indexed,
             counters,
-            buckets,
-            objects,
+            namespaces,
+            names,
         })
     }
 
     fn flush(&self) -> Result<()> {
         self.db.flush()?;
         Ok(())
+    }
+
+    /// How many entries the legacy S3 trees hold. Checked without opening a
+    /// tree that isn't there, since opening one creates it.
+    fn legacy_name_entries(&self) -> Result<usize> {
+        let existing = self.db.tree_names();
+        let mut entries = 0;
+        for tree in LEGACY_NAME_TREES {
+            if existing.iter().any(|name| name.as_ref() == tree.as_bytes()) {
+                entries += self.db.open_tree(tree)?.len();
+            }
+        }
+        Ok(entries)
     }
 
     #[allow(dead_code)]
@@ -414,18 +433,24 @@ impl MetadataStore for SledStore {
             &self.refs,
             &self.indexed,
             &self.counters,
+            &self.namespaces,
+            &self.names,
         )
-            .transaction(|(capsules, content, refs, indexed, counters)| {
-                let trees = IndexTrees {
-                    capsules,
-                    content,
-                    refs,
-                    indexed,
-                };
-                apply_record(record, &trees)?;
-                counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
-                Ok(())
-            });
+            .transaction(
+                |(capsules, content, refs, indexed, counters, namespaces, names)| {
+                    let trees = IndexTrees {
+                        capsules,
+                        content,
+                        refs,
+                        indexed,
+                        namespaces,
+                        names,
+                    };
+                    apply_record(record, &trees)?;
+                    counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
+                    Ok(())
+                },
+            );
         match result {
             Ok(()) => Ok(()),
             Err(TransactionError::Abort(err)) => Err(err),
@@ -452,12 +477,26 @@ impl MetadataStore for SledStore {
         self.content.clear()?;
         self.refs.clear()?;
         self.indexed.clear()?;
+        self.namespaces.clear()?;
+        self.names.clear()?;
         self.counters.remove(JOURNAL_POSITION_KEY)?;
+        // Names written before the journal held them aren't in it, so a
+        // rebuild can't keep them.
+        let legacy = self.legacy_name_entries()?;
+        if legacy > 0 {
+            warn!(
+                entries = legacy,
+                "dropping S3 buckets and keys recorded before names moved to the capsule journal"
+            );
+        }
+        for tree in LEGACY_NAME_TREES {
+            self.db.drop_tree(tree)?;
+        }
         self.flush()
     }
 
-    fn has_capsules(&self) -> Result<bool> {
-        Ok(!self.capsules.is_empty())
+    fn has_records(&self) -> Result<bool> {
+        Ok(!self.capsules.is_empty() || self.legacy_name_entries()? > 0)
     }
 
     fn segment_refs(&self) -> Result<HashMap<SegmentId, u32>> {
@@ -512,54 +551,30 @@ impl MetadataStore for SledStore {
         Ok(entries)
     }
 
-    fn put_bucket(&self, bucket: &str, created_at: u64) -> Result<()> {
-        // Keep the first creation time when the bucket already exists.
-        let _ = self.buckets.compare_and_swap(
-            bucket.as_bytes(),
-            None as Option<&[u8]>,
-            Some(bincode::serialize(&created_at)?),
-        )?;
-        self.flush()
-    }
-
-    fn get_bucket(&self, bucket: &str) -> Result<Option<u64>> {
+    fn get_namespace(&self, ns: &str) -> Result<Option<u64>> {
         Ok(self
-            .buckets
-            .get(bucket.as_bytes())?
+            .namespaces
+            .get(ns.as_bytes())?
             .map(|v| bincode::deserialize(&v))
             .transpose()?)
     }
 
-    fn get_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
-        decode_capsule_id(self.objects.get(object_key(bucket, key))?)
+    fn get_name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>> {
+        decode_capsule_id(self.names.get(name_key(ns, name))?)
     }
 
-    fn put_object(&self, bucket: &str, key: &str, id: CapsuleId) -> Result<Option<CapsuleId>> {
-        let previous = self
-            .objects
-            .insert(object_key(bucket, key), bincode::serialize(&id)?)?;
-        self.flush()?;
-        decode_capsule_id(previous)
-    }
-
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
-        let previous = self.objects.remove(object_key(bucket, key))?;
-        self.flush()?;
-        decode_capsule_id(previous)
-    }
-
-    fn list_objects(
+    fn list_names(
         &self,
-        bucket: &str,
+        ns: &str,
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, CapsuleId)>> {
-        let scan = object_key(bucket, prefix);
+        let scan = name_key(ns, prefix);
         let start = match start_after {
             Some(after) => {
                 // The smallest key that sorts after `after`.
-                let mut after = object_key(bucket, after);
+                let mut after = name_key(ns, after);
                 after.push(0);
                 after.max(scan.clone())
             }
@@ -567,7 +582,7 @@ impl MetadataStore for SledStore {
         };
 
         let mut out = Vec::new();
-        for entry in self.objects.range(start..) {
+        for entry in self.names.range(start..) {
             if out.len() >= limit {
                 break;
             }
@@ -575,10 +590,10 @@ impl MetadataStore for SledStore {
             if !k.starts_with(&scan) {
                 break;
             }
-            let key = std::str::from_utf8(&k[bucket.len() + 1..])
-                .context("S3 key is not UTF-8")?
+            let name = std::str::from_utf8(&k[ns.len() + 1..])
+                .context("name is not UTF-8")?
                 .to_string();
-            out.push((key, bincode::deserialize(&v)?));
+            out.push((name, bincode::deserialize(&v)?));
         }
         Ok(out)
     }
@@ -650,6 +665,8 @@ struct IndexTrees<'a> {
     content: &'a TransactionalTree,
     refs: &'a TransactionalTree,
     indexed: &'a TransactionalTree,
+    namespaces: &'a TransactionalTree,
+    names: &'a TransactionalTree,
 }
 
 fn abort<E: std::fmt::Display>(err: E) -> ConflictableTransactionError<anyhow::Error> {
@@ -672,7 +689,8 @@ fn read_count(
 
 /// Apply a journal record's effects (`docs/on-disk-format.md` §7). Replaying
 /// a record that's already applied changes nothing: a `CAPSULE` for a
-/// capsule that exists, or a `DROP` for one that doesn't, is skipped.
+/// capsule that exists, or a `DROP` for one that doesn't, is skipped, and
+/// the name records set state rather than change it.
 fn apply_record(
     record: &JournalRecord,
     t: &IndexTrees<'_>,
@@ -717,6 +735,22 @@ fn apply_record(
                     }
                 }
             }
+        }
+        JournalRecord::Namespace { ns, created_at } => {
+            // A namespace keeps the time it was first created.
+            if t.namespaces.get(ns.as_bytes())?.is_none() {
+                t.namespaces.insert(ns.as_bytes(), ser(created_at)?)?;
+            }
+        }
+        JournalRecord::Bind {
+            ns,
+            name,
+            capsule_id,
+        } => {
+            t.names.insert(name_key(ns, name), ser(capsule_id)?)?;
+        }
+        JournalRecord::Unbind { ns, name } => {
+            t.names.remove(name_key(ns, name))?;
         }
         JournalRecord::Batch(records) => {
             for record in records {
@@ -785,9 +819,9 @@ mod tests {
     }
 
     #[test]
-    fn s3_object_keys_keep_their_on_disk_encoding() {
-        assert_eq!(object_key("demo", "dir/a.txt"), b"demo\0dir/a.txt");
-        assert_eq!(object_key("demo", ""), b"demo\0");
+    fn name_keys_keep_their_on_disk_encoding() {
+        assert_eq!(name_key("s3:demo", "dir/a.txt"), b"s3:demo\0dir/a.txt");
+        assert_eq!(name_key("s3:demo", ""), b"s3:demo\0");
     }
 
     #[test]

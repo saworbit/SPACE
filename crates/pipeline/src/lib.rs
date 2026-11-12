@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use anyhow::{anyhow, Context, Result};
 use async_stream::try_stream;
 use bytes::Bytes;
-use common::format::{CapsuleManifest, ManifestEntry};
+use common::format::{CapsuleManifest, JournalRecord, ManifestEntry};
 use common::{
     traits::{
         CapsuleCatalog, Compressor, DataStream, DecryptContext, DedupStats, Deduper,
@@ -334,21 +334,32 @@ impl CapsuleCatalog for InMemoryCatalog {
             .ok_or_else(|| anyhow!("capsule {:?} not found", id))
     }
 
-    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+    /// Capsule records only: this catalog keeps no names, so name records
+    /// are accepted and change nothing.
+    fn commit(&self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner
-            .capsules
-            .insert(manifest.capsule_id, manifest.to_capsule());
-        Ok(())
-    }
-
-    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        self.inner
-            .lock()
-            .unwrap()
-            .capsules
-            .remove(&id)
-            .ok_or_else(|| anyhow!("capsule {:?} not found", id))
+        for record in &records {
+            match record {
+                JournalRecord::Drop(id) if !inner.capsules.contains_key(id) => {
+                    return Err(anyhow!("capsule {:?} not found", id));
+                }
+                JournalRecord::Batch(_) => return Err(anyhow!("a batch can't hold another batch")),
+                _ => {}
+            }
+        }
+        let mut dropped = Vec::new();
+        for record in records {
+            match record {
+                JournalRecord::Capsule(manifest) => {
+                    inner
+                        .capsules
+                        .insert(manifest.capsule_id, manifest.to_capsule());
+                }
+                JournalRecord::Drop(id) => dropped.extend(inner.capsules.remove(&id)),
+                _ => {}
+            }
+        }
+        Ok(dropped)
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
@@ -746,6 +757,22 @@ where
 
     /// Record the capsule. If that fails, the write's segments are released.
     pub async fn finish_write(&mut self, write: CapsuleWrite) -> Result<CapsuleId> {
+        let id = write.capsule_id;
+        self.finish_write_with(write, Vec::new()).await?;
+        Ok(id)
+    }
+
+    /// Record the capsule together with `with`, all or nothing
+    /// (`docs/on-disk-format.md` §5.7): an S3 overwrite commits the capsule,
+    /// its key and the drop of the capsule the key pointed at as one batch.
+    /// Returns the capsules `with` dropped. Their segments stay until
+    /// [`Pipeline::release`] is called for each, so a reader can finish with
+    /// them first. If the commit fails, the write's segments are released.
+    pub async fn finish_write_with(
+        &mut self,
+        write: CapsuleWrite,
+        with: Vec<JournalRecord>,
+    ) -> Result<Vec<Capsule>> {
         let manifest = CapsuleManifest {
             capsule_id: write.capsule_id,
             created_at: std::time::SystemTime::now()
@@ -760,12 +787,32 @@ where
             policy: write.policy.clone(),
             entries: write.entries.clone(),
         };
-        if let Err(err) = self.catalog.create_capsule(manifest) {
-            self.abort_after_error(write).await;
-            return Err(err);
+        let mut records = Vec::with_capacity(1 + with.len());
+        records.push(JournalRecord::Capsule(Box::new(manifest)));
+        records.extend(with);
+        match self.catalog.commit(records) {
+            Ok(dropped) => {
+                self.open_writes = self.open_writes.saturating_sub(1);
+                Ok(dropped)
+            }
+            Err(err) => {
+                self.abort_after_error(write).await;
+                Err(err)
+            }
         }
-        self.open_writes = self.open_writes.saturating_sub(1);
-        Ok(write.capsule_id)
+    }
+
+    /// Commit `records`, all or nothing. Returns the capsules they dropped,
+    /// whose segments stay until [`Pipeline::release`] is called for each.
+    pub fn commit(&mut self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+        self.catalog.commit(records)
+    }
+
+    /// Release a dropped capsule's references to its segments. Until then
+    /// they pin the segments (`docs/on-disk-format.md` §6): each stays
+    /// readable, and leaves the store when its last reference goes.
+    pub async fn release(&mut self, capsule: &Capsule) -> Result<()> {
+        self.release_segments(&capsule.segments).await
     }
 
     /// Give up on an open write and release the segments it holds.

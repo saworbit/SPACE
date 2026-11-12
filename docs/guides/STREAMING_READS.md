@@ -42,7 +42,7 @@ pub async fn download(
 }
 ```
 
-The stream doesn't borrow the handle, so the lock is released before the body is sent. A delete can then run while the body is still going out. The S3 view holds off deleting a capsule until its last GET is done.
+The stream doesn't borrow the handle, so the lock is released before the body is sent. A delete can then run while the body is still going out. The S3 view lets an overwrite or DELETE commit at once, but holds off releasing the dropped capsule's segments until its last GET is done, so they stay readable.
 
 ## Range reads
 

@@ -1,8 +1,9 @@
 use bytes::Bytes;
 use capsule_registry::modular_pipeline::{
-    registry_pipeline_from_log, write_from_reader, RegistryPipelineHandle,
+    registry_pipeline_from_log, stage_from_reader, RegistryPipelineHandle,
 };
 use capsule_registry::CapsuleRegistry;
+use common::format::JournalRecord;
 use common::{Capsule, CapsuleId};
 use futures::{Stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
@@ -18,6 +19,17 @@ pub mod server;
 
 /// Raw keys read from the store per batch while building a listing.
 const LIST_BATCH: usize = 1000;
+
+/// The longest string the capsule journal can record: its strings carry a
+/// 16-bit length (`docs/on-disk-format.md` §4.1).
+const MAX_JOURNAL_STR: usize = u16::MAX as usize;
+
+/// Each bucket is a namespace in the registry, holding its keys as names.
+const NAMESPACE_PREFIX: &str = "s3:";
+
+fn namespace(bucket: &str) -> String {
+    format!("{NAMESPACE_PREFIX}{bucket}")
+}
 
 /// Errors the handlers turn into S3 error responses.
 #[derive(Debug, thiserror::Error)]
@@ -169,31 +181,33 @@ pub struct ListPage {
 /// S3 Protocol View - provides S3-compatible access to capsules
 pub struct S3View {
     pipeline: Arc<TokioMutex<RegistryPipelineHandle>>,
-    // Buckets and keys live in the registry's store, so they survive a
-    // restart (#85).
+    // Buckets and keys are names in the registry, recorded in the capsule
+    // journal, so they survive a restart (#85) and a lost space.db. Changes
+    // to them are made with the pipeline locked.
     registry: CapsuleRegistry,
     leases: Arc<Mutex<HashMap<CapsuleId, LeaseState>>>,
 }
 
-/// GETs stream outside the pipeline lock. A capsule with a GET in flight is
-/// deleted only after its last reader is done, so an overwrite or DELETE
-/// can't cut a download short.
+/// GETs stream outside the pipeline lock. An overwrite or DELETE commits at
+/// once, but a capsule it drops while a GET reads it keeps its segments
+/// until the last reader is done, so the download isn't cut short. The
+/// reader pins them (`docs/on-disk-format.md` §6).
 #[derive(Default)]
 struct LeaseState {
     readers: usize,
-    release: bool,
+    /// The capsule, once it has been dropped.
+    dropped: Option<Capsule>,
 }
 
 struct Lease {
     id: CapsuleId,
     leases: Arc<Mutex<HashMap<CapsuleId, LeaseState>>>,
     pipeline: Arc<TokioMutex<RegistryPipelineHandle>>,
-    registry: CapsuleRegistry,
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        let release = {
+        let dropped = {
             let mut leases = self.leases.lock().unwrap_or_else(|e| e.into_inner());
             let Some(state) = leases.get_mut(&self.id) else {
                 return;
@@ -202,21 +216,22 @@ impl Drop for Lease {
             if state.readers > 0 {
                 return;
             }
-            leases.remove(&self.id).is_some_and(|state| state.release)
+            leases.remove(&self.id).and_then(|state| state.dropped)
         };
-        if !release {
+        let Some(capsule) = dropped else {
             return;
-        }
-        let (id, pipeline, registry) = (self.id, Arc::clone(&self.pipeline), self.registry.clone());
+        };
+        let pipeline = Arc::clone(&self.pipeline);
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 runtime.spawn(async move {
-                    delete_unreferenced(&mut *pipeline.lock().await, &registry, id).await;
+                    release_segments(&mut *pipeline.lock().await, &capsule).await;
                 });
             }
-            Err(_) => {
-                warn!(capsule = %id.as_uuid(), "capsule left in place: no runtime to delete it")
-            }
+            Err(_) => warn!(
+                capsule = %self.id.as_uuid(),
+                "segments of a dropped capsule stay until restart: no runtime to release them"
+            ),
         }
     }
 }
@@ -242,19 +257,22 @@ impl S3View {
     /// Create a bucket. Creating one that exists is not an error.
     pub fn create_bucket(&self, bucket: &str) -> S3Result<()> {
         check_bucket_name(bucket)?;
-        self.registry.create_bucket(bucket)?;
+        self.registry.create_namespace(&namespace(bucket))?;
         Ok(())
     }
 
     pub fn head_bucket(&self, bucket: &str) -> S3Result<()> {
-        match self.registry.bucket_created_at(bucket)? {
+        match self.registry.namespace_created_at(&namespace(bucket))? {
             Some(_) => Ok(()),
             None => Err(S3Error::NoSuchBucket(bucket.to_string())),
         }
     }
 
     /// PUT object. Creates the bucket if needed. Overwriting a key deletes
-    /// the capsule it pointed at before (#86).
+    /// the capsule it pointed at before (#86). The capsule, its key, the
+    /// bucket if it's new, and the drop of the capsule replaced commit as
+    /// one batch (`docs/on-disk-format.md` §6), so a crash can't leave the
+    /// new capsule without its key or the old one alive without one.
     pub async fn put_object<S, E>(
         &self,
         bucket: &str,
@@ -266,26 +284,38 @@ impl S3View {
         E: Into<anyhow::Error>,
     {
         check_bucket_name(bucket)?;
-        self.registry.create_bucket(bucket)?;
+        if key.len() > MAX_JOURNAL_STR {
+            return Err(S3Error::InvalidArgument(format!(
+                "keys can be at most {MAX_JOURNAL_STR} bytes"
+            )));
+        }
+        let ns = namespace(bucket);
         let reader =
             StreamReader::new(data_stream.map_err(|err| std::io::Error::other(err.into())));
         // The body is stored one segment at a time as it arrives (#99).
         let policy = self.pipeline.lock().await.default_policy();
-        let (capsule_id, _) = write_from_reader(&self.pipeline, reader, &policy).await?;
+        let staged = stage_from_reader(&self.pipeline, reader, &policy).await?;
+        let capsule_id = staged.capsule_id();
 
+        // Dropping `staged` on an error below aborts the write.
         let mut handle = self.pipeline.lock().await;
-        let previous = match self.registry.bind_object(bucket, key, capsule_id) {
-            Ok(previous) => previous,
-            Err(err) => {
-                // No key points at the new capsule, so don't keep it.
-                self.release(&mut handle, capsule_id).await;
-                return Err(err.into());
-            }
-        };
-        if let Some(old) = previous {
-            self.release(&mut handle, old).await;
+        let mut with = Vec::with_capacity(3);
+        if self.registry.namespace_created_at(&ns)?.is_none() {
+            with.push(JournalRecord::Namespace {
+                ns: ns.clone(),
+                created_at: now_secs(),
+            });
         }
-
+        let previous = self.live_capsule(&ns, key)?;
+        with.push(JournalRecord::Bind {
+            ns,
+            name: key.to_string(),
+            capsule_id,
+        });
+        with.extend(previous.map(JournalRecord::Drop));
+        for capsule in staged.commit(&mut handle, with).await? {
+            self.release(&mut handle, capsule).await;
+        }
         Ok(capsule_id)
     }
 
@@ -334,7 +364,7 @@ impl S3View {
 
     /// HEAD object - get metadata without reading data
     pub fn head_object(&self, bucket: &str, key: &str) -> S3Result<ObjectMapping> {
-        let Some(id) = self.registry.object(bucket, key)? else {
+        let Some(id) = self.registry.name(&namespace(bucket), key)? else {
             return Err(self.missing(bucket, key));
         };
         // A key whose capsule was removed with `spacectl delete` reads as
@@ -349,7 +379,8 @@ impl S3View {
     /// bucket name. With a delimiter, keys that share a prefix up to it are
     /// rolled into one common prefix, which counts toward `max_keys`.
     pub fn list_objects(&self, bucket: &str, query: &ListQuery) -> S3Result<ListPage> {
-        if self.registry.bucket_created_at(bucket)?.is_none() {
+        let ns = namespace(bucket);
+        if self.registry.namespace_created_at(&ns)?.is_none() {
             return Err(S3Error::NoSuchBucket(bucket.to_string()));
         }
 
@@ -367,7 +398,7 @@ impl S3View {
         loop {
             let batch =
                 self.registry
-                    .list_objects(bucket, &query.prefix, after.as_deref(), LIST_BATCH)?;
+                    .list_names(&ns, &query.prefix, after.as_deref(), LIST_BATCH)?;
             let full = batch.len() == LIST_BATCH;
             after = batch.last().map(|(key, _)| key.clone());
 
@@ -407,15 +438,32 @@ impl S3View {
         }
     }
 
-    /// DELETE object. Deletes the capsule the key pointed at (#86).
+    /// DELETE object. Deletes the capsule the key pointed at (#86), in the
+    /// same batch that removes the key.
     pub async fn delete_object(&self, bucket: &str, key: &str) -> S3Result<()> {
         let mut handle = self.pipeline.lock().await;
-        match self.registry.unbind_object(bucket, key)? {
-            Some(id) => {
-                self.release(&mut handle, id).await;
-                Ok(())
-            }
-            None => Err(self.missing(bucket, key)),
+        let ns = namespace(bucket);
+        let Some(id) = self.registry.name(&ns, key)? else {
+            return Err(self.missing(bucket, key));
+        };
+        // A capsule `spacectl delete` removed has nothing left to drop.
+        let live = self.registry.get_capsule(id)?.is_some();
+        let mut records = vec![JournalRecord::Unbind {
+            ns,
+            name: key.to_string(),
+        }];
+        records.extend(live.then_some(JournalRecord::Drop(id)));
+        for capsule in handle.commit(records)? {
+            self.release(&mut handle, capsule).await;
+        }
+        Ok(())
+    }
+
+    /// The capsule a key points at, unless `spacectl delete` removed it.
+    fn live_capsule(&self, ns: &str, key: &str) -> S3Result<Option<CapsuleId>> {
+        match self.registry.name(ns, key)? {
+            Some(id) if self.registry.get_capsule(id)?.is_some() => Ok(Some(id)),
+            _ => Ok(None),
         }
     }
 
@@ -426,51 +474,53 @@ impl S3View {
             id,
             leases: Arc::clone(&self.leases),
             pipeline: Arc::clone(&self.pipeline),
-            registry: self.registry.clone(),
         }
     }
 
-    /// Delete a capsule that no key points at any more, once no GET is
-    /// reading it. Call with the pipeline locked.
-    async fn release(&self, handle: &mut RegistryPipelineHandle, id: CapsuleId) {
+    /// Release the segments of a capsule an overwrite or DELETE dropped,
+    /// once no GET is reading it. Call with the pipeline locked.
+    async fn release(&self, handle: &mut RegistryPipelineHandle, capsule: Capsule) {
         {
             let mut leases = self.leases.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(state) = leases.get_mut(&id) {
-                state.release = true;
+            if let Some(state) = leases.get_mut(&capsule.id) {
+                state.dropped = Some(capsule);
                 return;
             }
         }
-        delete_unreferenced(handle, &self.registry, id).await;
+        release_segments(handle, &capsule).await;
     }
 
     fn missing(&self, bucket: &str, key: &str) -> S3Error {
-        match self.registry.bucket_created_at(bucket) {
+        match self.registry.namespace_created_at(&namespace(bucket)) {
             Ok(None) => S3Error::NoSuchBucket(bucket.to_string()),
             _ => S3Error::NoSuchKey(key.to_string()),
         }
     }
 }
 
-/// Delete a capsule that no key points at any more. One already removed
-/// with `spacectl delete` is skipped. A failure here only leaks space, so
-/// it is logged instead of failing the request.
-async fn delete_unreferenced(
-    handle: &mut RegistryPipelineHandle,
-    registry: &CapsuleRegistry,
-    id: CapsuleId,
-) {
-    if !matches!(registry.get_capsule(id), Ok(Some(_))) {
-        return;
-    }
-    if let Err(err) = handle.delete_capsule(id).await {
-        warn!(capsule = %id.as_uuid(), "failed to delete unreferenced capsule: {err:#}");
+/// Release a dropped capsule's segments. A failure here only keeps them
+/// until the next restart recounts references, so it is logged instead of
+/// failing the request.
+async fn release_segments(handle: &mut RegistryPipelineHandle, capsule: &Capsule) {
+    if let Err(err) = handle.release(capsule).await {
+        warn!(capsule = %capsule.id.as_uuid(), "failed to release a dropped capsule's segments: {err:#}");
     }
 }
 
-/// A bucket name ends at the first '/' of a path, and the store separates
-/// bucket from key with NUL, so a name can contain neither.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// A bucket name ends at the first '/' of a path, and a namespace can't
+/// hold NUL, so a name can contain neither.
 fn check_bucket_name(bucket: &str) -> S3Result<()> {
-    if bucket.is_empty() || bucket.contains(['/', '\0']) {
+    if bucket.is_empty()
+        || bucket.contains(['/', '\0'])
+        || bucket.len() > MAX_JOURNAL_STR - NAMESPACE_PREFIX.len()
+    {
         return Err(S3Error::InvalidBucketName(bucket.to_string()));
     }
     Ok(())

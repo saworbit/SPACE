@@ -1,5 +1,5 @@
-//! Keys survive a restart (#85), and replaced or deleted objects free their
-//! capsules (#86).
+//! Keys survive a restart (#85) and a lost index, an overwrite is all or
+//! nothing, and replaced or deleted objects free their capsules (#86).
 
 use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
@@ -133,6 +133,71 @@ async fn a_key_whose_capsule_is_gone_reads_as_missing() {
     assert!(keys(&view, "b").is_empty());
     view.put_object("b", "k", body(b"again")).await.unwrap();
     assert_eq!(read(&view, "b", "k").await, b"again");
+
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn keys_and_buckets_survive_losing_the_index() {
+    let dir = scratch("lost_index");
+    let (registry, view) = open(&dir);
+    view.put_object("photos", "a/1.jpg", body(b"one"))
+        .await
+        .unwrap();
+    view.put_object("photos", "a/2.jpg", body(b"two"))
+        .await
+        .unwrap();
+    view.put_object("photos", "a/1.jpg", body(b"uno"))
+        .await
+        .unwrap();
+    view.put_object("docs", "gone.txt", body(b"bye"))
+        .await
+        .unwrap();
+    view.delete_object("docs", "gone.txt").await.unwrap();
+    view.create_bucket("empty").unwrap();
+    let capsules = registry.capsules().len();
+    drop((registry, view));
+
+    // Buckets and keys are in the capsule journal, so the index rebuilds.
+    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+
+    let (registry, view) = open(&dir);
+    assert_eq!(keys(&view, "photos"), ["a/1.jpg", "a/2.jpg"]);
+    assert_eq!(read(&view, "photos", "a/1.jpg").await, b"uno");
+    assert_eq!(read(&view, "photos", "a/2.jpg").await, b"two");
+    assert!(keys(&view, "docs").is_empty());
+    view.head_bucket("empty").unwrap();
+    assert_eq!(registry.capsules().len(), capsules);
+
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_overwrite_cut_short_leaves_the_old_object() {
+    let dir = scratch("torn_overwrite");
+    let (registry, view) = open(&dir);
+    let old = view.put_object("b", "k", body(b"old")).await.unwrap();
+    let journal = dir.join("space.journal");
+    let before = std::fs::metadata(&journal).unwrap().len();
+    view.put_object("b", "k", body(b"new")).await.unwrap();
+    drop((registry, view));
+
+    // A crash before the overwrite's batch was whole on disk.
+    let after = std::fs::metadata(&journal).unwrap().len();
+    assert!(after > before + 1);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&journal)
+        .unwrap()
+        .set_len(after - 1)
+        .unwrap();
+
+    let (registry, view) = open(&dir);
+    assert_eq!(read(&view, "b", "k").await, b"old");
+    assert_eq!(view.head_object("b", "k").unwrap().capsule_id(), old);
+    assert_eq!(registry.capsules().len(), 1);
 
     drop((registry, view));
     let _ = std::fs::remove_dir_all(&dir);

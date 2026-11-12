@@ -49,6 +49,12 @@ pub mod kind {
     pub const CAPSULE: u8 = 0x10;
     /// Commits a delete.
     pub const DROP: u8 = 0x11;
+    /// Creates a namespace.
+    pub const NAMESPACE: u8 = 0x12;
+    /// Points a name at a capsule.
+    pub const BIND: u8 = 0x13;
+    /// Removes a name.
+    pub const UNBIND: u8 = 0x14;
     /// Several journal records applied all or nothing.
     pub const BATCH: u8 = 0x1F;
 }
@@ -57,8 +63,11 @@ pub mod kind {
 pub const FILE_VERSION: u8 = 1;
 /// Layout version of the `SEGMENT` header.
 pub const SEGMENT_VERSION: u8 = 1;
-/// Layout version of the `CAPSULE`, `DROP` and `BATCH` headers.
+/// Layout version of every journal record's header.
 pub const JOURNAL_VERSION: u8 = 1;
+
+/// `NAMESPACE` op: create the namespace.
+const NAMESPACE_CREATE: u8 = 1;
 
 const SUM_LEN: usize = 16;
 
@@ -766,6 +775,18 @@ impl CapsuleManifest {
     }
 }
 
+/// Check that `ns` can name a namespace: it isn't empty and holds no NUL,
+/// which the index uses to separate a namespace from the names in it.
+pub fn check_namespace(ns: &str) -> Result<(), FormatError> {
+    if ns.is_empty() {
+        return Err(FormatError::Invalid("namespace is empty"));
+    }
+    if ns.contains('\0') {
+        return Err(FormatError::Invalid("namespace contains NUL"));
+    }
+    Ok(())
+}
+
 /// A record in the capsule journal.
 #[derive(Debug, Clone)]
 pub enum JournalRecord {
@@ -773,6 +794,20 @@ pub enum JournalRecord {
     Capsule(Box<CapsuleManifest>),
     /// Commits a delete.
     Drop(CapsuleId),
+    /// Creates a namespace. Creating one that exists changes nothing.
+    Namespace {
+        ns: String,
+        /// Unix seconds.
+        created_at: u64,
+    },
+    /// Points `name` in `ns` at a capsule, replacing any earlier binding.
+    Bind {
+        ns: String,
+        name: String,
+        capsule_id: CapsuleId,
+    },
+    /// Removes `name` from `ns`, if it's there.
+    Unbind { ns: String, name: String },
     /// Records applied in order, all or nothing. Never nested.
     Batch(Vec<JournalRecord>),
 }
@@ -782,6 +817,9 @@ impl JournalRecord {
         match self {
             Self::Capsule(_) => kind::CAPSULE,
             Self::Drop(_) => kind::DROP,
+            Self::Namespace { .. } => kind::NAMESPACE,
+            Self::Bind { .. } => kind::BIND,
+            Self::Unbind { .. } => kind::UNBIND,
             Self::Batch(_) => kind::BATCH,
         }
     }
@@ -790,6 +828,33 @@ impl JournalRecord {
         match self {
             Self::Capsule(manifest) => manifest.encode(),
             Self::Drop(id) => Ok(id.as_uuid().as_bytes().to_vec()),
+            Self::Namespace { ns, created_at } => {
+                check_namespace(ns)?;
+                let mut w = Writer::new();
+                w.u8(NAMESPACE_CREATE);
+                w.u64(*created_at);
+                w.str(ns)?;
+                Ok(w.0)
+            }
+            Self::Bind {
+                ns,
+                name,
+                capsule_id,
+            } => {
+                check_namespace(ns)?;
+                let mut w = Writer::new();
+                w.bytes(capsule_id.as_uuid().as_bytes());
+                w.str(ns)?;
+                w.str(name)?;
+                Ok(w.0)
+            }
+            Self::Unbind { ns, name } => {
+                check_namespace(ns)?;
+                let mut w = Writer::new();
+                w.str(ns)?;
+                w.str(name)?;
+                Ok(w.0)
+            }
             Self::Batch(records) => {
                 let count = u32::try_from(records.len())
                     .map_err(|_| FormatError::Invalid("batch too large"))?;
@@ -799,7 +864,17 @@ impl JournalRecord {
                     if matches!(record, Self::Batch(_)) {
                         return Err(FormatError::Invalid("batches can't nest"));
                     }
-                    w.bytes(&record.encode_record()?);
+                    // No magic and no sums: the batch's head_sum covers
+                    // these bytes, and without the magic a scan after a
+                    // torn batch can't take a sub-record for a record.
+                    let header = record.encode_header()?;
+                    let header_len = u32::try_from(header.len())
+                        .map_err(|_| FormatError::Invalid("batch record too large"))?;
+                    w.u8(record.kind());
+                    w.u8(JOURNAL_VERSION);
+                    w.u16(0);
+                    w.u32(header_len);
+                    w.bytes(&header);
                 }
                 Ok(w.0)
             }
@@ -814,19 +889,23 @@ impl JournalRecord {
     /// Decode a journal record from a frame and header whose head checksum
     /// has been verified.
     pub fn decode(frame: &Frame, header: &[u8]) -> Result<Self, FormatError> {
-        if !matches!(frame.kind, kind::CAPSULE | kind::DROP | kind::BATCH) {
-            return Err(FormatError::UnknownKind(frame.kind));
-        }
-        if frame.version != JOURNAL_VERSION {
-            return Err(FormatError::UnsupportedVersion {
-                kind: frame.kind,
-                version: frame.version,
-            });
-        }
         if frame.body_len != 0 {
             return Err(FormatError::Invalid("journal records have no body"));
         }
-        match frame.kind {
+        Self::decode_header(frame.kind, frame.version, header)
+    }
+
+    fn decode_header(kind: u8, version: u8, header: &[u8]) -> Result<Self, FormatError> {
+        if !matches!(
+            kind,
+            kind::CAPSULE | kind::DROP | kind::NAMESPACE | kind::BIND | kind::UNBIND | kind::BATCH
+        ) {
+            return Err(FormatError::UnknownKind(kind));
+        }
+        if version != JOURNAL_VERSION {
+            return Err(FormatError::UnsupportedVersion { kind, version });
+        }
+        match kind {
             kind::CAPSULE => Ok(Self::Capsule(Box::new(CapsuleManifest::decode(header)?))),
             kind::DROP => {
                 let mut r = Reader::new(header);
@@ -834,19 +913,54 @@ impl JournalRecord {
                 r.finish()?;
                 Ok(Self::Drop(id))
             }
+            kind::NAMESPACE => {
+                let mut r = Reader::new(header);
+                if r.u8()? != NAMESPACE_CREATE {
+                    return Err(FormatError::Invalid("unknown NAMESPACE op"));
+                }
+                let created_at = r.u64()?;
+                let ns = r.str()?;
+                r.finish()?;
+                check_namespace(&ns)?;
+                Ok(Self::Namespace { ns, created_at })
+            }
+            kind::BIND => {
+                let mut r = Reader::new(header);
+                let capsule_id = CapsuleId::from_uuid(Uuid::from_bytes(r.array()?));
+                let ns = r.str()?;
+                let name = r.str()?;
+                r.finish()?;
+                check_namespace(&ns)?;
+                Ok(Self::Bind {
+                    ns,
+                    name,
+                    capsule_id,
+                })
+            }
+            kind::UNBIND => {
+                let mut r = Reader::new(header);
+                let ns = r.str()?;
+                let name = r.str()?;
+                r.finish()?;
+                check_namespace(&ns)?;
+                Ok(Self::Unbind { ns, name })
+            }
             _ => {
                 let mut r = Reader::new(header);
                 let count = r.u32()? as usize;
                 let mut records = Vec::with_capacity(count.min(1024));
                 for _ in 0..count {
-                    let frame_bytes: [u8; FRAME_LEN] = r.array()?;
-                    let sub = Frame::parse(&frame_bytes)?;
-                    let sub_header = r.take(sub.header_len as usize)?;
-                    sub.verify_head(sub_header)?;
-                    if sub.kind == kind::BATCH {
+                    let sub_kind = r.u8()?;
+                    let sub_version = r.u8()?;
+                    if r.u16()? != 0 {
+                        return Err(FormatError::Invalid("batch record reserved field isn't 0"));
+                    }
+                    let sub_len = r.u32()? as usize;
+                    let sub_header = r.take(sub_len)?;
+                    if sub_kind == kind::BATCH {
                         return Err(FormatError::Invalid("batches can't nest"));
                     }
-                    records.push(Self::decode(&sub, sub_header)?);
+                    records.push(Self::decode_header(sub_kind, sub_version, sub_header)?);
                 }
                 r.finish()?;
                 Ok(Self::Batch(records))
@@ -1087,6 +1201,11 @@ mod tests {
         let id = CapsuleId::from_uuid(Uuid::from_u128(9));
         let batch = JournalRecord::Batch(vec![
             JournalRecord::Capsule(Box::new(sample_manifest())),
+            JournalRecord::Bind {
+                ns: "s3:b".into(),
+                name: "k".into(),
+                capsule_id: sample_manifest().capsule_id,
+            },
             JournalRecord::Drop(id),
         ]);
         let JournalRecord::Batch(records) = decode_record(&batch.encode_record().unwrap()).unwrap()
@@ -1094,10 +1213,112 @@ mod tests {
             panic!("not a BATCH record");
         };
         assert!(matches!(records[0], JournalRecord::Capsule(_)));
-        assert!(matches!(records[1], JournalRecord::Drop(d) if d == id));
+        assert!(matches!(&records[1], JournalRecord::Bind { name, .. } if name == "k"));
+        assert!(matches!(records[2], JournalRecord::Drop(d) if d == id));
 
-        let nested = JournalRecord::Batch(vec![batch]);
+        let nested = JournalRecord::Batch(vec![batch.clone()]);
         assert!(nested.encode_record().is_err());
+
+        // Sub-records carry no magic, so a scan for the next record after a
+        // torn batch can't find one inside it (docs/on-disk-format.md §8.1).
+        let bytes = batch.encode_record().unwrap();
+        assert!(!bytes[FRAME_LEN..].windows(MAGIC.len()).any(|w| w == MAGIC));
+        let header = &bytes[FRAME_LEN..];
+        assert_eq!(&header[0..4], &3u32.to_le_bytes());
+        assert_eq!(header[4], kind::CAPSULE);
+        assert_eq!(header[5], JOURNAL_VERSION);
+        assert_eq!(&header[6..8], &[0, 0]);
+    }
+
+    #[test]
+    fn name_records_round_trip_with_documented_layout() {
+        let id = CapsuleId::from_uuid(Uuid::from_u128(5));
+
+        let bytes = JournalRecord::Namespace {
+            ns: "s3:demo".into(),
+            created_at: 1_700_000_000,
+        }
+        .encode_record()
+        .unwrap();
+        let header = &bytes[FRAME_LEN..];
+        assert_eq!(frame_of(&bytes).kind, kind::NAMESPACE);
+        assert_eq!(header[0], 1);
+        assert_eq!(&header[1..9], &1_700_000_000u64.to_le_bytes());
+        assert_eq!(&header[9..11], &7u16.to_le_bytes());
+        assert_eq!(&header[11..], b"s3:demo");
+        assert!(matches!(
+            decode_record(&bytes).unwrap(),
+            JournalRecord::Namespace { ns, created_at: 1_700_000_000 } if ns == "s3:demo"
+        ));
+
+        let bytes = JournalRecord::Bind {
+            ns: "s3:demo".into(),
+            name: "dir/a.txt".into(),
+            capsule_id: id,
+        }
+        .encode_record()
+        .unwrap();
+        let header = &bytes[FRAME_LEN..];
+        assert_eq!(frame_of(&bytes).kind, kind::BIND);
+        assert_eq!(&header[0..16], id.as_uuid().as_bytes());
+        assert_eq!(&header[16..18], &7u16.to_le_bytes());
+        assert_eq!(&header[25..27], &9u16.to_le_bytes());
+        assert_eq!(header.len(), 16 + 2 + 7 + 2 + 9);
+        assert!(matches!(
+            decode_record(&bytes).unwrap(),
+            JournalRecord::Bind { ns, name, capsule_id }
+                if ns == "s3:demo" && name == "dir/a.txt" && capsule_id == id
+        ));
+
+        let bytes = JournalRecord::Unbind {
+            ns: "s3:demo".into(),
+            name: "dir/a.txt".into(),
+        }
+        .encode_record()
+        .unwrap();
+        assert_eq!(frame_of(&bytes).kind, kind::UNBIND);
+        assert_eq!(bytes.len() - FRAME_LEN, 2 + 7 + 2 + 9);
+        assert!(matches!(
+            decode_record(&bytes).unwrap(),
+            JournalRecord::Unbind { ns, name } if ns == "s3:demo" && name == "dir/a.txt"
+        ));
+    }
+
+    #[test]
+    fn namespaces_must_be_non_empty_and_free_of_nul() {
+        for ns in ["", "s3:a\0b"] {
+            let record = JournalRecord::Unbind {
+                ns: ns.into(),
+                name: "k".into(),
+            };
+            assert!(record.encode_record().is_err(), "{ns:?} was encoded");
+
+            // A record written by something else is refused on decode too.
+            let mut w = Writer::new();
+            w.str(ns).unwrap();
+            w.str("k").unwrap();
+            let bytes = encode_head(kind::UNBIND, JOURNAL_VERSION, 0, &w.0, &[]).unwrap();
+            assert!(matches!(
+                decode_record(&bytes),
+                Err(FormatError::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn unknown_namespace_ops_are_rejected() {
+        let mut header = JournalRecord::Namespace {
+            ns: "s3:b".into(),
+            created_at: 0,
+        }
+        .encode_header()
+        .unwrap();
+        header[0] = 2;
+        let bytes = encode_head(kind::NAMESPACE, JOURNAL_VERSION, 0, &header, &[]).unwrap();
+        assert!(matches!(
+            decode_record(&bytes),
+            Err(FormatError::Invalid(_))
+        ));
     }
 
     #[test]

@@ -33,7 +33,7 @@ Dedup happens before encryption, and the hash is taken over the pre-encryption b
 - Each segment's `ref_count` is held in memory and never written. Opening a pipeline sets it from the per-segment reference counts the index keeps, which only committed capsules contribute to, so a crash can't leave a count too high or too low.
 - `Pipeline::delete_capsule` decrements the count for each of the capsule's segments. When a count reaches zero it drops the segment from the log's in-memory map and unregisters the hash. The segment's record stays in the log until `NvramLog::compact()` rewrites it; reopening the log in the meantime maps it again, with no references.
 - `Pipeline::garbage_collect` removes segments that no capsule references, such as leftovers from failed or interrupted writes.
-- `spacectl delete`, S3 DELETE and S3 overwrites call `delete_capsule`. Nothing runs GC or compaction ([#97](https://github.com/saworbit/SPACE/issues/97)).
+- `spacectl delete` calls `delete_capsule`. S3 DELETE and overwrites commit the `DROP` in the same `BATCH` as the key change, then release the dropped capsule's segments the same way once no GET is reading it. Nothing runs GC or compaction ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ## Using it
 

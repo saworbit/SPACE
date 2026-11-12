@@ -23,8 +23,8 @@ cargo build --release -p spacectl
 
 | Path | Contents |
 |------|----------|
-| `space.journal` | capsule journal: one record per capsule write and delete; the durable record of which capsules exist |
-| `space.db/` | sled database: an index of the journal (capsule records, content-hash index), plus S3 buckets and keys |
+| `space.journal` | capsule journal: a record for each capsule write and delete and each bucket and key change; the durable record of which capsules, buckets and keys exist |
+| `space.db/` | sled database: an index of the journal (capsule records, content-hash index, buckets and keys), rebuilt from the journal if it's lost |
 | `space.nvram` | append-only segment log; each segment's compression and encryption metadata is stored with its bytes ([on-disk format](../on-disk-format.md)) |
 
 A store created before on-disk format 1 has a `space.nvram.segments` file as well. This version refuses to open it.
@@ -113,7 +113,7 @@ The S3 view and `spacectl` share one capsule store. Stop the server first: sled 
 ./target/release/spacectl read f1eec31a-8966-4ca1-9538-187d6529383b
 ```
 
-Buckets and keys are stored in `space.db` too, so objects are still there after the server restarts. `spacectl delete <id>` removes a capsule. An S3 key that pointed at it then returns `NoSuchKey`.
+Buckets and keys are recorded in `space.journal` too, so objects are still there after the server restarts. A PUT commits the object, its key and the removal of any object it replaces together, so a crash leaves either the old object or the new one under the key. `spacectl delete <id>` removes a capsule. An S3 key that pointed at it then returns `NoSuchKey`.
 
 ## Using an S3 SDK
 
