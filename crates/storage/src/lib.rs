@@ -185,6 +185,11 @@ impl NvramBackend {
     pub fn from_log(log: NvramLog) -> Self {
         Self { log }
     }
+
+    /// The data log this backend stores segments in.
+    pub fn log(&self) -> &NvramLog {
+        &self.log
+    }
 }
 
 pub struct NvramStorageTransaction {
@@ -295,6 +300,17 @@ impl StorageBackend for NvramBackend {
     fn used_bytes(&self) -> futures::future::BoxFuture<'_, Result<u64>> {
         let log = self.log.clone();
         Box::pin(async move { Ok(log.used_bytes()) })
+    }
+
+    /// Each record's frame checksums its stored bytes.
+    fn verify_stored(
+        &self,
+        segment: SegmentId,
+    ) -> futures::future::BoxFuture<'_, Result<Option<bool>>> {
+        let log = self.log.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || log.verify_record(segment).map(Some)).await?
+        })
     }
 }
 

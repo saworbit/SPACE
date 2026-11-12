@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use anyhow::{anyhow, Context, Result};
 use async_stream::try_stream;
 use bytes::Bytes;
+use common::format::{CapsuleManifest, JournalRecord, ManifestEntry};
 use common::{
     traits::{
         CapsuleCatalog, Compressor, DataStream, DecryptContext, DedupStats, Deduper,
@@ -14,7 +15,7 @@ use common::{
 use compression::Lz4ZstdCompressor;
 use dedup::{verify_content_hash, Blake3Deduper, VerifyOutcome};
 use futures::StreamExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use storage::{InMemoryBackend, NvramBackend};
 use tracing::instrument;
@@ -264,6 +265,11 @@ impl KeyManagerKeyring {
     pub fn new(manager: Arc<Mutex<KeyManager>>) -> Self {
         Self { manager }
     }
+
+    /// The key manager this keyring derives keys from.
+    pub fn manager(&self) -> Arc<Mutex<KeyManager>> {
+        Arc::clone(&self.manager)
+    }
 }
 
 impl Default for KeyManagerKeyring {
@@ -333,36 +339,32 @@ impl CapsuleCatalog for InMemoryCatalog {
             .ok_or_else(|| anyhow!("capsule {:?} not found", id))
     }
 
-    fn create_capsule(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        policy: &Policy,
-        segments: Vec<SegmentId>,
-        stats: &DedupStats,
-    ) -> Result<()> {
+    /// Capsule records only: this catalog keeps no names, so name records
+    /// are accepted and change nothing.
+    fn commit(&self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let capsule = Capsule {
-            id,
-            size,
-            segments,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs(),
-            policy: policy.clone(),
-            deduped_bytes: stats.bytes_saved,
-        };
-        inner.capsules.insert(id, capsule);
-        Ok(())
-    }
-
-    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        self.inner
-            .lock()
-            .unwrap()
-            .capsules
-            .remove(&id)
-            .ok_or_else(|| anyhow!("capsule {:?} not found", id))
+        for record in &records {
+            match record {
+                JournalRecord::Drop(id) if !inner.capsules.contains_key(id) => {
+                    return Err(anyhow!("capsule {:?} not found", id));
+                }
+                JournalRecord::Batch(_) => return Err(anyhow!("a batch can't hold another batch")),
+                _ => {}
+            }
+        }
+        let mut dropped = Vec::new();
+        for record in records {
+            match record {
+                JournalRecord::Capsule(manifest) => {
+                    inner
+                        .capsules
+                        .insert(manifest.capsule_id, manifest.to_capsule());
+                }
+                JournalRecord::Drop(id) => dropped.extend(inner.capsules.remove(&id)),
+                _ => {}
+            }
+        }
+        Ok(dropped)
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
@@ -418,6 +420,33 @@ impl CapsuleCatalog for InMemoryCatalog {
 /// Dedup key domain for a segment. Encrypted and plaintext segments must
 /// never share storage, so encryption is part of the domain next to the
 /// compression algorithm (#83). Unencrypted keys are unchanged.
+/// A content hash as the raw bytes a manifest entry holds; all zero if it
+/// isn't a 32-byte hex hash.
+fn hash_bytes(hash: &ContentHash) -> [u8; 32] {
+    hex::decode(hash.as_str())
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        .unwrap_or([0u8; 32])
+}
+
+/// The manifest entry for a dedup hit on `segment`, which holds `plain_len`
+/// logical bytes.
+fn manifest_entry(
+    segment: SegmentId,
+    metadata: &Segment,
+    plain_len: usize,
+) -> Result<ManifestEntry> {
+    Ok(ManifestEntry {
+        segment_id: segment,
+        plain_len: u32::try_from(plain_len).context("segment too large")?,
+        content_hash: metadata
+            .content_hash
+            .as_ref()
+            .map(hash_bytes)
+            .unwrap_or([0u8; 32]),
+    })
+}
+
 fn dedup_domain<'a>(compression_algo: &'a str, encryption: &EncryptionPolicy) -> Cow<'a, str> {
     if encryption.is_enabled() {
         Cow::Owned(format!("{compression_algo}+xts-aes-256"))
@@ -489,6 +518,10 @@ pub struct CapsuleWrite {
     encryption_policy: EncryptionPolicy,
     dedupe: bool,
     segments: Vec<SegmentId>,
+    /// One per segment, in logical byte order; becomes the manifest.
+    entries: Vec<ManifestEntry>,
+    /// BLAKE3 over the logical bytes so far.
+    digest: blake3::Hasher,
     stats: DedupStats,
     size: u64,
     ended: bool,
@@ -523,8 +556,11 @@ where
     keyring: Option<K>,
     stats: DedupStats,
     catalog: R,
-    /// Writes begun and not yet finished or aborted.
-    open_writes: usize,
+    /// Segments that no committed capsule may reference but that must not
+    /// be collected: those an open write holds, and those of a capsule a
+    /// commit dropped until [`Pipeline::release`] is called for it. Counts,
+    /// since a segment can be held more than once.
+    pins: HashMap<SegmentId, u32>,
 }
 
 impl<C, D, E, S, Eval, K, R> Pipeline<C, D, E, S, Eval, K, R>
@@ -555,7 +591,24 @@ where
             keyring,
             stats: DedupStats::default(),
             catalog,
-            open_writes: 0,
+            pins: HashMap::new(),
+        }
+    }
+
+    fn pin(&mut self, segments: &[SegmentId]) {
+        for seg in segments {
+            *self.pins.entry(*seg).or_insert(0) += 1;
+        }
+    }
+
+    fn unpin(&mut self, segments: &[SegmentId]) {
+        for seg in segments {
+            if let Some(count) = self.pins.get_mut(seg) {
+                *count -= 1;
+                if *count == 0 {
+                    self.pins.remove(seg);
+                }
+            }
         }
     }
 
@@ -584,11 +637,12 @@ where
             encryption_policy: self.evaluator.evaluate_encryption(policy)?,
             dedupe: self.evaluator.evaluate_dedup(policy)?,
             segments: Vec::new(),
+            entries: Vec::new(),
+            digest: blake3::Hasher::new(),
             stats: DedupStats::new(),
             size: 0,
             ended: false,
         };
-        self.open_writes += 1;
         Ok(write)
     }
 
@@ -605,6 +659,7 @@ where
             ));
         }
         write.ended = chunk.len() < write.chunk_size;
+        write.digest.update(chunk);
         let compression_policy = match &write.compression_policy {
             Some(policy) => policy.clone(),
             None => {
@@ -647,6 +702,7 @@ where
             let mut metadata = self.storage.metadata(existing).await?;
             metadata.ref_count += 1;
             metadata.deduplicated = metadata.ref_count > 1;
+            let entry = manifest_entry(existing, &metadata, chunk.len())?;
             let mut txn = self.storage.begin_txn().await?;
             txn.set_segment_metadata(existing, metadata).await?;
             txn.commit().await?;
@@ -654,6 +710,8 @@ where
             self.stats.record(summary.output_size as u64, true);
             write.stats.record(summary.output_size as u64, true);
             write.segments.push(existing);
+            self.pin(&[existing]);
+            write.entries.push(entry);
         } else {
             let mut txn = self.storage.begin_txn().await?;
             let seg_id = self.catalog.allocate_segment()?;
@@ -703,6 +761,12 @@ where
             txn.commit().await?;
             // Recorded before anything else can fail, so an abort releases it.
             write.segments.push(seg_id);
+            self.pin(&[seg_id]);
+            write.entries.push(ManifestEntry {
+                segment_id: seg_id,
+                plain_len: u32::try_from(summary.original_size).context("segment too large")?,
+                content_hash: hash_bytes(&hash),
+            });
 
             if write.dedupe {
                 self.catalog.register_content(hash.clone(), seg_id)?;
@@ -719,23 +783,80 @@ where
 
     /// Record the capsule. If that fails, the write's segments are released.
     pub async fn finish_write(&mut self, write: CapsuleWrite) -> Result<CapsuleId> {
-        if let Err(err) = self.catalog.create_capsule(
-            write.capsule_id,
-            write.size,
-            &write.policy,
-            write.segments.clone(),
-            &write.stats,
-        ) {
-            self.abort_after_error(write).await;
-            return Err(err);
+        let id = write.capsule_id;
+        self.finish_write_with(write, Vec::new()).await?;
+        Ok(id)
+    }
+
+    /// Record the capsule together with `with`, all or nothing
+    /// (`docs/on-disk-format.md` §5.7): an S3 overwrite commits the capsule,
+    /// its key and the drop of the capsule the key pointed at as one batch.
+    /// Returns the capsules `with` dropped. Their segments stay until
+    /// [`Pipeline::release`] is called for each, so a reader can finish with
+    /// them first. If the commit fails, the write's segments are released.
+    pub async fn finish_write_with(
+        &mut self,
+        write: CapsuleWrite,
+        with: Vec<JournalRecord>,
+    ) -> Result<Vec<Capsule>> {
+        let manifest = CapsuleManifest {
+            capsule_id: write.capsule_id,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            size: write.size,
+            digest: *write.digest.finalize().as_bytes(),
+            dedupe: write.dedupe,
+            requires_encryption: write.encryption_policy.is_enabled(),
+            deduped_bytes: write.stats.bytes_saved,
+            policy: write.policy.clone(),
+            entries: write.entries.clone(),
+        };
+        let mut records = Vec::with_capacity(1 + with.len());
+        records.push(JournalRecord::Capsule(Box::new(manifest)));
+        records.extend(with);
+        match self.catalog.commit(records) {
+            Ok(dropped) => {
+                // The capsule references the write's segments now.
+                self.unpin(&write.segments);
+                self.hold(&dropped);
+                Ok(dropped)
+            }
+            Err(err) => {
+                self.abort_after_error(write).await;
+                Err(err)
+            }
         }
-        self.open_writes = self.open_writes.saturating_sub(1);
-        Ok(write.capsule_id)
+    }
+
+    /// Commit `records`, all or nothing. Returns the capsules they dropped,
+    /// whose segments stay until [`Pipeline::release`] is called for each.
+    pub fn commit(&mut self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+        let dropped = self.catalog.commit(records)?;
+        self.hold(&dropped);
+        Ok(dropped)
+    }
+
+    /// Pin the segments of capsules a commit dropped until they're released.
+    fn hold(&mut self, dropped: &[Capsule]) {
+        for capsule in dropped {
+            self.pin(&capsule.segments);
+        }
+    }
+
+    /// Release a dropped capsule's references to its segments. Until then
+    /// they pin the segments (`docs/on-disk-format.md` §6): each stays
+    /// readable, garbage collection and compaction keep it, and it leaves
+    /// the store when its last reference goes.
+    pub async fn release(&mut self, capsule: &Capsule) -> Result<()> {
+        self.unpin(&capsule.segments);
+        self.release_segments(&capsule.segments).await
     }
 
     /// Give up on an open write and release the segments it holds.
     pub async fn abort_write(&mut self, write: CapsuleWrite) -> Result<()> {
-        self.open_writes = self.open_writes.saturating_sub(1);
+        self.unpin(&write.segments);
         self.release_segments(&write.segments).await
     }
 
@@ -853,6 +974,14 @@ where
             let chunk = chunk?;
             output.extend_from_slice(&chunk);
         }
+        if let Some(expected) = self.catalog.lookup_capsule(id)?.digest {
+            if *blake3::hash(&output).as_bytes() != expected {
+                return Err(anyhow!(
+                    "capsule {:?} doesn't match its digest; its segments are damaged",
+                    id
+                ));
+            }
+        }
         Ok(output)
     }
 
@@ -919,11 +1048,12 @@ where
         Ok(output)
     }
 
+    /// Commit the delete first, then release the capsule's references to
+    /// its segments. Ref counts are in memory, so a crash in between only
+    /// leaves counts that the next open recounts.
     pub async fn delete_capsule(&mut self, id: CapsuleId) -> Result<()> {
-        let capsule = self.catalog.lookup_capsule(id)?;
-        self.release_segments(&capsule.segments).await?;
-        self.catalog.delete_capsule(id)?;
-        Ok(())
+        let capsule = self.catalog.delete_capsule(id)?;
+        self.release_segments(&capsule.segments).await
     }
 
     /// Drop one reference to each segment. The last reference deletes the
@@ -949,51 +1079,55 @@ where
         Ok(())
     }
 
+    /// Remove segments that no committed capsule references and nothing
+    /// pins: leftovers of writes that failed or were interrupted. Segments
+    /// an open write holds, or a dropped capsule holds until it's released,
+    /// are kept, and so is every segment a capsule references, whatever its
+    /// stored ref count says. Returns how many were removed.
+    ///
+    /// On the NVRAM log a removed segment leaves the map, and compaction
+    /// reclaims its bytes. Compaction already leaves out segments with no
+    /// references, so the log needs no garbage collection of its own; file
+    /// backends do, since each segment is a file.
     pub async fn garbage_collect(&mut self) -> Result<usize> {
-        // An open write holds segments that no capsule references yet.
-        if self.open_writes > 0 {
-            return Err(anyhow!(
-                "garbage collection can't run while a write is open"
-            ));
-        }
-        let referenced: HashSet<SegmentId> = self
-            .catalog
-            .capsules()
+        let referenced = self.catalog.referenced_segments()?;
+        let candidates: Vec<SegmentId> = self
+            .storage
+            .segment_ids()
+            .await?
             .into_iter()
-            .flat_map(|capsule| capsule.segments.into_iter())
-            .collect();
-
-        let content_map: HashMap<SegmentId, ContentHash> = self
-            .catalog
-            .content_entries()
-            .into_iter()
-            .map(|(hash, seg)| (seg, hash))
+            .filter(|seg| !referenced.contains(seg) && !self.pins.contains_key(seg))
             .collect();
 
         let mut reclaimed = 0usize;
-
-        let orphan_segments = self.storage.segment_ids().await?;
         let mut txn = self.storage.begin_txn().await?;
-
-        for seg_id in orphan_segments {
-            let metadata = match self.storage.metadata(seg_id).await {
-                Ok(meta) => meta,
-                Err(_) => continue,
-            };
-
-            if referenced.contains(&seg_id) && metadata.ref_count > 0 {
-                continue;
-            }
-
+        for seg_id in candidates {
+            // One whose metadata can't be read is just as unreferenced.
+            let hash = self
+                .storage
+                .metadata(seg_id)
+                .await
+                .ok()
+                .and_then(|m| m.content_hash);
             txn.delete(seg_id).await?;
-            if let Some(hash) = content_map.get(&seg_id) {
-                let _ = self.catalog.deregister_content(hash, seg_id)?;
+            if let Some(hash) = hash {
+                let _ = self.catalog.deregister_content(&hash, seg_id)?;
             }
             reclaimed += 1;
         }
         txn.commit().await?;
 
         Ok(reclaimed)
+    }
+
+    /// The storage backend segments are written to.
+    pub fn storage(&self) -> &S {
+        &self.storage
+    }
+
+    /// The keyring, when the pipeline has one.
+    pub fn keyring(&self) -> Option<&K> {
+        self.keyring.as_ref()
     }
 }
 
@@ -1648,6 +1782,33 @@ mod tests {
         assert_eq!(s3.0, 2);
     }
 
+    fn test_manifest(
+        id: CapsuleId,
+        size: u64,
+        policy: &Policy,
+        segments: &[SegmentId],
+        stats: &common::traits::DedupStats,
+    ) -> CapsuleManifest {
+        CapsuleManifest {
+            capsule_id: id,
+            created_at: 0,
+            size,
+            digest: [0u8; 32],
+            dedupe: true,
+            requires_encryption: false,
+            deduped_bytes: stats.bytes_saved,
+            policy: policy.clone(),
+            entries: segments
+                .iter()
+                .map(|s| ManifestEntry {
+                    segment_id: *s,
+                    plain_len: 0,
+                    content_hash: [0u8; 32],
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn catalog_create_and_lookup_capsule() {
         use common::traits::DedupStats;
@@ -1656,7 +1817,7 @@ mod tests {
         let policy = Policy::default();
         let stats = DedupStats::new();
         catalog
-            .create_capsule(id, 100, &policy, vec![], &stats)
+            .create_capsule(test_manifest(id, 100, &policy, &[], &stats))
             .unwrap();
 
         let capsule = catalog.lookup_capsule(id).unwrap();
@@ -1681,7 +1842,7 @@ mod tests {
         let policy = Policy::default();
         let stats = DedupStats::new();
         catalog
-            .create_capsule(id, 200, &policy, vec![seg], &stats)
+            .create_capsule(test_manifest(id, 200, &policy, &[seg], &stats))
             .unwrap();
 
         let capsule = catalog.lookup_capsule(id).unwrap();
@@ -1696,7 +1857,7 @@ mod tests {
         let policy = Policy::default();
         let stats = DedupStats::new();
         catalog
-            .create_capsule(id, 50, &policy, vec![], &stats)
+            .create_capsule(test_manifest(id, 50, &policy, &[], &stats))
             .unwrap();
         assert!(catalog.lookup_capsule(id).is_ok());
 
@@ -2247,17 +2408,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn garbage_collection_waits_for_open_writes() {
+    async fn garbage_collection_keeps_what_writes_and_dropped_capsules_hold() {
         let mut p: InMemoryPipeline = PipelineBuilder::new().build();
         let policy = small_segments(1000);
+        // Clones share the backend's data.
+        let mut storage = p.storage().clone();
 
+        // An open write's segments aren't referenced by any capsule yet.
         let mut write = p.begin_write(&policy).unwrap();
         p.write_chunk(&mut write, &noise(1000, 4)).await.unwrap();
-        assert!(p.garbage_collect().await.is_err());
-        let id = p.finish_write(write).await.unwrap();
-
         assert_eq!(p.garbage_collect().await.unwrap(), 0);
+        let id = p.finish_write(write).await.unwrap();
         assert_eq!(p.read_capsule(id).await.unwrap(), noise(1000, 4));
+
+        // A dropped capsule's segments stay until it's released.
+        let dropped = p.commit(vec![JournalRecord::Drop(id)]).unwrap();
+        let seg = dropped[0].segments[0];
+        assert_eq!(p.garbage_collect().await.unwrap(), 0);
+        assert!(storage.metadata(seg).await.is_ok());
+        p.release(&dropped[0]).await.unwrap();
+        assert!(storage.metadata(seg).await.is_err());
+
+        // An orphan goes. A segment a capsule references stays, whatever its
+        // stored ref count says.
+        let kept = p.write_capsule(&noise(1000, 5), &policy).await.unwrap();
+        let kept_seg = p.catalog().lookup_capsule(kept).unwrap().segments[0];
+        let mut meta = storage.metadata(kept_seg).await.unwrap();
+        meta.ref_count = 0;
+        let orphan = Segment {
+            id: SegmentId(999),
+            len: 6,
+            ref_count: 1,
+            ..Segment::default()
+        };
+        let mut txn = storage.begin_txn().await.unwrap();
+        txn.set_segment_metadata(kept_seg, meta).await.unwrap();
+        txn.append(SegmentId(999), b"orphan").await.unwrap();
+        txn.set_segment_metadata(SegmentId(999), orphan)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        assert_eq!(p.garbage_collect().await.unwrap(), 1);
+        assert!(storage.metadata(SegmentId(999)).await.is_err());
+        assert_eq!(p.read_capsule(kept).await.unwrap(), noise(1000, 5));
     }
 
     #[tokio::test]

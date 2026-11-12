@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::pin::Pin;
 
 use anyhow::Result;
@@ -7,6 +8,7 @@ use futures::future::BoxFuture;
 use futures::Stream;
 use hex;
 
+use crate::format::{CapsuleManifest, JournalRecord};
 use crate::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
     SegmentId,
@@ -274,6 +276,13 @@ pub trait StorageBackend: Send + Sync {
     fn used_bytes(&self) -> BoxFuture<'_, Result<u64>> {
         Box::pin(async { Ok(0) })
     }
+
+    /// Check a segment's stored bytes against a checksum the backend keeps
+    /// of its own, without needing a key. `Ok(None)` means the backend keeps
+    /// none, which is the default; `Ok(Some(false))` means it didn't match.
+    fn verify_stored(&self, _segment: SegmentId) -> BoxFuture<'_, Result<Option<bool>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Evaluates policy directives for a given capsule write.
@@ -308,16 +317,23 @@ pub trait CapsuleCatalog: Send + Sync {
 
     fn lookup_capsule(&self, id: CapsuleId) -> Result<Capsule>;
 
-    fn create_capsule(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        policy: &Policy,
-        segments: Vec<SegmentId>,
-        stats: &DedupStats,
-    ) -> Result<()>;
+    /// Commit `records` (`docs/on-disk-format.md` §5) all or nothing, as one
+    /// `BATCH` when there are several, and return the capsules their `DROP`s
+    /// removed. A `DROP` of a capsule that isn't live fails the commit.
+    fn commit(&self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>>;
 
-    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule>;
+    /// Commit a capsule from its manifest.
+    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+        self.commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+            .map(|_| ())
+    }
+
+    /// Commit a delete, and return the capsule it removed.
+    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
+        self.commit(vec![JournalRecord::Drop(id)])?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("capsule {id:?} not found"))
+    }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId>;
 
@@ -328,4 +344,13 @@ pub trait CapsuleCatalog: Send + Sync {
     fn capsules(&self) -> Vec<Capsule>;
 
     fn content_entries(&self) -> Vec<(ContentHash, SegmentId)>;
+
+    /// Every segment some committed capsule references.
+    fn referenced_segments(&self) -> Result<HashSet<SegmentId>> {
+        Ok(self
+            .capsules()
+            .into_iter()
+            .flat_map(|capsule| capsule.segments)
+            .collect())
+    }
 }

@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `serve-s3` scrubs the store in the background: a deep scrub at startup and then weekly (`--deep-scrub-interval`), a light scrub daily (`--scrub-interval`, `0` turns scrubbing off), reading at most 64 MiB/s (`--scrub-rate`). `spacectl scrub [--deep]` checks every segment now, prints each failed segment with the capsules that hold it, and exits non-zero if any failed. In `space.nvram`, light scrub now checks each record's own checksum, so it catches damage in encrypted segments without the key (#97).
+- `serve-s3` reclaims space on its own: a pass at startup and every `--reclaim-interval` seconds (default 300, `0` turns it off) compacts `space.nvram` once a quarter of it, and at least 4 MiB, is reclaimable, or deletes unreferenced segments under `SPACE_STORAGE_ROOT`. `spacectl gc` removes segments no capsule references, and `spacectl compact` compacts `space.nvram` at once (part of #97).
+
 ### Changed
 
+- S3 buckets and keys are names in the capsule journal: `NAMESPACE`, `BIND` and `UNBIND` records (on-disk format 1, §5.5–§5.6), indexed in sled like capsules. An S3 PUT commits the new capsule, its key, the bucket if it's new, and the drop of the capsule it replaces as one `BATCH`; a DELETE commits the key's removal and the drop as one. A crash can no longer leave a new object without its key, or a replaced one alive with no key pointing at it. An overwrite or DELETE no longer waits for GETs reading the old object: the capsule leaves the index at once, and its segments stay until the last of those GETs ends. A failed PUT no longer creates its bucket.
+- Capsule writes and deletes are committed to a capsule journal, `space.journal` next to `space.db` (on-disk format 1, §5–§7). A write appends a `CAPSULE` manifest with each segment's plain length and content hash and a BLAKE3 digest of the capsule; a delete appends a `DROP`. `space.db` is now an index of the journal: records it hasn't applied are replayed on open, and a missing or mismatched index is rebuilt. A `space.db` written before the journal is refused. Capsules record their digest, and a whole-capsule read (`read_capsule`) checks it.
+- **Breaking:** the NVRAM log uses on-disk format 1 ([docs/on-disk-format.md](docs/on-disk-format.md)). It starts with a `FILE` record, and each segment is a framed record holding its metadata next to its bytes, with checksums over both. `space.nvram.segments` is gone. A store written before this is refused with a message saying so (#96).
 - Docs now describe the single-node core as it actually behaves. Known gaps link to their GitHub issues.
   - Rewrote the S3 quick start and the streaming reads guide.
   - Rewrote the encryption, dedup and encrypted-dedup implementation docs. The throughput figures there are now measured numbers.
@@ -18,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Background scrub covers the whole store each interval. A cycle that reached `max_segments_per_cycle` used to leave the rest until the next interval, so a store of more than 1024 segments was only partly scrubbed. Segments deleted during a cycle are no longer reported as read errors, and the schedule forgets deleted segments rather than growing forever. `ScrubResult::MetadataMismatch` names its segment.
+- Garbage collection keeps the segments of open writes, and those of an object an S3 overwrite or DELETE dropped while a GET still reads it, instead of refusing to run while a write is open. It never removes a segment a capsule references, whatever the segment's stored ref count.
+- A read of the data log during a compaction could look up a segment's offset in one generation and read it from the next. The read's checksum check rejected the bytes, so the read failed rather than returning them.
+- Compaction is crash-safe, holds one buffer of data at a time rather than every live segment, and no longer blocks reads and writes while it copies. It writes the live records to the next generation of the log, `space.nvram.compact`, outside the log's locks, catches up on appends under them, and renames the new file into place. A crash at any point leaves the old log or the new one, and opening the log deletes an unfinished `space.nvram.compact`. The `.compacting` marker and its manual recovery are gone. Segments an open write or a GET still holds are kept, and segment ids compaction removes aren't handed out again, even after `space.db` is lost (#108).
+- Losing `space.db` no longer loses anything: reopening rebuilds capsules, S3 buckets and keys, and the content index from the journal.
+- A write that crashed after storing a segment no longer leaves that segment in the content index, where a later write could dedup against it after compaction removed it. Hashes reach the durable index only when the capsule that holds them commits.
+- A journal and a data log from different stores are refused, and the segment allocator stays above every id in the data log.
+- Losing `space.nvram.segments` no longer loses every capsule, because there is no such file: opening the log rebuilds its segment map by scanning it. A record cut short by a crash is truncated away on open. Bytes that aren't a valid record but have valid records after them open the log read-only, and `NvramLog::damage()` lists them (#96).
+- A crash part way through a write no longer leaves ref counts too high. Ref counts aren't stored; opening a pipeline recounts them from the capsules in `space.db`. Compaction refuses to run until they've been recounted (part of #97).
 - `Policy.dedupe = false` is now honoured. Those writes get their own segments and don't register their hashes (#87).
 - `Policy::validate` rejects segment sizes of 0 or above 16 MiB, and segment lengths are converted to `u32` with `try_from` (#109).
 - Removed pre-reset leftovers: the stray `src/Cargo.toml`, the unused `SPACE_DISABLE_MODULAR_PIPELINE` test lines, the unused `prometheus` and `num_cpus` workspace deps, and `GarbageCollector`. `RaftNode` is now `MetadataLog`. `S3View::new` builds the same pipeline as `serve-s3`, so the S3 tests cover the production path (#106).
@@ -27,11 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `spacectl put`. It skipped the pipeline, wrote zones nothing else could read, and leaked data on a reused `--id` (#93).
 - `serve-s3` listens on 127.0.0.1 unless given `--bind`, and no longer sends permissive CORS headers. Removed the unenforced `--token` flag (#90).
 - Added `cargo bench -p capsule-registry --bench end_to_end`, which times whole writes and reads, plain and encrypted, so the throughput figures in ENCRYPTION_IMPLEMENTATION.md can be reproduced (#102).
-- S3 buckets and keys are stored in `space.db`, so objects survive a server restart. PUT to a new bucket creates it, and `PUT /bucket` creates an empty one (#85).
+- S3 buckets and keys persist, so objects survive a server restart. PUT to a new bucket creates it, and `PUT /bucket` creates an empty one (#85).
 - S3 DELETE and overwrites delete the capsule the key pointed at. Added `spacectl delete` (#86).
 - S3 keys may contain `/` (#88).
 - S3 listings are `ListBucketResult` XML (V1 and V2) with prefix, delimiter, `max-keys`, paging and `encoding-type=url`, and keys no longer include the bucket name. Errors are S3 XML (`NoSuchKey`, `NoSuchBucket`), and GET sends `Content-Length`, `ETag` and `Last-Modified`. Multipart upload is still missing (#89).
-- S3 PUT and `spacectl create` store objects one segment at a time as the data arrives, and S3 GET and `spacectl read` stream them back, so memory no longer grows with object size. GET honours a single `Range` with `206 Partial Content`. A failed or dropped upload releases its segments, and an overwrite waits for GETs still reading the old object (#99).
+- S3 PUT and `spacectl create` store objects one segment at a time as the data arrives, and S3 GET and `spacectl read` stream them back, so memory no longer grows with object size. GET honours a single `Range` with `206 Partial Content`. A failed or dropped upload releases its segments, and a GET still reading an object finishes even if the object is overwritten or deleted (#99).
 - A set but invalid `SPACE_MASTER_KEY` is now a startup error, and an encrypted write with no key fails instead of storing plaintext marked encrypted. Removed the all-zero and fixed fallback keys (#84).
 - Encrypted and plaintext writes no longer dedup onto each other's segments. The dedup key now includes the encryption mode (#83).
 - Encrypted writes of objects or tail segments under 16 bytes now work. Short segments are zero-padded to one XTS block (#94).

@@ -1,15 +1,16 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
+use common::format::{CapsuleManifest, JournalRecord};
 use common::*;
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tracing::warn;
 
-use crate::metadata_log::MetadataLog;
-use crate::metadata_ops::{MetadataOp, OpResult};
+use crate::journal::{Journal, JournalPosition};
 use crate::store::{MetadataStore, SledStore};
 
-mod metadata_log;
-mod metadata_ops;
+mod journal;
 mod store;
 
 const DEFAULT_PAGE_SIZE: usize = 1024;
@@ -23,10 +24,15 @@ pub mod scrub_executor;
 pub use error::{CompressionError, DedupError, PipelineError};
 
 pub mod modular_pipeline {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use anyhow::Result;
-    use common::{traits::DataStream, CapsuleId, EncryptionPolicy, Policy};
+    use common::format::JournalRecord;
+    use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubState};
+    use common::traits::StorageBackend;
+    use common::{traits::DataStream, Capsule, CapsuleId, EncryptionPolicy, Policy, SegmentId};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
@@ -36,8 +42,11 @@ pub mod modular_pipeline {
     };
     pub use storage::{AutoFsBackend, InMemoryBackend, NvramBackend};
     use tokio::io::{AsyncRead, AsyncReadExt};
-    use tokio::sync::Mutex as TokioMutex;
-    use tracing::warn;
+    use tokio::sync::{watch, Mutex as TokioMutex};
+    use tokio::task::JoinHandle;
+    use tracing::{info, warn};
+
+    use crate::scrub_executor::ScrubExecutor;
 
     pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
         path: P,
@@ -153,6 +162,42 @@ pub mod modular_pipeline {
             }
         }
 
+        /// Commit the write together with `with`, all or nothing. Returns
+        /// the capsules `with` dropped; release each with [`Self::release`].
+        pub async fn finish_write_with(
+            &mut self,
+            write: CapsuleWrite,
+            with: Vec<JournalRecord>,
+        ) -> Result<Vec<Capsule>> {
+            match self {
+                Self::Encrypted(p) => p.finish_write_with(write, with).await,
+                Self::Plain(p) => p.finish_write_with(write, with).await,
+                Self::FsEncrypted(p) => p.finish_write_with(write, with).await,
+                Self::FsPlain(p) => p.finish_write_with(write, with).await,
+            }
+        }
+
+        /// Commit `records`, all or nothing. Returns the capsules they
+        /// dropped; release each with [`Self::release`].
+        pub fn commit(&mut self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+            match self {
+                Self::Encrypted(p) => p.commit(records),
+                Self::Plain(p) => p.commit(records),
+                Self::FsEncrypted(p) => p.commit(records),
+                Self::FsPlain(p) => p.commit(records),
+            }
+        }
+
+        /// Release a dropped capsule's references to its segments.
+        pub async fn release(&mut self, capsule: &Capsule) -> Result<()> {
+            match self {
+                Self::Encrypted(p) => p.release(capsule).await,
+                Self::Plain(p) => p.release(capsule).await,
+                Self::FsEncrypted(p) => p.release(capsule).await,
+                Self::FsPlain(p) => p.release(capsule).await,
+            }
+        }
+
         pub async fn abort_write(&mut self, write: CapsuleWrite) -> Result<()> {
             match self {
                 Self::Encrypted(p) => p.abort_write(write).await,
@@ -220,6 +265,144 @@ pub mod modular_pipeline {
                 Self::FsPlain(p) => p.garbage_collect().await,
             }
         }
+
+        /// The NVRAM data log the pipeline stores segments in, or `None` for
+        /// a file backend.
+        pub fn data_log(&self) -> Option<NvramLog> {
+            match self {
+                Self::Encrypted(p) => Some(p.storage().log().clone()),
+                Self::Plain(p) => Some(p.storage().log().clone()),
+                Self::FsEncrypted(_) | Self::FsPlain(_) => None,
+            }
+        }
+
+        fn key_manager(&self) -> Option<Arc<Mutex<KeyManager>>> {
+            match self {
+                Self::Encrypted(p) => p.keyring().map(KeyManagerKeyring::manager),
+                Self::FsEncrypted(p) => p.keyring().map(KeyManagerKeyring::manager),
+                Self::Plain(_) | Self::FsPlain(_) => None,
+            }
+        }
+
+        /// Scrub the store in the background on `config`'s schedule
+        /// ([`ScrubExecutor::spawn_background`]). The executor gets the
+        /// pipeline's key, so deep scrubs check encrypted segments' MACs. It
+        /// reads segments straight from the backend, without the pipeline
+        /// lock.
+        pub fn spawn_scrub(
+            &self,
+            config: ScrubConfig,
+        ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
+            let key = self.key_manager();
+            match self {
+                Self::Encrypted(p) => {
+                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
+                }
+                Self::Plain(p) => ScrubExecutor::spawn_background(p.storage().clone(), config, key),
+                Self::FsEncrypted(p) => {
+                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
+                }
+                Self::FsPlain(p) => {
+                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
+                }
+            }
+        }
+
+        /// Scrub every segment of the store once, now, as `spacectl scrub`
+        /// does: no per-cycle cap and no throttling.
+        pub async fn scrub_all(&self, kind: ScrubKind) -> ScrubReport {
+            let config = ScrubConfig {
+                max_segments_per_cycle: usize::MAX,
+                inter_segment_delay: Duration::ZERO,
+                max_bytes_per_sec: None,
+                ..ScrubConfig::default()
+            };
+            let key = self.key_manager();
+            match self {
+                Self::Encrypted(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+                Self::Plain(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+                Self::FsEncrypted(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+                Self::FsPlain(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+            }
+        }
+    }
+
+    fn executor<B: StorageBackend>(
+        backend: B,
+        key: Option<Arc<Mutex<KeyManager>>>,
+    ) -> ScrubExecutor<B> {
+        match key {
+            Some(key) => ScrubExecutor::with_key_manager(backend, key),
+            None => ScrubExecutor::new(backend),
+        }
+    }
+
+    /// What a [`reclaim`] pass did.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct ReclaimReport {
+        /// Segments garbage collection removed (file backends).
+        pub collected: usize,
+        /// Bytes compaction reclaimed, when it ran (the NVRAM log).
+        pub compacted: Option<u64>,
+    }
+
+    /// Whether a scheduled pass should compact `log`: once a quarter of it,
+    /// and at least one default segment, is reclaimable. Compaction copies
+    /// every live record, so it waits until there's enough to gain.
+    pub fn worth_compacting(log: &NvramLog) -> bool {
+        let reclaimable = log.reclaimable_bytes();
+        reclaimable >= common::SEGMENT_SIZE as u64 && reclaimable.saturating_mul(4) >= log.size()
+    }
+
+    /// One reclaim pass, as `serve-s3` schedules them.
+    ///
+    /// On the NVRAM log it compacts, if [`worth_compacting`] says so. A
+    /// segment no capsule references has no references in the log's counts,
+    /// so compaction leaves it out and garbage collection has nothing to
+    /// add. Compaction runs on a blocking thread without the pipeline lock,
+    /// so writes and reads carry on.
+    ///
+    /// On a file backend it garbage-collects, with the pipeline locked: each
+    /// unreferenced segment is a file to delete.
+    pub async fn reclaim(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+    ) -> Result<ReclaimReport> {
+        let log = {
+            let mut handle = pipeline.lock().await;
+            match handle.data_log() {
+                Some(log) => log,
+                None => {
+                    return Ok(ReclaimReport {
+                        collected: handle.garbage_collect().await?,
+                        compacted: None,
+                    })
+                }
+            }
+        };
+        if !worth_compacting(&log) {
+            return Ok(ReclaimReport::default());
+        }
+        let reclaimed = tokio::task::spawn_blocking(move || log.compact()).await??;
+        Ok(ReclaimReport {
+            collected: 0,
+            compacted: Some(reclaimed),
+        })
     }
 
     /// Write a capsule from `reader` one segment at a time, so memory stays
@@ -232,6 +415,24 @@ pub mod modular_pipeline {
         reader: Rd,
         policy: &Policy,
     ) -> Result<(CapsuleId, u64)>
+    where
+        Rd: AsyncRead + Send,
+    {
+        let staged = stage_from_reader(pipeline, reader, policy).await?;
+        let (id, size) = (staged.capsule_id(), staged.size());
+        let mut handle = pipeline.lock().await;
+        staged.commit(&mut handle, Vec::new()).await?;
+        Ok((id, size))
+    }
+
+    /// Store everything `reader` yields as an open write, as
+    /// [`write_from_reader`] does, but leave committing it to the caller:
+    /// see [`StagedWrite::commit`].
+    pub async fn stage_from_reader<Rd>(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+        reader: Rd,
+        policy: &Policy,
+    ) -> Result<StagedWrite>
     where
         Rd: AsyncRead + Send,
     {
@@ -272,10 +473,44 @@ pub mod modular_pipeline {
                 break;
             }
         }
+        Ok(StagedWrite { open, size })
+    }
 
-        let mut handle = pipeline.lock().await;
-        let write = open.take();
-        Ok((handle.finish_write(write).await?, size))
+    /// A write whose bytes are all stored but not yet committed. Dropping
+    /// it aborts the write in the background.
+    pub struct StagedWrite {
+        open: OpenWrite,
+        size: u64,
+    }
+
+    impl StagedWrite {
+        pub fn capsule_id(&self) -> CapsuleId {
+            self.open
+                .write
+                .as_ref()
+                .expect("write is open")
+                .capsule_id()
+        }
+
+        /// Logical bytes written.
+        pub fn size(&self) -> u64 {
+            self.size
+        }
+
+        /// Commit the capsule together with `with`, all or nothing
+        /// (`docs/on-disk-format.md` §5.7). Call it with the pipeline locked,
+        /// so the records can be built from state no other commit changes in
+        /// between. Returns the capsules `with` dropped; release each with
+        /// [`RegistryPipelineHandle::release`]. If the commit fails, the
+        /// write's segments are released.
+        pub async fn commit(
+            mut self,
+            handle: &mut RegistryPipelineHandle,
+            with: Vec<JournalRecord>,
+        ) -> Result<Vec<Capsule>> {
+            let write = self.open.take();
+            handle.finish_write_with(write, with).await
+        }
     }
 
     /// Aborts the write in the background if dropped before it ends.
@@ -374,6 +609,7 @@ pub mod modular_pipeline {
             let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
         } else {
+            recount_references(&storage, &registry)?;
             Ok(RegistryPipelineHandle::Plain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -409,11 +645,41 @@ pub mod modular_pipeline {
         }
     }
 
+    /// Ref counts aren't stored in the data log (docs/on-disk-format.md §2),
+    /// so set them from the capsules the registry holds before the pipeline
+    /// serves any write or delete.
+    ///
+    /// It also pairs the registry's journal with the data log, and keeps the
+    /// segment allocator above every id the log has held, including ones
+    /// from writes that never committed and ones compaction removed.
+    fn recount_references(storage: &NvramBackend, registry: &crate::CapsuleRegistry) -> Result<()> {
+        let log = storage.log();
+        registry.bind_store(log.store_id())?;
+        registry.ensure_segment_floor(log.segment_id_floor())?;
+        let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
+        let report = log.recount_references(&counts);
+        if let Some(first) = report.missing.first() {
+            warn!(
+                missing = report.missing.len(),
+                first = first.0,
+                "capsules reference segments the data log doesn't hold; those capsules can't be read"
+            );
+        }
+        if !report.orphans.is_empty() {
+            info!(
+                orphans = report.orphans.len(),
+                "the data log holds segments no capsule references; compaction reclaims them"
+            );
+        }
+        Ok(())
+    }
+
     fn build_nvram_encrypted_pipeline(
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryEncryptedPipeline> {
+        recount_references(&storage, &registry)?;
         Ok(Pipeline::new(
             compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),
@@ -451,23 +717,8 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
         self.lookup(id)
     }
 
-    fn create_capsule(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        policy: &Policy,
-        segments: Vec<SegmentId>,
-        stats: &common::traits::DedupStats,
-    ) -> Result<()> {
-        self.create_capsule_with_segments(id, size, segments, policy.clone())?;
-        if stats.bytes_saved > 0 {
-            self.add_deduped_bytes(id, stats.bytes_saved)?;
-        }
-        Ok(())
-    }
-
-    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        self.delete_capsule(id)
+    fn commit(&self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+        self.commit(records)
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
@@ -489,11 +740,25 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
     fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
         self.content_entries()
     }
+
+    /// From the index's reference counts, without loading every capsule.
+    fn referenced_segments(&self) -> Result<std::collections::HashSet<SegmentId>> {
+        Ok(self.segment_refs()?.into_keys().collect())
+    }
 }
 
+/// Capsule records, names and the content index, kept in sled as an index of
+/// the capsule journal (`docs/on-disk-format.md` §7). The journal sits next
+/// to the database (`space.journal` beside `space.db`) and is the durable
+/// record: losing the database costs one replay.
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
-    log: MetadataLog,
+    journal: Arc<Journal>,
+    /// Content hashes of segments stored by writes that haven't committed.
+    /// Concurrent writes can dedup against them, but they reach the durable
+    /// index only when a `CAPSULE` record that holds them is applied, so a
+    /// crash can't leave an index entry for a segment compaction removes.
+    pending: Arc<Mutex<HashMap<ContentHash, SegmentId>>>,
 }
 
 impl CapsuleRegistry {
@@ -503,12 +768,140 @@ impl CapsuleRegistry {
         )
     }
 
+    /// Open the registry database at `path` and the capsule journal next to
+    /// it. Records the index hasn't applied yet are replayed; an index that
+    /// doesn't match the journal is rebuilt from it.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path_str = path.as_ref().to_string_lossy().to_string();
+        let path = path.as_ref();
+        let path_str = path.to_string_lossy().to_string();
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
-        let log = MetadataLog::new(Arc::clone(&store));
+        let journal_path = Journal::path_for(path);
+        let journal = Arc::new(Journal::open(&journal_path)?);
 
-        Ok(Self { store, log })
+        let apply = |record: &JournalRecord, position: JournalPosition| {
+            store.apply_journal(record, &position)
+        };
+        match store.journal_position()? {
+            Some(position) if journal.matches(&position) => journal.replay(&position, apply)?,
+            Some(_) => {
+                warn!(
+                    journal = %journal_path.display(),
+                    "the registry index doesn't match the capsule journal; rebuilding it"
+                );
+                store.clear_index()?;
+                store.set_journal_position(&journal.start())?;
+                journal.replay(&journal.start(), apply)?;
+            }
+            None if store.has_records()? => bail!(
+                "'{path_str}' holds capsules or S3 buckets but has no capsule journal position: \
+                 it was written before the capsule journal (docs/on-disk-format.md §13)"
+            ),
+            None => {
+                store.clear_index()?;
+                store.set_journal_position(&journal.start())?;
+                journal.replay(&journal.start(), apply)?;
+            }
+        }
+
+        Ok(Self {
+            store,
+            journal,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    /// The id of the store this registry's journal belongs to.
+    pub fn store_id(&self) -> uuid::Uuid {
+        self.journal.store_id()
+    }
+
+    /// Pair the journal with a data log whose store id is `store_id`. A
+    /// journal with no records takes the log's id; one with records must
+    /// already have it.
+    pub fn bind_store(&self, store_id: uuid::Uuid) -> Result<()> {
+        if self.journal.store_id() == store_id {
+            return Ok(());
+        }
+        if !self.journal.is_empty() {
+            bail!(
+                "the capsule journal belongs to store {} but the data log belongs to store \
+                 {store_id}; they come from different stores",
+                self.journal.store_id()
+            );
+        }
+        let position = self.journal.adopt_store_id(store_id)?;
+        self.store.set_journal_position(&position)
+    }
+
+    /// How many capsule entries reference each segment, from the index.
+    pub fn segment_refs(&self) -> Result<HashMap<SegmentId, u32>> {
+        self.store.segment_refs()
+    }
+
+    /// Never allocate a segment id below `floor`.
+    pub fn ensure_segment_floor(&self, floor: u64) -> Result<()> {
+        self.store.ensure_segment_floor(floor)
+    }
+
+    /// Commit `records` all or nothing: append them to the journal, as one
+    /// `BATCH` when there are several, then apply them to the index. Returns
+    /// the capsules their `DROP`s removed. Nothing is written if a `CAPSULE`
+    /// reuses a live id, a `DROP` names a capsule that isn't live, or a
+    /// record is itself a `BATCH`.
+    pub fn commit(&self, mut records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+        let mut journal = self.journal.lock();
+        // The index changes only under the journal lock, so what these
+        // checks see holds until the record is applied.
+        let mut created: Vec<CapsuleId> = Vec::new();
+        let mut segments: Vec<SegmentId> = Vec::new();
+        let mut dropped: Vec<Capsule> = Vec::new();
+        for record in &records {
+            match record {
+                JournalRecord::Capsule(manifest) => {
+                    let id = manifest.capsule_id;
+                    if created.contains(&id) || self.store.get_capsule(&id)?.is_some() {
+                        bail!("Capsule collision (extremely unlikely)");
+                    }
+                    created.push(id);
+                    segments.extend(manifest.entries.iter().map(|e| e.segment_id));
+                }
+                JournalRecord::Drop(id) => {
+                    if dropped.iter().any(|c| c.id == *id) {
+                        bail!("capsule {:?} is dropped twice in one commit", id);
+                    }
+                    let capsule = self
+                        .store
+                        .get_capsule(id)?
+                        .ok_or_else(|| anyhow!("Capsule not found"))?;
+                    dropped.push(capsule);
+                }
+                JournalRecord::Batch(_) => bail!("a batch can't hold another batch"),
+                JournalRecord::Namespace { .. }
+                | JournalRecord::Bind { .. }
+                | JournalRecord::Unbind { .. } => {}
+            }
+        }
+        let record = match records.len() {
+            0 => return Ok(Vec::new()),
+            1 => records.remove(0),
+            _ => JournalRecord::Batch(records),
+        };
+        let position = journal.append(&record)?;
+        self.store.apply_journal(&record, &position)?;
+        drop(journal);
+        if !segments.is_empty() {
+            self.pending
+                .lock()
+                .unwrap()
+                .retain(|_, seg| !segments.contains(seg));
+        }
+        Ok(dropped)
+    }
+
+    /// Commit a capsule from its manifest.
+    pub fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+        self.commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+            .map(|_| ())
     }
 
     fn collect_capsules_paginated(&self, page_size: usize) -> Result<Vec<Capsule>> {
@@ -537,51 +930,6 @@ impl CapsuleRegistry {
         Ok(capsules)
     }
 
-    fn insert_capsule(&self, capsule: Capsule) -> Result<()> {
-        if self.store.get_capsule(&capsule.id)?.is_some() {
-            anyhow::bail!("Capsule collision (extremely unlikely)");
-        }
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
-    }
-
-    /// Insert capsule metadata if it does not already exist.
-    ///
-    /// Returns `true` if newly inserted, or `false` if a capsule with the same ID
-    /// is already present (idempotent insert).
-    pub fn put_capsule(&self, capsule: Capsule) -> Result<bool> {
-        if self.store.get_capsule(&capsule.id)?.is_some() {
-            return Ok(false);
-        }
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(true),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
-    }
-
-    pub fn create_capsule_with_segments(
-        &self,
-        id: CapsuleId,
-        size: u64,
-        segments: Vec<SegmentId>,
-        policy: Policy,
-    ) -> Result<()> {
-        let capsule = Capsule {
-            id,
-            size,
-            segments,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs(),
-            policy,
-            deduped_bytes: 0,
-        };
-
-        self.insert_capsule(capsule)
-    }
-
     /// Like `lookup`, but a missing capsule is `None` rather than an error.
     pub fn get_capsule(&self, id: CapsuleId) -> Result<Option<Capsule>> {
         self.store.get_capsule(&id)
@@ -604,50 +952,32 @@ impl CapsuleRegistry {
             .map_err(|err| anyhow!("failed to allocate segment id: {err}"))
     }
 
-    pub fn add_segment(&self, capsule_id: CapsuleId, seg_id: SegmentId) -> Result<()> {
-        let mut capsule = self.lookup(capsule_id)?;
-        capsule.segments.push(seg_id);
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
-    }
-
+    /// The segment holding content with this hash: a committed one from the
+    /// index, or one an open write has stored.
     pub fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
-        self.store.get_content(hash).ok().flatten()
+        match self.store.get_content(hash) {
+            Ok(Some(segment)) => Some(segment),
+            _ => self.pending.lock().unwrap().get(hash).copied(),
+        }
     }
 
+    /// Offer a segment an open write just stored for other writes to dedup
+    /// against. It joins the durable index when its capsule commits.
     pub fn register_content(&self, hash: ContentHash, seg_id: SegmentId) -> Result<()> {
-        match self.log.apply(MetadataOp::RegisterContent {
-            hash: hash.clone(),
-            segment: seg_id,
-        })? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        self.pending.lock().unwrap().entry(hash).or_insert(seg_id);
+        Ok(())
     }
 
+    /// Withdraw a segment from dedup: a pending one whose write gave up, or
+    /// an indexed one no capsule references any more.
     pub fn deregister_content(&self, hash: &ContentHash, seg_id: SegmentId) -> Result<bool> {
-        match self.log.apply(MetadataOp::DeregisterContent {
-            hash: hash.clone(),
-            segment: seg_id,
-        })? {
-            OpResult::Ok => Ok(true),
-            OpResult::NotFound => Ok(false),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
+        let mut pending = self.pending.lock().unwrap();
+        if pending.get(hash) == Some(&seg_id) {
+            pending.remove(hash);
+            return Ok(true);
         }
-    }
-
-    pub fn add_deduped_bytes(&self, capsule_id: CapsuleId, bytes: u64) -> Result<()> {
-        let mut capsule = match self.lookup(capsule_id) {
-            Ok(capsule) => capsule,
-            Err(_) => return Ok(()), // Capsule deleted before dedup update; treat as noop
-        };
-        capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
-        match self.log.apply(MetadataOp::PutCapsule(capsule))? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        drop(pending);
+        self.store.deregister_unreferenced(hash, seg_id)
     }
 
     pub fn list_capsules(&self, limit: usize, cursor: Option<CapsuleId>) -> Result<Vec<CapsuleId>> {
@@ -655,77 +985,50 @@ impl CapsuleRegistry {
         Ok(capsules.into_iter().map(|c| c.id).collect())
     }
 
+    /// Commit a delete, and return the capsule it removed. Segment bytes
+    /// stay until compaction. Names that point at the capsule are left as
+    /// they are; readers treat them as missing.
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        match self.log.apply(MetadataOp::DeleteCapsule(id))? {
-            OpResult::CapsuleFound(capsule) => Ok(capsule),
-            OpResult::NotFound => Err(anyhow!("Capsule not found")),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        self.commit(vec![JournalRecord::Drop(id)])?
+            .pop()
+            .ok_or_else(|| anyhow!("Capsule not found"))
     }
 
-    /// Create an S3 bucket. Creating one that exists is a no-op.
-    pub fn create_bucket(&self, bucket: &str) -> Result<()> {
+    /// Create namespace `ns` if it doesn't exist.
+    pub fn create_namespace(&self, ns: &str) -> Result<()> {
+        if self.store.get_namespace(ns)?.is_some() {
+            return Ok(());
+        }
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        match self.log.apply(MetadataOp::PutBucket {
-            bucket: bucket.to_string(),
+        self.commit(vec![JournalRecord::Namespace {
+            ns: ns.to_string(),
             created_at,
-        })? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        }])
+        .map(|_| ())
     }
 
-    /// When an S3 bucket was created, or `None` if it doesn't exist.
-    pub fn bucket_created_at(&self, bucket: &str) -> Result<Option<u64>> {
-        self.store.get_bucket(bucket)
+    /// When namespace `ns` was created, or `None` if it doesn't exist.
+    pub fn namespace_created_at(&self, ns: &str) -> Result<Option<u64>> {
+        self.store.get_namespace(ns)
     }
 
-    /// The capsule an S3 key points at.
-    pub fn object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
-        self.store.get_object(bucket, key)
+    /// The capsule `name` in `ns` points at.
+    pub fn name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>> {
+        self.store.get_name(ns, name)
     }
 
-    /// Point an S3 key at a capsule. Returns the capsule it pointed at before.
-    pub fn bind_object(
+    /// Names in `ns` that start with `prefix` and sort after `start_after`,
+    /// in byte order, at most `limit` of them.
+    pub fn list_names(
         &self,
-        bucket: &str,
-        key: &str,
-        capsule: CapsuleId,
-    ) -> Result<Option<CapsuleId>> {
-        self.replaced(MetadataOp::PutObject {
-            bucket: bucket.to_string(),
-            key: key.to_string(),
-            capsule,
-        })
-    }
-
-    /// Remove an S3 key. Returns the capsule it pointed at.
-    pub fn unbind_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
-        self.replaced(MetadataOp::DeleteObject {
-            bucket: bucket.to_string(),
-            key: key.to_string(),
-        })
-    }
-
-    /// S3 keys in `bucket` that start with `prefix` and sort after
-    /// `start_after`, in byte order, at most `limit` of them.
-    pub fn list_objects(
-        &self,
-        bucket: &str,
+        ns: &str,
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, CapsuleId)>> {
-        self.store.list_objects(bucket, prefix, start_after, limit)
-    }
-
-    fn replaced(&self, op: MetadataOp) -> Result<Option<CapsuleId>> {
-        match self.log.apply(op)? {
-            OpResult::Replaced(previous) => Ok(previous),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        self.store.list_names(ns, prefix, start_after, limit)
     }
 
     pub fn get_dedup_stats(&self) -> (usize, usize) {
@@ -760,7 +1063,8 @@ impl Clone for CapsuleRegistry {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
-            log: self.log.clone(),
+            journal: Arc::clone(&self.journal),
+            pending: Arc::clone(&self.pending),
         }
     }
 }

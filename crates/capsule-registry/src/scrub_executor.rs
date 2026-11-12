@@ -10,11 +10,13 @@
 //!
 //! ## Verification strategy
 //!
-//! - **Light scrub**: reads each segment's bytes and confirms the length
-//!   matches the `len` field in its metadata. This catches truncation and
-//!   missing segments. Note: `StorageBackend` has no stat-only method, so a
-//!   full read is required; the "light" in light scrub refers to the
-//!   verification being length-only, not to reduced I/O.
+//! - **Light scrub**: checks each segment without a key. When the backend
+//!   keeps a checksum of the stored bytes (`StorageBackend::verify_stored`;
+//!   the data log's record frames do), light scrub verifies it, which catches
+//!   media damage in any segment, encrypted or not. Otherwise it reads the
+//!   bytes and confirms the length matches the `len` field in the metadata,
+//!   which catches truncation and missing segments. Either way it reads every
+//!   byte: "light" refers to what's checked, not to the I/O.
 //!
 //! - **Deep scrub**: reads the raw stored bytes and applies the strongest
 //!   integrity check available for each segment:
@@ -101,15 +103,20 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             }
         };
 
+        self.schedule.retain(&all_ids);
         let due = match kind {
             ScrubKind::Light => self.schedule.due_for_light(&all_ids, config),
             ScrubKind::Deep => self.schedule.due_for_deep(&all_ids, config),
         };
 
+        report.segments_deferred = due.len().saturating_sub(config.max_segments_per_cycle);
         let to_check: Vec<SegmentId> = due
             .into_iter()
             .take(config.max_segments_per_cycle)
             .collect();
+        // Settled after the loop: on a live store, a segment deleted while
+        // the cycle ran fails to read, and that isn't an error.
+        let mut read_errors = Vec::new();
 
         for seg_id in to_check {
             let (result, seg_bytes, legacy_hash_hit) = match kind {
@@ -146,6 +153,8 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                     "scrub: segment skipped (transient)"
                 );
                 report.segments_skipped += 1;
+            } else if matches!(result, ScrubResult::ReadError { .. }) {
+                read_errors.push(result);
             } else {
                 report.segments_checked += 1;
 
@@ -177,6 +186,38 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 
             if !config.inter_segment_delay.is_zero() {
                 tokio::time::sleep(config.inter_segment_delay).await;
+            }
+        }
+
+        if !read_errors.is_empty() {
+            // If the listing fails, keep every error rather than guess.
+            let present: Option<std::collections::HashSet<SegmentId>> = self
+                .backend
+                .segment_ids()
+                .await
+                .ok()
+                .map(|ids| ids.into_iter().collect());
+            for result in read_errors {
+                let ScrubResult::ReadError { segment, .. } = &result else {
+                    continue;
+                };
+                if present.as_ref().is_some_and(|ids| !ids.contains(segment)) {
+                    debug!(
+                        segment_id = segment.0,
+                        "scrub: segment deleted during the cycle"
+                    );
+                    continue;
+                }
+                // Not recorded in the schedule: I/O may be transient, so the
+                // segment stays due and is retried next cycle.
+                warn!(
+                    segment_id = segment.0,
+                    ?result,
+                    "scrub: segment couldn't be read"
+                );
+                report.segments_checked += 1;
+                report.read_errors += 1;
+                report.errors.push(result);
             }
         }
 
@@ -212,6 +253,30 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             }
         };
 
+        // A backend that checksums its own bytes, as the data log's record
+        // frames do, can say more than the length can, with no key.
+        match self.backend.verify_stored(seg_id).await {
+            Ok(Some(true)) => return (ScrubResult::Ok, u64::from(meta.len), false),
+            Ok(Some(false)) => {
+                return (
+                    ScrubResult::ContentCorrupted { segment: seg_id },
+                    u64::from(meta.len),
+                    false,
+                )
+            }
+            Ok(None) => {}
+            Err(err) => {
+                return (
+                    ScrubResult::ReadError {
+                        segment: seg_id,
+                        error: err.to_string(),
+                    },
+                    0,
+                    false,
+                )
+            }
+        }
+
         let stored = match self.backend.read(seg_id).await {
             Ok(b) => b,
             Err(err) => {
@@ -231,6 +296,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
         if actual_len != meta.len {
             (
                 ScrubResult::MetadataMismatch {
+                    segment: seg_id,
                     expected_len: meta.len,
                     actual_len,
                 },
@@ -283,6 +349,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
         if stored.len() as u32 != meta.len {
             return (
                 ScrubResult::MetadataMismatch {
+                    segment: seg_id,
                     expected_len: meta.len,
                     actual_len: stored.len() as u32,
                 },
@@ -534,6 +601,16 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                     );
                 }
 
+                // More segments were due than one cycle takes: carry on with
+                // them after the pause below, not a whole interval later.
+                if report.segments_deferred > 0 {
+                    let now = tokio::time::Instant::now();
+                    match kind {
+                        ScrubKind::Deep => next_deep = now,
+                        ScrubKind::Light => next_light = now,
+                    }
+                }
+
                 // Yield briefly to avoid spinning in three cases:
                 // 1. The cycle hit max_segments_per_cycle (more work pending).
                 // 2. All segments were Skipped (e.g. key manager unavailable).
@@ -543,8 +620,7 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                 // reset to `now` and would fire again immediately on a
                 // zero-duration interval.
                 let attempted = report.segments_checked + report.segments_skipped;
-                if report.segments_checked >= config.max_segments_per_cycle
-                    || (attempted > 0 && report.segments_recorded == 0)
+                if report.segments_deferred > 0 || (attempted > 0 && report.segments_recorded == 0)
                 {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
@@ -616,6 +692,63 @@ mod tests {
 
         fn begin_txn(&mut self) -> BoxFuture<'_, anyhow::Result<Self::Transaction>> {
             self.inner.begin_txn()
+        }
+    }
+
+    /// Counts reads, and deletes a `vanish` segment just before reading it,
+    /// as a release on a live store can between listing and reading.
+    #[derive(Clone)]
+    struct ProbeBackend {
+        inner: InMemoryBackend,
+        vanish: std::collections::HashSet<SegmentId>,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl common::traits::StorageBackend for ProbeBackend {
+        type Transaction = <InMemoryBackend as common::traits::StorageBackend>::Transaction;
+
+        fn append<'a>(
+            &'a mut self,
+            segment: SegmentId,
+            data: &'a [u8],
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            self.inner.append(segment, data)
+        }
+
+        fn read(&self, segment: SegmentId) -> BoxFuture<'_, anyhow::Result<Vec<u8>>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let vanish = self.vanish.contains(&segment);
+            let mut inner = self.inner.clone();
+            Box::pin(async move {
+                if vanish {
+                    inner.delete(segment).await?;
+                }
+                inner.read(segment).await
+            })
+        }
+
+        fn metadata(&self, segment: SegmentId) -> BoxFuture<'_, anyhow::Result<common::Segment>> {
+            self.inner.metadata(segment)
+        }
+
+        fn delete<'a>(&'a mut self, segment: SegmentId) -> BoxFuture<'a, anyhow::Result<()>> {
+            self.inner.delete(segment)
+        }
+
+        fn segment_ids(&self) -> BoxFuture<'_, anyhow::Result<Vec<SegmentId>>> {
+            self.inner.segment_ids()
+        }
+
+        fn begin_txn(&mut self) -> BoxFuture<'_, anyhow::Result<Self::Transaction>> {
+            self.inner.begin_txn()
+        }
+    }
+
+    fn probe(inner: InMemoryBackend, vanish: &[u64]) -> ProbeBackend {
+        ProbeBackend {
+            inner,
+            vanish: vanish.iter().map(|id| SegmentId(*id)).collect(),
+            reads: Arc::default(),
         }
     }
 
@@ -1099,6 +1232,81 @@ mod tests {
             matches!(*state_rx.borrow(), ScrubState::Completed { .. }),
             "Completed state must persist between cycles, not be overwritten by Idle"
         );
+    }
+
+    #[tokio::test]
+    async fn a_segment_deleted_during_a_cycle_is_not_an_error() {
+        let mut inner = InMemoryBackend::new();
+        for id in 1..=2 {
+            let data = format!("segment {id}").into_bytes();
+            write_segment(&mut inner, id, &data, Some(hash_content(&data)), None).await;
+        }
+        let mut executor = ScrubExecutor::new(probe(inner, &[2]));
+        let report = executor
+            .scrub_cycle(&fast_config(ScrubKind::Deep), ScrubKind::Deep)
+            .await;
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.read_errors, 0);
+        assert_eq!(report.segments_checked, 1);
+    }
+
+    #[tokio::test]
+    async fn the_schedule_forgets_deleted_segments() {
+        let mut backend = InMemoryBackend::new();
+        for id in 1..=2 {
+            write_segment(&mut backend, id, b"data", None, None).await;
+        }
+        let config = ScrubConfig {
+            light_interval: Duration::from_secs(3600),
+            ..fast_config(ScrubKind::Deep)
+        };
+        let mut executor = ScrubExecutor::new(backend.clone());
+        executor.scrub_cycle(&config, ScrubKind::Light).await;
+        assert_eq!(executor.schedule.last_light.len(), 2);
+
+        backend.delete(SegmentId(2)).await.unwrap();
+        executor.scrub_cycle(&config, ScrubKind::Light).await;
+        assert_eq!(
+            executor
+                .schedule
+                .last_light
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [SegmentId(1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capped_cycle_carries_on_without_waiting_an_interval() {
+        let mut inner = InMemoryBackend::new();
+        for id in 1..=3 {
+            write_segment(&mut inner, id, b"data", None, None).await;
+        }
+        let config = ScrubConfig {
+            light_interval: Duration::from_secs(3600),
+            deep_interval: Duration::from_secs(3600),
+            max_segments_per_cycle: 1,
+            inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
+        };
+
+        let mut executor = ScrubExecutor::new(inner.clone());
+        let report = executor.scrub_cycle(&config, ScrubKind::Deep).await;
+        assert_eq!(report.segments_deferred, 2);
+
+        // The background loop takes the rest a second apart, not an hour.
+        let backend = probe(inner, &[]);
+        let reads = Arc::clone(&backend.reads);
+        let (handle, _state) = ScrubExecutor::spawn_background(backend, config, None);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while reads.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the deferred segments weren't scrubbed within 5 seconds");
+        handle.abort();
     }
 
     /// Verify that `Completed.errors` counts only definitive failures

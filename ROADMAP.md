@@ -1,6 +1,6 @@
 # SPACE Roadmap
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-11-13
 
 This is the post-reset roadmap. The previous multi-phase plan (including distributed PODMS, extra protocol views, and foundry) is archived on `archive/pre-reset-2026-10`.
 
@@ -15,7 +15,7 @@ See [RESET.md](RESET.md) for why the hard restart happened and what was kept.
 ## Current focus (core capsule)
 
 - Modular pipeline as the default path.
-- Automatic background GC and working reference counting.
+- Automatic background GC and working reference counting. **Done:** reference counts are derived from the capsule journal, and `serve-s3` compacts and garbage-collects on a schedule ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
 - S3 view: multipart upload.
 - spacectl polish (progress, doctor, config, completions).
 - Property tests and basic benchmarks for the pipeline.
@@ -29,5 +29,5 @@ Distributed features, additional protocol views, and experimental crates can be 
 
 - Local cargo check / test on this branch.
 - Make modular pipeline default and remove any remaining legacy bridges.
-- Background GC.
+- Background GC. **Done** ([#97](https://github.com/saworbit/SPACE/issues/97)).
 - S3 and CLI polish items above.

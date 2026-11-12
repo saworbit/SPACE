@@ -341,6 +341,10 @@ where
     fn used_bytes(&self) -> BoxFuture<'_, Result<u64>> {
         self.inner.used_bytes()
     }
+
+    fn verify_stored(&self, segment: SegmentId) -> BoxFuture<'_, Result<Option<bool>>> {
+        self.inner.verify_stored(segment)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -196,9 +196,16 @@ mod modular_pipeline_integration {
 
     #[tokio::test]
     async fn registry_pipeline_lifecycle() {
-        let log_path = "modular_registry_lifecycle.log".to_string();
+        // A fresh directory per run: a journal left by an earlier run would
+        // belong to another store than this run's new data log.
+        let dir = std::env::temp_dir()
+            .join("space_registry_integration")
+            .join(format!("lifecycle_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("space.nvram").to_string_lossy().to_string();
         let segments_path = format!("{}.segments", log_path);
-        let meta_path = "modular_registry_lifecycle.metadata";
+        let meta_string = dir.join("space.db").to_string_lossy().to_string();
+        let meta_path = meta_string.as_str();
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(&segments_path);
         let _ = fs::remove_file(meta_path);
@@ -231,9 +238,16 @@ mod modular_pipeline_integration {
 
     #[tokio::test]
     async fn registry_pipeline_garbage_collects_orphans() {
-        let log_path = "modular_registry_gc.log".to_string();
+        // A fresh directory per run: a journal left by an earlier run would
+        // belong to another store than this run's new data log.
+        let dir = std::env::temp_dir()
+            .join("space_registry_integration")
+            .join(format!("gc_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("space.nvram").to_string_lossy().to_string();
         let segments_path = format!("{}.segments", log_path);
-        let meta_path = "modular_registry_gc.metadata";
+        let meta_string = dir.join("space.db").to_string_lossy().to_string();
+        let meta_path = meta_string.as_str();
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(&segments_path);
         let _ = fs::remove_file(meta_path);
@@ -255,28 +269,37 @@ mod modular_pipeline_integration {
             .unwrap();
         drop(pipeline);
 
+        // Drop the capsule record without releasing its segment, as a crash
+        // between the two would.
         let capsule = registry.lookup(capsule_id).unwrap();
         let seg_id = capsule.segments[0];
-        let log = NvramLog::open(&log_path).unwrap();
-        let mut metadata = log.get_segment_metadata(seg_id).unwrap();
-        metadata.ref_count = 0;
-        metadata.deduplicated = false;
-        log.update_segment_metadata(seg_id, metadata.clone())
-            .unwrap();
         registry.delete_capsule(capsule_id).unwrap();
-        drop(log);
 
-        let mut pipeline =
-            registry_nvram_pipeline_with_encryption(&log_path, registry.clone(), key_manager)
-                .unwrap();
+        // Opening a pipeline recounts references, so the segment is an
+        // orphan with none.
+        let log = NvramLog::open(&log_path).unwrap();
+        let mut pipeline = capsule_registry::modular_pipeline::registry_pipeline_from_log_with_key(
+            log.clone(),
+            registry.clone(),
+            key_manager,
+        )
+        .unwrap();
+        let metadata = log.get_segment_metadata(seg_id).unwrap();
+        assert_eq!(metadata.ref_count, 0);
 
         let reclaimed = pipeline.garbage_collect().await.unwrap();
         assert_eq!(reclaimed, 1);
-        let log = NvramLog::open(&log_path).unwrap();
         assert!(log.get_segment_metadata(seg_id).is_err());
         if let Some(hash) = metadata.content_hash {
             assert!(registry.lookup_content(&hash).is_none());
         }
+
+        // The record stays in the file until compaction drops it.
+        drop(pipeline);
+        log.compact().unwrap();
+        drop(log);
+        let log = NvramLog::open(&log_path).unwrap();
+        assert!(log.get_segment_metadata(seg_id).is_err());
 
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(segments_path);

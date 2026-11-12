@@ -1,6 +1,6 @@
 # SPACE Core Scope
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-11-13
 
 Post-reset scope. The previous v0.2 plan is superseded by this document and [RESET.md](RESET.md).
 
@@ -26,6 +26,6 @@ PODMS mesh, gossip, Raft control plane, federation, foundry, other protocol view
 
 1. Confirm the reduced workspace builds and tests pass.
 2. Modular pipeline default; remove legacy bridge.
-3. Background GC.
+3. Background GC. **Done** ([#97](https://github.com/saworbit/SPACE/issues/97)).
 4. S3 multipart + range + error mapping.
 5. spacectl doctor and progress.

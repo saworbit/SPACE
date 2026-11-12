@@ -23,9 +23,11 @@ cargo build --release -p spacectl
 
 | Path | Contents |
 |------|----------|
-| `space.db/` | sled database: capsule records and the content-hash index |
-| `space.nvram` | append-only segment log |
-| `space.nvram.segments` | JSON map of segment offsets, lengths, compression and encryption metadata |
+| `space.journal` | capsule journal: a record for each capsule write and delete and each bucket and key change; the durable record of which capsules, buckets and keys exist |
+| `space.db/` | sled database: an index of the journal (capsule records, content-hash index, buckets and keys), rebuilt from the journal if it's lost |
+| `space.nvram` | append-only segment log; each segment's compression and encryption metadata is stored with its bytes ([on-disk format](../on-disk-format.md)) |
+
+A store created before on-disk format 1 has a `space.nvram.segments` file as well. This version refuses to open it.
 
 Set `SPACE_STORAGE_ROOT` to store segments as files under a directory instead of the NVRAM log. The registry stays in `./space.db`.
 
@@ -40,6 +42,10 @@ INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://127.0.
 ```
 
 The server has no authentication, so it listens on loopback only. `--bind 0.0.0.0` exposes it on every interface; do that only on a network you trust.
+
+While it runs, the server reclaims the space of deleted objects and interrupted uploads: in `space.nvram` by compacting it, under `SPACE_STORAGE_ROOT` by deleting the segment files no object references. See [Current limitations](#current-limitations) for when.
+
+It also scrubs the store, reading at most 64 MiB/s (`--scrub-rate`). A deep scrub runs at startup and then weekly (`--deep-scrub-interval`), and a light scrub runs daily (`--scrub-interval`, `0` to turn scrubbing off). Damage is logged at `WARN`. With the server stopped, `spacectl scrub --deep` lists any damaged segments and the capsules that hold them.
 
 ## 2. PUT an object
 
@@ -111,7 +117,7 @@ The S3 view and `spacectl` share one capsule store. Stop the server first: sled 
 ./target/release/spacectl read f1eec31a-8966-4ca1-9538-187d6529383b
 ```
 
-Buckets and keys are stored in `space.db` too, so objects are still there after the server restarts. `spacectl delete <id>` removes a capsule. An S3 key that pointed at it then returns `NoSuchKey`.
+Buckets and keys are recorded in `space.journal` too, so objects are still there after the server restarts. A PUT commits the object, its key and the removal of any object it replaces together, so a crash leaves either the old object or the new one under the key. `spacectl delete <id>` removes a capsule. An S3 key that pointed at it then returns `NoSuchKey`.
 
 ## Using an S3 SDK
 
@@ -133,7 +139,7 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ## Current limitations
 
 - No multipart upload.
-- DELETE and overwrites free the old capsule, but its bytes stay in `space.nvram` until compaction, and nothing runs compaction yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
+- DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. With the server stopped, `spacectl compact` compacts right away.
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
 
 ## Troubleshooting
@@ -145,5 +151,5 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 **Start from an empty store (deletes all data):**
 
 ```bash
-rm -rf space.db space.nvram space.nvram.segments
+rm -rf space.db space.journal space.nvram space.nvram.segments
 ```
