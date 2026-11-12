@@ -24,7 +24,7 @@ crates/dedup/                           @saworbit
 # ── Protocol views ───────────────────────────────────────────────
 crates/protocol-s3/                     @saworbit
 
-# ── CLI & web ────────────────────────────────────────────────────
+# ── CLI ──────────────────────────────────────────────────────────
 crates/spacectl/                        @saworbit
 
 # ── Build, CI, and tooling ───────────────────────────────────────
