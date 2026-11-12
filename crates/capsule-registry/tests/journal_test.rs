@@ -1,6 +1,7 @@
-//! The capsule journal through the registry: the sled index is rebuilt or
-//! caught up from it on open, crashed writes leave no index entries, and a
-//! journal and data log from different stores don't pair.
+//! The capsule journal through the registry: the sled index, names included,
+//! is rebuilt or caught up from it on open, a commit is all or nothing,
+//! crashed writes leave no index entries, and a journal and data log from
+//! different stores don't pair.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -12,7 +13,8 @@ use capsule_registry::modular_pipeline::{
     registry_pipeline_from_log_with_key, RegistryPipelineHandle,
 };
 use capsule_registry::CapsuleRegistry;
-use common::{ContentHash, Policy, SegmentId};
+use common::format::JournalRecord;
+use common::{CapsuleId, ContentHash, Policy, SegmentId};
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
 use uuid::Uuid;
@@ -110,6 +112,23 @@ fn patterned(len: usize, seed: u8) -> Vec<u8> {
     (0..len)
         .map(|i| (i % 251) as u8 ^ seed ^ (i / 3001) as u8)
         .collect()
+}
+
+/// Every name in `ns` and the capsule it points at.
+fn names(registry: &CapsuleRegistry, ns: &str) -> Vec<(String, CapsuleId)> {
+    registry.list_names(ns, "", None, usize::MAX).unwrap()
+}
+
+fn bind(ns: &str, name: &str, capsule_id: CapsuleId) -> JournalRecord {
+    JournalRecord::Bind {
+        ns: ns.into(),
+        name: name.into(),
+        capsule_id,
+    }
+}
+
+fn journal_len(store: &Store) -> u64 {
+    fs::metadata(store.journal_path()).unwrap().len()
 }
 
 #[tokio::test]
@@ -282,4 +301,167 @@ async fn the_digest_is_blake3_of_the_capsule() {
         registry.lookup(empty).unwrap().digest,
         Some(*blake3::hash(b"").as_bytes())
     );
+}
+
+#[tokio::test]
+async fn names_are_rebuilt_from_the_journal() {
+    let store = Store::new("names");
+    let ns = "s3:demo";
+    let (a, before, created_at) = {
+        let (registry, _log, mut handle) = store.open();
+        let policy = Policy::default();
+        let a = handle.write_capsule(b"alpha", &policy).await.unwrap();
+        let b = handle.write_capsule(b"bravo", &policy).await.unwrap();
+        registry.create_namespace(ns).unwrap();
+        registry.create_namespace("s3:empty").unwrap();
+        handle
+            .commit(vec![bind(ns, "a.txt", a), bind(ns, "b.txt", b)])
+            .unwrap();
+        // Rebinding replaces; unbinding a name that isn't there does nothing.
+        handle
+            .commit(vec![
+                bind(ns, "b.txt", a),
+                JournalRecord::Unbind {
+                    ns: ns.into(),
+                    name: "missing".into(),
+                },
+            ])
+            .unwrap();
+        let dropped = handle
+            .commit(vec![
+                JournalRecord::Unbind {
+                    ns: ns.into(),
+                    name: "b.txt".into(),
+                },
+                JournalRecord::Drop(b),
+            ])
+            .unwrap();
+        assert_eq!(dropped.len(), 1);
+        handle.release(&dropped[0]).await.unwrap();
+        (
+            a,
+            index_state(&registry),
+            registry.namespace_created_at(ns).unwrap(),
+        )
+    };
+    assert!(created_at.is_some());
+
+    fs::remove_dir_all(store.db_path()).unwrap();
+
+    let (registry, _log, handle) = store.open();
+    assert_eq!(index_state(&registry), before);
+    assert_eq!(names(&registry, ns), [("a.txt".to_string(), a)]);
+    assert_eq!(registry.namespace_created_at(ns).unwrap(), created_at);
+    assert!(registry.namespace_created_at("s3:empty").unwrap().is_some());
+    assert!(registry.namespace_created_at("s3:never").unwrap().is_none());
+    assert_eq!(handle.read_capsule(a).await.unwrap(), b"alpha");
+}
+
+#[tokio::test]
+async fn a_refused_commit_writes_nothing() {
+    let store = Store::new("refused");
+    let (registry, _log, mut handle) = store.open();
+    let a = handle
+        .write_capsule(b"kept", &Policy::default())
+        .await
+        .unwrap();
+    let len = journal_len(&store);
+    let missing = CapsuleId::new();
+
+    let refused = [
+        vec![bind("s3:b", "k", a), JournalRecord::Drop(missing)],
+        vec![JournalRecord::Drop(a), JournalRecord::Drop(a)],
+        vec![JournalRecord::Batch(vec![bind("s3:b", "k", a)])],
+        vec![bind("", "k", a)],
+    ];
+    for records in refused {
+        assert!(handle.commit(records.clone()).is_err(), "{records:?}");
+        assert_eq!(journal_len(&store), len, "{records:?} reached the journal");
+    }
+    assert!(names(&registry, "s3:b").is_empty());
+    assert!(registry.get_capsule(a).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_torn_batch_is_dropped_whole() {
+    let store = Store::new("torn_batch");
+    let ns = "s3:b";
+    let policy = Policy::default();
+    let old = patterned(30_000, 9);
+    let (a, new_id) = {
+        let (registry, _log, mut handle) = store.open();
+        let a = handle.write_capsule(&old, &policy).await.unwrap();
+        handle.commit(vec![bind(ns, "k", a)]).unwrap();
+        let before = journal_len(&store);
+
+        // An overwrite: the new capsule, its key and the drop of the old one.
+        let mut write = handle.begin_write(&policy).unwrap();
+        handle
+            .write_chunk(&mut write, &patterned(20_000, 10))
+            .await
+            .unwrap();
+        let new_id = write.capsule_id();
+        let dropped = handle
+            .finish_write_with(write, vec![bind(ns, "k", new_id), JournalRecord::Drop(a)])
+            .await
+            .unwrap();
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(names(&registry, ns), [("k".to_string(), new_id)]);
+        assert!(journal_len(&store) > before + 1);
+        (a, new_id)
+    };
+
+    // Cut the batch's last byte, as a crash during its append would.
+    let file = OpenOptions::new()
+        .write(true)
+        .open(store.journal_path())
+        .unwrap();
+    file.set_len(journal_len(&store) - 1).unwrap();
+    drop(file);
+
+    let (registry, _log, handle) = store.open();
+    assert_eq!(names(&registry, ns), [("k".to_string(), a)]);
+    assert!(registry.get_capsule(new_id).unwrap().is_none());
+    assert_eq!(handle.read_capsule(a).await.unwrap(), old);
+}
+
+#[test]
+fn s3_names_from_before_the_journal_are_refused_or_dropped() {
+    // A space.db whose S3 buckets were never journaled is refused, so going
+    // back to the build that wrote it still finds them.
+    let store = Store::new("legacy");
+    {
+        let db = sled::open(store.db_path()).unwrap();
+        db.open_tree("s3_buckets")
+            .unwrap()
+            .insert("demo", vec![0u8; 8])
+            .unwrap();
+        db.flush().unwrap();
+    }
+    let err = CapsuleRegistry::open(store.db_path()).err().unwrap();
+    assert!(
+        err.to_string().contains("before the capsule journal"),
+        "{err}"
+    );
+
+    // An index being rebuilt from the journal drops them: nothing reads
+    // them, and the journal doesn't hold them.
+    let store = Store::new("legacy_rebuild");
+    drop(CapsuleRegistry::open(store.db_path()).unwrap());
+    {
+        let db = sled::open(store.db_path()).unwrap();
+        db.open_tree("s3_objects")
+            .unwrap()
+            .insert("demo\0k", vec![0u8; 24])
+            .unwrap();
+        db.flush().unwrap();
+    }
+    // A new journal belongs to a new store, so the index no longer matches.
+    fs::remove_file(store.journal_path()).unwrap();
+    drop(CapsuleRegistry::open(store.db_path()).unwrap());
+    let db = sled::open(store.db_path()).unwrap();
+    assert!(!db
+        .tree_names()
+        .iter()
+        .any(|name| name.as_ref() == b"s3_objects"));
 }

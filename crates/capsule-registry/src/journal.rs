@@ -1,11 +1,12 @@
 //! The capsule journal (`docs/on-disk-format.md` §5–§7): an append-only file
-//! of `CAPSULE`, `DROP` and `BATCH` records. It's the durable record of which
-//! capsules exist; sled is an index rebuilt from it.
+//! of `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND` and `BATCH` records.
+//! It's the durable record of which capsules and names exist; sled is an
+//! index rebuilt from it.
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{anyhow, bail, Result};
 use common::format::{FileHeader, FileKind, JournalRecord};
@@ -13,13 +14,16 @@ use nvram_sim::record_file;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Version of the index sled keeps. Bump it whenever the encoding of an index
+/// record changes or the index starts holding something new from the
+/// journal: an index of another version is rebuilt from the journal.
+///
+/// 2: names (`NAMESPACE`, `BIND`, `UNBIND`) are indexed.
+pub const INDEX_VERSION: u32 = 2;
+
 /// How far into which journal the index has applied records. Stored in
 /// sled next to the index, and updated in the same transaction as each
 /// record's effects.
-/// Version of the index sled keeps. Bump it whenever the encoding of an index
-/// record changes: an index of another version is rebuilt from the journal.
-pub const INDEX_VERSION: u32 = 1;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalPosition {
     pub index_version: u32,
@@ -132,38 +136,13 @@ impl Journal {
         })
     }
 
-    /// Append `record` and fsync it, then call `apply` with the position just
-    /// past it. The record is durable, and so committed, once the fsync
-    /// returns. The lock is held across `apply` so the index applies
-    /// records in journal order.
-    pub fn commit<F>(&self, record: &JournalRecord, apply: F) -> Result<()>
-    where
-        F: FnOnce(JournalPosition) -> Result<()>,
-    {
-        let bytes = record
-            .encode_record()
-            .map_err(|err| anyhow!("can't encode journal record: {err}"))?;
-        let mut inner = self.inner.lock().unwrap();
-        let base = inner.end;
-        let written: Result<()> = (|| {
-            inner.file.seek(SeekFrom::Start(base))?;
-            inner.file.write_all(&bytes)?;
-            inner.file.sync_data()?;
-            Ok(())
-        })();
-        if let Err(err) = written {
-            // Leave nothing half-written for the next append to land after.
-            let _ = inner.file.set_len(base);
-            return Err(err);
+    /// Lock the journal for appending. Hold the lock across checking the
+    /// index, appending and applying: the index then applies records in
+    /// journal order, and a check sees every earlier commit.
+    pub fn lock(&self) -> JournalWriter<'_> {
+        JournalWriter {
+            inner: self.inner.lock().unwrap(),
         }
-        inner.end = base + bytes.len() as u64;
-        let position = JournalPosition {
-            index_version: INDEX_VERSION,
-            store_id: inner.header.store_id,
-            generation: inner.header.generation,
-            offset: inner.end,
-        };
-        apply(position)
     }
 
     /// Give an empty journal another store's id, so it pairs with an
@@ -192,5 +171,115 @@ impl Journal {
             generation: 0,
             offset: end,
         })
+    }
+}
+
+/// The journal, locked by [`Journal::lock`].
+pub struct JournalWriter<'a> {
+    inner: MutexGuard<'a, Inner>,
+}
+
+impl JournalWriter<'_> {
+    /// Append `record` and fsync it. The record is durable, and so
+    /// committed, once this returns. Returns the position just past it.
+    pub fn append(&mut self, record: &JournalRecord) -> Result<JournalPosition> {
+        let bytes = record
+            .encode_record()
+            .map_err(|err| anyhow!("can't encode journal record: {err}"))?;
+        let inner = &mut *self.inner;
+        let base = inner.end;
+        let written: Result<()> = (|| {
+            inner.file.seek(SeekFrom::Start(base))?;
+            inner.file.write_all(&bytes)?;
+            inner.file.sync_data()?;
+            Ok(())
+        })();
+        if let Err(err) = written {
+            // Leave nothing half-written for the next append to land after.
+            let _ = inner.file.set_len(base);
+            return Err(err);
+        }
+        inner.end = base + bytes.len() as u64;
+        Ok(JournalPosition {
+            index_version: INDEX_VERSION,
+            store_id: inner.header.store_id,
+            generation: inner.header.generation,
+            offset: inner.end,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::format::{CapsuleManifest, ManifestEntry};
+    use common::{CapsuleId, Policy, SegmentId};
+
+    fn manifest() -> CapsuleManifest {
+        CapsuleManifest {
+            capsule_id: CapsuleId::new(),
+            created_at: 1_700_000_000,
+            size: 10,
+            digest: [1u8; 32],
+            dedupe: true,
+            requires_encryption: false,
+            deduped_bytes: 0,
+            policy: Policy::default(),
+            entries: vec![ManifestEntry {
+                segment_id: SegmentId(1),
+                plain_len: 10,
+                content_hash: [2u8; 32],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_batch_cut_at_any_byte_is_dropped_as_a_torn_tail() {
+        let dir = std::env::temp_dir().join(format!("space_journal_unit_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("space.journal");
+
+        let old = manifest();
+        let new = manifest();
+        let (clean_len, bytes) = {
+            let journal = Journal::open(&path).unwrap();
+            let mut writer = journal.lock();
+            writer
+                .append(&JournalRecord::Capsule(Box::new(old.clone())))
+                .unwrap();
+            let clean_len = std::fs::metadata(&path).unwrap().len();
+            writer
+                .append(&JournalRecord::Batch(vec![
+                    JournalRecord::Capsule(Box::new(new.clone())),
+                    JournalRecord::Bind {
+                        ns: "s3:b".into(),
+                        name: "k".into(),
+                        capsule_id: new.capsule_id,
+                    },
+                    JournalRecord::Drop(old.capsule_id),
+                ]))
+                .unwrap();
+            (clean_len as usize, std::fs::read(&path).unwrap())
+        };
+
+        for cut in clean_len + 1..bytes.len() {
+            std::fs::write(&path, &bytes[..cut]).unwrap();
+            let journal =
+                Journal::open(&path).unwrap_or_else(|err| panic!("cut at {cut}: {err:#}"));
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len() as usize,
+                clean_len,
+                "cut at {cut}"
+            );
+            let mut records = 0;
+            journal
+                .replay(&journal.start(), |_, _| {
+                    records += 1;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(records, 1, "cut at {cut}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

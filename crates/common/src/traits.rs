@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use futures::Stream;
 use hex;
 
-use crate::format::CapsuleManifest;
+use crate::format::{CapsuleManifest, JournalRecord};
 use crate::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, EncryptionPolicy, Policy, Segment,
     SegmentId,
@@ -309,10 +309,23 @@ pub trait CapsuleCatalog: Send + Sync {
 
     fn lookup_capsule(&self, id: CapsuleId) -> Result<Capsule>;
 
-    /// Commit a capsule from its manifest (`docs/on-disk-format.md` §5.3).
-    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()>;
+    /// Commit `records` (`docs/on-disk-format.md` §5) all or nothing, as one
+    /// `BATCH` when there are several, and return the capsules their `DROP`s
+    /// removed. A `DROP` of a capsule that isn't live fails the commit.
+    fn commit(&self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>>;
 
-    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule>;
+    /// Commit a capsule from its manifest.
+    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+        self.commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+            .map(|_| ())
+    }
+
+    /// Commit a delete, and return the capsule it removed.
+    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
+        self.commit(vec![JournalRecord::Drop(id)])?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("capsule {id:?} not found"))
+    }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId>;
 

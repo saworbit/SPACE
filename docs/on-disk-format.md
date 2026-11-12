@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`. Names (`NAMESPACE`, `BIND`, `UNBIND`), the checkpoint, journal compaction and generation-swap compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. The checkpoint, journal compaction and generation-swap compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -196,14 +196,26 @@ Notes:
 
 `UNBIND` is the same without `capsule_id`.
 
-Namespaces and names are opaque strings to the core. The S3 view uses `ns = "s3:" + bucket` and `name = key`. Binding a name replaces any earlier binding; unbinding an unbound name does nothing. Neither drops a capsule on its own; that takes a `DROP` in the same `BATCH`.
+Namespaces and names are opaque strings to the core. A namespace can't be empty or contain NUL, because the index separates a namespace from its names with NUL; a reader refuses a record that breaks this. A name can be any string. The S3 view uses `ns = "s3:" + bucket` and `name = key`. Binding a name replaces any earlier binding; unbinding an unbound name does nothing. Neither drops a capsule on its own; that takes a `DROP` in the same `BATCH`.
 
 ### 5.7 `BATCH`
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | `count` |
-| 4 | … | `count` complete records (frame + header, no body), each a `CAPSULE`, `DROP`, `NAMESPACE`, `BIND` or `UNBIND` |
+| 4 | … | `count` sub-records |
+
+Sub-record:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 0 | 1 | `kind` | `CAPSULE`, `DROP`, `NAMESPACE`, `BIND` or `UNBIND` |
+| 1 | 1 | `version` | Layout version of that kind's header |
+| 2 | 2 | reserved | 0 |
+| 4 | 4 | `header_len` | |
+| 8 | `header_len` | header | As the kind's own record |
+
+A sub-record has no magic and no sums. The `BATCH`'s `head_sum` covers its bytes, and without the magic, the scan for a valid record after a torn `BATCH` (§8.1) can't mistake a sub-record for a record of its own.
 
 The sub-records apply in order, all or nothing. This is what makes compound operations atomic without special-purpose fields: an S3 overwrite is one `BATCH`, so a crash can't leave the new capsule nameless or the old one alive and unreferenced.
 
@@ -245,8 +257,8 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 |---|---|
 | `CAPSULE` | Insert the capsule. For each entry `refs[seg] += 1`. If `DEDUPE` is set and the hash isn't in the content index, register `hash → seg`. |
 | `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`; at 0, deregister the hash if it points at `seg`. |
-| `NAMESPACE` | Create the bucket (`s3_buckets`). |
-| `BIND` / `UNBIND` | Set or clear the name (`s3_objects`). |
+| `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists. |
+| `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name). |
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
 
@@ -263,7 +275,7 @@ Scanning a file, the reader validates each record's magic, `head_sum` and length
 - If no valid record exists anywhere after P (the reader searches forward for the magic and checks `head_sum`), it's a torn tail from an interrupted append. The file is truncated to P and the bytes dropped are logged.
 - If a valid record follows, it's corruption in the middle of the file. The store opens read-only and the damaged ranges are reported (`NvramLog::damage()` today; `spacectl doctor` should also name the capsules whose segments fall in them).
 
-Known limitation: the forward search can be fooled by a complete record embedded in a segment's plaintext body, for example a SPACE data log stored as an uncompressed, unencrypted capsule, when the record in front of it is torn. The result is a false damage report and a read-only open, never silent data loss.
+Known limitation: the forward search can be fooled by a complete record embedded in the bytes of the torn record, when they hold one. That happens with a SPACE data log stored as an uncompressed, unencrypted capsule, or a name crafted to contain a record (names are written as is). The result is a false damage report and a read-only open, or for the journal a refusal to open, never silent data loss. `BATCH` sub-records carry no magic so that every batch doesn't trip it (§5.7).
 
 ### 8.2 Data log
 
@@ -358,7 +370,13 @@ Suggested PRs:
    - A journal with damage inside it is refused rather than opened read-only.
    - `read_capsule` checks the digest. Streaming and range reads, scrub and the S3 ETag don't use it yet.
    - `BATCH` is encoded, decoded and applied, but nothing writes one until the S3 view moves onto the journal.
-3. `NAMESPACE`, `BIND`, `UNBIND`; the S3 view moves onto the journal.
+3. `NAMESPACE`, `BIND`, `UNBIND`; the S3 view moves onto the journal. **Done**, with these differences from the draft:
+   - `BATCH` sub-records lost their frame (§5.7). Embedded whole records made a torn `BATCH` look like damage in the middle of the journal, which refuses to open.
+   - Names are generic, as drafted (open question 5). sled indexes them in `namespaces` and `names`; the old `s3_buckets` and `s3_objects` trees go. A `space.db` that still holds S3 buckets or keys but has no journal position is refused, like one holding capsules. An index being rebuilt drops those trees, warning if they held anything, since the journal doesn't have them.
+   - The index version is 2, so an index written before names were journaled is rebuilt.
+   - Pins are the data log's in-memory reference counts. An S3 overwrite or DELETE commits its `DROP` at once, and the S3 view holds back releasing the dropped capsule's references while a GET is reading it. `Pipeline::garbage_collect` doesn't know about pins and would remove such segments, but nothing calls it while `serve-s3` runs.
+   - `spacectl delete` of a named capsule keeps today's behaviour (open question 6): the name stays, and reads as missing.
+   - The registry checks a commit's `CAPSULE` and `DROP` records against the index under the journal lock, so a `DROP` of a capsule that isn't live fails the whole commit and nothing is written.
 4. Compaction by generation swap. Closes #108. Then schedule GC and compaction (the rest of #97).
 
 ## 15. Tests
@@ -375,6 +393,6 @@ Suggested PRs:
 2. **Keyed digest.** Should encrypted capsules use a keyed digest? That closes the confirmation oracle for the digest, but `content_hash` leaks the same thing, and the digest stops matching `b3sum`.
 3. **ETag.** Should it be the digest in hex, or an MD5 computed alongside it? Some S3 tools compare a single-part ETag with the body's MD5; today's UUID ETag already fails that check.
 4. **Checkpoint.** Should the first implementation include the checkpoint, or always scan?
-5. **Names.** Generic namespaces (as drafted), or S3-specific record kinds?
-6. **Deleting a named capsule.** `spacectl delete` of a capsule an S3 key points at: keep today's behaviour (the key reads as missing), or make `DROP` also remove bindings?
+5. **Names.** Generic namespaces (as drafted), or S3-specific record kinds? *Generic, as implemented in PR 3.*
+6. **Deleting a named capsule.** `spacectl delete` of a capsule an S3 key points at: keep today's behaviour (the key reads as missing), or make `DROP` also remove bindings? *Today's behaviour, for now. Removing bindings would need an index from capsules to the names that point at them.*
 7. **Frame sums.** BLAKE3 (no new dependency) or CRC32C (cheaper per segment)?

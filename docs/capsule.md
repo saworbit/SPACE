@@ -286,15 +286,18 @@ Each `SEGMENT` record carries the segment's write-once descriptor (compression, 
 
 The registry has two parts:
 
-- **The capsule journal**, `space.journal` next to `space.db`. An append-only file of framed records: a `CAPSULE` manifest commits each write, and a `DROP` commits each delete ([on-disk-format.md](on-disk-format.md) §5–§7). It's the durable record of which capsules exist.
+- **The capsule journal**, `space.journal` next to `space.db`. An append-only file of framed records: a `CAPSULE` manifest commits each write, a `DROP` commits each delete, and `NAMESPACE`, `BIND` and `UNBIND` records create namespaces and point names at capsules ([on-disk-format.md](on-disk-format.md) §5–§7). Several records can commit together as one `BATCH`. It's the durable record of which capsules and names exist.
 - **A sled index of the journal**, in `space.db`:
   - `Capsule` records keyed by `CapsuleId`
   - the content-hash index, `ContentHash → SegmentId`, for dedup lookup
   - per-segment reference counts, and which segment each indexed hash belongs to
+  - namespaces, and the capsule each name points at
   - the journal position the index has reached
   - a counter for allocating `SegmentId`s
 
-Each journal record is applied to the index in one sled transaction that also records the new position. On open, records past that position are replayed; an index that doesn't match the journal, or a missing `space.db`, is rebuilt from it. S3 buckets and keys are still stored only in sled.
+Each journal record, or each whole `BATCH`, is applied to the index in one sled transaction that also records the new position. On open, records past that position are replayed; an index that doesn't match the journal, or a missing `space.db`, is rebuilt from it.
+
+Names are opaque strings to the registry. The S3 view keeps each bucket as the namespace `s3:<bucket>` and each key as a name in it.
 
 Segment metadata isn't in the registry: the descriptor is written once, in the segment's record in the NVRAM log, through `StorageBackend::begin_txn()…commit()`, and the log's in-memory ref counts are set from the index when a pipeline opens. See [§9.3](#93-metadata-commits) for the commit order.
 
@@ -463,14 +466,16 @@ Segment lifecycle:
 
 ### Delete path
 
-`Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`, S3 DELETE, and S3 overwrites. It:
+`Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`. It:
 
 1. Commits the delete: appends a `DROP` record to the journal and fsyncs it. Applying it removes the capsule record, decrements each segment's reference count in the index, and removes a segment's hash from the content index when its count reaches zero.
-2. For each `SegmentId` in `capsule.segments`: if the in-memory `ref_count` is above 1, decrements it; otherwise drops the segment from the log's map.
+2. Releases the capsule's segments: for each `SegmentId` in `capsule.segments`, if the in-memory `ref_count` is above 1, decrements it; otherwise drops the segment from the log's map.
 
 The delete commits first, so a crash part way through step 2 leaves only in-memory counts, which the next open sets again from the index.
 
-Segments still referenced by other Capsules remain.
+S3 DELETE and overwrites commit the `DROP` in the same `BATCH` as the key change (`Pipeline::finish_write_with` or `Pipeline::commit`), then release the dropped capsule with `Pipeline::release`. If a GET is still reading it, the S3 view holds the release until the GET ends: the in-memory references pin the segments, so they stay readable.
+
+Segments still referenced by other Capsules remain. `spacectl delete` leaves any S3 key that points at the capsule in place; the key then reads as missing.
 
 ### Garbage collection
 
@@ -802,7 +807,7 @@ never on capsule.policy
 | **Damaged bytes inside the log** | `open()` finds bytes that aren't a valid record, with valid records after them | The log opens read-only and `NvramLog::damage()` lists the ranges. Segments outside them still read; capsules with a segment inside can't be read. |
 | **Crash mid-compaction** | `.compacting` marker present | `open()` refuses to open the log. Verify or restore the data, then delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)). |
 | **Crash mid-append** | `open()` finds a last record that fails its checksums, with nothing valid after it | Truncated away; it belonged to a write that never committed. Segments the interrupted write had already stored stay, with no references, until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). |
-| **Lost or corrupt `space.db`** | `space.db` missing, or sled fails to open it | Delete it and reopen: the index is rebuilt from `space.journal`. S3 buckets and keys are stored only in sled until they move to the journal, so they're lost. |
+| **Lost or corrupt `space.db`** | `space.db` missing, or sled fails to open it | Delete it and reopen: the index, S3 buckets and keys included, is rebuilt from `space.journal`. |
 | **Journal record cut short** | `open()` finds a last journal record that fails its checks | Truncated away; it was a commit that never completed, so its write or delete didn't happen. |
 | **Damage inside the journal** | Invalid bytes with valid journal records after them | The registry refuses to open: the capsules recorded in the damaged range can't be recovered from it. |
 | **Wrong key on read** | MAC verify fails | Read fails with auth error. No plaintext is exposed. |
@@ -829,7 +834,7 @@ never on capsule.policy
 | **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted). |
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |
-| **Registry** | The capsule journal and its sled index: capsules, content-hash index, reference counts, segment ID counter. |
+| **Registry** | The capsule journal and its sled index: capsules, names, content-hash index, reference counts, segment ID counter. |
 | **Capsule journal** | `space.journal`: the append-only record of capsule writes (`CAPSULE`) and deletes (`DROP`). The sled index is rebuilt from it. |
 | **NVRAM log** | The primary durable backend. Append-only log of framed segment records. |
 | **Compaction** | Rewriting the live segments of an NVRAM log to reclaim space from GC'd segments. |

@@ -8,13 +8,9 @@ use std::sync::{Arc, Mutex};
 use tracing::warn;
 
 use crate::journal::{Journal, JournalPosition};
-use crate::metadata_log::MetadataLog;
-use crate::metadata_ops::{MetadataOp, OpResult};
 use crate::store::{MetadataStore, SledStore};
 
 mod journal;
-mod metadata_log;
-mod metadata_ops;
 mod store;
 
 const DEFAULT_PAGE_SIZE: usize = 1024;
@@ -32,7 +28,8 @@ pub mod modular_pipeline {
     use std::sync::{Arc, Mutex};
 
     use anyhow::Result;
-    use common::{traits::DataStream, CapsuleId, EncryptionPolicy, Policy, SegmentId};
+    use common::format::JournalRecord;
+    use common::{traits::DataStream, Capsule, CapsuleId, EncryptionPolicy, Policy, SegmentId};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
@@ -159,6 +156,42 @@ pub mod modular_pipeline {
             }
         }
 
+        /// Commit the write together with `with`, all or nothing. Returns
+        /// the capsules `with` dropped; release each with [`Self::release`].
+        pub async fn finish_write_with(
+            &mut self,
+            write: CapsuleWrite,
+            with: Vec<JournalRecord>,
+        ) -> Result<Vec<Capsule>> {
+            match self {
+                Self::Encrypted(p) => p.finish_write_with(write, with).await,
+                Self::Plain(p) => p.finish_write_with(write, with).await,
+                Self::FsEncrypted(p) => p.finish_write_with(write, with).await,
+                Self::FsPlain(p) => p.finish_write_with(write, with).await,
+            }
+        }
+
+        /// Commit `records`, all or nothing. Returns the capsules they
+        /// dropped; release each with [`Self::release`].
+        pub fn commit(&mut self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+            match self {
+                Self::Encrypted(p) => p.commit(records),
+                Self::Plain(p) => p.commit(records),
+                Self::FsEncrypted(p) => p.commit(records),
+                Self::FsPlain(p) => p.commit(records),
+            }
+        }
+
+        /// Release a dropped capsule's references to its segments.
+        pub async fn release(&mut self, capsule: &Capsule) -> Result<()> {
+            match self {
+                Self::Encrypted(p) => p.release(capsule).await,
+                Self::Plain(p) => p.release(capsule).await,
+                Self::FsEncrypted(p) => p.release(capsule).await,
+                Self::FsPlain(p) => p.release(capsule).await,
+            }
+        }
+
         pub async fn abort_write(&mut self, write: CapsuleWrite) -> Result<()> {
             match self {
                 Self::Encrypted(p) => p.abort_write(write).await,
@@ -241,6 +274,24 @@ pub mod modular_pipeline {
     where
         Rd: AsyncRead + Send,
     {
+        let staged = stage_from_reader(pipeline, reader, policy).await?;
+        let (id, size) = (staged.capsule_id(), staged.size());
+        let mut handle = pipeline.lock().await;
+        staged.commit(&mut handle, Vec::new()).await?;
+        Ok((id, size))
+    }
+
+    /// Store everything `reader` yields as an open write, as
+    /// [`write_from_reader`] does, but leave committing it to the caller:
+    /// see [`StagedWrite::commit`].
+    pub async fn stage_from_reader<Rd>(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+        reader: Rd,
+        policy: &Policy,
+    ) -> Result<StagedWrite>
+    where
+        Rd: AsyncRead + Send,
+    {
         let write = pipeline.lock().await.begin_write(policy)?;
         let chunk_size = write.chunk_size();
         let mut open = OpenWrite {
@@ -278,10 +329,44 @@ pub mod modular_pipeline {
                 break;
             }
         }
+        Ok(StagedWrite { open, size })
+    }
 
-        let mut handle = pipeline.lock().await;
-        let write = open.take();
-        Ok((handle.finish_write(write).await?, size))
+    /// A write whose bytes are all stored but not yet committed. Dropping
+    /// it aborts the write in the background.
+    pub struct StagedWrite {
+        open: OpenWrite,
+        size: u64,
+    }
+
+    impl StagedWrite {
+        pub fn capsule_id(&self) -> CapsuleId {
+            self.open
+                .write
+                .as_ref()
+                .expect("write is open")
+                .capsule_id()
+        }
+
+        /// Logical bytes written.
+        pub fn size(&self) -> u64 {
+            self.size
+        }
+
+        /// Commit the capsule together with `with`, all or nothing
+        /// (`docs/on-disk-format.md` §5.7). Call it with the pipeline locked,
+        /// so the records can be built from state no other commit changes in
+        /// between. Returns the capsules `with` dropped; release each with
+        /// [`RegistryPipelineHandle::release`]. If the commit fails, the
+        /// write's segments are released.
+        pub async fn commit(
+            mut self,
+            handle: &mut RegistryPipelineHandle,
+            with: Vec<JournalRecord>,
+        ) -> Result<Vec<Capsule>> {
+            let write = self.open.take();
+            handle.finish_write_with(write, with).await
+        }
     }
 
     /// Aborts the write in the background if dropped before it ends.
@@ -490,12 +575,8 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
         self.lookup(id)
     }
 
-    fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
-        self.create_capsule(manifest)
-    }
-
-    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        self.delete_capsule(id)
+    fn commit(&self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+        self.commit(records)
     }
 
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
@@ -519,13 +600,12 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
     }
 }
 
-/// Capsule records and the content index, kept in sled as an index of the
-/// capsule journal (`docs/on-disk-format.md` §7). The journal sits next to
-/// the database (`space.journal` beside `space.db`) and is the durable
+/// Capsule records, names and the content index, kept in sled as an index of
+/// the capsule journal (`docs/on-disk-format.md` §7). The journal sits next
+/// to the database (`space.journal` beside `space.db`) and is the durable
 /// record: losing the database costs one replay.
 pub struct CapsuleRegistry {
     store: Arc<dyn MetadataStore>,
-    log: MetadataLog,
     journal: Arc<Journal>,
     /// Content hashes of segments stored by writes that haven't committed.
     /// Concurrent writes can dedup against them, but they reach the durable
@@ -548,7 +628,6 @@ impl CapsuleRegistry {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
-        let log = MetadataLog::new(Arc::clone(&store));
         let journal_path = Journal::path_for(path);
         let journal = Arc::new(Journal::open(&journal_path)?);
 
@@ -566,9 +645,9 @@ impl CapsuleRegistry {
                 store.set_journal_position(&journal.start())?;
                 journal.replay(&journal.start(), apply)?;
             }
-            None if store.has_capsules()? => bail!(
-                "'{path_str}' holds capsules but has no capsule journal position: it was written \
-                 before the capsule journal (docs/on-disk-format.md §13)"
+            None if store.has_records()? => bail!(
+                "'{path_str}' holds capsules or S3 buckets but has no capsule journal position: \
+                 it was written before the capsule journal (docs/on-disk-format.md §13)"
             ),
             None => {
                 store.clear_index()?;
@@ -579,7 +658,6 @@ impl CapsuleRegistry {
 
         Ok(Self {
             store,
-            log,
             journal,
             pending: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -618,22 +696,65 @@ impl CapsuleRegistry {
         self.store.ensure_segment_floor(floor)
     }
 
-    /// Commit a capsule: append its `CAPSULE` record to the journal, then
-    /// apply it to the index. A capsule whose id is already live is refused.
-    pub fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
-        if self.store.get_capsule(&manifest.capsule_id)?.is_some() {
-            bail!("Capsule collision (extremely unlikely)");
+    /// Commit `records` all or nothing: append them to the journal, as one
+    /// `BATCH` when there are several, then apply them to the index. Returns
+    /// the capsules their `DROP`s removed. Nothing is written if a `CAPSULE`
+    /// reuses a live id, a `DROP` names a capsule that isn't live, or a
+    /// record is itself a `BATCH`.
+    pub fn commit(&self, mut records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
+        let mut journal = self.journal.lock();
+        // The index changes only under the journal lock, so what these
+        // checks see holds until the record is applied.
+        let mut created: Vec<CapsuleId> = Vec::new();
+        let mut segments: Vec<SegmentId> = Vec::new();
+        let mut dropped: Vec<Capsule> = Vec::new();
+        for record in &records {
+            match record {
+                JournalRecord::Capsule(manifest) => {
+                    let id = manifest.capsule_id;
+                    if created.contains(&id) || self.store.get_capsule(&id)?.is_some() {
+                        bail!("Capsule collision (extremely unlikely)");
+                    }
+                    created.push(id);
+                    segments.extend(manifest.entries.iter().map(|e| e.segment_id));
+                }
+                JournalRecord::Drop(id) => {
+                    if dropped.iter().any(|c| c.id == *id) {
+                        bail!("capsule {:?} is dropped twice in one commit", id);
+                    }
+                    let capsule = self
+                        .store
+                        .get_capsule(id)?
+                        .ok_or_else(|| anyhow!("Capsule not found"))?;
+                    dropped.push(capsule);
+                }
+                JournalRecord::Batch(_) => bail!("a batch can't hold another batch"),
+                JournalRecord::Namespace { .. }
+                | JournalRecord::Bind { .. }
+                | JournalRecord::Unbind { .. } => {}
+            }
         }
-        let segments: Vec<SegmentId> = manifest.entries.iter().map(|e| e.segment_id).collect();
-        let record = JournalRecord::Capsule(Box::new(manifest));
-        self.journal.commit(&record, |position| {
-            self.store.apply_journal(&record, &position)
-        })?;
-        self.pending
-            .lock()
-            .unwrap()
-            .retain(|_, seg| !segments.contains(seg));
-        Ok(())
+        let record = match records.len() {
+            0 => return Ok(Vec::new()),
+            1 => records.remove(0),
+            _ => JournalRecord::Batch(records),
+        };
+        let position = journal.append(&record)?;
+        self.store.apply_journal(&record, &position)?;
+        drop(journal);
+        if !segments.is_empty() {
+            self.pending
+                .lock()
+                .unwrap()
+                .retain(|_, seg| !segments.contains(seg));
+        }
+        Ok(dropped)
+    }
+
+    /// Commit a capsule from its manifest.
+    pub fn create_capsule(&self, manifest: CapsuleManifest) -> Result<()> {
+        self.commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+            .map(|_| ())
     }
 
     fn collect_capsules_paginated(&self, page_size: usize) -> Result<Vec<Capsule>> {
@@ -717,80 +838,50 @@ impl CapsuleRegistry {
         Ok(capsules.into_iter().map(|c| c.id).collect())
     }
 
-    /// Commit a delete: append a `DROP` record to the journal, then apply
-    /// it. Segment bytes stay until compaction.
+    /// Commit a delete, and return the capsule it removed. Segment bytes
+    /// stay until compaction. Names that point at the capsule are left as
+    /// they are; readers treat them as missing.
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        let capsule = self.lookup(id)?;
-        let record = JournalRecord::Drop(id);
-        self.journal.commit(&record, |position| {
-            self.store.apply_journal(&record, &position)
-        })?;
-        Ok(capsule)
+        self.commit(vec![JournalRecord::Drop(id)])?
+            .pop()
+            .ok_or_else(|| anyhow!("Capsule not found"))
     }
 
-    /// Create an S3 bucket. Creating one that exists is a no-op.
-    pub fn create_bucket(&self, bucket: &str) -> Result<()> {
+    /// Create namespace `ns` if it doesn't exist.
+    pub fn create_namespace(&self, ns: &str) -> Result<()> {
+        if self.store.get_namespace(ns)?.is_some() {
+            return Ok(());
+        }
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        match self.log.apply(MetadataOp::PutBucket {
-            bucket: bucket.to_string(),
+        self.commit(vec![JournalRecord::Namespace {
+            ns: ns.to_string(),
             created_at,
-        })? {
-            OpResult::Ok => Ok(()),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        }])
+        .map(|_| ())
     }
 
-    /// When an S3 bucket was created, or `None` if it doesn't exist.
-    pub fn bucket_created_at(&self, bucket: &str) -> Result<Option<u64>> {
-        self.store.get_bucket(bucket)
+    /// When namespace `ns` was created, or `None` if it doesn't exist.
+    pub fn namespace_created_at(&self, ns: &str) -> Result<Option<u64>> {
+        self.store.get_namespace(ns)
     }
 
-    /// The capsule an S3 key points at.
-    pub fn object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
-        self.store.get_object(bucket, key)
+    /// The capsule `name` in `ns` points at.
+    pub fn name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>> {
+        self.store.get_name(ns, name)
     }
 
-    /// Point an S3 key at a capsule. Returns the capsule it pointed at before.
-    pub fn bind_object(
+    /// Names in `ns` that start with `prefix` and sort after `start_after`,
+    /// in byte order, at most `limit` of them.
+    pub fn list_names(
         &self,
-        bucket: &str,
-        key: &str,
-        capsule: CapsuleId,
-    ) -> Result<Option<CapsuleId>> {
-        self.replaced(MetadataOp::PutObject {
-            bucket: bucket.to_string(),
-            key: key.to_string(),
-            capsule,
-        })
-    }
-
-    /// Remove an S3 key. Returns the capsule it pointed at.
-    pub fn unbind_object(&self, bucket: &str, key: &str) -> Result<Option<CapsuleId>> {
-        self.replaced(MetadataOp::DeleteObject {
-            bucket: bucket.to_string(),
-            key: key.to_string(),
-        })
-    }
-
-    /// S3 keys in `bucket` that start with `prefix` and sort after
-    /// `start_after`, in byte order, at most `limit` of them.
-    pub fn list_objects(
-        &self,
-        bucket: &str,
+        ns: &str,
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, CapsuleId)>> {
-        self.store.list_objects(bucket, prefix, start_after, limit)
-    }
-
-    fn replaced(&self, op: MetadataOp) -> Result<Option<CapsuleId>> {
-        match self.log.apply(op)? {
-            OpResult::Replaced(previous) => Ok(previous),
-            other => anyhow::bail!("unexpected metadata op result: {:?}", other),
-        }
+        self.store.list_names(ns, prefix, start_after, limit)
     }
 
     pub fn get_dedup_stats(&self) -> (usize, usize) {
@@ -825,7 +916,6 @@ impl Clone for CapsuleRegistry {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
-            log: self.log.clone(),
             journal: Arc::clone(&self.journal),
             pending: Arc::clone(&self.pending),
         }
