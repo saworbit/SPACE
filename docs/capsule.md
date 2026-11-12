@@ -287,7 +287,7 @@ Each `SEGMENT` record carries the segment's write-once descriptor (compression, 
 2. Without holding the log's locks, it writes `{path}.compact`: a `FILE` record with the generation incremented, then each live record copied unchanged, a buffer at a time. Reads and appends carry on meanwhile.
 3. Under the log's locks, it copies the records appended since step 1, fsyncs, and renames the new file over the log.
 
-A crash before the rename leaves the old log; one after it leaves the new generation. Both open without manual steps. A log with nothing to reclaim is left alone. Compaction refuses to run until ref counts have been recounted, so it can't mistake a live segment for a dead one. The new `FILE` record keeps the segment id floor above every id the log has held, so ids compaction removed are never handed out again. Nothing schedules compaction yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
+A crash before the rename leaves the old log; one after it leaves the new generation. Both open without manual steps. A log with nothing to reclaim is left alone. Compaction refuses to run until ref counts have been recounted, so it can't mistake a live segment for a dead one. The new `FILE` record keeps the segment id floor above every id the log has held, so ids compaction removed are never handed out again. `serve-s3` schedules compaction and `spacectl compact` runs it on demand ([§Garbage collection](#garbage-collection)).
 
 ### 4.3 Capsule registry
 
@@ -486,9 +486,16 @@ Segments still referenced by other Capsules remain. `spacectl delete` leaves any
 
 ### Garbage collection
 
-`Pipeline::garbage_collect()` removes segments that no Capsule references, or whose `ref_count` is 0, and unregisters their hashes. Unreferenced segments are typically left over from a failed or interrupted write.
+`Pipeline::garbage_collect()` removes segments that no Capsule references and nothing pins, and unregisters their hashes. They're typically left over from a failed or interrupted write. Pinned segments are kept: those an open write holds, and those of a Capsule a commit dropped until `Pipeline::release` is called for it. That covers an S3 GET still reading an object an overwrite or DELETE removed. A segment a Capsule references is kept whatever its stored `ref_count` says.
 
-**Bytes remain in the log** until compaction (`NvramLog::compact()`) rewrites it. The two-step design keeps deletion cheap (touch one record) and bulk reclamation infrequent. Nothing runs GC or compaction automatically yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
+**Bytes remain in the log** until compaction (`NvramLog::compact()`) writes the next generation without them. The two-step design keeps deletion cheap (touch one record) and bulk reclamation infrequent. In the NVRAM log, compaction alone reclaims unreferenced segments, since they have no references in the log's counts. Under `SPACE_STORAGE_ROOT` each segment is a file, and garbage collection deletes it.
+
+**Scheduling.** `serve-s3` runs a reclaim pass at startup and then every `--reclaim-interval` seconds (default 300; 0 turns it off):
+
+- On the NVRAM log it compacts once a quarter of the log, and at least one default segment (4 MiB), is reclaimable, on a blocking thread and without the pipeline lock, so requests carry on.
+- Under `SPACE_STORAGE_ROOT` it garbage-collects, with the pipeline lock held.
+
+`spacectl gc` and `spacectl compact` run the two steps on demand, with the server stopped, since only one process can open a store.
 
 ### Race-freedom
 
@@ -606,7 +613,7 @@ There's no transaction spanning the two stores. A write commits in this order:
 3. After the last segment: append the `CAPSULE` record to the journal and fsync it. This is the commit point.
 4. Apply the record to the sled index in one transaction: the capsule record, reference counts, content-index entries for its segments, and the new journal position.
 
-A crash before step 3 leaves no visible capsule, and nothing in the durable content index points at its segments. They come back with no references, and compaction reclaims them; nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97)). A crash between steps 3 and 4 is repaired on the next open, which replays the journal past the index's position. The log's in-memory ref counts are set from the index whenever a pipeline opens, so no crash leaves a count wrong.
+A crash before step 3 leaves no visible capsule, and nothing in the durable content index points at its segments. They come back with no references, and compaction reclaims them: at a `serve-s3` reclaim pass, or with `spacectl compact`. A crash between steps 3 and 4 is repaired on the next open, which replays the journal past the index's position. The log's in-memory ref counts are set from the index whenever a pipeline opens, so no crash leaves a count wrong.
 
 ### 9.4 PODMS swarm behavior (archived)
 
@@ -708,9 +715,9 @@ Compaction doesn't rewrite the log either. It writes the next generation to a ne
 
 **Alternative**: in-place update with a free list.
 
-**Why**: append-only matches NVRAM/flash physics (no rewrites = no write amplification = longer device life), matches replication semantics (ship the log forward), and dramatically simplifies crash recovery (no partial-write torn states). The intent is for compaction to be amortized in the background. It copies outside the log's locks and holds them only to catch up on appends and rename, but nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
+**Why**: append-only matches NVRAM/flash physics (no rewrites = no write amplification = longer device life), matches replication semantics (ship the log forward), and dramatically simplifies crash recovery (no partial-write torn states). The intent is for compaction to be amortized in the background. It copies outside the log's locks and holds them only to catch up on appends and rename, and `serve-s3` runs it once a quarter of the log is reclaimable.
 
-The trade-off is space overhead: GC'd segments occupy bytes until the next compaction. For workloads with rapid churn this is real. `compact_interval_secs` is meant to tune the frequency, but nothing reads it yet.
+The trade-off is space overhead: GC'd segments occupy bytes until the next compaction. For workloads with rapid churn this is real. `serve-s3 --reclaim-interval` sets how often a pass checks, and compaction waits until a quarter of the log is reclaimable. The per-capsule `compact_interval_secs` is still read by nothing: how often to compact is a property of the log, not of a capsule.
 
 ### 10.9 Two-store split: NVRAM log + Sled registry
 

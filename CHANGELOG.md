@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `serve-s3` reclaims space on its own: a pass at startup and every `--reclaim-interval` seconds (default 300, `0` turns it off) compacts `space.nvram` once a quarter of it, and at least 4 MiB, is reclaimable, or deletes unreferenced segments under `SPACE_STORAGE_ROOT`. `spacectl gc` removes segments no capsule references, and `spacectl compact` compacts `space.nvram` at once (part of #97).
+
 ### Changed
 
 - S3 buckets and keys are names in the capsule journal: `NAMESPACE`, `BIND` and `UNBIND` records (on-disk format 1, §5.5–§5.6), indexed in sled like capsules. An S3 PUT commits the new capsule, its key, the bucket if it's new, and the drop of the capsule it replaces as one `BATCH`; a DELETE commits the key's removal and the drop as one. A crash can no longer leave a new object without its key, or a replaced one alive with no key pointing at it. An overwrite or DELETE no longer waits for GETs reading the old object: the capsule leaves the index at once, and its segments stay until the last of those GETs ends. A failed PUT no longer creates its bucket.
@@ -21,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Garbage collection keeps the segments of open writes, and those of an object an S3 overwrite or DELETE dropped while a GET still reads it, instead of refusing to run while a write is open. It never removes a segment a capsule references, whatever the segment's stored ref count.
+- A read of the data log during a compaction could look up a segment's offset in one generation and read it from the next. The read's checksum check rejected the bytes, so the read failed rather than returning them.
 - Compaction is crash-safe, holds one buffer of data at a time rather than every live segment, and no longer blocks reads and writes while it copies. It writes the live records to the next generation of the log, `space.nvram.compact`, outside the log's locks, catches up on appends under them, and renames the new file into place. A crash at any point leaves the old log or the new one, and opening the log deletes an unfinished `space.nvram.compact`. The `.compacting` marker and its manual recovery are gone. Segments an open write or a GET still holds are kept, and segment ids compaction removes aren't handed out again, even after `space.db` is lost (#108).
 - Losing `space.db` no longer loses anything: reopening rebuilds capsules, S3 buckets and keys, and the content index from the journal.
 - A write that crashed after storing a segment no longer leaves that segment in the content index, where a later write could dedup against it after compaction removed it. Hashes reach the durable index only when the capsule that holds them commits.

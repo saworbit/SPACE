@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::pin::Pin;
 
 use anyhow::Result;
@@ -336,4 +337,13 @@ pub trait CapsuleCatalog: Send + Sync {
     fn capsules(&self) -> Vec<Capsule>;
 
     fn content_entries(&self) -> Vec<(ContentHash, SegmentId)>;
+
+    /// Every segment some committed capsule references.
+    fn referenced_segments(&self) -> Result<HashSet<SegmentId>> {
+        Ok(self
+            .capsules()
+            .into_iter()
+            .flat_map(|capsule| capsule.segments)
+            .collect())
+    }
 }

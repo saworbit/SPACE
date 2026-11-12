@@ -259,6 +259,68 @@ pub mod modular_pipeline {
                 Self::FsPlain(p) => p.garbage_collect().await,
             }
         }
+
+        /// The NVRAM data log the pipeline stores segments in, or `None` for
+        /// a file backend.
+        pub fn data_log(&self) -> Option<NvramLog> {
+            match self {
+                Self::Encrypted(p) => Some(p.storage().log().clone()),
+                Self::Plain(p) => Some(p.storage().log().clone()),
+                Self::FsEncrypted(_) | Self::FsPlain(_) => None,
+            }
+        }
+    }
+
+    /// What a [`reclaim`] pass did.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct ReclaimReport {
+        /// Segments garbage collection removed (file backends).
+        pub collected: usize,
+        /// Bytes compaction reclaimed, when it ran (the NVRAM log).
+        pub compacted: Option<u64>,
+    }
+
+    /// Whether a scheduled pass should compact `log`: once a quarter of it,
+    /// and at least one default segment, is reclaimable. Compaction copies
+    /// every live record, so it waits until there's enough to gain.
+    pub fn worth_compacting(log: &NvramLog) -> bool {
+        let reclaimable = log.reclaimable_bytes();
+        reclaimable >= common::SEGMENT_SIZE as u64 && reclaimable.saturating_mul(4) >= log.size()
+    }
+
+    /// One reclaim pass, as `serve-s3` schedules them.
+    ///
+    /// On the NVRAM log it compacts, if [`worth_compacting`] says so. A
+    /// segment no capsule references has no references in the log's counts,
+    /// so compaction leaves it out and garbage collection has nothing to
+    /// add. Compaction runs on a blocking thread without the pipeline lock,
+    /// so writes and reads carry on.
+    ///
+    /// On a file backend it garbage-collects, with the pipeline locked: each
+    /// unreferenced segment is a file to delete.
+    pub async fn reclaim(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+    ) -> Result<ReclaimReport> {
+        let log = {
+            let mut handle = pipeline.lock().await;
+            match handle.data_log() {
+                Some(log) => log,
+                None => {
+                    return Ok(ReclaimReport {
+                        collected: handle.garbage_collect().await?,
+                        compacted: None,
+                    })
+                }
+            }
+        };
+        if !worth_compacting(&log) {
+            return Ok(ReclaimReport::default());
+        }
+        let reclaimed = tokio::task::spawn_blocking(move || log.compact()).await??;
+        Ok(ReclaimReport {
+            collected: 0,
+            compacted: Some(reclaimed),
+        })
     }
 
     /// Write a capsule from `reader` one segment at a time, so memory stays
@@ -595,6 +657,11 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
 
     fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
         self.content_entries()
+    }
+
+    /// From the index's reference counts, without loading every capsule.
+    fn referenced_segments(&self) -> Result<std::collections::HashSet<SegmentId>> {
+        Ok(self.segment_refs()?.into_keys().collect())
     }
 }
 

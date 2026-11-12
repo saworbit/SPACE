@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use capsule_registry::modular_pipeline::{
-    registry_pipeline_from_log, stage_from_reader, RegistryPipelineHandle,
+    self, registry_pipeline_from_log, stage_from_reader, ReclaimReport, RegistryPipelineHandle,
 };
 use capsule_registry::CapsuleRegistry;
 use common::format::JournalRecord;
@@ -457,6 +457,14 @@ impl S3View {
             self.release(&mut handle, capsule).await;
         }
         Ok(())
+    }
+
+    /// Run one reclaim pass over the store: compact the data log once enough
+    /// of it is reclaimable, or garbage-collect a file backend
+    /// ([`modular_pipeline::reclaim`]). Segments a GET is still reading are
+    /// kept.
+    pub async fn reclaim(&self) -> S3Result<ReclaimReport> {
+        Ok(modular_pipeline::reclaim(&self.pipeline).await?)
     }
 
     /// The capsule a key points at, unless `spacectl delete` removed it.

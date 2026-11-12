@@ -43,6 +43,8 @@ INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://127.0.
 
 The server has no authentication, so it listens on loopback only. `--bind 0.0.0.0` exposes it on every interface; do that only on a network you trust.
 
+While it runs, the server reclaims the space of deleted objects and interrupted uploads: in `space.nvram` by compacting it, under `SPACE_STORAGE_ROOT` by deleting the segment files no object references. See [Current limitations](#current-limitations) for when.
+
 ## 2. PUT an object
 
 ```bash
@@ -135,7 +137,7 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ## Current limitations
 
 - No multipart upload.
-- DELETE and overwrites free the old capsule, but its bytes stay in `space.nvram` until compaction, and nothing runs compaction yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
+- DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. With the server stopped, `spacectl compact` compacts right away.
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
 
 ## Troubleshooting

@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`. The checkpoint and journal compaction are not implemented, and nothing schedules compaction yet. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -385,7 +385,12 @@ Suggested PRs:
    - The old file is closed before the rename, and the new one is renamed while open. If the rename fails, the old file is reopened and the log carries on unchanged.
    - There's no checkpoint, so step 4 doesn't apply.
    - A `.compacting` marker from the in-place compaction of earlier builds is still refused.
-5. Schedule GC and compaction, with `spacectl` commands for them (the rest of #97).
+5. Schedule GC and compaction, with `spacectl` commands for them (the rest of #97). **Done**:
+   - The pipeline pins segments for open writes, and for each capsule a commit drops until `Pipeline::release` is called for it. `Pipeline::garbage_collect` keeps every pinned or referenced segment, so it no longer refuses to run while a write is open, and it no longer removes a segment a capsule references because its stored count is 0. This closes the gap noted under PR 3.
+   - In the data log, GC adds nothing to compaction: an unreferenced segment has no references in the log's counts, so compaction leaves it out. A reclaim pass therefore compacts the data log and garbage-collects only file backends, where each segment is a file.
+   - `serve-s3` runs a pass at startup and every `--reclaim-interval` seconds (default 300). It compacts once a quarter of the log, and at least one default segment, is reclaimable, without the pipeline lock. `spacectl gc` and `spacectl compact` run each step on demand.
+   - `NvramLog::read` now takes the file lock before it looks up the offset. Looking it up first let a compaction swap the file in between, so the read used an offset from the old generation. The read's MAC or content-hash check would have rejected the bytes.
+   - Scrub, which #97 also asks to schedule, isn't part of this.
 
 ## 15. Tests
 

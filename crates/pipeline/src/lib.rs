@@ -15,7 +15,7 @@ use common::{
 use compression::Lz4ZstdCompressor;
 use dedup::{verify_content_hash, Blake3Deduper, VerifyOutcome};
 use futures::StreamExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use storage::{InMemoryBackend, NvramBackend};
 use tracing::instrument;
@@ -551,8 +551,11 @@ where
     keyring: Option<K>,
     stats: DedupStats,
     catalog: R,
-    /// Writes begun and not yet finished or aborted.
-    open_writes: usize,
+    /// Segments that no committed capsule may reference but that must not
+    /// be collected: those an open write holds, and those of a capsule a
+    /// commit dropped until [`Pipeline::release`] is called for it. Counts,
+    /// since a segment can be held more than once.
+    pins: HashMap<SegmentId, u32>,
 }
 
 impl<C, D, E, S, Eval, K, R> Pipeline<C, D, E, S, Eval, K, R>
@@ -583,7 +586,24 @@ where
             keyring,
             stats: DedupStats::default(),
             catalog,
-            open_writes: 0,
+            pins: HashMap::new(),
+        }
+    }
+
+    fn pin(&mut self, segments: &[SegmentId]) {
+        for seg in segments {
+            *self.pins.entry(*seg).or_insert(0) += 1;
+        }
+    }
+
+    fn unpin(&mut self, segments: &[SegmentId]) {
+        for seg in segments {
+            if let Some(count) = self.pins.get_mut(seg) {
+                *count -= 1;
+                if *count == 0 {
+                    self.pins.remove(seg);
+                }
+            }
         }
     }
 
@@ -618,7 +638,6 @@ where
             size: 0,
             ended: false,
         };
-        self.open_writes += 1;
         Ok(write)
     }
 
@@ -686,6 +705,7 @@ where
             self.stats.record(summary.output_size as u64, true);
             write.stats.record(summary.output_size as u64, true);
             write.segments.push(existing);
+            self.pin(&[existing]);
             write.entries.push(entry);
         } else {
             let mut txn = self.storage.begin_txn().await?;
@@ -736,6 +756,7 @@ where
             txn.commit().await?;
             // Recorded before anything else can fail, so an abort releases it.
             write.segments.push(seg_id);
+            self.pin(&[seg_id]);
             write.entries.push(ManifestEntry {
                 segment_id: seg_id,
                 plain_len: u32::try_from(summary.original_size).context("segment too large")?,
@@ -792,7 +813,9 @@ where
         records.extend(with);
         match self.catalog.commit(records) {
             Ok(dropped) => {
-                self.open_writes = self.open_writes.saturating_sub(1);
+                // The capsule references the write's segments now.
+                self.unpin(&write.segments);
+                self.hold(&dropped);
                 Ok(dropped)
             }
             Err(err) => {
@@ -805,19 +828,30 @@ where
     /// Commit `records`, all or nothing. Returns the capsules they dropped,
     /// whose segments stay until [`Pipeline::release`] is called for each.
     pub fn commit(&mut self, records: Vec<JournalRecord>) -> Result<Vec<Capsule>> {
-        self.catalog.commit(records)
+        let dropped = self.catalog.commit(records)?;
+        self.hold(&dropped);
+        Ok(dropped)
+    }
+
+    /// Pin the segments of capsules a commit dropped until they're released.
+    fn hold(&mut self, dropped: &[Capsule]) {
+        for capsule in dropped {
+            self.pin(&capsule.segments);
+        }
     }
 
     /// Release a dropped capsule's references to its segments. Until then
     /// they pin the segments (`docs/on-disk-format.md` §6): each stays
-    /// readable, and leaves the store when its last reference goes.
+    /// readable, garbage collection and compaction keep it, and it leaves
+    /// the store when its last reference goes.
     pub async fn release(&mut self, capsule: &Capsule) -> Result<()> {
+        self.unpin(&capsule.segments);
         self.release_segments(&capsule.segments).await
     }
 
     /// Give up on an open write and release the segments it holds.
     pub async fn abort_write(&mut self, write: CapsuleWrite) -> Result<()> {
-        self.open_writes = self.open_writes.saturating_sub(1);
+        self.unpin(&write.segments);
         self.release_segments(&write.segments).await
     }
 
@@ -1040,51 +1074,50 @@ where
         Ok(())
     }
 
+    /// Remove segments that no committed capsule references and nothing
+    /// pins: leftovers of writes that failed or were interrupted. Segments
+    /// an open write holds, or a dropped capsule holds until it's released,
+    /// are kept, and so is every segment a capsule references, whatever its
+    /// stored ref count says. Returns how many were removed.
+    ///
+    /// On the NVRAM log a removed segment leaves the map, and compaction
+    /// reclaims its bytes. Compaction already leaves out segments with no
+    /// references, so the log needs no garbage collection of its own; file
+    /// backends do, since each segment is a file.
     pub async fn garbage_collect(&mut self) -> Result<usize> {
-        // An open write holds segments that no capsule references yet.
-        if self.open_writes > 0 {
-            return Err(anyhow!(
-                "garbage collection can't run while a write is open"
-            ));
-        }
-        let referenced: HashSet<SegmentId> = self
-            .catalog
-            .capsules()
+        let referenced = self.catalog.referenced_segments()?;
+        let candidates: Vec<SegmentId> = self
+            .storage
+            .segment_ids()
+            .await?
             .into_iter()
-            .flat_map(|capsule| capsule.segments.into_iter())
-            .collect();
-
-        let content_map: HashMap<SegmentId, ContentHash> = self
-            .catalog
-            .content_entries()
-            .into_iter()
-            .map(|(hash, seg)| (seg, hash))
+            .filter(|seg| !referenced.contains(seg) && !self.pins.contains_key(seg))
             .collect();
 
         let mut reclaimed = 0usize;
-
-        let orphan_segments = self.storage.segment_ids().await?;
         let mut txn = self.storage.begin_txn().await?;
-
-        for seg_id in orphan_segments {
-            let metadata = match self.storage.metadata(seg_id).await {
-                Ok(meta) => meta,
-                Err(_) => continue,
-            };
-
-            if referenced.contains(&seg_id) && metadata.ref_count > 0 {
-                continue;
-            }
-
+        for seg_id in candidates {
+            // One whose metadata can't be read is just as unreferenced.
+            let hash = self
+                .storage
+                .metadata(seg_id)
+                .await
+                .ok()
+                .and_then(|m| m.content_hash);
             txn.delete(seg_id).await?;
-            if let Some(hash) = content_map.get(&seg_id) {
-                let _ = self.catalog.deregister_content(hash, seg_id)?;
+            if let Some(hash) = hash {
+                let _ = self.catalog.deregister_content(&hash, seg_id)?;
             }
             reclaimed += 1;
         }
         txn.commit().await?;
 
         Ok(reclaimed)
+    }
+
+    /// The storage backend segments are written to.
+    pub fn storage(&self) -> &S {
+        &self.storage
     }
 }
 
@@ -2365,17 +2398,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn garbage_collection_waits_for_open_writes() {
+    async fn garbage_collection_keeps_what_writes_and_dropped_capsules_hold() {
         let mut p: InMemoryPipeline = PipelineBuilder::new().build();
         let policy = small_segments(1000);
+        // Clones share the backend's data.
+        let mut storage = p.storage().clone();
 
+        // An open write's segments aren't referenced by any capsule yet.
         let mut write = p.begin_write(&policy).unwrap();
         p.write_chunk(&mut write, &noise(1000, 4)).await.unwrap();
-        assert!(p.garbage_collect().await.is_err());
-        let id = p.finish_write(write).await.unwrap();
-
         assert_eq!(p.garbage_collect().await.unwrap(), 0);
+        let id = p.finish_write(write).await.unwrap();
         assert_eq!(p.read_capsule(id).await.unwrap(), noise(1000, 4));
+
+        // A dropped capsule's segments stay until it's released.
+        let dropped = p.commit(vec![JournalRecord::Drop(id)]).unwrap();
+        let seg = dropped[0].segments[0];
+        assert_eq!(p.garbage_collect().await.unwrap(), 0);
+        assert!(storage.metadata(seg).await.is_ok());
+        p.release(&dropped[0]).await.unwrap();
+        assert!(storage.metadata(seg).await.is_err());
+
+        // An orphan goes. A segment a capsule references stays, whatever its
+        // stored ref count says.
+        let kept = p.write_capsule(&noise(1000, 5), &policy).await.unwrap();
+        let kept_seg = p.catalog().lookup_capsule(kept).unwrap().segments[0];
+        let mut meta = storage.metadata(kept_seg).await.unwrap();
+        meta.ref_count = 0;
+        let orphan = Segment {
+            id: SegmentId(999),
+            len: 6,
+            ref_count: 1,
+            ..Segment::default()
+        };
+        let mut txn = storage.begin_txn().await.unwrap();
+        txn.set_segment_metadata(kept_seg, meta).await.unwrap();
+        txn.append(SegmentId(999), b"orphan").await.unwrap();
+        txn.set_segment_metadata(SegmentId(999), orphan)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        assert_eq!(p.garbage_collect().await.unwrap(), 1);
+        assert!(storage.metadata(SegmentId(999)).await.is_err());
+        assert_eq!(p.read_capsule(kept).await.unwrap(), noise(1000, 5));
     }
 
     #[tokio::test]
