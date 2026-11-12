@@ -482,7 +482,7 @@ The delete commits first, so a crash part way through step 2 leaves only in-memo
 
 S3 DELETE and overwrites commit the `DROP` in the same `BATCH` as the key change (`Pipeline::finish_write_with` or `Pipeline::commit`), then release the dropped capsule with `Pipeline::release`. If a GET is still reading it, the S3 view holds the release until the GET ends: the in-memory references pin the segments, so they stay readable.
 
-Segments still referenced by other Capsules remain. `spacectl delete` leaves any S3 key that points at the capsule in place; the key then reads as missing.
+Segments still referenced by other Capsules remain. `spacectl delete` leaves any S3 key that points at the capsule in place; the key then reads as missing ([#138](https://github.com/saworbit/SPACE/issues/138)).
 
 ### Garbage collection
 
@@ -499,7 +499,7 @@ Segments still referenced by other Capsules remain. `spacectl delete` leaves any
 
 ### Race-freedom
 
-The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle runs under one async mutex. A streaming write takes it once per segment, so other writes and deletes can run between its segments. Each segment a write uses holds a reference from the moment it is stored, and GC refuses to run while a write is open. A second process can't open the same store at all, because sled locks `space.db`.
+The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle runs under one async mutex. A streaming write takes it once per segment, so other writes and deletes can run between its segments. Each segment a write uses holds a reference from the moment it is stored, and garbage collection keeps every segment an open write pins, as well as those of a dropped capsule that hasn't been released yet. A second process can't open the same store at all, because sled locks `space.db`.
 
 ---
 
@@ -514,7 +514,7 @@ Capsules are durable only if their bytes still match their hashes and MACs. Scru
 | **Light** | In `space.nvram`, each record's own checksum (`body_sum` and `head_sum`). Elsewhere, that the stored byte count matches `segment.len`. | Full read | BLAKE3 |
 | **Deep** | MAC tag (encrypted) or content hash (unencrypted) | Full read | BLAKE3 / AES |
 
-Light scrub needs no key. In the data log it catches media damage in any segment, encrypted or not; the length check is all a file backend allows. Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
+Light scrub needs no key. In the data log it catches media damage in any segment, encrypted or not; the length check is all a file backend allows ([#135](https://github.com/saworbit/SPACE/issues/135)). Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
 
 The executor tracks each segment's last-checked times in memory, and a cycle scrubs only segments that are due. It forgets segments that have been deleted. A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
 
@@ -528,7 +528,7 @@ The executor tracks each segment's last-checked times in memory, and a cycle scr
 | `--deep-scrub-interval` | 604800 (1 week) | Seconds between deep scrubs. |
 | `--scrub-rate` | 64 | MiB per second scrubbing reads at most. `0` means no limit. |
 
-The first cycle, at startup, is deep. Because the schedule lives in memory, a restart scrubs the whole store again. Each cycle logs its outcome at `INFO`, or at `WARN` with counts when it finds damage.
+The first cycle, at startup, is deep. Because the schedule lives in memory, a restart scrubs the whole store again ([#134](https://github.com/saworbit/SPACE/issues/134)). Each cycle logs its outcome at `INFO`, or at `WARN` with counts when it finds damage.
 
 `spacectl scrub` checks every segment once, unthrottled, and `spacectl scrub --deep` runs the deep checks. Each failed segment is printed with the capsules that hold it, and the command exits non-zero when any segment fails.
 

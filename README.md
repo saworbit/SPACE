@@ -27,7 +27,9 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 - XTS-AES-256 encryption with a BLAKE3 MAC. `spacectl create` and S3 PUT turn it on when `SPACE_MASTER_KEY` is set.
 - Modular pipeline (`pipeline`): the registry write and read path
 - Basic S3: buckets, PUT / GET / HEAD / DELETE, ranged GETs, and ListObjects; see [the S3 quick start](docs/guides/QUICKSTART_S3.md).
-- `spacectl` for local create, read, list, delete, and `serve-s3`
+- On-disk format 1: segments are framed, checksummed records in `space.nvram`, and capsule writes and deletes, S3 buckets and S3 keys are committed to a journal, `space.journal`. `space.db` is an index of the journal and can be rebuilt from it ([spec](docs/on-disk-format.md)).
+- Background maintenance in `serve-s3`: it reclaims space (compacting `space.nvram`, or deleting unreferenced segment files under `SPACE_STORAGE_ROOT`) and scrubs every segment on a schedule.
+- `spacectl` for local create, read, list, delete, `gc`, `compact`, `scrub`, and `serve-s3`
 - Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)
 
 The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`.
