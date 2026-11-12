@@ -620,7 +620,7 @@ mod tests {
 federation:
   - us-west
 "#;
-        let policy: Policy = serde_yaml::from_str(shorthand_yaml).unwrap();
+        let policy: Policy = serde_norway::from_str(shorthand_yaml).unwrap();
         assert_eq!(policy.federation.targets, vec!["us-west".to_string()]);
         assert_eq!(policy.federation.priority, TransferPriority::Background);
 
@@ -629,7 +629,7 @@ federation:
   targets: ["eu-central-1"]
   priority: critical
 "#;
-        let policy: Policy = serde_yaml::from_str(explicit_yaml).unwrap();
+        let policy: Policy = serde_norway::from_str(explicit_yaml).unwrap();
         assert_eq!(policy.federation.targets, vec!["eu-central-1".to_string()]);
         assert_eq!(policy.federation.priority, TransferPriority::Critical);
 
@@ -654,7 +654,7 @@ transform:
       sha256: deadbeef
 "#;
 
-        let policy: Policy = serde_yaml::from_str(yaml).unwrap();
+        let policy: Policy = serde_norway::from_str(yaml).unwrap();
         assert_eq!(policy.transform.len(), 1);
         assert_eq!(policy.transform[0].trigger, TransformTrigger::OnRead);
         assert_eq!(policy.transform[0].args.get("width").unwrap(), "1080");

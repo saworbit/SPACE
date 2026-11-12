@@ -26,6 +26,6 @@ tokio = { workspace = true, features = ["macros", "rt", "time", "sync", "signal"
 clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

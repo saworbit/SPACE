@@ -43,6 +43,7 @@ CI on pull requests runs the checks below (see `.github/workflows/ci.yml`).
 | Workspace tests | `cargo test --workspace` |
 | Build on rust-version | `cargo +1.89 check --workspace --locked` |
 | License field | `license = "BUSL-1.1"` in the root `Cargo.toml` |
+| Dependency audit | `cargo audit --deny warnings` and `cargo deny check` |
 
 ## Dependency Changes
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.
