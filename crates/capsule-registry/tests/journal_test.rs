@@ -465,3 +465,62 @@ fn s3_names_from_before_the_journal_are_refused_or_dropped() {
         .iter()
         .any(|name| name.as_ref() == b"s3_objects"));
 }
+
+#[tokio::test]
+async fn segment_ids_are_not_reused_after_compaction_and_a_lost_index() {
+    let store = Store::new("id_floor");
+    let policy = Policy::default();
+    let kept = patterned(10_000, 11);
+    let (a, dropped_ids) = {
+        let (registry, log, mut handle) = store.open();
+        let a = handle.write_capsule(&kept, &policy).await.unwrap();
+        let b = handle
+            .write_capsule(&patterned(10_000, 12), &policy)
+            .await
+            .unwrap();
+        let dropped_ids = registry.lookup(b).unwrap().segments;
+        handle.delete_capsule(b).await.unwrap();
+        // The highest ids leave the data log.
+        assert!(log.compact().unwrap() > 0);
+        (a, dropped_ids)
+    };
+    // The allocator's counter goes with space.db; the data log keeps the
+    // floor in its FILE record.
+    fs::remove_dir_all(store.db_path()).unwrap();
+
+    let (registry, _log, mut handle) = store.open();
+    let c = handle
+        .write_capsule(&patterned(10_000, 13), &policy)
+        .await
+        .unwrap();
+    let highest_dropped = dropped_ids.iter().max().unwrap();
+    for seg in registry.lookup(c).unwrap().segments {
+        assert!(seg > *highest_dropped, "segment id {seg:?} reused");
+    }
+    assert_eq!(handle.read_capsule(a).await.unwrap(), kept);
+}
+
+#[tokio::test]
+async fn compaction_keeps_the_segments_of_an_open_write() {
+    let store = Store::new("open_write");
+    let policy = Policy::default();
+    let data = patterned(50_000, 14);
+    let (registry, log, mut handle) = store.open();
+    let doomed = handle
+        .write_capsule(&patterned(20_000, 15), &policy)
+        .await
+        .unwrap();
+    handle.delete_capsule(doomed).await.unwrap();
+
+    let mut write = handle.begin_write(&policy).unwrap();
+    handle.write_chunk(&mut write, &data).await.unwrap();
+    // The open write's segment is referenced only by the write itself.
+    assert!(log.compact().unwrap() > 0);
+    let id = handle.finish_write(write).await.unwrap();
+
+    assert_eq!(handle.read_capsule(id).await.unwrap(), data);
+    drop((registry, log, handle));
+    let (_registry, log, handle) = store.open();
+    assert_eq!(log.file_header().generation, 1);
+    assert_eq!(handle.read_capsule(id).await.unwrap(), data);
+}

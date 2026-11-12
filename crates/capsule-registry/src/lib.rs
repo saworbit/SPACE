@@ -506,14 +506,12 @@ pub mod modular_pipeline {
     /// serves any write or delete.
     ///
     /// It also pairs the registry's journal with the data log, and keeps the
-    /// segment allocator above every id the log holds, including ones from
-    /// writes that never committed.
+    /// segment allocator above every id the log has held, including ones
+    /// from writes that never committed and ones compaction removed.
     fn recount_references(storage: &NvramBackend, registry: &crate::CapsuleRegistry) -> Result<()> {
         let log = storage.log();
         registry.bind_store(log.store_id())?;
-        if let Some(max) = log.max_segment_id() {
-            registry.ensure_segment_floor(max.0 + 1)?;
-        }
+        registry.ensure_segment_floor(log.segment_id_floor())?;
         let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
         let report = log.recount_references(&counts);
         if let Some(first) = report.missing.first() {

@@ -9,6 +9,9 @@
 //! Ref counts aren't stored. They live in memory, start at 1 for every
 //! scanned segment, and are set from the registry with
 //! [`NvramLog::recount_references`] when a pipeline opens the log.
+//!
+//! Compaction writes the live records to a new generation of the file and
+//! renames it over the old one ([`NvramLog::compact`]).
 
 pub mod record_file;
 
@@ -20,12 +23,12 @@ use common::format::{
 use common::*;
 pub use record_file::Damage;
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
-use tracing::warn;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use tracing::{info, warn};
 
 /// A segment in the log: its in-memory metadata (`offset` and `len` locate
 /// the body) and where its record starts.
@@ -51,22 +54,32 @@ pub struct RecountReport {
     pub missing: Vec<SegmentId>,
 }
 
+/// Locks are taken in the order `file`, `next_offset`, `segment_map`. An
+/// append holds `file` until its records are in the map, so whoever holds
+/// `file` sees a map that matches `next_offset`.
 struct Shared {
     file: RwLock<File>,
     segment_map: RwLock<HashMap<SegmentId, Entry>>,
     next_offset: RwLock<u64>,
+    /// The `FILE` record. Compaction replaces it with the next generation's.
+    header: RwLock<FileHeader>,
+    /// One past the highest segment id the log has held, counting segments
+    /// compaction has since removed.
+    id_floor: AtomicU64,
     /// Whether every segment's ref count reflects the capsules that hold it.
     /// True for a log that was empty when opened, or once references have
     /// been recounted.
     refs_known: AtomicBool,
+    /// Held while a compaction runs, so only one runs at a time.
+    compacting: Mutex<()>,
 }
 
 #[derive(Clone)]
 pub struct NvramLog {
     shared: Arc<Shared>,
     path: PathBuf,
-    header: FileHeader,
-    /// Offset of the first byte after the `FILE` record.
+    /// Offset of the first byte after the `FILE` record. Every generation's
+    /// `FILE` record is the same size, so compaction doesn't change it.
     data_start: u64,
     damage: Arc<Vec<Damage>>,
 }
@@ -77,8 +90,42 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Marker left by the in-place compaction of earlier builds.
 fn compacting_marker(path: &Path) -> PathBuf {
     sibling(path, ".compacting")
+}
+
+/// Where compaction writes the next generation before renaming it into
+/// place.
+fn compaction_file(path: &Path) -> PathBuf {
+    sibling(path, ".compact")
+}
+
+/// Points in a compaction where a test can stop it, as a crash there would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The new generation holds the live records; appends since haven't
+    /// been copied.
+    Copied,
+    /// The new generation is complete and fsynced, but not renamed.
+    Synced,
+    /// The new generation has replaced the log on disk.
+    Renamed,
+}
+
+/// Copy the bytes `start..end` of `src` to the current position of `dst`, a
+/// buffer at a time.
+fn copy_range(src: &mut File, dst: &mut File, start: u64, end: u64) -> Result<()> {
+    src.seek(SeekFrom::Start(start))?;
+    let want = end - start;
+    let copied = std::io::copy(&mut Read::by_ref(src).take(want), dst)?;
+    if copied != want {
+        bail!(
+            "the data log ended at byte {} while copying bytes {start}..{end}",
+            start + copied
+        );
+    }
+    Ok(())
 }
 
 impl NvramLog {
@@ -104,21 +151,33 @@ impl NvramLog {
             }
         }
 
-        // The in-place compaction rewrites the log front to back. A crash
-        // part way leaves it inconsistent, so refuse rather than serve
-        // wrong data (#108).
+        // Earlier builds compacted in place, front to back. A crash part way
+        // through left the log inconsistent, so refuse rather than serve
+        // wrong data.
         let marker = compacting_marker(&path);
         if marker.exists() {
             bail!(
-                "NvramLog at '{}' has an unfinished compaction marker ('{}' exists). The log \
-                 may be inconsistent after a crash during compact(). Remove the marker file \
-                 after verifying integrity or restoring from backup.",
+                "NvramLog at '{}' has a marker from an unfinished in-place compaction ('{}' \
+                 exists), left by an earlier build. The log may be inconsistent. Remove the \
+                 marker after verifying integrity or restoring from backup.",
                 path.display(),
                 marker.display()
             );
         }
 
+        // A compaction that didn't get as far as its rename leaves the next
+        // generation behind. The log it would have replaced is intact.
+        let unfinished = compaction_file(&path);
+        if unfinished.exists() {
+            warn!(
+                path = %unfinished.display(),
+                "removing the file of a compaction that didn't finish; the data log is intact"
+            );
+            std::fs::remove_file(&unfinished)?;
+        }
+
         let mut entries: HashMap<SegmentId, Entry> = HashMap::new();
+        let mut id_floor = 0u64;
         let opened = record_file::open(&path, FileKind::DataLog, |pos, frame, header| match frame
             .kind
         {
@@ -137,6 +196,7 @@ impl NvramLog {
                     record_offset: pos,
                 };
                 let id = entry.segment.id;
+                id_floor = id_floor.max(id.0.saturating_add(1));
                 if entries.insert(id, entry).is_some() {
                     warn!(
                         segment = id.0,
@@ -153,28 +213,38 @@ impl NvramLog {
         })?;
 
         let refs_known = entries.is_empty();
+        let id_floor = id_floor.max(opened.header.segment_id_floor);
         Ok(Self {
             shared: Arc::new(Shared {
                 file: RwLock::new(opened.file),
                 segment_map: RwLock::new(entries),
                 next_offset: RwLock::new(opened.end),
+                header: RwLock::new(opened.header),
+                id_floor: AtomicU64::new(id_floor),
                 refs_known: AtomicBool::new(refs_known),
+                compacting: Mutex::new(()),
             }),
             path,
-            header: opened.header,
             data_start: opened.data_start,
             damage: Arc::new(opened.damage),
         })
     }
 
     /// The log's `FILE` record.
-    pub fn file_header(&self) -> &FileHeader {
-        &self.header
+    pub fn file_header(&self) -> FileHeader {
+        *self.shared.header.read().unwrap()
     }
 
     /// The id of the store this log belongs to.
     pub fn store_id(&self) -> uuid::Uuid {
-        self.header.store_id
+        self.file_header().store_id
+    }
+
+    /// The lowest segment id the allocator may hand out: one past every id
+    /// the log has held, including segments compaction has removed since,
+    /// so no id is used twice (`docs/on-disk-format.md` §8.3).
+    pub fn segment_id_floor(&self) -> u64 {
+        self.shared.id_floor.load(Ordering::SeqCst)
     }
 
     /// Damaged ranges found when the log was opened. Non-empty means the
@@ -271,13 +341,19 @@ impl NvramLog {
             return Err(err);
         }
         *next_offset = pos;
-        drop(next_offset);
-        drop(file);
 
+        // Still holding `file`, so a compaction never sees these records
+        // below `next_offset` but missing from the map.
         let mut map = self.shared.segment_map.write().unwrap();
         for entry in &placed {
+            self.shared
+                .id_floor
+                .fetch_max(entry.segment.id.0.saturating_add(1), Ordering::SeqCst);
             map.insert(entry.segment.id, entry.clone());
         }
+        drop(map);
+        drop(next_offset);
+        drop(file);
         Ok(placed.into_iter().map(|e| e.segment).collect())
     }
 
@@ -410,22 +486,35 @@ impl NvramLog {
         report
     }
 
-    /// Compact the log by rewriting only live segments (`ref_count > 0`).
+    /// Reclaim the bytes of segments nothing references, by writing the
+    /// live records to the next generation of the log and renaming it over
+    /// this one (`docs/on-disk-format.md` §9.1). Returns the bytes reclaimed.
     ///
-    /// Records of segments with `ref_count == 0`, and of segments removed
-    /// from the map, are dropped; their bytes are reclaimed. Live records
-    /// are copied unchanged to just after the `FILE` record, then the file
-    /// is truncated.
+    /// A segment is live while its ref count is above 0. That includes
+    /// segments an open write holds, and those of a dropped capsule a reader
+    /// still holds.
     ///
-    /// Returns the number of bytes reclaimed.
+    /// 1. Note the live records and where the log ends.
+    /// 2. Without holding the log's locks, write `<log>.compact`: a `FILE`
+    ///    record for the next generation, then each live record copied
+    ///    unchanged, a buffer at a time. Records hold no offsets, so their
+    ///    checksums stay valid. Reads and appends carry on meanwhile.
+    /// 3. Under the log's locks, copy the records appended since step 1, and
+    ///    any segment that became live, fsync, and rename the new file over
+    ///    the log.
     ///
-    /// ## Crash safety
-    ///
-    /// A `.compacting` marker file is written before any modification and
-    /// removed once the rewrite is fsynced. If the process crashes in
-    /// between, `open()` detects the marker and returns an error rather than
-    /// serving inconsistent data (#108).
+    /// A crash before the rename leaves `<log>.compact`, which the next open
+    /// removes; the old log is intact. A crash after it leaves the complete
+    /// new generation. Either opens without manual steps (#108).
     pub fn compact(&self) -> Result<u64> {
+        self.compact_with(|_| false)
+    }
+
+    /// [`NvramLog::compact`], calling `stop_at` at each [`Step`]. When it
+    /// returns true, compaction stops there and leaves the files as a crash
+    /// would. Only tests stop it; the in-memory state is then stale, so the
+    /// log must be dropped and opened again.
+    fn compact_with(&self, mut stop_at: impl FnMut(Step) -> bool) -> Result<u64> {
         self.ensure_writable()?;
         if !self.shared.refs_known.load(Ordering::SeqCst) {
             bail!(
@@ -434,66 +523,175 @@ impl NvramLog {
                  recount_references first"
             );
         }
-        let marker = compacting_marker(&self.path);
-        // Plant the marker before touching any file.
-        std::fs::write(&marker, b"")?;
+        let _running = match self.shared.compacting.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                bail!(
+                    "a compaction of '{}' is already running",
+                    self.path.display()
+                )
+            }
+        };
 
-        let result = self.do_compact();
-
-        if result.is_ok() {
-            let _ = std::fs::remove_file(&marker);
-        }
-        result
-    }
-
-    fn do_compact(&self) -> Result<u64> {
-        let mut file = self.shared.file.write().unwrap();
-        let mut next_offset = self.shared.next_offset.write().unwrap();
-        let mut segment_map = self.shared.segment_map.write().unwrap();
-
-        let old_size = *next_offset;
-        if old_size <= self.data_start {
+        // 1. The live records, and where the log ends. Holding `file` keeps
+        // appends out, so the map matches `next_offset`.
+        let (live, snapshot_end, header) = {
+            let _file = self.shared.file.write().unwrap();
+            let end = *self.shared.next_offset.read().unwrap();
+            let map = self.shared.segment_map.read().unwrap();
+            let mut live: Vec<Entry> = map
+                .values()
+                .filter(|e| e.segment.ref_count > 0)
+                .cloned()
+                .collect();
+            live.sort_by_key(|e| e.record_offset);
+            (live, end, *self.shared.header.read().unwrap())
+        };
+        let live_bytes: u64 = live.iter().map(|e| e.record_end() - e.record_offset).sum();
+        if self.data_start + live_bytes == snapshot_end {
             return Ok(0);
         }
 
-        // Collect live records, sorted by offset for sequential reads.
-        let mut live: Vec<Entry> = segment_map
-            .values()
-            .filter(|e| e.segment.ref_count > 0)
-            .cloned()
-            .collect();
-        live.sort_by_key(|e| e.record_offset);
-
-        // Read all live records while holding the write lock.
-        let mut records = Vec::with_capacity(live.len());
-        for entry in &live {
-            let mut buf = vec![0u8; (entry.record_end() - entry.record_offset) as usize];
-            file.seek(SeekFrom::Start(entry.record_offset))?;
-            file.read_exact(&mut buf)?;
-            records.push(buf);
+        // 2. Copy them to the next generation.
+        let next_path = compaction_file(&self.path);
+        let mut next = FileHeader {
+            generation: header.generation + 1,
+            segment_id_floor: self.segment_id_floor(),
+            ..header
+        };
+        let mut out = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&next_path)?;
+        let copied = (|| -> Result<(u64, HashMap<SegmentId, u64>)> {
+            let mut pos = record_file::write_new_file(&mut out, &next_path, &next)?;
+            // A handle of its own, so reads and appends needn't wait. It's
+            // closed before the rename below.
+            let mut src = File::open(&self.path)?;
+            let mut moved = HashMap::with_capacity(live.len());
+            for entry in &live {
+                copy_range(&mut src, &mut out, entry.record_offset, entry.record_end())?;
+                moved.insert(entry.segment.id, pos);
+                pos += entry.record_end() - entry.record_offset;
+            }
+            Ok((pos, moved))
+        })();
+        let (mut pos, mut moved) = match copied {
+            Ok(copied) => copied,
+            Err(err) => {
+                drop(out);
+                let _ = std::fs::remove_file(&next_path);
+                return Err(err);
+            }
+        };
+        if stop_at(Step::Copied) {
+            bail!("compaction stopped at {:?}", Step::Copied);
         }
 
-        // Records hold no offsets, so they move unchanged.
-        file.seek(SeekFrom::Start(self.data_start))?;
-        let mut pos = self.data_start;
-        let mut new_map = HashMap::with_capacity(live.len());
-        for (mut entry, bytes) in live.into_iter().zip(records) {
-            file.write_all(&bytes)?;
-            let head_len = entry.segment.offset - entry.record_offset;
-            entry.record_offset = pos;
-            entry.segment.offset = pos + head_len;
-            pos += bytes.len() as u64;
-            new_map.insert(entry.segment.id, entry);
+        // 3. Catch up and swap, with reads and appends held off.
+        let mut file = self.shared.file.write().unwrap();
+        let mut next_offset = self.shared.next_offset.write().unwrap();
+        let mut map = self.shared.segment_map.write().unwrap();
+        let old_end = *next_offset;
+        let tail_base = pos;
+        let caught_up = (|| -> Result<u64> {
+            // Records appended since step 1 sit together at the end.
+            copy_range(&mut file, &mut out, snapshot_end, old_end)?;
+            let mut pos = tail_base + (old_end - snapshot_end);
+            // A segment with no references can't gain one, since nothing
+            // can find it to dedup against. Copy any that did anyway.
+            let mut revived: Vec<&Entry> = map
+                .values()
+                .filter(|e| {
+                    e.segment.ref_count > 0
+                        && e.record_offset < snapshot_end
+                        && !moved.contains_key(&e.segment.id)
+                })
+                .collect();
+            revived.sort_by_key(|e| e.record_offset);
+            for entry in revived {
+                warn!(
+                    segment = entry.segment.id.0,
+                    "a segment gained references during compaction; copying it"
+                );
+                copy_range(&mut file, &mut out, entry.record_offset, entry.record_end())?;
+                moved.insert(entry.segment.id, pos);
+                pos += entry.record_end() - entry.record_offset;
+            }
+            // Ids appended since step 1 count toward the floor.
+            next.segment_id_floor = self.segment_id_floor();
+            out.seek(SeekFrom::Start(0))?;
+            out.write_all(&next.encode_record())?;
+            out.sync_all()?;
+            Ok(pos)
+        })();
+        pos = match caught_up {
+            Ok(pos) => pos,
+            Err(err) => {
+                drop(out);
+                let _ = std::fs::remove_file(&next_path);
+                return Err(err);
+            }
+        };
+        if stop_at(Step::Synced) {
+            bail!("compaction stopped at {:?}", Step::Synced);
         }
 
-        // Truncate the reclaimed tail and flush.
-        file.set_len(pos)?;
-        file.sync_data()?;
+        // Windows won't rename over a file that's open, so close the old log
+        // first. The new file can be renamed while open.
+        let old = std::mem::replace(&mut *file, out);
+        drop(old);
+        if let Err(err) = std::fs::rename(&next_path, &self.path) {
+            let restored = OpenOptions::new().read(true).write(true).open(&self.path);
+            let _ = std::fs::remove_file(&next_path);
+            return match restored {
+                Ok(old) => {
+                    *file = old;
+                    Err(anyhow!(
+                        "couldn't move the compacted log into place: {err}; the log is unchanged"
+                    ))
+                }
+                Err(reopen) => Err(anyhow!(
+                    "couldn't move the compacted log into place ({err}) or reopen the old one \
+                     ({reopen}); reopen the store"
+                )),
+            };
+        }
+        record_file::sync_parent_dir(&self.path);
+        if stop_at(Step::Renamed) {
+            bail!("compaction stopped at {:?}", Step::Renamed);
+        }
 
-        *segment_map = new_map;
+        // Point the map at the new offsets. Segments left out were dead.
+        let mut new_map = HashMap::with_capacity(moved.len());
+        for (id, mut entry) in map.drain() {
+            let new_offset = if entry.record_offset >= snapshot_end {
+                Some(tail_base + (entry.record_offset - snapshot_end))
+            } else {
+                moved.get(&id).copied()
+            };
+            if let Some(record_offset) = new_offset {
+                let head_len = entry.segment.offset - entry.record_offset;
+                entry.record_offset = record_offset;
+                entry.segment.offset = record_offset + head_len;
+                new_map.insert(id, entry);
+            }
+        }
+        *map = new_map;
         *next_offset = pos;
+        *self.shared.header.write().unwrap() = next;
 
-        Ok(old_size.saturating_sub(pos))
+        let reclaimed = old_end.saturating_sub(pos);
+        info!(
+            path = %self.path.display(),
+            generation = next.generation,
+            reclaimed,
+            "compacted the data log"
+        );
+        Ok(reclaimed)
     }
 
     pub fn begin_transaction(&self) -> Result<NvramTransaction> {
@@ -710,7 +908,26 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.path);
             let _ = std::fs::remove_file(compacting_marker(&self.path));
+            let _ = std::fs::remove_file(compaction_file(&self.path));
         }
+    }
+
+    /// Segments 1 to 4, of which 1 and 2 are referenced.
+    fn half_live(tmp: &TempLog) -> NvramLog {
+        let log = tmp.open();
+        for i in 1..=4 {
+            commit_described(&log, i, &payload(i));
+        }
+        drop(log);
+        let log = tmp.open();
+        log.recount_references(&[(SegmentId(1), 1), (SegmentId(2), 1)].into());
+        log
+    }
+
+    fn sorted_ids(log: &NvramLog) -> Vec<SegmentId> {
+        let mut ids = log.list_segment_ids();
+        ids.sort();
+        ids
     }
 
     fn now_nanos() -> u128 {
@@ -943,6 +1160,127 @@ mod tests {
         log.decrement_refcount(SegmentId(2)).unwrap();
         log.compact().unwrap();
         assert_eq!(log.list_segment_ids(), vec![SegmentId(1)]);
+    }
+
+    #[test]
+    fn compaction_writes_the_next_generation_and_keeps_the_id_floor() {
+        let tmp = TempLog::new("generation");
+        let log = half_live(&tmp);
+        let store_id = log.store_id();
+        assert_eq!(log.file_header().generation, 0);
+
+        assert!(log.compact().unwrap() > 0);
+        assert_eq!(log.file_header().generation, 1);
+        assert_eq!(log.read(SegmentId(2)).unwrap(), payload(2));
+        // Appends land after the copied records.
+        commit_described(&log, 5, b"after compaction");
+        drop(log);
+
+        let log = tmp.open();
+        assert!(!compaction_file(&tmp.path).exists());
+        assert_eq!(log.store_id(), store_id);
+        assert_eq!(log.file_header().generation, 1);
+        assert_eq!(sorted_ids(&log), [SegmentId(1), SegmentId(2), SegmentId(5)]);
+        assert_eq!(log.read(SegmentId(5)).unwrap(), b"after compaction");
+        drop(log);
+
+        // Compacting away the highest ids doesn't lower the floor.
+        let log = tmp.open();
+        log.recount_references(&[(SegmentId(1), 1)].into());
+        log.compact().unwrap();
+        drop(log);
+        let log = tmp.open();
+        assert_eq!(sorted_ids(&log), [SegmentId(1)]);
+        assert_eq!(log.file_header().generation, 2);
+        assert_eq!(log.segment_id_floor(), 6);
+    }
+
+    #[test]
+    fn a_log_with_nothing_to_reclaim_is_left_alone() {
+        let tmp = TempLog::new("nothing");
+        let log = tmp.open();
+        commit_described(&log, 1, b"live");
+        let before = tmp.len();
+        assert_eq!(log.compact().unwrap(), 0);
+        assert_eq!(log.file_header().generation, 0);
+        assert_eq!(tmp.len(), before);
+    }
+
+    #[test]
+    fn a_crash_at_any_step_leaves_a_log_that_opens() {
+        for step in [Step::Copied, Step::Synced, Step::Renamed] {
+            let tmp = TempLog::new("crash");
+            let log = half_live(&tmp);
+            assert!(log.compact_with(|at| at == step).is_err());
+            drop(log);
+
+            let log = tmp.open();
+            assert!(log.damage().is_empty(), "{step:?}");
+            assert!(!compaction_file(&tmp.path).exists(), "{step:?}");
+            let (generation, ids) = if step == Step::Renamed {
+                (1, vec![SegmentId(1), SegmentId(2)])
+            } else {
+                (0, (1..=4).map(SegmentId).collect())
+            };
+            assert_eq!(log.file_header().generation, generation, "{step:?}");
+            assert_eq!(sorted_ids(&log), ids, "{step:?}");
+            for i in 1..=2 {
+                assert_eq!(log.read(SegmentId(i)).unwrap(), payload(i), "{step:?}");
+            }
+
+            // And it compacts normally afterwards.
+            log.recount_references(&[(SegmentId(1), 1), (SegmentId(2), 1)].into());
+            log.compact().unwrap();
+            drop(log);
+            let log = tmp.open();
+            assert_eq!(sorted_ids(&log), [SegmentId(1), SegmentId(2)], "{step:?}");
+        }
+    }
+
+    #[test]
+    fn appends_and_releases_during_the_copy_are_caught_up() {
+        let tmp = TempLog::new("concurrent");
+        let log = half_live(&tmp);
+        log.compact_with(|at| {
+            if at == Step::Copied {
+                // No lock is held while the live records are copied.
+                assert!(log.compact().is_err(), "a second compaction started");
+                log.append(SegmentId(10), b"appended mid-copy").unwrap();
+                commit_described(&log, 11, &payload(11));
+                assert_eq!(log.read(SegmentId(1)).unwrap(), payload(1));
+                log.remove_segment(SegmentId(2)).unwrap();
+                // Dead when the copy started; the catch-up copies it anyway.
+                log.increment_refcount(SegmentId(3)).unwrap();
+            }
+            false
+        })
+        .unwrap();
+
+        assert_eq!(
+            sorted_ids(&log),
+            [SegmentId(1), SegmentId(3), SegmentId(10), SegmentId(11)]
+        );
+        assert_eq!(log.read(SegmentId(3)).unwrap(), payload(3));
+        log.decrement_refcount(SegmentId(3)).unwrap();
+        assert_eq!(log.read(SegmentId(10)).unwrap(), b"appended mid-copy");
+        assert_eq!(log.read(SegmentId(11)).unwrap(), payload(11));
+        assert_eq!(log.segment_id_floor(), 12);
+        drop(log);
+
+        // Segment 2 was copied before it was released, so it comes back with
+        // no references and goes at the next compaction.
+        let log = tmp.open();
+        assert_eq!(log.file_header().segment_id_floor, 12);
+        assert_eq!(log.read(SegmentId(11)).unwrap(), payload(11));
+        let report = log.recount_references(
+            &[(SegmentId(1), 1), (SegmentId(10), 1), (SegmentId(11), 1)].into(),
+        );
+        assert_eq!(report.orphans, [SegmentId(2), SegmentId(3)]);
+        log.compact().unwrap();
+        assert_eq!(
+            sorted_ids(&log),
+            [SegmentId(1), SegmentId(10), SegmentId(11)]
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. The checkpoint, journal compaction and generation-swap compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`. The checkpoint and journal compaction are not implemented, and nothing schedules compaction yet. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -108,7 +108,7 @@ The sums are BLAKE3 because it's already a dependency. CRC32C would be cheaper p
 | 2 | 2 | `format` | Store format. 1 for this document. |
 | 4 | 16 | `store_id` | `uuid`, chosen when the store is created |
 | 20 | 8 | `generation` | 0 for a new file; +1 each time compaction replaces the file |
-| 28 | 8 | `created_at` | Unix seconds |
+| 28 | 8 | `created_at` | Unix seconds when the file's first generation was created; compaction keeps it |
 | 36 | 8 | `segment_id_floor` | The allocator never hands out an id below this (§8.3) |
 
 ### 5.2 `SEGMENT`
@@ -305,7 +305,7 @@ A manifest entry whose segment isn't in the data log means the capsule is damage
 3. Take the log's write lock. Copy any `SEGMENT` records appended since step 2 began, fsync, close the old handle (Windows won't rename over an open file), rename over `space.nvram`, fsync the directory, reopen and release the lock.
 4. Write a new checkpoint, if checkpoints are in use.
 
-A crash before the rename leaves `space.nvram.compact` behind, which open deletes; the old log is intact. A crash after it leaves a complete new log. There's no marker file and no manual step. A segment dropped during compaction is copied anyway and reclaimed next time.
+A crash before the rename leaves `space.nvram.compact` behind, which open deletes; the old log is intact. A crash after it leaves a complete new log. There's no marker file and no manual step. A segment dropped during compaction is copied anyway and reclaimed next time. §14 (PR 4) lists where the implementation differs from these steps.
 
 ### 9.2 Journal
 
@@ -377,7 +377,15 @@ Suggested PRs:
    - Pins are the data log's in-memory reference counts. An S3 overwrite or DELETE commits its `DROP` at once, and the S3 view holds back releasing the dropped capsule's references while a GET is reading it. `Pipeline::garbage_collect` doesn't know about pins and would remove such segments, but nothing calls it while `serve-s3` runs.
    - `spacectl delete` of a named capsule keeps today's behaviour (open question 6): the name stays, and reads as missing.
    - The registry checks a commit's `CAPSULE` and `DROP` records against the index under the journal lock, so a `DROP` of a capsule that isn't live fails the whole commit and nothing is written.
-4. Compaction by generation swap. Closes #108. Then schedule GC and compaction (the rest of #97).
+4. Compaction by generation swap. Closes #108. **Done**, with these differences from §9.1:
+   - Step 1 needs no pipeline lock. Open writes and readers hold segments through the data log's in-memory reference counts, so the log notes the live set itself, holding its file lock so the map matches the end offset. Appends keep the file lock until their records are in the map.
+   - `segment_id_floor` is one past every id the data log has held, including ones it removed, rather than the allocator's next id; the `FILE` record is rewritten with it after the catch-up. Opening a pipeline raises the allocator to the log's floor, which is the larger of that field and one past the highest id scanned.
+   - The catch-up in step 3 also copies any segment that gained references after step 1. Nothing should revive a dead segment, since nothing can find one to dedup against, but the copy costs nothing when there are none.
+   - A log with nothing to reclaim isn't rewritten.
+   - The old file is closed before the rename, and the new one is renamed while open. If the rename fails, the old file is reopened and the log carries on unchanged.
+   - There's no checkpoint, so step 4 doesn't apply.
+   - A `.compacting` marker from the in-place compaction of earlier builds is still refused.
+5. Schedule GC and compaction, with `spacectl` commands for them (the rest of #97).
 
 ## 15. Tests
 

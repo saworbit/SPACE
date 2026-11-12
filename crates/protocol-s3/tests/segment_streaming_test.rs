@@ -132,6 +132,52 @@ async fn a_get_in_flight_keeps_reading_the_object_it_started_on() {
 }
 
 #[tokio::test]
+async fn compaction_keeps_the_segments_a_get_is_reading() {
+    let s = Scratch::new("compact");
+    let old = noise(9 * MIB, 4);
+    s.view
+        .put_object("b", "k", body(old.clone()))
+        .await
+        .unwrap();
+    s.view
+        .put_object("b", "gone", body(noise(5 * MIB, 5)))
+        .await
+        .unwrap();
+    s.view.delete_object("b", "gone").await.unwrap();
+
+    let mut object = s.view.get_object("b", "k").await.unwrap();
+    let mut got = object.body.next().await.unwrap().unwrap().to_vec();
+    s.view
+        .put_object("b", "k", body(b"new".to_vec()))
+        .await
+        .unwrap();
+
+    // The deleted object goes; the one the GET holds moves with the rest.
+    let before = std::fs::metadata(s.dir.join("space.nvram")).unwrap().len();
+    let reclaimed = s.log.compact().unwrap();
+    assert!(reclaimed >= 5 * MIB as u64, "reclaimed {reclaimed} bytes");
+    assert_eq!(
+        std::fs::metadata(s.dir.join("space.nvram")).unwrap().len(),
+        before - reclaimed
+    );
+    while let Some(chunk) = object.body.next().await {
+        got.extend_from_slice(&chunk.unwrap());
+    }
+    assert!(got == old, "GET in flight returned the wrong bytes");
+
+    drop(object);
+    s.until("the replaced capsule's segments to be released", || {
+        s.log.list_segment_ids().len() == 1
+    })
+    .await;
+    assert!(s.log.compact().unwrap() >= 9 * MIB as u64);
+    assert_eq!(
+        collect(s.view.get_object("b", "k").await.unwrap()).await,
+        b"new"
+    );
+}
+
+#[tokio::test]
 async fn a_failed_upload_stores_nothing() {
     let s = Scratch::new("failed");
     let chunks = vec![

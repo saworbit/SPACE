@@ -257,16 +257,16 @@ The split is deliberate: segment bytes are bulky and want streaming I/O; capsule
 
 ### 4.2 NVRAM log layout
 
-The NVRAM log is the **primary** durable store. Segments are appended; nothing is ever rewritten in place (except during compaction, which is its own atomic operation).
+The NVRAM log is the **primary** durable store. Segments are appended and nothing is rewritten in place: compaction writes a new file and renames it over the old one.
 
 ```
 {path}                          # On-disk format 1 data log
-  ├─ FILE record                  format version, store id
+  ├─ FILE record                  format version, store id, generation, segment id floor
   ├─ SEGMENT record               48-byte frame + descriptor + stored bytes
   ├─ SEGMENT record
   └─ ...
 
-{path}.compacting               # Marker present while compact() runs
+{path}.compact                  # The next generation, while compact() writes it
 ```
 
 Each `SEGMENT` record carries the segment's write-once descriptor (compression, content hash, encryption fields) next to its bytes, with checksums over both. The byte layouts are in [on-disk-format.md](on-disk-format.md) §4–§5.
@@ -277,10 +277,17 @@ Each `SEGMENT` record carries the segment's write-once descriptor (compression, 
 - Bytes that hold no valid record but have valid records after them are damage. The log then opens read-only, and `NvramLog::damage()` lists the ranges. Records outside them still read.
 - Only the last record's body is checksummed on open; earlier bodies are verified when read (MAC or content hash) and by scrub.
 - Ref counts aren't stored. They're held in memory and recounted from the registry's capsules whenever a pipeline opens the log.
-- If `{path}.compacting` exists, `open()` refuses to open the log.
+- If `{path}.compact` exists, a compaction stopped before its rename. `open()` deletes it; the log it would have replaced is intact.
+- If `{path}.compacting` exists, `open()` refuses to open the log. Only the in-place compaction of earlier builds wrote that marker.
 - A log written before format 1 (with a `.segments` sidecar) is refused; see [on-disk-format.md](on-disk-format.md) §13.
 
-**Compaction** (`NvramLog::compact()`) reclaims bytes from deleted and orphaned segments. It copies the live records, unchanged, to just after the `FILE` record and truncates the rest, holding all live data in memory while it runs. It refuses to run until ref counts have been recounted, so it can't mistake a live segment for a dead one. Nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
+**Compaction** (`NvramLog::compact()`) reclaims bytes from deleted and orphaned segments by writing the next generation of the log ([on-disk-format.md](on-disk-format.md) §9.1):
+
+1. It notes the live records: segments with a ref count above 0, which includes segments an open write holds and those a GET still reads after their capsule was dropped.
+2. Without holding the log's locks, it writes `{path}.compact`: a `FILE` record with the generation incremented, then each live record copied unchanged, a buffer at a time. Reads and appends carry on meanwhile.
+3. Under the log's locks, it copies the records appended since step 1, fsyncs, and renames the new file over the log.
+
+A crash before the rename leaves the old log; one after it leaves the new generation. Both open without manual steps. A log with nothing to reclaim is left alone. Compaction refuses to run until ref counts have been recounted, so it can't mistake a live segment for a dead one. The new `FILE` record keeps the segment id floor above every id the log has held, so ids compaction removed are never handed out again. Nothing schedules compaction yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 ### 4.3 Capsule registry
 
@@ -679,7 +686,7 @@ The fix domain-separates the hash by algorithm. The two writes now produce disti
 
 **Why**: the sidecar was the only map of the data. Losing or corrupting that one file made every segment unreadable, and it wasn't fsynced, so after a power loss it could lag behind the data ([#96](https://github.com/saworbit/SPACE/issues/96)). It also grew with the store and was rewritten whole on every change. The descriptor never changes after a write once ref counts are derived instead of stored, so it can sit in the record and be written exactly once. See [on-disk-format.md](on-disk-format.md) §2.
 
-The `.compacting` marker covers a different failure: a crash mid-compaction, while the segment log itself is being rewritten. If the marker exists, `open()` refuses to open the log. An operator then has to verify or restore the data and delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)).
+Compaction doesn't rewrite the log either. It writes the next generation to a new file and renames it into place, so a crash leaves either the old log or the new one, and no marker or manual step is needed ([#108](https://github.com/saworbit/SPACE/issues/108)).
 
 ### 10.7 4 MiB default segment size
 
@@ -701,7 +708,7 @@ The `.compacting` marker covers a different failure: a crash mid-compaction, whi
 
 **Alternative**: in-place update with a free list.
 
-**Why**: append-only matches NVRAM/flash physics (no rewrites = no write amplification = longer device life), matches replication semantics (ship the log forward), and dramatically simplifies crash recovery (no partial-write torn states). The intent is for compaction to be amortized in the background. Today nothing schedules it, and when it does run it holds the log's write lock, so it blocks writes ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
+**Why**: append-only matches NVRAM/flash physics (no rewrites = no write amplification = longer device life), matches replication semantics (ship the log forward), and dramatically simplifies crash recovery (no partial-write torn states). The intent is for compaction to be amortized in the background. It copies outside the log's locks and holds them only to catch up on appends and rename, but nothing schedules it yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
 
 The trade-off is space overhead: GC'd segments occupy bytes until the next compaction. For workloads with rapid churn this is real. `compact_interval_secs` is meant to tune the frequency, but nothing reads it yet.
 
@@ -787,7 +794,7 @@ open() succeeds
 all committed Capsules remain readable
 no Capsule is partially visible
 ```
-Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). A record the crash cut short is truncated away on open; the nvram-sim tests cut the last record at every byte offset. It does not hold after a crash during compaction, where `open()` refuses to start ([#108](https://github.com/saworbit/SPACE/issues/108)).
+Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). A record the crash cut short is truncated away on open; the nvram-sim tests cut the last record at every byte offset. It holds after a crash during compaction too: the nvram-sim tests stop a compaction at each step and reopen the log.
 
 ### Segment metadata is truth
 
@@ -805,7 +812,8 @@ never on capsule.policy
 | **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch. Reads catch it too. | `ScrubResult::ContentCorrupted` / `MacMismatch`. Restore from backup or accept the loss (no replicas on this branch). |
 | **Truncated segment file** | Light scrub: actual_len ≠ metadata.len | `ScrubResult::MetadataMismatch`. Same as above. |
 | **Damaged bytes inside the log** | `open()` finds bytes that aren't a valid record, with valid records after them | The log opens read-only and `NvramLog::damage()` lists the ranges. Segments outside them still read; capsules with a segment inside can't be read. |
-| **Crash mid-compaction** | `.compacting` marker present | `open()` refuses to open the log. Verify or restore the data, then delete the marker ([#108](https://github.com/saworbit/SPACE/issues/108)). |
+| **Crash mid-compaction** | `{path}.compact` present, or the log is a new generation | Nothing to do. Before the rename, `open()` deletes `{path}.compact` and the old log is intact; after it, the new generation is complete. |
+| **Marker from an earlier build** | `{path}.compacting` present | Left by the in-place compaction builds before generation swap used. `open()` refuses; verify or restore the data, then delete the marker. |
 | **Crash mid-append** | `open()` finds a last record that fails its checksums, with nothing valid after it | Truncated away; it belonged to a write that never committed. Segments the interrupted write had already stored stay, with no references, until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). |
 | **Lost or corrupt `space.db`** | `space.db` missing, or sled fails to open it | Delete it and reopen: the index, S3 buckets and keys included, is rebuilt from `space.journal`. |
 | **Journal record cut short** | `open()` finds a last journal record that fails its checks | Truncated away; it was a commit that never completed, so its write or delete didn't happen. |
@@ -837,7 +845,7 @@ never on capsule.policy
 | **Registry** | The capsule journal and its sled index: capsules, names, content-hash index, reference counts, segment ID counter. |
 | **Capsule journal** | `space.journal`: the append-only record of capsule writes (`CAPSULE`) and deletes (`DROP`). The sled index is rebuilt from it. |
 | **NVRAM log** | The primary durable backend. Append-only log of framed segment records. |
-| **Compaction** | Rewriting the live segments of an NVRAM log to reclaim space from GC'd segments. |
+| **Compaction** | Copying the live segments of an NVRAM log into its next generation, to reclaim space from GC'd segments. |
 | **PODMS** | Policy-Orchestrated Disaggregated Mesh Scaling. The distributed mode, archived in the reset. |
 | **Sovereignty** | A PODMS policy attribute controlling whether a Capsule may be replicated/migrated across zones (archived). |
 
