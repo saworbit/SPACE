@@ -63,3 +63,22 @@ jobs:
 
       - name: Check workspace
         run: cargo check --workspace --locked
+
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+
+      # Ignored advisories live in .cargo/audit.toml and deny.toml, each with a reason.
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+      - name: cargo deny
+        run: cargo deny check

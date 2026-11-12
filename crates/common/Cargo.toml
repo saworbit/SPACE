@@ -20,4 +20,4 @@ bytes = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }

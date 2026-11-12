@@ -230,7 +230,7 @@ fn describe_scrub_error(
 
 fn load_policy_file(path: &PathBuf) -> Result<Policy> {
     let text = fs::read_to_string(path)?;
-    serde_yaml::from_str(&text).map_err(|err| anyhow!(err))
+    serde_norway::from_str(&text).map_err(|err| anyhow!(err))
 }
 
 #[tokio::main]

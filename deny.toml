@@ -70,26 +70,10 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    # Unmaintained transitive dependencies from libp2p and leptos
-    # These are not actual security vulnerabilities, just maintenance status warnings
-    { id = "RUSTSEC-2024-0384", reason = "instant - unmaintained (from libp2p)" },
-    { id = "RUSTSEC-2024-0436", reason = "paste - unmaintained (from leptos/netlink)" },
-
-    # --- Phase 4 Waivers (2025-12) ---
-    # RUSTSEC-2025-0057: fxhash (via sled)
-    # Constraint-based mitigation: sled keys are high-entropy UUID/BLAKE3 values only.
-    { id = "RUSTSEC-2025-0057", reason = "Mitigated: sled keys are crypto-hashes/UUIDs only" },
-
-    # RUSTSEC-2025-0134: rustls-pemfile (via reqwest)
-    # Trusted control plane: only admin-provisioned PEMs are parsed locally.
-    { id = "RUSTSEC-2025-0134", reason = "Mitigated: Trusted control plane / local PEM inputs only" },
-
-    # --- Phase C RDMA toolchain (bindgen) warnings ---
-    # ansi_term (RUSTSEC-2021-0139) and atty (RUSTSEC-2021-0145, RUSTSEC-2024-0375)
-    # are pulled in by bindgen 0.59 (rdma-sys build-time) and do not ship in runtime artifacts.
-    { id = "RUSTSEC-2021-0139", reason = "bindgen build-time dep via rdma-sys; no runtime exposure" },
-    { id = "RUSTSEC-2021-0145", reason = "bindgen build-time dep via rdma-sys; no runtime exposure" },
-    { id = "RUSTSEC-2024-0375", reason = "bindgen build-time dep via rdma-sys; no runtime exposure" },
+    # Keep in step with .cargo/audit.toml: only advisories the current tree triggers.
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 encodes space.db records; moving off it is a format migration" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained, via sled 0.34; sled keys are UUIDs and BLAKE3 hashes" },
+    { id = "RUSTSEC-2024-0384", reason = "instant unmaintained, via parking_lot 0.11 in sled 0.34" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -135,108 +119,19 @@ external-default-features = "allow"
 allow = []
 deny = []
 skip = [
-    # libp2p ecosystem transitive dependencies
-    { crate = "base64@0.21.7", reason = "libp2p-gossipsub transitive pin" },
-    { crate = "unsigned-varint@0.7.2", reason = "multistream-select transitive pin" },
-    { crate = "yamux@0.12.1", reason = "multistream-select transitive pin" },
-
     # Older ecosystem versions
     { crate = "bitflags@1.3.2", reason = "transitive pin from various deps" },
-    { crate = "dashmap@5.5.3", reason = "scaling stack pin" },
-    { crate = "getrandom@0.2.16", reason = "rand ecosystem transitive pin" },
-    { crate = "hashbrown@0.12.3", reason = "indexmap 1.x transitive pin (tower 0.4 stack)" },
-    { crate = "hashbrown@0.13.2", reason = "cranelift/regalloc2 transitive pin (wasmtime)" },
-    { crate = "hashbrown@0.14.5", reason = "std collections compatibility" },
-    { crate = "hashbrown@0.15.5", reason = "object crate transitive pin (wasmtime)" },
-    { crate = "hashbrown@0.16.1", reason = "indexmap 2.x transitive pin" },
-    { crate = "heck@0.4.1", reason = "proc-macro transitive pin" },
-    { crate = "indexmap@1.9.3", reason = "tower 0.4 stack transitive pin" },
-    { crate = "itertools@0.10.5", reason = "criterion/proptest ecosystem transitive pin" },
-    { crate = "itertools@0.12.1", reason = "wasmtime/cranelift transitive pin (transform-engine)" },
-    { crate = "itertools@0.14.0", reason = "prost-build/tonic-build transitive pin" },
-    { crate = "linux-raw-sys@0.4.15", reason = "rustix transitive pin" },
-    { crate = "object@0.32.2", reason = "wasmtime build-time dependency (psm/ar_archive_writer)" },
-    { crate = "rustix@0.38.44", reason = "system interface transitive pin" },
-    { crate = "socket2@0.4.10", reason = "tokio-uring/sled compatibility" },
-    { crate = "socket2@0.5.10", reason = "tokio/mio compatibility" },
-    { crate = "socket2@0.6.1", reason = "hyper-util/tokio compatibility" },
-    { crate = "syn@1.0.109", reason = "proc-macro v1 compatibility" },
 
-    # parking_lot ecosystem split (sled vs tokio/libp2p stacks)
+    # parking_lot ecosystem split (sled vs tokio)
     { crate = "parking_lot@0.11.2", reason = "sled pin" },
     { crate = "parking_lot_core@0.8.6", reason = "sled pin" },
-    { crate = "parking_lot@0.12.5", reason = "tokio/libp2p stack" },
-    { crate = "parking_lot_core@0.9.12", reason = "tokio/libp2p stack" },
+    { crate = "parking_lot@0.12.5", reason = "tokio stack" },
+    { crate = "parking_lot_core@0.9.12", reason = "tokio stack" },
     { crate = "redox_syscall@0.2.16", reason = "parking_lot_core 0.8.x pin" },
     { crate = "redox_syscall@0.5.18", reason = "parking_lot_core 0.9.x pin" },
 
-    # rand ecosystem
-    { crate = "rand@0.8.6", reason = "ecosystem compatibility; patched RUSTSEC-2026-0097 line" },
-    { crate = "rand_chacha@0.3.1", reason = "rand 0.8 compatibility" },
-    { crate = "rand_core@0.6.4", reason = "rand 0.8 compatibility" },
-
-    # thiserror v1 (many crates still use v1)
-    { crate = "thiserror@1.0.69", reason = "ecosystem compatibility" },
-    { crate = "thiserror-impl@1.0.69", reason = "thiserror 1.0 proc-macro" },
-
-    # Windows platform dependencies
-    { crate = "windows-sys@0.48.0", reason = "legacy windows support" },
-    { crate = "windows-sys@0.52.0", reason = "socket2 0.5 compatibility" },
-    { crate = "windows-sys@0.60.2", reason = "tokio transitive pin (clap stack)" },
-    { crate = "windows-sys@0.61.2", reason = "tokio transitive pin (mio stack)" },
-    { crate = "windows-core@0.53.0", reason = "libp2p/if-watch pin; incompatible with chrono stack" },
-    { crate = "windows-core@0.62.2", reason = "chrono/iana-time-zone pin; incompatible with libp2p windows bindings" },
-    { crate = "windows-result@0.1.2", reason = "windows 0.53 transitive pin" },
-    { crate = "windows-result@0.4.1", reason = "windows 0.62 transitive pin" },
-    { crate = "windows-targets@0.48.5", reason = "windows-sys 0.48 support" },
-    { crate = "windows-targets@0.52.6", reason = "windows-sys 0.52 support" },
-    { crate = "windows_aarch64_gnullvm@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_aarch64_gnullvm@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_aarch64_msvc@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_aarch64_msvc@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_i686_gnu@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_i686_gnu@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_i686_gnullvm@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_i686_msvc@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_i686_msvc@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_x86_64_gnu@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_x86_64_gnu@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_x86_64_gnullvm@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_x86_64_gnullvm@0.52.6", reason = "windows-targets 0.52 support" },
-    { crate = "windows_x86_64_msvc@0.48.5", reason = "windows-targets 0.48 support" },
-    { crate = "windows_x86_64_msvc@0.52.6", reason = "windows-targets 0.52 support" },
-
-    # Tower/Axum compatibility
-    { crate = "tower@0.4.13", reason = "protocol-s3 compatibility" },
-    { crate = "tower@0.5.2", reason = "axum 0.7 stack" },
-
-    # Phase 9.1: raft-proto 0.7.0 build-time dependencies (prost 0.11 vs 0.13)
-    # raft-proto uses old prost 0.11, while rest of project uses prost 0.13
-    { crate = "fixedbitset@0.4.2", reason = "raft-proto build-time via prost-build 0.11" },
-    { crate = "multimap@0.8.3", reason = "raft-proto build-time via prost-build 0.11" },
-    { crate = "petgraph@0.6.5", reason = "raft-proto build-time via prost-build 0.11" },
-    { crate = "prettyplease@0.1.25", reason = "raft-proto build-time via prost-build 0.11" },
-    { crate = "prost@0.11.9", reason = "raft-proto runtime dependency (old version)" },
-    { crate = "prost-build@0.11.9", reason = "raft-proto build-time dependency (old version)" },
-    { crate = "prost-derive@0.11.9", reason = "raft-proto build-time dependency (old version)" },
-    { crate = "prost-types@0.11.9", reason = "raft-proto build-time dependency (old version)" },
-    { crate = "protobuf@2.28.0", reason = "raft 0.7.0 runtime dependency (see audit.toml RUSTSEC-2024-0437)" },
-
-    # Phase 9.2: Dual tonic versions (0.8 for federation, 0.12 for capsule-registry)
-    # federation crate uses tikv/raft-rs 0.7.0, which requires tonic 0.8 + prost 0.11
-    # capsule-registry uses modern tonic 0.12 + prost 0.13
-    # This creates an intentional HTTP stack split (axum, hyper, h2, http, etc.)
-    { crate = "axum@0.6.20", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "axum-core@0.3.4", reason = "axum 0.6 dependency" },
-    { crate = "base64@0.22.1", reason = "tonic 0.12 stack (capsule-registry)" },
-    { crate = "h2@0.3.27", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "http@0.2.12", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "http-body@0.4.6", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "hyper@0.14.32", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "hyper-timeout@0.4.1", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "sync_wrapper@0.1.2", reason = "tonic 0.8 stack (federation raft)" },
-    { crate = "tonic@0.8.3", reason = "tikv/raft-rs 0.7.0 compatibility (federation)" },
-    { crate = "tonic-build@0.8.4", reason = "tonic 0.8 build-time dependency" },
+    # syn 3 transition
+    { crate = "syn@2.0.119", reason = "async-stream, axum-macros and tracing-attributes still use syn 2" },
 ]
 
 [sources]

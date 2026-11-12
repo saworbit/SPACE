@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The remaining entries in this section describe the pre-reset tree (foundry, federation, mesh, web UI, and the other removed crates). That code is on `archive/pre-reset-2026-10`. See [RESET.md](RESET.md).
 
+### Security
+
+- `cargo audit --deny warnings` and `cargo deny check` pass, and CI runs both. The S3 streaming test's HTTP client moved to reqwest 0.13 without TLS, which drops h2 0.3 and the rustls 0.21 stack along with their five advisories; none of them were in `spacectl`. Policy files are parsed with serde_norway, a maintained fork of the deprecated serde_yaml, so the unmaintained unsafe-libyaml is gone; `--policy-file` reads the same YAML as before. rustix is updated to 1.1.6. `.cargo/audit.toml` and `deny.toml` now ignore only the three unmaintained-crate advisories the dependency tree still triggers (bincode, fxhash, instant), instead of about 30 left from before the reset, and `deny.toml` drops 74 stale `skip` entries (#143).
+
 ### Changed
 
 - **Code-review simplification pass on the dedup/scrub/foundry diff** (`crates/dedup/src/lib.rs`, `crates/common/src/traits.rs`, `crates/common/src/scrub.rs`, `crates/capsule-registry/src/scrub_executor.rs`, `crates/capsule-registry/src/pipeline/legacy.rs`, `crates/foundry/src/backend/device.rs`)
