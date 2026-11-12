@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `serve-s3` scrubs the store in the background: a deep scrub at startup and then weekly (`--deep-scrub-interval`), a light scrub daily (`--scrub-interval`, `0` turns scrubbing off), reading at most 64 MiB/s (`--scrub-rate`). `spacectl scrub [--deep]` checks every segment now, prints each failed segment with the capsules that hold it, and exits non-zero if any failed. In `space.nvram`, light scrub now checks each record's own checksum, so it catches damage in encrypted segments without the key (#97).
 - `serve-s3` reclaims space on its own: a pass at startup and every `--reclaim-interval` seconds (default 300, `0` turns it off) compacts `space.nvram` once a quarter of it, and at least 4 MiB, is reclaimable, or deletes unreferenced segments under `SPACE_STORAGE_ROOT`. `spacectl gc` removes segments no capsule references, and `spacectl compact` compacts `space.nvram` at once (part of #97).
 
 ### Changed
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Background scrub covers the whole store each interval. A cycle that reached `max_segments_per_cycle` used to leave the rest until the next interval, so a store of more than 1024 segments was only partly scrubbed. Segments deleted during a cycle are no longer reported as read errors, and the schedule forgets deleted segments rather than growing forever. `ScrubResult::MetadataMismatch` names its segment.
 - Garbage collection keeps the segments of open writes, and those of an object an S3 overwrite or DELETE dropped while a GET still reads it, instead of refusing to run while a write is open. It never removes a segment a capsule references, whatever the segment's stored ref count.
 - A read of the data log during a compaction could look up a segment's offset in one generation and read it from the next. The read's checksum check rejected the bytes, so the read failed rather than returning them.
 - Compaction is crash-safe, holds one buffer of data at a time rather than every live segment, and no longer blocks reads and writes while it copies. It writes the live records to the next generation of the log, `space.nvram.compact`, outside the log's locks, catches up on appends under them, and renames the new file into place. A crash at any point leaves the old log or the new one, and opening the log deletes an unfinished `space.nvram.compact`. The `.compacting` marker and its manual recovery are gone. Segments an open write or a GET still holds are kept, and segment ids compaction removes aren't handed out again, even after `space.db` is lost (#108).

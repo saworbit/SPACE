@@ -265,6 +265,11 @@ impl KeyManagerKeyring {
     pub fn new(manager: Arc<Mutex<KeyManager>>) -> Self {
         Self { manager }
     }
+
+    /// The key manager this keyring derives keys from.
+    pub fn manager(&self) -> Arc<Mutex<KeyManager>> {
+        Arc::clone(&self.manager)
+    }
 }
 
 impl Default for KeyManagerKeyring {
@@ -1118,6 +1123,11 @@ where
     /// The storage backend segments are written to.
     pub fn storage(&self) -> &S {
         &self.storage
+    }
+
+    /// The keyring, when the pipeline has one.
+    pub fn keyring(&self) -> Option<&K> {
+        self.keyring.as_ref()
     }
 }
 

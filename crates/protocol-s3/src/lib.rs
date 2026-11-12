@@ -4,6 +4,7 @@ use capsule_registry::modular_pipeline::{
 };
 use capsule_registry::CapsuleRegistry;
 use common::format::JournalRecord;
+use common::scrub::{ScrubConfig, ScrubState};
 use common::{Capsule, CapsuleId};
 use futures::{Stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
@@ -465,6 +466,19 @@ impl S3View {
     /// kept.
     pub async fn reclaim(&self) -> S3Result<ReclaimReport> {
         Ok(modular_pipeline::reclaim(&self.pipeline).await?)
+    }
+
+    /// Scrub the store in the background on `config`'s schedule
+    /// ([`RegistryPipelineHandle::spawn_scrub`]). The receiver reports each
+    /// cycle; abort the handle to stop.
+    pub async fn spawn_scrub(
+        &self,
+        config: ScrubConfig,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Receiver<ScrubState>,
+    ) {
+        self.pipeline.lock().await.spawn_scrub(config)
     }
 
     /// The capsule a key points at, unless `spacectl delete` removed it.

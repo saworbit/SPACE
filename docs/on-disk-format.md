@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -391,6 +391,11 @@ Suggested PRs:
    - `serve-s3` runs a pass at startup and every `--reclaim-interval` seconds (default 300). It compacts once a quarter of the log, and at least one default segment, is reclaimable, without the pipeline lock. `spacectl gc` and `spacectl compact` run each step on demand.
    - `NvramLog::read` now takes the file lock before it looks up the offset. Looking it up first let a compaction swap the file in between, so the read used an offset from the old generation. The read's MAC or content-hash check would have rejected the bytes.
    - Scrub, which #97 also asks to schedule, isn't part of this.
+6. Schedule scrub, with `spacectl scrub` (the last of #97). **Done**:
+   - Light scrub of the data log checks each record's `head_sum` and `body_sum` (`StorageBackend::verify_stored`, `NvramLog::verify_record`), as §8.1 says scrub verifies earlier bodies. It needs no key, so it covers encrypted segments too. A length check, all light scrub did before, can't fail in the data log.
+   - `serve-s3` runs `ScrubExecutor::spawn_background` with the pipeline's key, without the pipeline lock: light daily, deep weekly, at most 64 MiB/s by default. The schedule lives in memory, so every start begins with a deep scrub.
+   - On a live store, a segment deleted during a cycle isn't reported as a read error, and the schedule forgets deleted segments.
+   - A cycle that reaches `max_segments_per_cycle` lets the rest follow a second later. Before, they waited for the next interval.
 
 ## 15. Tests
 

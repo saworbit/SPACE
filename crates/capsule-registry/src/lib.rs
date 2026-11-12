@@ -26,9 +26,12 @@ pub use error::{CompressionError, DedupError, PipelineError};
 pub mod modular_pipeline {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use anyhow::Result;
     use common::format::JournalRecord;
+    use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubState};
+    use common::traits::StorageBackend;
     use common::{traits::DataStream, Capsule, CapsuleId, EncryptionPolicy, Policy, SegmentId};
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
@@ -39,8 +42,11 @@ pub mod modular_pipeline {
     };
     pub use storage::{AutoFsBackend, InMemoryBackend, NvramBackend};
     use tokio::io::{AsyncRead, AsyncReadExt};
-    use tokio::sync::Mutex as TokioMutex;
+    use tokio::sync::{watch, Mutex as TokioMutex};
+    use tokio::task::JoinHandle;
     use tracing::{info, warn};
+
+    use crate::scrub_executor::ScrubExecutor;
 
     pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
         path: P,
@@ -268,6 +274,82 @@ pub mod modular_pipeline {
                 Self::Plain(p) => Some(p.storage().log().clone()),
                 Self::FsEncrypted(_) | Self::FsPlain(_) => None,
             }
+        }
+
+        fn key_manager(&self) -> Option<Arc<Mutex<KeyManager>>> {
+            match self {
+                Self::Encrypted(p) => p.keyring().map(KeyManagerKeyring::manager),
+                Self::FsEncrypted(p) => p.keyring().map(KeyManagerKeyring::manager),
+                Self::Plain(_) | Self::FsPlain(_) => None,
+            }
+        }
+
+        /// Scrub the store in the background on `config`'s schedule
+        /// ([`ScrubExecutor::spawn_background`]). The executor gets the
+        /// pipeline's key, so deep scrubs check encrypted segments' MACs. It
+        /// reads segments straight from the backend, without the pipeline
+        /// lock.
+        pub fn spawn_scrub(
+            &self,
+            config: ScrubConfig,
+        ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
+            let key = self.key_manager();
+            match self {
+                Self::Encrypted(p) => {
+                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
+                }
+                Self::Plain(p) => ScrubExecutor::spawn_background(p.storage().clone(), config, key),
+                Self::FsEncrypted(p) => {
+                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
+                }
+                Self::FsPlain(p) => {
+                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
+                }
+            }
+        }
+
+        /// Scrub every segment of the store once, now, as `spacectl scrub`
+        /// does: no per-cycle cap and no throttling.
+        pub async fn scrub_all(&self, kind: ScrubKind) -> ScrubReport {
+            let config = ScrubConfig {
+                max_segments_per_cycle: usize::MAX,
+                inter_segment_delay: Duration::ZERO,
+                max_bytes_per_sec: None,
+                ..ScrubConfig::default()
+            };
+            let key = self.key_manager();
+            match self {
+                Self::Encrypted(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+                Self::Plain(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+                Self::FsEncrypted(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+                Self::FsPlain(p) => {
+                    executor(p.storage().clone(), key)
+                        .scrub_cycle(&config, kind)
+                        .await
+                }
+            }
+        }
+    }
+
+    fn executor<B: StorageBackend>(
+        backend: B,
+        key: Option<Arc<Mutex<KeyManager>>>,
+    ) -> ScrubExecutor<B> {
+        match key {
+            Some(key) => ScrubExecutor::with_key_manager(backend, key),
+            None => ScrubExecutor::new(backend),
         }
     }
 

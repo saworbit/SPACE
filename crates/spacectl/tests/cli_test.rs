@@ -213,3 +213,55 @@ fn compact_has_nothing_to_do_under_a_storage_root() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn scrub_names_the_damaged_segment_and_its_capsule() {
+    let dir = scratch_dir("scrub");
+    std::fs::write(dir.join("a.bin"), noise(100_000, 3)).unwrap();
+    std::fs::write(dir.join("b.bin"), noise(100_000, 4)).unwrap();
+    let damaged = created_id(&spacectl(&dir, &["create", "-f", "a.bin"]));
+    created_id(&spacectl(&dir, &["create", "-f", "b.bin"]));
+
+    let out = spacectl(&dir, &["scrub"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("Light scrub: checked 2 segments"),
+        "{stdout}"
+    );
+    assert!(stdout.ends_with("All healthy\n"), "{stdout}");
+
+    // Rot a byte of the first capsule's segment.
+    let registry = capsule_registry::CapsuleRegistry::open(dir.join("space.db")).unwrap();
+    let segment = registry
+        .lookup(common::CapsuleId::from_uuid(damaged.parse().unwrap()))
+        .unwrap()
+        .segments[0];
+    drop(registry);
+    let log = nvram_sim::NvramLog::open(dir.join("space.nvram")).unwrap();
+    let offset = log.get_segment_metadata(segment).unwrap().offset as usize;
+    drop(log);
+    let mut bytes = std::fs::read(dir.join("space.nvram")).unwrap();
+    bytes[offset + 10] ^= 0x01;
+    std::fs::write(dir.join("space.nvram"), &bytes).unwrap();
+
+    for args in [&["scrub"][..], &["scrub", "--deep"][..]] {
+        let out = spacectl(&dir, args);
+        assert!(!out.status.success(), "{args:?} passed a damaged store");
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let line = format!("segment {}: stored bytes don't match", segment.0);
+        assert!(stdout.contains(&line), "{args:?}: {stdout}");
+        assert!(stdout.contains(&damaged), "{args:?}: {stdout}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("1 segment failed integrity checks"),
+            "{args:?}: {stderr}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -275,7 +275,7 @@ Each `SEGMENT` record carries the segment's write-once descriptor (compression, 
 - There is no sidecar. `open()` scans the log and rebuilds the segment map from the records.
 - A record cut short at the end of the file, from an append a crash interrupted, fails its checksums with nothing valid after it. `open()` truncates it away. That write never committed: segments are fsynced before their hashes are registered or a capsule refers to them.
 - Bytes that hold no valid record but have valid records after them are damage. The log then opens read-only, and `NvramLog::damage()` lists the ranges. Records outside them still read.
-- Only the last record's body is checksummed on open; earlier bodies are verified when read (MAC or content hash) and by scrub.
+- Only the last record's body is checksummed on open; earlier bodies are verified when read (MAC or content hash) and by scrub, which checks every record's checksum.
 - Ref counts aren't stored. They're held in memory and recounted from the registry's capsules whenever a pipeline opens the log.
 - If `{path}.compact` exists, a compaction stopped before its rename. `open()` deletes it; the log it would have replaced is intact.
 - If `{path}.compacting` exists, `open()` refuses to open the log. Only the in-place compaction of earlier builds wrote that marker.
@@ -505,16 +505,32 @@ The classic race is a segment reaching zero just as a new write is about to dedu
 
 ## 8. Scrub: continuous integrity
 
-Capsules are durable only if their bytes still match their hashes and MACs. Scrub is the background loop that proves this. `ScrubExecutor` implements it, but nothing on this branch starts it yet ([#97](https://github.com/saworbit/SPACE/issues/97)).
+Capsules are durable only if their bytes still match their hashes and MACs. Scrub is the background loop that proves this. `ScrubExecutor` implements it. `serve-s3` runs it, and `spacectl scrub` runs one pass on demand.
 
 ### Two flavors
 
 | Kind | What it verifies | I/O | CPU |
 |---|---|---|---|
-| **Light** | Stored byte count matches `segment.len` | Full read | None |
+| **Light** | In `space.nvram`, each record's own checksum (`body_sum` and `head_sum`). Elsewhere, that the stored byte count matches `segment.len`. | Full read | BLAKE3 |
 | **Deep** | MAC tag (encrypted) or content hash (unencrypted) | Full read | BLAKE3 / AES |
 
-Both run on configurable intervals (defaults: light = 24h, deep = 7d). The executor tracks each segment's last-checked times in memory, and a cycle scrubs only segments that are due.
+Light scrub needs no key. In the data log it catches media damage in any segment, encrypted or not; the length check is all a file backend allows. Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
+
+The executor tracks each segment's last-checked times in memory, and a cycle scrubs only segments that are due. It forgets segments that have been deleted. A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
+
+### Running it
+
+`serve-s3` scrubs in the background, without the pipeline lock:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--scrub-interval` | 86400 (1 day) | Seconds between light scrubs. `0` turns scrubbing off. |
+| `--deep-scrub-interval` | 604800 (1 week) | Seconds between deep scrubs. |
+| `--scrub-rate` | 64 | MiB per second scrubbing reads at most. `0` means no limit. |
+
+The first cycle, at startup, is deep. Because the schedule lives in memory, a restart scrubs the whole store again. Each cycle logs its outcome at `INFO`, or at `WARN` with counts when it finds damage.
+
+`spacectl scrub` checks every segment once, unthrottled, and `spacectl scrub --deep` runs the deep checks. Each failed segment is printed with the capsules that hold it, and the command exits non-zero when any segment fails.
 
 ### Deep scrub of encrypted segments
 
@@ -540,8 +556,10 @@ The `legacy_hash_hits` counter in `ScrubReport` is the operator's gauge for reti
 ### State machine
 
 ```
-Idle → Running(kind) → Completed { kind, errors } → Idle
+Idle → Running(kind) → Completed { kind, errors } → Running(kind) → …
 ```
+
+`Completed` stays the current value until the next cycle starts.
 
 Published via a `tokio::sync::watch` channel. Consumers observe transitions without polling. The deep-scrub MAC/BLAKE3 work runs inside `spawn_blocking` so the async executor isn't stalled by CPU-heavy verification.
 
@@ -816,7 +834,7 @@ never on capsule.policy
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| **Bit rot in segment bytes** | Deep scrub: content hash or MAC mismatch. Reads catch it too. | `ScrubResult::ContentCorrupted` / `MacMismatch`. Restore from backup or accept the loss (no replicas on this branch). |
+| **Bit rot in segment bytes** | Light scrub: the record's checksum (in `space.nvram`). Deep scrub: content hash or MAC mismatch. Reads catch it too. | `ScrubResult::ContentCorrupted` / `MacMismatch`; `spacectl scrub` names the capsules affected. Restore from backup or accept the loss (no replicas on this branch). |
 | **Truncated segment file** | Light scrub: actual_len ≠ metadata.len | `ScrubResult::MetadataMismatch`. Same as above. |
 | **Damaged bytes inside the log** | `open()` finds bytes that aren't a valid record, with valid records after them | The log opens read-only and `NvramLog::damage()` lists the ranges. Segments outside them still read; capsules with a segment inside can't be read. |
 | **Crash mid-compaction** | `{path}.compact` present, or the log is a new generation | Nothing to do. Before the rename, `open()` deletes `{path}.compact` and the old log is intact; after it, the new generation is complete. |
@@ -845,7 +863,7 @@ never on capsule.policy
 | **Policy** | The compression/encryption/layout bundle a Capsule was written with. Set at write time; see [§3.6](#36-policy). |
 | **Integrity tag** | First 16 bytes of `BLAKE3_keyed(mac_key, ciphertext ‖ metadata)`. The MAC. |
 | **Tweak** | 16-byte XTS tweak: the first 16 bytes of a BLAKE3 hash of the segment's compressed bytes. |
-| **Light scrub** | Background verification of stored byte counts. |
+| **Light scrub** | Background verification without a key: each record's checksum in the data log, stored byte counts elsewhere. |
 | **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted). |
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |

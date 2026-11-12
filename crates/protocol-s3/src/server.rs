@@ -11,6 +11,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
 
 use crate::{handlers::*, S3View};
+use common::scrub::ScrubConfig;
 
 /// Run [`S3View::reclaim`] now and then every `every`, until the task is
 /// aborted. A failed pass is logged and the next one runs on schedule.
@@ -62,6 +63,7 @@ pub struct S3Server {
     s3_view: Arc<S3View>,
     addr: SocketAddr,
     reclaim_every: Option<Duration>,
+    scrub: Option<ScrubConfig>,
 }
 
 impl S3Server {
@@ -70,7 +72,15 @@ impl S3Server {
             s3_view: Arc::new(s3_view),
             addr,
             reclaim_every: None,
+            scrub: None,
         }
+    }
+
+    /// Scrub the store in the background on `config`'s schedule while the
+    /// server runs ([`S3View::spawn_scrub`]). `None`, the default, doesn't.
+    pub fn scrub(mut self, config: Option<ScrubConfig>) -> Self {
+        self.scrub = config;
+        self
     }
 
     /// Run a reclaim pass at startup and then every `every` while the
@@ -84,6 +94,11 @@ impl S3Server {
         let _reclaim = self
             .reclaim_every
             .map(|every| AbortOnDrop(spawn_reclaim(Arc::clone(&self.s3_view), every)));
+        let _scrub = match self.scrub {
+            // Each cycle logs its outcome, so nothing reads the state.
+            Some(config) => Some(AbortOnDrop(self.s3_view.spawn_scrub(config).await.0)),
+            None => None,
+        };
         let app = router(self.s3_view);
 
         let addr = self.addr;

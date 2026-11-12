@@ -4,12 +4,13 @@ use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 
 use clap::{Parser, Subcommand};
 
-use common::CapsuleId;
-use common::Policy;
+use common::scrub::{ScrubConfig, ScrubKind, ScrubResult};
+use common::{CapsuleId, Policy, SegmentId};
 use futures::StreamExt;
 
 use nvram_sim::NvramLog;
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -132,6 +133,15 @@ enum Commands {
     /// Reclaim the bytes of segments no capsule references by writing a new
     /// generation of space.nvram.
     Compact,
+    /// Check every segment's integrity now, and exit non-zero if any fails.
+    /// In space.nvram this checks each record's checksum; under
+    /// SPACE_STORAGE_ROOT, each segment's length.
+    Scrub {
+        /// Also check each segment's MAC (needs SPACE_MASTER_KEY) or content
+        /// hash, which catches tampering as well as damage.
+        #[arg(long)]
+        deep: bool,
+    },
     /// Start S3-compatible HTTP server
     ServeS3 {
         /// Port to listen on
@@ -147,7 +157,75 @@ enum Commands {
         /// turns them off.
         #[arg(long, default_value_t = 300, value_name = "SECONDS")]
         reclaim_interval: u64,
+        #[command(flatten)]
+        scrub: ScrubArgs,
     },
+}
+
+/// When `serve-s3` scrubs the store. Which segments were checked when is
+/// kept in memory, so a restart starts over, with a deep scrub.
+#[derive(clap::Args, Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrubArgs {
+    /// Seconds between light scrubs, which check each segment without a key.
+    /// 0 turns scrubbing off.
+    #[arg(long, default_value_t = 86_400, value_name = "SECONDS")]
+    scrub_interval: u64,
+    /// Seconds between deep scrubs, which also check MACs and content
+    /// hashes. The first runs at startup.
+    #[arg(
+        long,
+        default_value_t = 604_800,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    deep_scrub_interval: u64,
+    /// Most MiB per second scrubbing reads, so it leaves room for requests.
+    /// 0 means no limit.
+    #[arg(long, default_value_t = 64, value_name = "MIB")]
+    scrub_rate: u64,
+}
+
+impl ScrubArgs {
+    fn config(self) -> Option<ScrubConfig> {
+        (self.scrub_interval > 0).then(|| ScrubConfig {
+            light_interval: Duration::from_secs(self.scrub_interval),
+            deep_interval: Duration::from_secs(self.deep_scrub_interval),
+            max_bytes_per_sec: (self.scrub_rate > 0)
+                .then(|| self.scrub_rate.saturating_mul(1024 * 1024)),
+            ..ScrubConfig::default()
+        })
+    }
+}
+
+/// One line per failed segment, naming the capsules that hold it.
+fn describe_scrub_error(
+    result: &ScrubResult,
+    owners: &HashMap<SegmentId, Vec<CapsuleId>>,
+) -> String {
+    let what = match result {
+        ScrubResult::MetadataMismatch {
+            expected_len,
+            actual_len,
+            ..
+        } => format!("{actual_len} bytes stored, {expected_len} expected"),
+        ScrubResult::ContentCorrupted { .. } => {
+            "stored bytes don't match their checksum or content hash".to_string()
+        }
+        ScrubResult::MacMismatch { .. } => "MAC check failed".to_string(),
+        ScrubResult::ReadError { error, .. } => format!("couldn't be read: {error}"),
+        other => format!("{other:?}"),
+    };
+    let Some(segment) = result.segment() else {
+        return what;
+    };
+    let held_by = match owners.get(&segment) {
+        Some(ids) => {
+            let ids: Vec<String> = ids.iter().map(|id| id.as_uuid().to_string()).collect();
+            format!(" (capsule {})", ids.join(", "))
+        }
+        None => " (no capsule)".to_string(),
+    };
+    format!("segment {}: {what}{held_by}", segment.0)
 }
 
 fn load_policy_file(path: &PathBuf) -> Result<Policy> {
@@ -283,10 +361,63 @@ async fn main() -> Result<()> {
                 println!("(no capsules)");
             }
         }
+        Commands::Scrub { deep } => {
+            let registry = open_registry()?;
+            let store = open_store(registry.clone()).await?;
+            let (kind, name) = if deep {
+                (ScrubKind::Deep, "Deep")
+            } else {
+                (ScrubKind::Light, "Light")
+            };
+            let report = store.scrub_all(kind).await;
+            println!(
+                "{name} scrub: checked {} ({}) in {:.1?}",
+                plural(report.segments_checked as u64, "segment", "segments"),
+                plural(report.bytes_checked, "byte", "bytes"),
+                report.duration
+            );
+            if report.segments_skipped > 0 {
+                println!(
+                    "Skipped {}: set SPACE_MASTER_KEY to check encrypted segments' MACs",
+                    plural(report.segments_skipped as u64, "segment", "segments")
+                );
+            }
+            if report.errors.is_empty() {
+                println!("All healthy");
+            } else {
+                let mut owners: HashMap<SegmentId, Vec<CapsuleId>> = HashMap::new();
+                let failed: HashSet<SegmentId> = report
+                    .errors
+                    .iter()
+                    .filter_map(ScrubResult::segment)
+                    .collect();
+                for capsule in registry.capsules() {
+                    for segment in capsule.segments.iter().filter(|s| failed.contains(s)) {
+                        owners.entry(*segment).or_default().push(capsule.id);
+                    }
+                }
+                for error in &report.errors {
+                    println!("{}", describe_scrub_error(error, &owners));
+                }
+                let damaged =
+                    report.mac_failures + report.content_failures + report.metadata_failures;
+                if damaged > 0 {
+                    bail!(
+                        "{} failed integrity checks",
+                        plural(damaged as u64, "segment", "segments")
+                    );
+                }
+                bail!(
+                    "{} couldn't be read",
+                    plural(report.read_errors as u64, "segment", "segments")
+                );
+            }
+        }
         Commands::ServeS3 {
             port,
             bind,
             reclaim_interval,
+            scrub,
         } => {
             use protocol_s3::{server::S3Server, S3View};
 
@@ -295,8 +426,9 @@ async fn main() -> Result<()> {
             let s3_view = S3View::new_modular(open_store(open_registry()?).await?);
             let reclaim_every =
                 (reclaim_interval > 0).then(|| Duration::from_secs(reclaim_interval));
-            let server =
-                S3Server::new(s3_view, SocketAddr::new(bind, port)).reclaim_every(reclaim_every);
+            let server = S3Server::new(s3_view, SocketAddr::new(bind, port))
+                .reclaim_every(reclaim_every)
+                .scrub(scrub.config());
             server.run().await?;
         }
     }
@@ -315,6 +447,7 @@ mod tests {
             port,
             bind,
             reclaim_interval,
+            ..
         } = cli.command
         else {
             panic!("expected serve-s3");
@@ -337,5 +470,38 @@ mod tests {
             panic!("expected serve-s3");
         };
         assert_eq!(bind, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn serve_s3_scrubs_daily_and_deep_weekly_unless_told_otherwise() {
+        let scrub = |args: &[&str]| {
+            let cli = Cli::try_parse_from([&["spacectl", "serve-s3"][..], args].concat())?;
+            let Commands::ServeS3 { scrub, .. } = cli.command else {
+                panic!("expected serve-s3");
+            };
+            Ok::<_, clap::Error>(scrub.config())
+        };
+
+        let config = scrub(&[]).unwrap().unwrap();
+        assert_eq!(config.light_interval, Duration::from_secs(86_400));
+        assert_eq!(config.deep_interval, Duration::from_secs(604_800));
+        assert_eq!(config.max_bytes_per_sec, Some(64 * 1024 * 1024));
+
+        let config = scrub(&[
+            "--scrub-interval",
+            "60",
+            "--deep-scrub-interval",
+            "600",
+            "--scrub-rate",
+            "0",
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.light_interval, Duration::from_secs(60));
+        assert_eq!(config.deep_interval, Duration::from_secs(600));
+        assert_eq!(config.max_bytes_per_sec, None);
+
+        assert!(scrub(&["--scrub-interval", "0"]).unwrap().is_none());
+        assert!(scrub(&["--deep-scrub-interval", "0"]).is_err());
     }
 }

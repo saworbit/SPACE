@@ -301,6 +301,17 @@ impl StorageBackend for NvramBackend {
         let log = self.log.clone();
         Box::pin(async move { Ok(log.used_bytes()) })
     }
+
+    /// Each record's frame checksums its stored bytes.
+    fn verify_stored(
+        &self,
+        segment: SegmentId,
+    ) -> futures::future::BoxFuture<'_, Result<Option<bool>>> {
+        let log = self.log.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || log.verify_record(segment).map(Some)).await?
+        })
+    }
 }
 
 impl NvramBackend {

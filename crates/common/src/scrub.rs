@@ -55,7 +55,11 @@ pub enum ScrubResult {
     /// Segment is healthy — integrity was positively verified.
     Ok,
     /// Segment metadata mismatch (size, missing file).
-    MetadataMismatch { expected_len: u32, actual_len: u32 },
+    MetadataMismatch {
+        segment: SegmentId,
+        expected_len: u32,
+        actual_len: u32,
+    },
     /// Content hash does not match stored hash (bit-rot detected).
     ContentCorrupted { segment: SegmentId },
     /// MAC verification failed.
@@ -77,6 +81,17 @@ impl ScrubResult {
 
     pub fn is_skipped(&self) -> bool {
         matches!(self, ScrubResult::Skipped { .. })
+    }
+
+    /// The segment this result is about, if it names one.
+    pub fn segment(&self) -> Option<SegmentId> {
+        match self {
+            ScrubResult::MetadataMismatch { segment, .. }
+            | ScrubResult::ContentCorrupted { segment }
+            | ScrubResult::MacMismatch { segment }
+            | ScrubResult::ReadError { segment, .. } => Some(*segment),
+            ScrubResult::Ok | ScrubResult::Skipped { .. } => None,
+        }
     }
 
     /// Whether this result should advance the segment's scrub schedule
@@ -176,6 +191,10 @@ pub struct ScrubReport {
     /// they should be rewritten under the algo-domain-separated scheme.
     #[serde(default)]
     pub legacy_hash_hits: u64,
+    /// Segments that were due but left for a later cycle because this one
+    /// reached `max_segments_per_cycle`.
+    #[serde(default)]
+    pub segments_deferred: usize,
 }
 
 /// Whether a scrub cycle is light (length-only) or deep (content verification).
@@ -224,6 +243,15 @@ impl ScrubSchedule {
             })
             .copied()
             .collect()
+    }
+
+    /// Forget segments not in `present`, such as ones deleted since they were
+    /// scrubbed, so a long-running schedule doesn't grow with every segment
+    /// the store has ever held.
+    pub fn retain(&mut self, present: &[SegmentId]) {
+        let present: std::collections::HashSet<&SegmentId> = present.iter().collect();
+        self.last_light.retain(|id, _| present.contains(id));
+        self.last_deep.retain(|id, _| present.contains(id));
     }
 
     /// Record that a segment was scrubbed.
@@ -310,6 +338,7 @@ mod tests {
     fn scrub_result_errors_are_not_ok() {
         let cases = vec![
             ScrubResult::MetadataMismatch {
+                segment: SegmentId(0),
                 expected_len: 100,
                 actual_len: 80,
             },
@@ -348,6 +377,7 @@ mod tests {
         let definitive = vec![
             ScrubResult::Ok,
             ScrubResult::MetadataMismatch {
+                segment: SegmentId(0),
                 expected_len: 4,
                 actual_len: 2,
             },
