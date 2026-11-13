@@ -262,6 +262,8 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
 
+sled also keeps the scrub schedule (`scrub_schedule`: segment id to when it was last light- and deep-scrubbed). It isn't journal state, and a rebuild keeps it, since segment ids are never reused.
+
 **Rebuild** is: clear the sled trees and replay the journal from the start. `spacectl doctor --rebuild-index` does exactly that, and losing `space.db` costs one replay.
 
 This fixes the ref-count drift in #97. A dedup hit writes nothing until its capsule commits, so a crash can't leave an increment behind, and a crash between commit and index update is repaired by replay.
@@ -393,7 +395,7 @@ Suggested PRs:
    - Scrub, which #97 also asks to schedule, isn't part of this.
 6. Schedule scrub, with `spacectl scrub` (the last of #97). **Done**:
    - Light scrub of the data log checks each record's `head_sum` and `body_sum` (`StorageBackend::verify_stored`, `NvramLog::verify_record`), as §8.1 says scrub verifies earlier bodies. It needs no key, so it covers encrypted segments too. A length check, all light scrub did before, can't fail in the data log.
-   - `serve-s3` runs `ScrubExecutor::spawn_background` with the pipeline's key, without the pipeline lock: light daily, deep weekly, at most 64 MiB/s by default. The schedule lives in memory, so every start begins with a deep scrub.
+   - `serve-s3` runs `ScrubExecutor::spawn_background` with the pipeline's key, without the pipeline lock: light daily, deep weekly, at most 64 MiB/s by default. The schedule lived in memory at first, so every start began with a deep scrub of the whole store; it's now kept in `space.db` ([#134](https://github.com/saworbit/SPACE/issues/134)).
    - On a live store, a segment deleted during a cycle isn't reported as a read error, and the schedule forgets deleted segments.
    - A cycle that reaches `max_segments_per_cycle` lets the rest follow a second later. Before, they waited for the next interval.
 

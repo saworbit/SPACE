@@ -7,8 +7,8 @@
 //! The scrub task runs as a background `tokio::spawn` loop, processing a
 //! bounded number of segments per cycle to avoid starving foreground IO.
 
-use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -205,13 +205,42 @@ pub enum ScrubKind {
     Deep,
 }
 
+/// When a segment was last scrubbed, as kept between runs by a
+/// [`ScheduleStore`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScrubTimes {
+    pub light: Option<SystemTime>,
+    pub deep: Option<SystemTime>,
+}
+
+/// Somewhere to keep the scrub schedule between runs, so a restart doesn't
+/// scrub the whole store again (#134). Losing it only costs one full scrub.
+pub trait ScheduleStore: Send + Sync {
+    /// Every segment's recorded times.
+    fn load(&self) -> anyhow::Result<Vec<(SegmentId, ScrubTimes)>>;
+    /// Apply changes: `Some` sets a segment's times, `None` forgets it.
+    fn save(&self, changes: &[(SegmentId, Option<ScrubTimes>)]) -> anyhow::Result<()>;
+}
+
 /// Tracks per-segment scrub history for scheduling decisions.
+///
+/// Times are wall-clock, so they can be kept across restarts. A time in the
+/// future, from a clock set back, counts as due.
 #[derive(Debug, Clone, Default)]
 pub struct ScrubSchedule {
     /// Last light scrub time per segment.
-    pub last_light: BTreeMap<SegmentId, Instant>,
+    pub last_light: BTreeMap<SegmentId, SystemTime>,
     /// Last deep scrub time per segment.
-    pub last_deep: BTreeMap<SegmentId, Instant>,
+    pub last_deep: BTreeMap<SegmentId, SystemTime>,
+    /// Segments whose times changed since [`ScrubSchedule::take_changes`].
+    changed: BTreeSet<SegmentId>,
+}
+
+fn is_due(last: Option<&SystemTime>, interval: Duration, now: SystemTime) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.duration_since(*t).map_or(true, |age| age >= interval),
+    }
 }
 
 impl ScrubSchedule {
@@ -219,30 +248,57 @@ impl ScrubSchedule {
         Self::default()
     }
 
+    /// A schedule holding times loaded from a [`ScheduleStore`], with no
+    /// pending changes.
+    pub fn from_times(times: impl IntoIterator<Item = (SegmentId, ScrubTimes)>) -> Self {
+        let mut schedule = Self::new();
+        for (segment, t) in times {
+            if let Some(light) = t.light {
+                schedule.last_light.insert(segment, light);
+            }
+            if let Some(deep) = t.deep {
+                schedule.last_deep.insert(segment, deep);
+            }
+        }
+        schedule
+    }
+
     /// Return segment IDs that are due for a light scrub.
     pub fn due_for_light(&self, all: &[SegmentId], config: &ScrubConfig) -> Vec<SegmentId> {
-        let now = Instant::now();
+        let now = SystemTime::now();
         all.iter()
-            .filter(|id| {
-                self.last_light
-                    .get(id)
-                    .is_none_or(|t| now.duration_since(*t) >= config.light_interval)
-            })
+            .filter(|id| is_due(self.last_light.get(id), config.light_interval, now))
             .copied()
             .collect()
     }
 
     /// Return segment IDs that are due for a deep scrub.
     pub fn due_for_deep(&self, all: &[SegmentId], config: &ScrubConfig) -> Vec<SegmentId> {
-        let now = Instant::now();
+        let now = SystemTime::now();
         all.iter()
-            .filter(|id| {
-                self.last_deep
-                    .get(id)
-                    .is_none_or(|t| now.duration_since(*t) >= config.deep_interval)
-            })
+            .filter(|id| is_due(self.last_deep.get(id), config.deep_interval, now))
             .copied()
             .collect()
+    }
+
+    /// The earliest time after `now` at which a recorded segment falls due
+    /// for `kind`, if any does. Segments already due aren't counted: the
+    /// cycle that just ran either checked them or couldn't.
+    pub fn next_due(
+        &self,
+        kind: ScrubKind,
+        config: &ScrubConfig,
+        now: SystemTime,
+    ) -> Option<SystemTime> {
+        let (times, interval) = match kind {
+            ScrubKind::Light => (&self.last_light, config.light_interval),
+            ScrubKind::Deep => (&self.last_deep, config.deep_interval),
+        };
+        times
+            .values()
+            .filter_map(|t| t.checked_add(interval))
+            .filter(|due| *due > now)
+            .min()
     }
 
     /// Forget segments not in `present`, such as ones deleted since they were
@@ -250,13 +306,23 @@ impl ScrubSchedule {
     /// the store has ever held.
     pub fn retain(&mut self, present: &[SegmentId]) {
         let present: std::collections::HashSet<&SegmentId> = present.iter().collect();
-        self.last_light.retain(|id, _| present.contains(id));
-        self.last_deep.retain(|id, _| present.contains(id));
+        let gone: Vec<SegmentId> = self
+            .last_light
+            .keys()
+            .chain(self.last_deep.keys())
+            .filter(|id| !present.contains(id))
+            .copied()
+            .collect();
+        for id in gone {
+            self.last_light.remove(&id);
+            self.last_deep.remove(&id);
+            self.changed.insert(id);
+        }
     }
 
     /// Record that a segment was scrubbed.
     pub fn record(&mut self, segment: SegmentId, kind: ScrubKind) {
-        let now = Instant::now();
+        let now = SystemTime::now();
         match kind {
             ScrubKind::Light => {
                 self.last_light.insert(segment, now);
@@ -267,6 +333,23 @@ impl ScrubSchedule {
                 self.last_light.insert(segment, now);
             }
         }
+        self.changed.insert(segment);
+    }
+
+    /// The changes since the last call, for [`ScheduleStore::save`]: each
+    /// changed segment's times, or `None` for one that was forgotten.
+    pub fn take_changes(&mut self) -> Vec<(SegmentId, Option<ScrubTimes>)> {
+        std::mem::take(&mut self.changed)
+            .into_iter()
+            .map(|id| {
+                let times = ScrubTimes {
+                    light: self.last_light.get(&id).copied(),
+                    deep: self.last_deep.get(&id).copied(),
+                };
+                let kept = times.light.is_some() || times.deep.is_some();
+                (id, kept.then_some(times))
+            })
+            .collect()
     }
 }
 
@@ -313,6 +396,110 @@ mod tests {
         assert_eq!(light.len(), 1, "only un-scrubbed segment should be due");
         assert_eq!(light[0], SegmentId(2));
         assert_eq!(deep.len(), 1);
+    }
+
+    #[test]
+    fn recording_and_forgetting_are_reported_as_changes() {
+        let mut schedule = ScrubSchedule::new();
+        schedule.record(SegmentId(1), ScrubKind::Light);
+        schedule.record(SegmentId(2), ScrubKind::Deep);
+
+        let changes = schedule.take_changes();
+        assert_eq!(changes.len(), 2);
+        let one = changes[0].1.unwrap();
+        assert!(one.light.is_some() && one.deep.is_none());
+        let two = changes[1].1.unwrap();
+        assert_eq!(two.light, two.deep, "deep implies light");
+        assert!(schedule.take_changes().is_empty(), "changes are taken once");
+
+        schedule.retain(&[SegmentId(2)]);
+        assert_eq!(schedule.take_changes(), vec![(SegmentId(1), None)]);
+    }
+
+    #[test]
+    fn loaded_times_decide_what_is_due() {
+        let config = ScrubConfig {
+            light_interval: Duration::from_secs(3600),
+            deep_interval: Duration::from_secs(86400),
+            ..Default::default()
+        };
+        let now = SystemTime::now();
+        let schedule = ScrubSchedule::from_times([
+            (
+                SegmentId(1),
+                ScrubTimes {
+                    light: Some(now - Duration::from_secs(60)),
+                    deep: Some(now - Duration::from_secs(90_000)),
+                },
+            ),
+            (
+                SegmentId(2),
+                ScrubTimes {
+                    light: Some(now - Duration::from_secs(7200)),
+                    deep: None,
+                },
+            ),
+        ]);
+        let mut loaded = schedule.clone();
+        assert!(loaded.take_changes().is_empty());
+
+        let ids = [SegmentId(1), SegmentId(2), SegmentId(3)];
+        assert_eq!(
+            schedule.due_for_light(&ids, &config),
+            vec![SegmentId(2), SegmentId(3)]
+        );
+        assert_eq!(schedule.due_for_deep(&ids, &config), ids.to_vec());
+    }
+
+    #[test]
+    fn a_time_in_the_future_counts_as_due() {
+        let schedule = ScrubSchedule::from_times([(
+            SegmentId(1),
+            ScrubTimes {
+                light: Some(SystemTime::now() + Duration::from_secs(3600)),
+                deep: None,
+            },
+        )]);
+        let due = schedule.due_for_light(&[SegmentId(1)], &ScrubConfig::default());
+        assert_eq!(due, vec![SegmentId(1)]);
+    }
+
+    #[test]
+    fn next_due_is_the_earliest_time_still_ahead() {
+        let config = ScrubConfig {
+            light_interval: Duration::from_secs(100),
+            ..Default::default()
+        };
+        let now = SystemTime::now();
+        let schedule = ScrubSchedule::from_times([
+            (
+                SegmentId(1),
+                ScrubTimes {
+                    light: Some(now - Duration::from_secs(70)),
+                    deep: None,
+                },
+            ),
+            (
+                SegmentId(2),
+                ScrubTimes {
+                    light: Some(now - Duration::from_secs(20)),
+                    deep: None,
+                },
+            ),
+            // Already overdue: not counted.
+            (
+                SegmentId(3),
+                ScrubTimes {
+                    light: Some(now - Duration::from_secs(500)),
+                    deep: None,
+                },
+            ),
+        ]);
+        assert_eq!(
+            schedule.next_due(ScrubKind::Light, &config, now),
+            Some(now + Duration::from_secs(30))
+        );
+        assert_eq!(schedule.next_due(ScrubKind::Deep, &config, now), None);
     }
 
     // ── ScrubConfig defaults ────────────────────────────────────────

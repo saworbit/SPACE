@@ -516,7 +516,7 @@ Capsules are durable only if their bytes still match their hashes and MACs. Scru
 
 Light scrub needs no key. In the data log it catches media damage in any segment, encrypted or not; the length check is all a file backend allows ([#135](https://github.com/saworbit/SPACE/issues/135)). Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
 
-The executor tracks each segment's last-checked times in memory, and a cycle scrubs only segments that are due. It forgets segments that have been deleted. A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
+The executor tracks when each segment was last checked, and a cycle scrubs only segments that are due. `serve-s3` and `spacectl scrub` keep those times in `space.db`, in the `scrub_schedule` tree, so a restart picks up where the last run left off; losing them costs one full scrub. It forgets segments that have been deleted. A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
 
 ### Running it
 
@@ -528,7 +528,7 @@ The executor tracks each segment's last-checked times in memory, and a cycle scr
 | `--deep-scrub-interval` | 604800 (1 week) | Seconds between deep scrubs. |
 | `--scrub-rate` | 64 | MiB per second scrubbing reads at most. `0` means no limit. |
 
-The first cycle, at startup, is deep. Because the schedule lives in memory, a restart scrubs the whole store again ([#134](https://github.com/saworbit/SPACE/issues/134)). Each cycle logs its outcome at `INFO`, or at `WARN` with counts when it finds damage.
+The first cycle, at startup, is deep, and checks the segments written or fallen due since the last run ([#134](https://github.com/saworbit/SPACE/issues/134)). After each cycle, the next one is timed for when the next segment falls due, plus a 64th of the interval so segments due close together share a cycle, rather than a whole interval later. A cycle that checked segments logs its outcome at `INFO`, or at `WARN` with counts when it finds damage.
 
 `spacectl scrub` checks every segment once, unthrottled, and `spacectl scrub --deep` runs the deep checks. Each failed segment is printed with the capsules that hold it, and the command exits non-zero when any segment fails.
 

@@ -51,7 +51,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 
 - Every segment is verified on read: encrypted ones by MAC, unencrypted ones by content hash.
 - Whether a segment counts as encrypted is a flag in the segment's descriptor in the data log, protected by a checksum but not a MAC. A capsule whose policy requires encryption refuses a segment marked unencrypted.
-- `serve-s3` scrubs the store in the background. A daily light scrub checks each data log record's checksum, which catches media damage but not tampering, since the checksum isn't keyed. A weekly deep scrub verifies content hashes and MACs, the latter only when `SPACE_MASTER_KEY` is set. `spacectl scrub [--deep]` runs a pass on demand. The schedule lives in memory, so it restarts with the server.
+- `serve-s3` scrubs the store in the background. A daily light scrub checks each data log record's checksum, which catches media damage but not tampering, since the checksum isn't keyed. A weekly deep scrub verifies content hashes and MACs, the latter only when `SPACE_MASTER_KEY` is set. `spacectl scrub [--deep]` runs a pass on demand. When each segment was last checked is kept in `space.db`, so a restart doesn't reset the schedule.
 
 ### Network exposure
 

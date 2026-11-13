@@ -285,57 +285,58 @@ pub mod modular_pipeline {
         }
 
         /// Scrub the store in the background on `config`'s schedule
-        /// ([`ScrubExecutor::spawn_background`]). The executor gets the
-        /// pipeline's key, so deep scrubs check encrypted segments' MACs. It
-        /// reads segments straight from the backend, without the pipeline
-        /// lock.
+        /// ([`ScrubExecutor::spawn`]). The executor gets the pipeline's key,
+        /// so deep scrubs check encrypted segments' MACs, and keeps its
+        /// schedule in `space.db`, so a restart scrubs only segments that are
+        /// due (#134). It reads segments straight from the backend, without
+        /// the pipeline lock.
         pub fn spawn_scrub(
             &self,
             config: ScrubConfig,
         ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
             let key = self.key_manager();
+            let schedule = self.registry().scrub_schedule();
             match self {
-                Self::Encrypted(p) => {
-                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
-                }
-                Self::Plain(p) => ScrubExecutor::spawn_background(p.storage().clone(), config, key),
-                Self::FsEncrypted(p) => {
-                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
-                }
-                Self::FsPlain(p) => {
-                    ScrubExecutor::spawn_background(p.storage().clone(), config, key)
-                }
+                Self::Encrypted(p) => executor(p.storage().clone(), key, schedule).spawn(config),
+                Self::Plain(p) => executor(p.storage().clone(), key, schedule).spawn(config),
+                Self::FsEncrypted(p) => executor(p.storage().clone(), key, schedule).spawn(config),
+                Self::FsPlain(p) => executor(p.storage().clone(), key, schedule).spawn(config),
             }
         }
 
         /// Scrub every segment of the store once, now, as `spacectl scrub`
-        /// does: no per-cycle cap and no throttling.
+        /// does: no per-cycle cap and no throttling. The results go into the
+        /// schedule in `space.db`, so `serve-s3` doesn't check the same
+        /// segments again before they're due.
         pub async fn scrub_all(&self, kind: ScrubKind) -> ScrubReport {
             let config = ScrubConfig {
+                // Every segment is due, whatever the schedule says.
+                light_interval: Duration::ZERO,
+                deep_interval: Duration::ZERO,
                 max_segments_per_cycle: usize::MAX,
                 inter_segment_delay: Duration::ZERO,
                 max_bytes_per_sec: None,
-                ..ScrubConfig::default()
             };
             let key = self.key_manager();
+            let schedule = self.registry().scrub_schedule();
             match self {
                 Self::Encrypted(p) => {
-                    executor(p.storage().clone(), key)
+                    executor(p.storage().clone(), key, schedule)
                         .scrub_cycle(&config, kind)
                         .await
                 }
                 Self::Plain(p) => {
-                    executor(p.storage().clone(), key)
+                    executor(p.storage().clone(), key, schedule)
                         .scrub_cycle(&config, kind)
                         .await
                 }
                 Self::FsEncrypted(p) => {
-                    executor(p.storage().clone(), key)
+                    executor(p.storage().clone(), key, schedule)
                         .scrub_cycle(&config, kind)
                         .await
                 }
                 Self::FsPlain(p) => {
-                    executor(p.storage().clone(), key)
+                    executor(p.storage().clone(), key, schedule)
                         .scrub_cycle(&config, kind)
                         .await
                 }
@@ -346,11 +347,13 @@ pub mod modular_pipeline {
     fn executor<B: StorageBackend>(
         backend: B,
         key: Option<Arc<Mutex<KeyManager>>>,
+        schedule: Arc<dyn common::scrub::ScheduleStore>,
     ) -> ScrubExecutor<B> {
-        match key {
+        let executor = match key {
             Some(key) => ScrubExecutor::with_key_manager(backend, key),
             None => ScrubExecutor::new(backend),
-        }
+        };
+        executor.with_schedule_store(schedule)
     }
 
     /// What a [`reclaim`] pass did.
@@ -761,6 +764,19 @@ pub struct CapsuleRegistry {
     pending: Arc<Mutex<HashMap<ContentHash, SegmentId>>>,
 }
 
+/// The registry's scrub schedule, as a [`common::scrub::ScheduleStore`].
+struct RegistryScrubSchedule(Arc<dyn MetadataStore>);
+
+impl common::scrub::ScheduleStore for RegistryScrubSchedule {
+    fn load(&self) -> Result<Vec<(SegmentId, common::scrub::ScrubTimes)>> {
+        self.0.scrub_times()
+    }
+
+    fn save(&self, changes: &[(SegmentId, Option<common::scrub::ScrubTimes>)]) -> Result<()> {
+        self.0.put_scrub_times(changes)
+    }
+}
+
 impl CapsuleRegistry {
     pub fn new() -> Self {
         Self::open("space.db").expect(
@@ -1029,6 +1045,12 @@ impl CapsuleRegistry {
         limit: usize,
     ) -> Result<Vec<(String, CapsuleId)>> {
         self.store.list_names(ns, prefix, start_after, limit)
+    }
+
+    /// The scrub schedule kept in `space.db`, for
+    /// [`ScrubExecutor::with_schedule_store`](crate::scrub_executor::ScrubExecutor::with_schedule_store).
+    pub fn scrub_schedule(&self) -> Arc<dyn common::scrub::ScheduleStore> {
+        Arc::new(RegistryScrubSchedule(Arc::clone(&self.store)))
     }
 
     pub fn get_dedup_stats(&self) -> (usize, usize) {

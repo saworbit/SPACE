@@ -45,7 +45,7 @@ The server has no authentication, so it listens on loopback only. `--bind 0.0.0.
 
 While it runs, the server reclaims the space of deleted objects and interrupted uploads: in `space.nvram` by compacting it, under `SPACE_STORAGE_ROOT` by deleting the segment files no object references. See [Current limitations](#current-limitations) for when.
 
-It also scrubs the store, reading at most 64 MiB/s (`--scrub-rate`). A deep scrub runs at startup and then weekly (`--deep-scrub-interval`), and a light scrub runs daily (`--scrub-interval`, `0` to turn scrubbing off). Damage is logged at `WARN`. With the server stopped, `spacectl scrub --deep` lists any damaged segments and the capsules that hold them.
+It also scrubs the store, reading at most 64 MiB/s (`--scrub-rate`): each segment gets a deep scrub weekly (`--deep-scrub-interval`) and a light scrub daily (`--scrub-interval`, `0` to turn scrubbing off). When each segment was last checked is kept in `space.db`, so a restart only scrubs segments that are new or due. Damage is logged at `WARN`. With the server stopped, `spacectl scrub --deep` lists any damaged segments and the capsules that hold them.
 
 ## 2. PUT an object
 

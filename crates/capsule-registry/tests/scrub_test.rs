@@ -1,7 +1,9 @@
 //! Scrubbing a real store (#97): light scrub checks the data log's record
 //! checksums without a key, deep scrub checks MACs and content hashes, and a
-//! scheduled scrub reports what it found.
+//! scheduled scrub reports what it found. The schedule is kept in space.db,
+//! so a restart only scrubs segments that are due (#134).
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use capsule_registry::modular_pipeline::{
     registry_pipeline_from_log, registry_pipeline_from_log_with_key, RegistryPipelineHandle,
 };
 use capsule_registry::CapsuleRegistry;
-use common::scrub::{ScrubConfig, ScrubKind, ScrubResult, ScrubState};
+use common::scrub::{ScrubConfig, ScrubKind, ScrubResult, ScrubState, ScrubTimes};
 use common::{CapsuleId, Policy, SegmentId};
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
@@ -186,5 +188,78 @@ async fn a_healthy_store_scrubs_clean() {
         assert!(report.bytes_checked > 0);
     }
     drop(handle);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn after_a_restart_only_due_segments_are_scrubbed() {
+    let dir = scratch("restart");
+    let scrubbed_before = {
+        let (registry, log, mut handle) = open(&dir, false);
+        let id = handle
+            .write_capsule(&patterned(100_000, 3), &Policy::default())
+            .await
+            .unwrap();
+        assert!(handle.scrub_all(ScrubKind::Deep).await.errors.is_empty());
+        let segments = registry.get_capsule(id).unwrap().unwrap().segments;
+        drop((registry, log, handle));
+        segments
+    };
+
+    let (registry, _log, mut handle) = open(&dir, false);
+    let before: HashMap<SegmentId, ScrubTimes> = registry
+        .scrub_schedule()
+        .load()
+        .unwrap()
+        .into_iter()
+        .collect();
+    for segment in &scrubbed_before {
+        assert!(
+            before[segment].deep.is_some(),
+            "spacectl scrub's results weren't kept"
+        );
+    }
+    let id = handle
+        .write_capsule(&patterned(100_000, 4), &Policy::default())
+        .await
+        .unwrap();
+    let written_after = registry.get_capsule(id).unwrap().unwrap().segments;
+
+    let config = ScrubConfig {
+        light_interval: Duration::from_secs(3600),
+        deep_interval: Duration::from_secs(7200),
+        inter_segment_delay: Duration::ZERO,
+        ..ScrubConfig::default()
+    };
+    let (task, mut state) = handle.spawn_scrub(config);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !matches!(*state.borrow_and_update(), ScrubState::Completed { .. }) {
+            state.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the first scheduled cycle didn't finish");
+    task.abort();
+
+    let after: HashMap<SegmentId, ScrubTimes> = registry
+        .scrub_schedule()
+        .load()
+        .unwrap()
+        .into_iter()
+        .collect();
+    for segment in &scrubbed_before {
+        assert_eq!(
+            after[segment], before[segment],
+            "a segment scrubbed before the restart was scrubbed again"
+        );
+    }
+    for segment in &written_after {
+        assert!(
+            after.get(segment).and_then(|t| t.deep).is_some(),
+            "a segment written after the restart wasn't scrubbed"
+        );
+    }
+
+    drop((registry, handle));
     let _ = fs::remove_dir_all(&dir);
 }

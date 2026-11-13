@@ -38,9 +38,11 @@
 //! segment remains due and will be retried next cycle.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubResult, ScrubSchedule, ScrubState};
+use common::scrub::{
+    ScheduleStore, ScrubConfig, ScrubKind, ScrubReport, ScrubResult, ScrubSchedule, ScrubState,
+};
 use common::traits::StorageBackend;
 use common::SegmentId;
 use encryption::policy::EncryptionMetadata;
@@ -60,6 +62,8 @@ pub struct ScrubExecutor<B: StorageBackend> {
     backend: B,
     key_manager: Option<Arc<Mutex<KeyManager>>>,
     schedule: ScrubSchedule,
+    /// Where the schedule is kept between runs, if anywhere.
+    store: Option<Arc<dyn ScheduleStore>>,
 }
 
 impl<B: StorageBackend> ScrubExecutor<B> {
@@ -72,6 +76,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             backend,
             key_manager: None,
             schedule: ScrubSchedule::new(),
+            store: None,
         }
     }
 
@@ -82,7 +87,20 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             backend,
             key_manager: Some(key_manager),
             schedule: ScrubSchedule::new(),
+            store: None,
         }
+    }
+
+    /// Keep the schedule in `store`: load it now, and save each cycle's
+    /// changes, so a restart only scrubs segments that are due (#134). If
+    /// the schedule can't be loaded, every segment counts as due.
+    pub fn with_schedule_store(mut self, store: Arc<dyn ScheduleStore>) -> Self {
+        match store.load() {
+            Ok(times) => self.schedule = ScrubSchedule::from_times(times),
+            Err(err) => warn!(error = %err, "scrub: couldn't load the scrub schedule"),
+        }
+        self.store = Some(store);
+        self
     }
 
     /// Run a single scrub cycle of the given kind and return its report.
@@ -218,6 +236,21 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                 report.segments_checked += 1;
                 report.read_errors += 1;
                 report.errors.push(result);
+            }
+        }
+
+        if let Some(store) = &self.store {
+            let changes = self.schedule.take_changes();
+            if !changes.is_empty() {
+                // Saving may fsync, so keep it off the async threads.
+                let store = Arc::clone(store);
+                let saved = tokio::task::spawn_blocking(move || store.save(&changes))
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|saved| saved);
+                if let Err(err) = saved {
+                    warn!(error = %err, "scrub: couldn't save the scrub schedule");
+                }
             }
         }
 
@@ -541,14 +574,28 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
         tokio::task::JoinHandle<()>,
         tokio::sync::watch::Receiver<ScrubState>,
     ) {
+        let executor = match key_manager {
+            Some(km) => ScrubExecutor::with_key_manager(backend, km),
+            None => ScrubExecutor::new(backend),
+        };
+        executor.spawn(config)
+    }
+
+    /// Run this executor in a background Tokio task, as
+    /// [`ScrubExecutor::spawn_background`] does. The first cycle is deep, and
+    /// checks only segments that are due: with a schedule from
+    /// [`ScrubExecutor::with_schedule_store`], that's new and overdue ones.
+    pub fn spawn(
+        self,
+        config: ScrubConfig,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Receiver<ScrubState>,
+    ) {
         let (state_tx, state_rx) = tokio::sync::watch::channel(ScrubState::Idle);
+        let mut executor = self;
 
         let handle = tokio::spawn(async move {
-            let mut executor = match key_manager {
-                Some(km) => ScrubExecutor::with_key_manager(backend, km),
-                None => ScrubExecutor::new(backend),
-            };
-
             let mut next_light = tokio::time::Instant::now();
             let mut next_deep = tokio::time::Instant::now();
 
@@ -580,7 +627,9 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                         + report.metadata_failures,
                 });
 
-                if report.errors.is_empty() {
+                if report.errors.is_empty() && report.segments_checked == 0 {
+                    debug!(kind = ?kind, "scrub cycle: no segments due");
+                } else if report.errors.is_empty() {
                     info!(
                         kind = ?kind,
                         segments_checked = report.segments_checked,
@@ -599,6 +648,22 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                         duration_ms = report.duration.as_millis(),
                         "scrub cycle: integrity issues detected"
                     );
+                }
+
+                // Segments recorded at different times, such as a schedule
+                // loaded at startup, fall due before a whole interval has
+                // passed: run the next cycle then. The slack lets one cycle
+                // take segments that fall due close together.
+                let wall = SystemTime::now();
+                let now = tokio::time::Instant::now();
+                for (timer_kind, next, interval) in [
+                    (ScrubKind::Light, &mut next_light, config.light_interval),
+                    (ScrubKind::Deep, &mut next_deep, config.deep_interval),
+                ] {
+                    if let Some(due) = executor.schedule.next_due(timer_kind, &config, wall) {
+                        let wait = due.duration_since(wall).unwrap_or_default() + interval / 64;
+                        *next = (*next).min(now + wait);
+                    }
                 }
 
                 // More segments were due than one cycle takes: carry on with
@@ -639,10 +704,11 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::scrub::ScrubConfig;
+    use common::scrub::{ScrubConfig, ScrubTimes};
     use common::traits::StorageTransaction as _;
     use common::{ContentHash, Segment, SegmentId};
     use futures::future::BoxFuture;
+    use std::collections::BTreeMap;
     use storage::InMemoryBackend;
 
     // ── FailReadBackend ──────────────────────────────────────────────────────
@@ -1371,5 +1437,132 @@ mod tests {
 
         handle.abort();
         let _ = handle.await;
+    }
+
+    // ── Schedule kept between runs (#134) ───────────────────────────────────
+
+    #[derive(Default)]
+    struct MemStore(Mutex<BTreeMap<SegmentId, ScrubTimes>>);
+
+    impl ScheduleStore for MemStore {
+        fn load(&self) -> anyhow::Result<Vec<(SegmentId, ScrubTimes)>> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (*k, *v))
+                .collect())
+        }
+
+        fn save(&self, changes: &[(SegmentId, Option<ScrubTimes>)]) -> anyhow::Result<()> {
+            let mut saved = self.0.lock().unwrap();
+            for (segment, times) in changes {
+                match times {
+                    Some(t) => saved.insert(*segment, *t),
+                    None => saved.remove(segment),
+                };
+            }
+            Ok(())
+        }
+    }
+
+    fn hourly() -> ScrubConfig {
+        ScrubConfig {
+            light_interval: Duration::from_secs(3600),
+            deep_interval: Duration::from_secs(7200),
+            max_segments_per_cycle: 64,
+            inter_segment_delay: Duration::ZERO,
+            max_bytes_per_sec: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_restarted_executor_scrubs_only_what_is_due() {
+        let mut backend = InMemoryBackend::new();
+        for id in 1..=3u64 {
+            let data = format!("segment {id}");
+            let hash = hash_content(data.as_bytes());
+            write_segment(&mut backend, id, data.as_bytes(), Some(hash), None).await;
+        }
+        let store = Arc::new(MemStore::default());
+
+        let mut first = ScrubExecutor::new(backend.clone()).with_schedule_store(store.clone());
+        let report = first.scrub_cycle(&hourly(), ScrubKind::Deep).await;
+        assert_eq!(report.segments_checked, 3);
+        assert_eq!(store.0.lock().unwrap().len(), 3);
+        drop(first);
+
+        // A new executor, as after a restart, picks up where the last left off.
+        let mut second = ScrubExecutor::new(backend.clone()).with_schedule_store(store.clone());
+        let deep = second.scrub_cycle(&hourly(), ScrubKind::Deep).await;
+        let light = second.scrub_cycle(&hourly(), ScrubKind::Light).await;
+        assert_eq!((deep.segments_checked, light.segments_checked), (0, 0));
+
+        // A segment written since is due at once.
+        write_segment(
+            &mut backend,
+            4,
+            b"segment 4",
+            Some(hash_content(b"segment 4")),
+            None,
+        )
+        .await;
+        let report = second.scrub_cycle(&hourly(), ScrubKind::Deep).await;
+        assert_eq!(report.segments_checked, 1);
+        assert_eq!(store.0.lock().unwrap().len(), 4);
+
+        // A deleted segment leaves the store.
+        backend.delete(SegmentId(2)).await.unwrap();
+        second.scrub_cycle(&hourly(), ScrubKind::Light).await;
+        assert!(!store.0.lock().unwrap().contains_key(&SegmentId(2)));
+    }
+
+    #[tokio::test]
+    async fn the_background_loop_runs_when_a_loaded_segment_falls_due() {
+        let mut backend = InMemoryBackend::new();
+        write_segment(
+            &mut backend,
+            1,
+            b"due soon",
+            Some(hash_content(b"due soon")),
+            None,
+        )
+        .await;
+        let config = ScrubConfig {
+            // The loop's slack is a 64th of this: 100 ms.
+            deep_interval: Duration::from_millis(6400),
+            ..hourly()
+        };
+        let now = SystemTime::now();
+        // Due for a deep scrub 400 ms from now.
+        let last_deep = now - Duration::from_millis(6000);
+        let store = Arc::new(MemStore::default());
+        store.0.lock().unwrap().insert(
+            SegmentId(1),
+            ScrubTimes {
+                light: Some(now),
+                deep: Some(last_deep),
+            },
+        );
+
+        let started = Instant::now();
+        let (task, _state) = ScrubExecutor::new(backend)
+            .with_schedule_store(store.clone())
+            .spawn(config);
+        // The first cycle finds nothing due. Waiting a whole interval after
+        // it would take 6.4 s.
+        loop {
+            let saved = store.0.lock().unwrap()[&SegmentId(1)].deep;
+            if saved.is_some_and(|t| t > last_deep) {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the segment wasn't scrubbed when it fell due"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        task.abort();
     }
 }

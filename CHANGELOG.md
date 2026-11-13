@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `serve-s3` no longer deep-scrubs the whole store on every start. When each segment was last scrubbed is kept in `space.db`, so a restart scrubs only segments that are new or due, and the next cycle runs when the next segment falls due rather than a whole interval later. `spacectl scrub` records its results there too (#134).
+- `NOTICE` said SPACE was licensed under Apache-2.0; it now matches `LICENSE` (BUSL-1.1).
 - Background scrub covers the whole store each interval. A cycle that reached `max_segments_per_cycle` used to leave the rest until the next interval, so a store of more than 1024 segments was only partly scrubbed. Segments deleted during a cycle are no longer reported as read errors, and the schedule forgets deleted segments rather than growing forever. `ScrubResult::MetadataMismatch` names its segment.
 - Garbage collection keeps the segments of open writes, and those of an object an S3 overwrite or DELETE dropped while a GET still reads it, instead of refusing to run while a write is open. It never removes a segment a capsule references, whatever the segment's stored ref count.
 - A read of the data log during a compaction could look up a segment's offset in one generation and read it from the next. The read's checksum check rejected the bytes, so the read failed rather than returning them.
