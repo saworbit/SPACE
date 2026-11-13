@@ -43,7 +43,7 @@ INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://127.0.
 
 The server has no authentication, so it listens on loopback only. `--bind 0.0.0.0` exposes it on every interface; do that only on a network you trust.
 
-While it runs, the server reclaims the space of deleted objects and interrupted uploads: in `space.nvram` by compacting it, under `SPACE_STORAGE_ROOT` by deleting the segment files no object references. See [Current limitations](#current-limitations) for when.
+While it runs, the server reclaims the space of deleted objects and interrupted uploads: in `space.nvram` by compacting it, under `SPACE_STORAGE_ROOT` by deleting the segment files no object references. It also compacts `space.journal`, dropping the records of deleted and overwritten objects. See [Current limitations](#current-limitations) for when.
 
 It also scrubs the store, reading at most 64 MiB/s (`--scrub-rate`): each segment gets a deep scrub weekly (`--deep-scrub-interval`) and a light scrub daily (`--scrub-interval`, `0` to turn scrubbing off). When each segment was last checked is kept in `space.db`, so a restart only scrubs segments that are new or due. Damage is logged at `WARN`. With the server stopped, `spacectl scrub --deep` lists any damaged segments and the capsules that hold them.
 

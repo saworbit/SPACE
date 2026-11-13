@@ -43,7 +43,7 @@ The observation the design rests on: **ref counts are the only segment metadata 
 
 **Why a separate journal rather than manifests inside the data log:**
 
-- `serve-s3` stores segments with `AutoFsBackend` when `SPACE_STORAGE_ROOT` is set, and there is no log there. The journal works the same with every backend.
+- `spacectl`, `serve-s3` included, stores segments with `AutoFsBackend` when `SPACE_STORAGE_ROOT` is set, and there is no log there. The journal works the same with every backend.
 - Rebuilding the capsule index reads only the journal, which holds manifests, not gigabytes of segment data.
 - Journal compaction and data compaction are independent.
 
