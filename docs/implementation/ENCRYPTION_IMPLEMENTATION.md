@@ -172,6 +172,6 @@ cargo bench -p capsule-registry --bench pipeline -- encrypt_xts_segment
 
 ## Not implemented
 
-- **Post-quantum key wrapping:** `CryptoProfile::HybridKyber` exists, and `Policy::validate` rejects it when dedupe is on. There's no ML-KEM code, though: segments written under it are encrypted exactly like `Classical`, and the `pq_ciphertext` / `pq_nonce` fields stay `None`.
+- **Post-quantum key wrapping:** `CryptoProfile::HybridKyber` exists, but there's no ML-KEM code, so `Policy::validate` rejects it and nothing is written under it ([#162](https://github.com/saworbit/SPACE/issues/162)). The `pq_ciphertext` / `pq_nonce` fields stay `None`.
 - **KMS and Vault providers:** stubs that return errors.
 - **Re-encryption** of existing segments after a key rotation.

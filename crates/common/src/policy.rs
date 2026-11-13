@@ -177,8 +177,10 @@ impl<'de> Deserialize<'de> for FederationPolicy {
     }
 }
 
-/// Policy knobs for layout planning.
+/// Policy knobs for layout planning. Only `strategy` changes anything, so
+/// the others needn't be given (#162).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LayoutPolicy {
     pub strategy: LayoutStrategy,
     pub ec_profile: (usize, usize),
@@ -409,17 +411,30 @@ impl Policy {
         }
     }
 
-    /// Reject policy combinations that the pipeline cannot handle correctly.
-    ///
-    /// `HybridKyber + dedupe` is currently incompatible: the ML-KEM key wrap
-    /// derives material from the originating capsule_id and segment_index, but
-    /// the read path re-derives using the reading capsule's context. A dedup
-    /// hit across capsules (or at a different logical index within the same
-    /// capsule) would yield the wrong wrapped key and the segment would fail
-    /// to decrypt.
+    /// Reject a policy the write path can't honour. Settings from before
+    /// the reset that nothing implements are refused rather than accepted
+    /// and ignored, so a capsule never claims a protection it doesn't have
+    /// (#162).
     pub fn validate(&self) -> Result<(), PolicyError> {
-        if self.crypto_profile == CryptoProfile::HybridKyber && self.dedupe {
-            return Err(PolicyError::HybridKyberDedupConflict);
+        if self.crypto_profile != CryptoProfile::Classical {
+            return Err(PolicyError::Unsupported(
+                "crypto_profile HybridKyber (there is no ML-KEM code)",
+            ));
+        }
+        if !self.transform.is_empty() {
+            return Err(PolicyError::Unsupported(
+                "transform (there is no WASM runtime)",
+            ));
+        }
+        if self.federation != FederationPolicy::default() {
+            return Err(PolicyError::Unsupported(
+                "federation (SPACE runs on one node)",
+            ));
+        }
+        if !matches!(self.layout.strategy, LayoutStrategy::Fixed { .. }) {
+            return Err(PolicyError::Unsupported(
+                "a layout strategy other than Fixed",
+            ));
         }
         let size = self.layout.strategy.default_segment_size();
         if size == 0 || size > MAX_SEGMENT_SIZE {
@@ -436,21 +451,19 @@ pub const MAX_SEGMENT_SIZE: usize = 16 * 1024 * 1024;
 /// Errors produced by [`Policy::validate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyError {
-    HybridKyberDedupConflict,
-    SegmentSizeOutOfRange { size: usize },
+    /// A setting nothing in this build implements.
+    Unsupported(&'static str),
+    SegmentSizeOutOfRange {
+        size: usize,
+    },
 }
 
 impl std::fmt::Display for PolicyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PolicyError::HybridKyberDedupConflict => write!(
-                f,
-                "CryptoProfile::HybridKyber is currently incompatible with dedupe=true: \
-                 the ML-KEM key wrap binds to the originating capsule_id and segment_index, \
-                 so a cross-capsule dedup hit would derive the wrong key on read and the \
-                 segment would fail to decrypt. Set policy.dedupe = false when using \
-                 HybridKyber, or switch crypto_profile to Classical."
-            ),
+            PolicyError::Unsupported(setting) => {
+                write!(f, "{setting} is not supported in this build")
+            }
             PolicyError::SegmentSizeOutOfRange { size } => write!(
                 f,
                 "segment size {size} is out of range: it must be between 1 byte and \
@@ -461,6 +474,60 @@ impl std::fmt::Display for PolicyError {
 }
 
 impl std::error::Error for PolicyError {}
+
+/// A policy file, as `spacectl create --policy-file` reads it: the settings
+/// the write path honours and nothing else. A misspelled or unknown key is
+/// an error instead of being dropped, leaving that setting at its default
+/// (#161), and so are the pre-reset settings nothing implements (#162).
+/// Settings left out keep the base policy's.
+///
+/// ```yaml
+/// compression: !Zstd { level: 3 }
+/// dedupe: false
+/// encryption: !XtsAes256 { key_version: null }
+/// layout:
+///   strategy: !Fixed { segment_size: 1048576 }
+/// ```
+///
+/// [`Policy`] itself stays lenient, since capsule records store it and an
+/// older record may hold fields a later build drops.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyFile {
+    pub compression: Option<CompressionPolicy>,
+    pub dedupe: Option<bool>,
+    pub encryption: Option<EncryptionPolicy>,
+    pub layout: Option<LayoutFile>,
+}
+
+/// The `layout` block of a [`PolicyFile`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutFile {
+    pub strategy: LayoutStrategy,
+}
+
+impl PolicyFile {
+    /// `base` with the settings this file gives, checked with
+    /// [`Policy::validate`].
+    pub fn apply(self, base: Policy) -> Result<Policy, PolicyError> {
+        let mut policy = base;
+        if let Some(compression) = self.compression {
+            policy.compression = compression;
+        }
+        if let Some(dedupe) = self.dedupe {
+            policy.dedupe = dedupe;
+        }
+        if let Some(encryption) = self.encryption {
+            policy.encryption = encryption;
+        }
+        if let Some(layout) = self.layout {
+            policy.layout.strategy = layout.strategy;
+        }
+        policy.validate()?;
+        Ok(policy)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -498,16 +565,115 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_kyber_with_dedup_is_rejected() {
-        let policy = Policy {
-            crypto_profile: CryptoProfile::HybridKyber,
-            dedupe: true,
-            ..Policy::default()
+    fn settings_nothing_implements_are_rejected() {
+        let unsupported = |policy: Policy| match policy.validate() {
+            Err(PolicyError::Unsupported(setting)) => setting,
+            other => panic!("expected Unsupported, got {other:?}"),
         };
+        for dedupe in [true, false] {
+            let kyber = Policy {
+                crypto_profile: CryptoProfile::HybridKyber,
+                dedupe,
+                ..Policy::default()
+            };
+            assert!(unsupported(kyber).contains("HybridKyber"));
+        }
+        let transform: Policy = serde_norway::from_str(
+            "transform: [{name: t, image: 'file:///t.wasm', verification: null}]",
+        )
+        .unwrap();
+        assert!(unsupported(transform).contains("transform"));
+        let federation: Policy = serde_norway::from_str("federation: [us-west]").unwrap();
+        assert!(unsupported(federation).contains("federation"));
+        for strategy in [
+            LayoutStrategy::AdaptiveEntropy,
+            LayoutStrategy::Learned {
+                model_path: "m".into(),
+            },
+            LayoutStrategy::QuantumReady {
+                merkle_algo: MerkleAlgo::Blake3,
+            },
+            LayoutStrategy::ZnsGraph {
+                zone_size_mib: 1,
+                graph_radius: 1,
+            },
+        ] {
+            let policy = Policy {
+                layout: LayoutPolicy {
+                    strategy,
+                    ..LayoutPolicy::default()
+                },
+                ..Policy::default()
+            };
+            assert!(unsupported(policy).contains("layout"));
+        }
         assert_eq!(
-            policy.validate().unwrap_err(),
-            PolicyError::HybridKyberDedupConflict
+            PolicyError::Unsupported("x").to_string(),
+            "x is not supported in this build"
         );
+    }
+
+    #[test]
+    fn policy_files_reject_unknown_keys() {
+        let parse = |yaml: &str| serde_norway::from_str::<PolicyFile>(yaml);
+        for typo in [
+            "dedup: false",
+            "compresion: None",
+            "encrypton: Disabled",
+            "crypto_profile: HybridKyber",
+            "federation: [us-west]",
+            "compact_interval_secs: 60",
+            "layout: {strategy: !Fixed {segment_size: 1024}, ec_profile: [6, 2]}",
+        ] {
+            let err = parse(typo).expect_err(typo).to_string();
+            assert!(err.contains("unknown field"), "{typo}: {err}");
+        }
+    }
+
+    #[test]
+    fn policy_files_override_only_what_they_give() {
+        let file: PolicyFile = serde_norway::from_str(
+            "compression: !Zstd { level: 3 }\n\
+             dedupe: false\n\
+             layout:\n  strategy: !Fixed { segment_size: 1048576 }\n",
+        )
+        .unwrap();
+        let policy = file.apply(Policy::encrypted()).unwrap();
+        assert!(matches!(
+            policy.compression,
+            CompressionPolicy::Zstd { level: 3 }
+        ));
+        assert!(!policy.dedupe);
+        assert!(policy.encryption.is_enabled(), "kept from the base policy");
+        assert_eq!(policy.layout.strategy.default_segment_size(), 1_048_576);
+
+        let file: PolicyFile = serde_norway::from_str("encryption: Disabled").unwrap();
+        assert!(!file
+            .apply(Policy::encrypted())
+            .unwrap()
+            .encryption
+            .is_enabled());
+
+        let file: PolicyFile =
+            serde_norway::from_str("layout: {strategy: !Fixed {segment_size: 0}}").unwrap();
+        assert_eq!(
+            file.apply(Policy::default()).unwrap_err(),
+            PolicyError::SegmentSizeOutOfRange { size: 0 }
+        );
+        let file: PolicyFile =
+            serde_norway::from_str("layout: {strategy: AdaptiveEntropy}").unwrap();
+        assert!(matches!(
+            file.apply(Policy::default()),
+            Err(PolicyError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn a_layout_block_needs_only_its_strategy() {
+        let policy: Policy =
+            serde_norway::from_str("layout: {strategy: !Fixed {segment_size: 65536}}").unwrap();
+        assert_eq!(policy.layout.strategy.default_segment_size(), 65_536);
+        assert_eq!(policy.layout.ec_profile, LayoutPolicy::default().ec_profile);
     }
 
     #[test]
@@ -533,27 +699,7 @@ mod tests {
                 size: MAX_SEGMENT_SIZE + 1
             }
         );
-        let zone = |zone_size_mib| {
-            with_layout(LayoutStrategy::ZnsGraph {
-                zone_size_mib,
-                graph_radius: 1,
-            })
-        };
-        assert!(zone(16).validate().is_ok());
-        assert!(zone(32).validate().is_err());
         assert!(Policy::default().validate().is_ok());
-    }
-
-    #[test]
-    fn hybrid_kyber_without_dedup_is_accepted() {
-        let policy = Policy {
-            crypto_profile: CryptoProfile::HybridKyber,
-            dedupe: false,
-            ..Policy::default()
-        };
-        policy
-            .validate()
-            .expect("HybridKyber with dedupe=false must validate");
     }
 
     #[test]

@@ -41,7 +41,7 @@ Source:
 ## Caveats
 
 - **Equality is visible.** Deterministic encryption means anyone who can read the disk can tell which segments are identical, though not what they contain.
-- **HybridKyber:** `Policy::validate` rejects `CryptoProfile::HybridKyber` together with `dedupe = true`, because a per-capsule key wrap would make shared segments unreadable. The ML-KEM wrap itself isn't implemented on this branch.
+- **HybridKyber:** `Policy::validate` rejects `CryptoProfile::HybridKyber`, because the ML-KEM wrap isn't implemented on this branch ([#162](https://github.com/saworbit/SPACE/issues/162)). A per-capsule key wrap would also make shared segments unreadable, so it can't be combined with dedup when it does exist.
 
 ## Flow diagram
 
