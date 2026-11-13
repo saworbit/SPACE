@@ -11,12 +11,14 @@ use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Once};
 use std::time::Duration;
 
+use tokio::net::TcpListener;
 use tokio::sync::Mutex as TokioMutex;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 const NVRAM_PATH: &str = "space.nvram";
@@ -297,10 +299,11 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "8080")]
         port: u16,
-        /// Address to listen on. The server has no authentication, so it
-        /// listens on loopback unless told otherwise.
-        #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
-        bind: IpAddr,
+        /// Address to listen on. The server has no authentication, so
+        /// without one it listens on loopback: on 127.0.0.1 and on ::1, for
+        /// clients that resolve localhost to ::1 first.
+        #[arg(long)]
+        bind: Option<IpAddr>,
         /// Seconds between passes that reclaim space: compacting space.nvram
         /// once a quarter of it is reclaimable, or deleting unreferenced
         /// segments under SPACE_STORAGE_ROOT, then compacting space.journal
@@ -377,6 +380,96 @@ fn describe_scrub_error(
         None => " (no capsule)".to_string(),
     };
     format!("segment {}: {what}{held_by}", segment.0)
+}
+
+async fn bind_to(addr: SocketAddr) -> Result<TcpListener> {
+    TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("couldn't listen on {addr}; try another --port"))
+}
+
+/// serve-s3's listeners: one on `bind` when it's given, or one on each
+/// loopback address (#158). Listening on 127.0.0.1 alone made clients that
+/// resolve localhost to ::1 first wait for that attempt to fail on every
+/// connection, about 2 s on Windows. A host with no IPv6 gets 127.0.0.1
+/// alone, and a warning.
+async fn listen(bind: Option<IpAddr>, port: u16) -> Result<Vec<TcpListener>> {
+    if let Some(ip) = bind {
+        return Ok(vec![bind_to(SocketAddr::new(ip, port)).await?]);
+    }
+    let v4 = bind_to(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port)).await?;
+    // With --port 0, ::1 takes the port the OS picked for 127.0.0.1.
+    let v6 = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), v4.local_addr()?.port());
+    match TcpListener::bind(v6).await {
+        Ok(listener) => Ok(vec![v4, listener]),
+        // Something else answers localhost clients there.
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+            Err(err).with_context(|| format!("couldn't listen on {v6}; try another --port"))
+        }
+        Err(err) => {
+            warn!("listening on 127.0.0.1 only: couldn't listen on {v6}: {err}");
+            Ok(vec![v4])
+        }
+    }
+}
+
+/// One line saying what serve-s3 serves and how (#170), and a warning when
+/// it's reachable from other hosts.
+fn log_startup(
+    addrs: &[SocketAddr],
+    dir: &Path,
+    store: &RegistryPipelineHandle,
+    reclaim_interval: u64,
+    scrub: ScrubArgs,
+) {
+    let absolute = |path: &Path| {
+        std::path::absolute(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+            .to_string()
+    };
+    let addr = addrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let segments = match storage_root() {
+        Ok(Some(root)) => absolute(&root),
+        _ => absolute(&dir.join(NVRAM_PATH)),
+    };
+    let encryption = if store.default_policy().encryption.is_enabled() {
+        "on"
+    } else {
+        "off"
+    };
+    let reclaim = match reclaim_interval {
+        0 => "off".to_string(),
+        secs => format!("{secs}s"),
+    };
+    let scrub = match scrub.config() {
+        Some(config) => format!(
+            "light:{}s,deep:{}s",
+            config.light_interval.as_secs(),
+            config.deep_interval.as_secs()
+        ),
+        None => "off".to_string(),
+    };
+    info!(
+        addr = %addr,
+        store = %absolute(dir),
+        segments = %segments,
+        encryption = %encryption,
+        reclaim = %reclaim,
+        scrub = %scrub,
+        "listening"
+    );
+    for addr in addrs.iter().filter(|addr| !addr.ip().is_loopback()) {
+        warn!(
+            %addr,
+            "listening beyond loopback with no authentication: anyone who can reach this \
+             address can read, change and delete every object"
+        );
+    }
 }
 
 /// A policy file's settings over `base`. Unknown keys and settings nothing
@@ -600,15 +693,18 @@ async fn run(cli: Cli) -> Result<()> {
 
             // Listen before opening the store, so a port that's in use
             // doesn't leave a new store behind (#166).
-            let addr = SocketAddr::new(bind, port);
-            let listener = tokio::net::TcpListener::bind(addr)
-                .await
-                .with_context(|| format!("couldn't listen on {addr}; try another --port"))?;
+            let listeners = listen(bind, port).await?;
             let registry = open_registry(dir, Open::OrCreate)?;
-            let s3_view = S3View::new_modular(open_store(dir, registry).await?);
+            let store = open_store(dir, registry).await?;
+            let addrs = listeners
+                .iter()
+                .map(TcpListener::local_addr)
+                .collect::<io::Result<Vec<_>>>()?;
+            log_startup(&addrs, dir, &store, reclaim_interval, scrub);
+            let s3_view = S3View::new_modular(store);
             let reclaim_every =
                 (reclaim_interval > 0).then(|| Duration::from_secs(reclaim_interval));
-            let server = S3Server::new(s3_view, listener)
+            let server = S3Server::new(s3_view, listeners)
                 .reclaim_every(reclaim_every)
                 .scrub(scrub.config());
             server.run().await?;
@@ -712,7 +808,7 @@ mod tests {
             panic!("expected serve-s3");
         };
         assert_eq!(port, 8080);
-        assert_eq!(bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(bind, None, "both loopback addresses");
         assert_eq!(reclaim_interval, 300);
 
         let cli = Cli::try_parse_from(["spacectl", "serve-s3", "--reclaim-interval", "0"]).unwrap();
@@ -728,7 +824,35 @@ mod tests {
         let Commands::ServeS3 { bind, .. } = cli.command else {
             panic!("expected serve-s3");
         };
-        assert_eq!(bind, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(bind, Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+    }
+
+    #[tokio::test]
+    async fn serve_s3_listens_on_both_loopback_addresses_on_one_port() {
+        let listeners = listen(None, 0).await.unwrap();
+        let addrs: Vec<SocketAddr> = listeners.iter().map(|l| l.local_addr().unwrap()).collect();
+        assert_eq!(addrs[0].ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_ne!(addrs[0].port(), 0);
+        // A host without IPv6 gets 127.0.0.1 alone.
+        if let Some(v6) = addrs.get(1) {
+            assert_eq!(v6.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+            assert_eq!(v6.port(), addrs[0].port());
+        }
+        let host_has_ipv6 = std::net::TcpListener::bind("[::1]:0").is_ok();
+        assert_eq!(addrs.len(), if host_has_ipv6 { 2 } else { 1 }, "{addrs:?}");
+
+        let one = listen(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 0)
+            .await
+            .unwrap();
+        assert_eq!(one.len(), 1);
+
+        // A port taken on 127.0.0.1 is an error naming it.
+        let port = addrs[0].port();
+        let err = listen(None, port).await.unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("couldn't listen on 127.0.0.1:{port}")),
+            "{err}"
+        );
     }
 
     #[test]

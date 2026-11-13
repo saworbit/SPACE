@@ -9,7 +9,7 @@ use common::{
     CompressionPolicy,
 };
 use subtle::ConstantTimeEq;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 pub use error::CompressionError;
 
@@ -269,8 +269,9 @@ pub fn adaptive_compress<'a>(
         ));
     }
 
+    // Both happen once per segment, so they'd flood the log at info.
     if let Some(reason) = entropy_skip_reason(data) {
-        info!(
+        debug!(
             entropy = ?reason,
             "Skipping compression due to high entropy"
         );
@@ -292,7 +293,7 @@ pub fn adaptive_compress<'a>(
 
     if compressed.len() >= data.len() {
         let ratio = compressed.len() as f32 / data.len() as f32;
-        info!(
+        debug!(
             original_len = data.len(),
             compressed_len = compressed.len(),
             ratio,

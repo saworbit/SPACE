@@ -35,13 +35,13 @@ Set `SPACE_STORAGE_ROOT` to store segments as files under a directory instead of
 SPACE_STORAGE_ROOT=./space.storage ./target/release/spacectl serve-s3 --port 8080
 ```
 
-Startup prints `Starting SPACE S3 Protocol View...`, then log lines including:
+Once it's listening, it logs one line saying where, which store it serves, whether encryption is on, and when it reclaims and scrubs:
 
 ```
-INFO protocol_s3::server: 🚀 SPACE S3 Protocol View listening on http://127.0.0.1:8080
+INFO spacectl: listening addr=127.0.0.1:8080,[::1]:8080 store=/home/me/space segments=/home/me/space/space.nvram encryption=off reclaim=300s scrub=light:86400s,deep:604800s
 ```
 
-The server has no authentication, so it listens on loopback only. `--bind 0.0.0.0` exposes it on every interface; do that only on a network you trust.
+The server has no authentication, so it listens on loopback only: on `127.0.0.1` and on `::1`, so clients that resolve `localhost` to `::1` first connect at once. `--bind <address>` listens on that address alone. `--bind 0.0.0.0` exposes it on every interface, and logs a warning; do that only on a network you trust.
 
 While it runs, the server reclaims the space of deleted objects and interrupted uploads: in `space.nvram` by compacting it, under `SPACE_STORAGE_ROOT` by deleting the segment files no object references. It also compacts `space.journal`, dropping the records of deleted and overwritten objects. See [Current limitations](#current-limitations) for when.
 

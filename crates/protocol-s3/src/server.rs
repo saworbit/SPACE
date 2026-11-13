@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use axum::{routing::get, Router};
 
+use std::future::IntoFuture;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,18 +73,18 @@ pub fn router(s3_view: Arc<S3View>) -> Router {
 /// a trusted network.
 pub struct S3Server {
     s3_view: Arc<S3View>,
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
     reclaim_every: Option<Duration>,
     scrub: Option<ScrubConfig>,
 }
 
 impl S3Server {
-    /// Serve `s3_view` on `listener`. The caller binds it, so it can fail
-    /// on a port in use before opening the store.
-    pub fn new(s3_view: S3View, listener: TcpListener) -> Self {
+    /// Serve `s3_view` on each of `listeners`. The caller binds them, so it
+    /// can fail on a port in use before opening the store.
+    pub fn new(s3_view: S3View, listeners: Vec<TcpListener>) -> Self {
         Self {
             s3_view: Arc::new(s3_view),
-            listener,
+            listeners,
             reclaim_every: None,
             scrub: None,
         }
@@ -114,24 +115,16 @@ impl S3Server {
         };
         let app = router(self.s3_view);
 
-        let listener = self.listener;
-        let addr = listener.local_addr()?;
-
-        info!("🚀 SPACE S3 Protocol View listening on http://{}", addr);
-        info!("📦 Ready to serve capsules via S3 API");
-        info!("");
-        info!("Try:");
-        info!(
-            "  curl -X PUT http://localhost:{}/demo-bucket/hello.txt -d 'Hello SPACE!'",
-            addr.port()
-        );
-        info!(
-            "  curl http://localhost:{}/demo-bucket/hello.txt",
-            addr.port()
-        );
-        info!("");
-
-        axum::serve(listener, app).await?;
+        if let Some(addr) = self.listeners.first().and_then(|l| l.local_addr().ok()) {
+            debug!(
+                "try: curl -X PUT http://{addr}/demo-bucket/hello.txt --data-binary 'Hello SPACE!'"
+            );
+        }
+        let servers = self
+            .listeners
+            .into_iter()
+            .map(|listener| axum::serve(listener, app.clone()).into_future());
+        futures::future::try_join_all(servers).await?;
 
         Ok(())
     }
