@@ -44,6 +44,8 @@ pub async fn download(
 
 The stream doesn't borrow the handle, so the lock is released before the body is sent. A delete can then run while the body is still going out. The S3 view lets an overwrite or DELETE commit at once, but holds off releasing the dropped capsule's segments until its last GET is done, so they stay readable.
 
+S3 GET decodes the first segment before it answers. A read that fails from the start, such as an encrypted object with no key or the wrong one, or a damaged first segment, gets an `InternalError` response. A later segment that fails can only cut the body short, so the client receives fewer bytes than `Content-Length` promised.
+
 ## Range reads
 
 `read_range(id, offset, len)` returns the bytes in `[offset, offset + len)`, clamped to the capsule size. It uses each segment's `plain_len` to skip segments that end before `offset`. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs at most two segment reads. `read_range_stream(id, offset, len)` does the same one segment at a time, and S3 GET uses it for `Range` requests.

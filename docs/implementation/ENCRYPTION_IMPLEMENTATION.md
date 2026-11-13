@@ -117,6 +117,7 @@ For each segment of the capsule:
    - load that key version;
    - verify the MAC;
    - decrypt, then strip any padding back to `plain_len`.
+   With no key loaded, `NoopEncryptor::decrypt` refuses the segment, naming `SPACE_MASTER_KEY`, rather than handing back the stored ciphertext.
    Otherwise refuse the segment if the capsule's policy requires encryption, and verify `content_hash`.
 3. If `segment.compressed` is set, decompress according to `compression_algo`.
 
