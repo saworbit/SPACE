@@ -22,8 +22,6 @@ These are high-impact areas where new contributors can make meaningful progress:
 
 SPACE is licensed under the [Business Source License 1.1](LICENSE). It's source-available: anyone can read, change and redistribute it, and use it in production for noncommercial purposes. Commercial production use needs a commercial license from the licensor. Each version becomes available under the Apache License 2.0 four years after it is first published.
 
-Versions up to commit `a54ed95` (13 November 2026) were released under MIT OR Apache-2.0, and copies of them stay under those terms.
-
 By submitting a pull request, you agree that your contribution is licensed under the same terms, and you grant the licensor, Shane Wall, a perpetual, irrevocable right to license your contribution under other terms, including commercial licenses.
 
 ## Getting Started
