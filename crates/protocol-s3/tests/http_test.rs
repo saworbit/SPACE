@@ -332,7 +332,8 @@ async fn unimplemented_operations_are_refused_not_misrun() {
         ("GET", "/demo/a.txt?tagging", ""),
         ("GET", "/demo/a.txt?acl", ""),
         ("GET", "/demo/a.txt?partNumber=1", ""),
-        ("GET", "/demo/a.txt?response-content-type=text/html", ""),
+        // Response overrides are for GET alone.
+        ("PUT", "/demo/a.txt?response-content-type=text/html", "x"),
         ("PUT", "/demo/a.txt?x-id=PutObjectTagging", "<Tagging/>"),
         // Bucket configuration, which mustn't create the bucket either.
         ("PUT", "/demo?versioning", "<VersioningConfiguration/>"),
@@ -411,4 +412,217 @@ async fn presigned_and_sdk_query_parameters_are_accepted() {
 
     let uri = "/demo/a.txt?x-id=DeleteObject";
     assert_eq!(app.send("DELETE", uri, b"").await.0, StatusCode::NO_CONTENT);
+}
+
+/// DeleteObject is idempotent: a key that isn't there is already deleted,
+/// so a retried DELETE succeeds (#160). A missing bucket is still an error.
+#[tokio::test]
+async fn deleting_a_missing_key_succeeds() {
+    let app = App::new("delete_missing");
+    app.send("PUT", "/demo/a.txt", b"x").await;
+    for _ in 0..2 {
+        let (status, _, body) = app.send("DELETE", "/demo/a.txt", b"").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+    let (status, _, _) = app.send("DELETE", "/demo/never.txt", b"").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _, xml) = app.send("DELETE", "/nobucket/a.txt", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
+}
+
+/// A key can't be empty, so `/{bucket}/` addresses the bucket (#179).
+#[tokio::test]
+async fn a_trailing_slash_still_addresses_the_bucket() {
+    let app = App::new("trailing_slash");
+    assert_eq!(app.send("HEAD", "/b2/", b"").await.0, StatusCode::NOT_FOUND);
+    let (status, headers, _) = app.send("PUT", "/b2/", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::LOCATION], "/b2");
+    assert_eq!(app.send("HEAD", "/b2/", b"").await.0, StatusCode::OK);
+
+    app.send("PUT", "/b2/dir/a.txt", b"x").await;
+    let (status, _, xml) = app.send("GET", "/b2/?list-type=2&delimiter=/", b"").await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(tags(&xml, "Prefix"), ["", "dir/"]);
+    let (_, _, xml) = app.send("GET", "/b2/?location", b"").await;
+    assert!(xml.contains("<LocationConstraint"), "{xml}");
+    let (status, _, xml) = app.send("GET", "/b2/?versioning", b"").await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{xml}");
+
+    // Other methods on the bucket are still refused.
+    let (status, _, xml) = app.send("DELETE", "/b2/", b"").await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(tags(&xml, "Code"), ["NotImplemented"]);
+}
+
+/// XML 1.0 can't carry most control characters even escaped, so keys
+/// holding one are refused rather than breaking every listing of their
+/// bucket (#172). Tab, newline and carriage return list intact.
+#[tokio::test]
+async fn keys_a_listing_cant_carry_are_refused() {
+    let app = App::new("control_chars");
+    for bad in ["bad%01key", "bad%00key", "bad%1Fkey", "bad%EF%BF%BEkey"] {
+        let (status, _, xml) = app.send("PUT", &format!("/c/{bad}"), b"x").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {xml}");
+        assert_eq!(tags(&xml, "Code"), ["InvalidArgument"], "{bad}");
+    }
+    assert_eq!(app.send("HEAD", "/c", b"").await.0, StatusCode::NOT_FOUND);
+
+    let (status, _, _) = app.send("PUT", "/c/tab%09nl%0Acr%0Dkey", b"x").await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, xml) = app.send("GET", "/c?list-type=2", b"").await;
+    assert_eq!(tags(&xml, "Key"), ["tab\tnl\ncr&#13;key"]);
+}
+
+/// GET's `response-*` parameters set the headers they name, ranged or not,
+/// as presigned download links use them (#177).
+#[tokio::test]
+async fn response_overrides_set_the_headers_they_name() {
+    let app = App::new("overrides");
+    app.send("PUT", "/demo/a.txt", b"0123456789").await;
+
+    let uri = "/demo/a.txt?response-content-disposition=attachment%3B%20filename%3Dx.txt\
+               &response-content-type=text/csv&X-Amz-Signature=abc";
+    let (status, headers, body) = app.send("GET", uri, b"").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "0123456789"));
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=x.txt"
+    );
+    assert_eq!(headers[header::CONTENT_TYPE], "text/csv");
+
+    let uri = "/demo/a.txt?response-content-language=fr\
+               &response-expires=Thu,%2001%20Jan%202099%2000:00:00%20GMT\
+               &response-cache-control=no-cache&response-content-encoding=identity";
+    let (status, headers, body) = app
+        .send_with("GET", uri, &[("range", "bytes=0-1")], b"")
+        .await;
+    assert_eq!((status, body.as_str()), (StatusCode::PARTIAL_CONTENT, "01"));
+    assert_eq!(headers[header::CONTENT_LANGUAGE], "fr");
+    assert_eq!(headers[header::EXPIRES], "Thu, 01 Jan 2099 00:00:00 GMT");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+    assert_eq!(headers[header::CONTENT_ENCODING], "identity");
+    assert_eq!(headers[header::CONTENT_TYPE], "text/plain");
+
+    let uri = "/demo/a.txt?response-content-type=a%0Ab";
+    let (status, _, xml) = app.send("GET", uri, b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tags(&xml, "Code"), ["InvalidArgument"]);
+}
+
+/// Conditional GETs, HEADs and PUTs, against the ETag (the capsule id) and
+/// Last-Modified (#171).
+#[tokio::test]
+async fn conditional_requests_check_the_etag_and_dates() {
+    let app = App::new("conditional");
+    let (_, headers, _) = app.send("PUT", "/demo/a.txt", b"one").await;
+    let etag = headers[header::ETAG].to_str().unwrap().to_string();
+    let weak = format!("W/{etag}");
+    let (_, headers, _) = app.send("HEAD", "/demo/a.txt", b"").await;
+    let modified = headers[header::LAST_MODIFIED].to_str().unwrap().to_string();
+    let other = "\"00000000-0000-0000-0000-000000000001\"";
+    let listed = format!("{other}, {etag}");
+    let past = "Sat, 01 Jan 2000 00:00:00 GMT";
+
+    for method in ["GET", "HEAD"] {
+        for (headers, expected) in [
+            (
+                vec![("if-none-match", etag.as_str())],
+                StatusCode::NOT_MODIFIED,
+            ),
+            (
+                vec![("if-none-match", weak.as_str())],
+                StatusCode::NOT_MODIFIED,
+            ),
+            (vec![("if-none-match", "*")], StatusCode::NOT_MODIFIED),
+            (vec![("if-none-match", other)], StatusCode::OK),
+            (vec![("if-match", etag.as_str())], StatusCode::OK),
+            (vec![("if-match", listed.as_str())], StatusCode::OK),
+            (vec![("if-match", "*")], StatusCode::OK),
+            (vec![("if-match", other)], StatusCode::PRECONDITION_FAILED),
+            (
+                vec![("if-match", weak.as_str())],
+                StatusCode::PRECONDITION_FAILED,
+            ),
+            (
+                vec![("if-modified-since", modified.as_str())],
+                StatusCode::NOT_MODIFIED,
+            ),
+            (vec![("if-modified-since", past)], StatusCode::OK),
+            (vec![("if-modified-since", "not a date")], StatusCode::OK),
+            (
+                vec![("if-unmodified-since", past)],
+                StatusCode::PRECONDITION_FAILED,
+            ),
+            (
+                vec![("if-unmodified-since", modified.as_str())],
+                StatusCode::OK,
+            ),
+            // If-Match takes the place of If-Unmodified-Since, and
+            // If-None-Match of If-Modified-Since.
+            (
+                vec![("if-match", etag.as_str()), ("if-unmodified-since", past)],
+                StatusCode::OK,
+            ),
+            (
+                vec![("if-none-match", other), ("if-modified-since", &modified)],
+                StatusCode::OK,
+            ),
+        ] {
+            let (status, _, _) = app.send_with(method, "/demo/a.txt", &headers, b"").await;
+            assert_eq!(status, expected, "{method} {headers:?}");
+        }
+    }
+    let (status, headers, body) = app
+        .send_with("GET", "/demo/a.txt", &[("if-none-match", &etag)], b"")
+        .await;
+    assert_eq!((status, body.as_str()), (StatusCode::NOT_MODIFIED, ""));
+    assert_eq!(headers[header::ETAG], etag.as_str());
+    let (_, _, xml) = app
+        .send_with("GET", "/demo/a.txt", &[("if-match", other)], b"")
+        .await;
+    assert_eq!(tags(&xml, "Code"), ["PreconditionFailed"]);
+
+    // PUT: If-None-Match: * creates only, If-Match swaps only the ETag
+    // named, and a PUT that fails stores nothing.
+    let put = |key: &'static str, headers: Vec<(&'static str, String)>, body: &'static str| {
+        let app = &app;
+        async move {
+            let headers: Vec<(&str, &str)> =
+                headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
+            app.send_with("PUT", key, &headers, body.as_bytes()).await
+        }
+    };
+    let failed = StatusCode::PRECONDITION_FAILED;
+    let (status, _, xml) = put("/demo/a.txt", vec![("if-none-match", "*".into())], "two").await;
+    assert_eq!(status, failed, "{xml}");
+    assert_eq!(tags(&xml, "Code"), ["PreconditionFailed"]);
+    let (status, _, _) = put("/demo/a.txt", vec![("if-match", other.into())], "two").await;
+    assert_eq!(status, failed);
+    let (status, _, _) = put(
+        "/demo/a.txt",
+        vec![("if-unmodified-since", past.into())],
+        "two",
+    )
+    .await;
+    assert_eq!(status, failed);
+    let (status, _, _) = put("/demo/new.txt", vec![("if-match", etag.clone())], "two").await;
+    assert_eq!(status, failed);
+    let (status, _, body) = app.send("GET", "/demo/a.txt", b"").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "one"));
+
+    let (status, headers, _) = put("/demo/a.txt", vec![("if-match", etag.clone())], "two").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(headers[header::ETAG], etag.as_str());
+    let (status, _, _) = put("/demo/a.txt", vec![("if-match", etag.clone())], "three").await;
+    assert_eq!(status, failed);
+    let (status, _, _) = put("/demo/new.txt", vec![("if-none-match", "*".into())], "new").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, xml) = app.send("GET", "/demo?list-type=2", b"").await;
+    assert_eq!(tags(&xml, "Key"), ["a.txt", "new.txt"]);
+    let (_, _, body) = app.send("GET", "/demo/a.txt", b"").await;
+    assert_eq!(body, "two");
 }

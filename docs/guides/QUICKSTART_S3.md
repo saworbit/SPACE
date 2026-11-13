@@ -142,12 +142,12 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
   - multipart upload;
   - CopyObject;
   - object tagging and ACLs, and bucket configuration such as `?versioning`;
-  - ListBuckets, DeleteBucket and DeleteObjects;
-  - the `response-*` header overrides on GET.
+  - ListBuckets, DeleteBucket and DeleteObjects.
 
   A PUT with an `aws-chunked` body is refused the same way, so send the body unencoded. Before [#156](https://github.com/saworbit/SPACE/issues/156), some of these ran as a plain PUT or DELETE and overwrote or deleted the object.
 - DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. The same pass compacts `space.journal`, which records every PUT and DELETE, once a quarter of it, and at least 1 MiB, is dead. With the server stopped, `spacectl compact` compacts both right away.
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
+- Keys can't hold control characters other than tab, newline and carriage return, since a listing's XML can't carry them ([#172](https://github.com/saworbit/SPACE/issues/172)).
 
 ## Troubleshooting
 

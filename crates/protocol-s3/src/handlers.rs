@@ -14,7 +14,9 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tracing::{error, info};
 
-use crate::{ByteRange, ListPage, ListQuery, ObjectMapping, S3Error, S3Result, S3View};
+use crate::{
+    ByteRange, ListPage, ListQuery, ObjectMapping, Preconditions, S3Error, S3Result, S3View,
+};
 
 pub type AppState = Arc<S3View>;
 
@@ -37,6 +39,20 @@ impl IntoResponse for S3Error {
             S3Error::InvalidArgument(_) => (StatusCode::BAD_REQUEST, "InvalidArgument", ""),
             S3Error::InvalidRange(_) => (StatusCode::RANGE_NOT_SATISFIABLE, "InvalidRange", ""),
             S3Error::NotImplemented(_) => (StatusCode::NOT_IMPLEMENTED, "NotImplemented", ""),
+            S3Error::PreconditionFailed => {
+                (StatusCode::PRECONDITION_FAILED, "PreconditionFailed", "")
+            }
+            // A 304 carries the validators and no body (RFC 9110 §15.4.5).
+            S3Error::NotModified(meta) => {
+                let mut headers = HeaderMap::new();
+                insert(&mut headers, header::ETAG, etag(meta.capsule_id));
+                insert(
+                    &mut headers,
+                    header::LAST_MODIFIED,
+                    http_date(meta.created_at),
+                );
+                return (StatusCode::NOT_MODIFIED, headers).into_response();
+            }
             S3Error::Internal(err) => {
                 error!("request failed: {err:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "InternalError", "")
@@ -90,8 +106,59 @@ const LIST_PARAMS: &[&str] = &[
     "fetch-owner",
 ];
 
+/// GetObject's `response-*` parameters, and the header each one sets in
+/// place of the stored one (#177).
+const RESPONSE_OVERRIDES: [(&str, &str); 6] = [
+    ("response-content-type", "content-type"),
+    ("response-content-language", "content-language"),
+    ("response-expires", "expires"),
+    ("response-cache-control", "cache-control"),
+    ("response-content-disposition", "content-disposition"),
+    ("response-content-encoding", "content-encoding"),
+];
+
 /// A request's query parameters, decoded, in order.
 type RawQuery = Query<Vec<(String, String)>>;
+
+/// The headers a GET's `response-*` parameters set. A value that can't be
+/// a header is refused before anything is read.
+fn response_overrides(query: &[(String, String)]) -> S3Result<Vec<(HeaderName, HeaderValue)>> {
+    let mut overrides = Vec::new();
+    for (param, name) in RESPONSE_OVERRIDES {
+        if let Some((_, value)) = query.iter().rev().find(|(p, _)| p == param) {
+            let value = HeaderValue::from_str(value).map_err(|_| {
+                S3Error::InvalidArgument(format!("'{param}' is not a valid header value"))
+            })?;
+            overrides.push((HeaderName::from_static(name), value));
+        }
+    }
+    Ok(overrides)
+}
+
+/// A request's conditional headers (#171). Repeated `If-Match` and
+/// `If-None-Match` lines are one list. A date that doesn't parse is
+/// ignored, as RFC 9110 says.
+fn preconditions(headers: &HeaderMap) -> Preconditions {
+    let list = |name: HeaderName| {
+        let values: Vec<&str> = headers
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        (!values.is_empty()).then(|| values.join(","))
+    };
+    let date = |name: HeaderName| {
+        let value = headers.get(name)?.to_str().ok()?;
+        let time = httpdate::parse_http_date(value).ok()?;
+        Some(time.duration_since(UNIX_EPOCH).ok()?.as_secs())
+    };
+    Preconditions {
+        if_match: list(header::IF_MATCH),
+        if_none_match: list(header::IF_NONE_MATCH),
+        if_modified_since: date(header::IF_MODIFIED_SINCE),
+        if_unmodified_since: date(header::IF_UNMODIFIED_SINCE),
+    }
+}
 
 /// Refuse a request whose query asks for something its handler doesn't do
 /// (#156). S3 picks the operation from the query as well as the method:
@@ -172,7 +239,8 @@ pub async fn put_object(
     // Convert Axum Body into a standard futures::Stream
     let stream = body.into_data_stream().map_err(Error::from).into_stream();
 
-    match s3.put_object(&bucket, &key, stream).await {
+    let conditions = preconditions(&request_headers);
+    match s3.put_object_if(&bucket, &key, stream, &conditions).await {
         Ok(capsule_id) => {
             info!(
                 "Created capsule {} for {}/{}",
@@ -186,7 +254,8 @@ pub async fn put_object(
     }
 }
 
-/// GET /{bucket}/{key}, honouring a single `Range: bytes=` range (#99).
+/// GET /{bucket}/{key}, honouring a single `Range: bytes=` range (#99), the
+/// conditional headers (#171) and the `response-*` overrides (#177).
 pub async fn get_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
@@ -194,15 +263,20 @@ pub async fn get_object(
     request_headers: HeaderMap,
 ) -> Response {
     info!("GET /{}/{}", bucket, key);
-    if let Err(e) = check_query(&query, &[], &["GetObject"]) {
-        return e.into_response();
-    }
+    let allowed = RESPONSE_OVERRIDES.map(|(param, _)| param);
+    let overrides = match check_query(&query, &allowed, &["GetObject"])
+        .and_then(|()| response_overrides(&query))
+    {
+        Ok(overrides) => overrides,
+        Err(e) => return e.into_response(),
+    };
 
     let range = request_headers
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
         .and_then(ByteRange::parse);
-    match s3.get_object_range(&bucket, &key, range).await {
+    let conditions = preconditions(&request_headers);
+    match s3.get_object_if(&bucket, &key, range, &conditions).await {
         Ok(object) => {
             let mut headers = object_headers(&object.meta);
             let status = match object.range {
@@ -222,24 +296,32 @@ pub async fn get_object(
                 }
                 None => StatusCode::OK,
             };
+            for (name, value) in overrides {
+                headers.insert(name, value);
+            }
             (status, headers, Body::from_stream(object.body)).into_response()
         }
         Err(e) => e.into_response(),
     }
 }
 
-/// HEAD /{bucket}/{key}
+/// HEAD /{bucket}/{key}, honouring the conditional headers (#171).
 pub async fn head_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
     Query(query): RawQuery,
+    request_headers: HeaderMap,
 ) -> Response {
     info!("HEAD /{}/{}", bucket, key);
     if let Err(e) = check_query(&query, &[], &["HeadObject"]) {
         return e.into_response();
     }
 
-    match s3.head_object(&bucket, &key) {
+    let head = s3.head_object(&bucket, &key).and_then(|mapping| {
+        preconditions(&request_headers).check_read(&mapping)?;
+        Ok(mapping)
+    });
+    match head {
         Ok(mapping) => (StatusCode::OK, object_headers(&mapping)).into_response(),
         Err(e) => e.into_response(),
     }
@@ -482,10 +564,14 @@ fn object_headers(meta: &ObjectMapping) -> HeaderMap {
     insert(
         &mut headers,
         header::LAST_MODIFIED,
-        httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs(meta.created_at)),
+        http_date(meta.created_at),
     );
     insert(&mut headers, header::ACCEPT_RANGES, "bytes".to_string());
     headers
+}
+
+fn http_date(secs: u64) -> String {
+    httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 /// Every value set here is built from ASCII, so it is always a valid header.
@@ -509,6 +595,8 @@ fn xml_escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            // A parser would read a bare CR back as LF, changing the key.
+            '\r' => out.push_str("&#13;"),
             c => out.push(c),
         }
     }

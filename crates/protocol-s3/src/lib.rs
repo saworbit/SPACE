@@ -49,6 +49,15 @@ pub enum S3Error {
     /// An S3 operation, or an option of one, that the server doesn't do.
     #[error("{0}")]
     NotImplemented(String),
+    /// An `If-Match`, `If-None-Match` on a PUT, or `If-Unmodified-Since`
+    /// didn't hold (#171).
+    #[error("At least one of the pre-conditions you specified did not hold")]
+    PreconditionFailed,
+    /// A GET or HEAD whose `If-None-Match` or `If-Modified-Since` says the
+    /// client has this object already. Not a failure: it's answered with a
+    /// 304 carrying the object's validators.
+    #[error("Not Modified")]
+    NotModified(Box<ObjectMapping>),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -151,6 +160,85 @@ impl ByteRange {
             ByteRange::Suffix(n) => (n > 0 && size > 0).then(|| (size - n.min(size), size - 1)),
         }
     }
+}
+
+/// The conditional headers of a request (RFC 9110 §13), compared with the
+/// object's ETag, its capsule id, and its Last-Modified, when the capsule
+/// was created (#171).
+#[derive(Debug, Clone, Default)]
+pub struct Preconditions {
+    /// `If-Match`: a list of ETags, or `*`.
+    pub if_match: Option<String>,
+    /// `If-None-Match`: a list of ETags, or `*`.
+    pub if_none_match: Option<String>,
+    /// `If-Modified-Since`, in seconds since the Unix epoch.
+    pub if_modified_since: Option<u64>,
+    /// `If-Unmodified-Since`, in seconds since the Unix epoch.
+    pub if_unmodified_since: Option<u64>,
+}
+
+impl Preconditions {
+    /// Check a GET or HEAD, in RFC 9110's order: `If-Match`, or else
+    /// `If-Unmodified-Since`, fails the request; then `If-None-Match`, or
+    /// else `If-Modified-Since`, answers it with 304.
+    pub fn check_read(&self, meta: &ObjectMapping) -> S3Result<()> {
+        if let Some(tags) = &self.if_match {
+            if !etag_listed(tags, meta.capsule_id, false) {
+                return Err(S3Error::PreconditionFailed);
+            }
+        } else if self
+            .if_unmodified_since
+            .is_some_and(|t| meta.created_at > t)
+        {
+            return Err(S3Error::PreconditionFailed);
+        }
+        let not_modified = match &self.if_none_match {
+            Some(tags) => etag_listed(tags, meta.capsule_id, true),
+            None => self.if_modified_since.is_some_and(|t| meta.created_at <= t),
+        };
+        if not_modified {
+            return Err(S3Error::NotModified(Box::new(meta.clone())));
+        }
+        Ok(())
+    }
+
+    /// Check a PUT against the object the key holds now, if any: its id and
+    /// when it was created. `If-None-Match: *` is create-only, and
+    /// `If-Match` is compare-and-swap.
+    fn check_write(&self, current: Option<(CapsuleId, u64)>) -> S3Result<()> {
+        let holds = |tags: &str, weak| current.is_some_and(|(id, _)| etag_listed(tags, id, weak));
+        let fails = self
+            .if_match
+            .as_deref()
+            .is_some_and(|tags| !holds(tags, false))
+            || self
+                .if_none_match
+                .as_deref()
+                .is_some_and(|tags| holds(tags, true))
+            || matches!(
+                (current, self.if_unmodified_since),
+                (Some((_, created_at)), Some(t)) if created_at > t
+            );
+        if fails {
+            return Err(S3Error::PreconditionFailed);
+        }
+        Ok(())
+    }
+}
+
+/// Whether a list of entity tags names this capsule's ETag. `*` names any
+/// object. A weak tag (`W/"..."`) matches only in the weak comparison
+/// `If-None-Match` uses. Quotes are optional, since some clients drop them.
+fn etag_listed(tags: &str, id: CapsuleId, weak: bool) -> bool {
+    let id = id.as_uuid().to_string();
+    tags.split(',').map(str::trim).any(|tag| {
+        let tag = match tag.strip_prefix("W/") {
+            Some(_) if !weak => return false,
+            Some(tag) => tag,
+            None => tag,
+        };
+        tag == "*" || tag.trim_matches('"').eq_ignore_ascii_case(&id)
+    })
 }
 
 /// Listing options, as in the ListObjectsV2 query.
@@ -287,13 +375,31 @@ impl S3View {
         S: Stream<Item = Result<Bytes, E>> + Send,
         E: Into<anyhow::Error>,
     {
+        self.put_object_if(bucket, key, data_stream, &Preconditions::default())
+            .await
+    }
+
+    /// [`S3View::put_object`], if `conditions` hold for the object the key
+    /// holds when the PUT commits. They're checked under the same lock as
+    /// the commit, so two create-only or compare-and-swap PUTs can't both
+    /// win (#171). A PUT that fails them stores nothing.
+    pub async fn put_object_if<S, E>(
+        &self,
+        bucket: &str,
+        key: &str,
+        data_stream: S,
+        conditions: &Preconditions,
+    ) -> S3Result<CapsuleId>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send,
+        E: Into<anyhow::Error>,
+    {
         check_bucket_name(bucket)?;
-        if key.len() > MAX_JOURNAL_STR {
-            return Err(S3Error::InvalidArgument(format!(
-                "keys can be at most {MAX_JOURNAL_STR} bytes"
-            )));
-        }
+        check_key(key)?;
         let ns = namespace(bucket);
+        // Fail early when the conditions already fail, rather than store the
+        // body first. They're checked again at the commit.
+        conditions.check_write(self.live_capsule_created(&ns, key)?)?;
         let reader =
             StreamReader::new(data_stream.map_err(|err| std::io::Error::other(err.into())));
         // The body is stored one segment at a time as it arrives (#99).
@@ -310,7 +416,9 @@ impl S3View {
                 created_at: now_secs(),
             });
         }
-        let previous = self.live_capsule(&ns, key)?;
+        let current = self.live_capsule_created(&ns, key)?;
+        conditions.check_write(current)?;
+        let previous = current.map(|(id, _)| id);
         with.push(JournalRecord::Bind {
             ns,
             name: key.to_string(),
@@ -336,10 +444,24 @@ impl S3View {
         key: &str,
         range: Option<ByteRange>,
     ) -> S3Result<ObjectBody> {
+        self.get_object_if(bucket, key, range, &Preconditions::default())
+            .await
+    }
+
+    /// [`S3View::get_object_range`], if `conditions` hold for the object
+    /// read (#171). They're checked before the range.
+    pub async fn get_object_if(
+        &self,
+        bucket: &str,
+        key: &str,
+        range: Option<ByteRange>,
+        conditions: &Preconditions,
+    ) -> S3Result<ObjectBody> {
         // Look up the key, start the read and take the lease under the
         // pipeline lock, so an overwrite can't delete the capsule first.
         let handle = self.pipeline.lock().await;
         let meta = self.head_object(bucket, key)?;
+        conditions.check_read(&meta)?;
         let range = match range {
             Some(range) => Some(
                 range
@@ -453,12 +575,17 @@ impl S3View {
     }
 
     /// DELETE object. Deletes the capsule the key pointed at (#86), in the
-    /// same batch that removes the key.
+    /// same batch that removes the key. As in S3, deleting a key that isn't
+    /// there succeeds, so a retried DELETE does too (#160); a bucket that
+    /// isn't there is still `NoSuchBucket`.
     pub async fn delete_object(&self, bucket: &str, key: &str) -> S3Result<()> {
         let mut handle = self.pipeline.lock().await;
         let ns = namespace(bucket);
         let Some(id) = self.registry.name(&ns, key)? else {
-            return Err(self.missing(bucket, key));
+            return match self.registry.namespace_created_at(&ns)? {
+                Some(_) => Ok(()),
+                None => Err(S3Error::NoSuchBucket(bucket.to_string())),
+            };
         };
         // A capsule `spacectl delete` removed has nothing left to drop.
         let live = self.registry.get_capsule(id)?.is_some();
@@ -494,11 +621,15 @@ impl S3View {
         self.pipeline.lock().await.spawn_scrub(config)
     }
 
-    /// The capsule a key points at, unless `spacectl delete` removed it.
-    fn live_capsule(&self, ns: &str, key: &str) -> S3Result<Option<CapsuleId>> {
+    /// The capsule a key points at and when it was created, unless
+    /// `spacectl delete` removed it.
+    fn live_capsule_created(&self, ns: &str, key: &str) -> S3Result<Option<(CapsuleId, u64)>> {
         match self.registry.name(ns, key)? {
-            Some(id) if self.registry.get_capsule(id)?.is_some() => Ok(Some(id)),
-            _ => Ok(None),
+            Some(id) => Ok(self
+                .registry
+                .get_capsule(id)?
+                .map(|capsule| (id, capsule.created_at))),
+            None => Ok(None),
         }
     }
 
@@ -557,6 +688,25 @@ fn check_bucket_name(bucket: &str) -> S3Result<()> {
         || bucket.len() > MAX_JOURNAL_STR - NAMESPACE_PREFIX.len()
     {
         return Err(S3Error::InvalidBucketName(bucket.to_string()));
+    }
+    Ok(())
+}
+
+/// A key fits in the journal, and in a listing's XML. XML 1.0 can't carry
+/// most control characters even escaped, so one key holding one would make
+/// every listing of its bucket unparseable (#172).
+fn check_key(key: &str) -> S3Result<()> {
+    if key.len() > MAX_JOURNAL_STR {
+        return Err(S3Error::InvalidArgument(format!(
+            "keys can be at most {MAX_JOURNAL_STR} bytes"
+        )));
+    }
+    let xml_illegal = |c: char| matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}');
+    if key.chars().any(xml_illegal) {
+        return Err(S3Error::InvalidArgument(
+            "keys can't hold control characters other than tab, newline and carriage return"
+                .to_string(),
+        ));
     }
     Ok(())
 }
