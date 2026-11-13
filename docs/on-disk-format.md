@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. Storage roots (§10) keep one `SEGMENT` record per file, in `storage`. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. Journal compaction (§9.2) is in `capsule-registry`, and runs in the same reclaim pass. Storage roots (§10) keep one `SEGMENT` record per file, in `storage`. The checkpoint is not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -310,9 +310,15 @@ A manifest entry whose segment isn't in the data log means the capsule is damage
 
 A crash before the rename leaves `space.nvram.compact` behind, which open deletes; the old log is intact. A crash after it leaves a complete new log. There's no marker file and no manual step. A segment dropped during compaction is copied anyway and reclaimed next time. §14 (PR 4) lists where the implementation differs from these steps.
 
-### 9.2 Journal
+### 9.2 Journal ([#136](https://github.com/saworbit/SPACE/issues/136))
 
-Under churn the journal grows with dead manifests. Journal compaction writes `space.journal.compact` with a `FILE` record at `generation + 1`, then `NAMESPACE`, `CAPSULE` and `BIND` records for the live state, renames it into place, and sets `journal_applied` to the new generation and end offset. It isn't needed for a while; the `generation` field exists so it can be added without a format change ([#136](https://github.com/saworbit/SPACE/issues/136)).
+Under churn the journal grows with dead records: the manifest of each deleted or overwritten capsule and the `DROP` that removed it, and each name that was replaced or removed. Compaction writes the live state to the next generation, as the data log's does:
+
+1. Note where the journal ends.
+2. Without the journal lock, read the journal to find the live capsules, namespaces and names, as replay would leave them (§7). Then write `space.journal.compact`: a `FILE` record with `generation + 1`, a `NAMESPACE` record for each namespace with its first creation time, the `CAPSULE` record of each live capsule in journal order, and a `BIND` record for each name. Commits carry on.
+3. Under the journal lock, copy the records committed since step 1 unchanged, fsync, rename the new file over `space.journal`, fsync the directory, and set `journal_applied` to the new generation and end offset.
+
+A crash before the rename leaves `space.journal.compact`, which open deletes; the journal is intact. A crash after it leaves the new generation with a `journal_applied` from the old one, so open rebuilds the index from the new generation (§7). There's no marker file and no manual step. §14 (PR 7) has the details of the implementation.
 
 ## 10. Other backends
 
@@ -406,6 +412,13 @@ Suggested PRs:
    - `serve-s3` runs `ScrubExecutor::spawn_background` with the pipeline's key, without the pipeline lock: light daily, deep weekly, at most 64 MiB/s by default. The schedule lived in memory at first, so every start began with a deep scrub of the whole store; it's now kept in `space.db` ([#134](https://github.com/saworbit/SPACE/issues/134)).
    - On a live store, a segment deleted during a cycle isn't reported as a read error, and the schedule forgets deleted segments.
    - A cycle that reaches `max_segments_per_cycle` lets the rest follow a second later. Before, they waited for the next interval.
+7. Journal compaction (§9.2, [#136](https://github.com/saworbit/SPACE/issues/136)). **Done**, with these details:
+   - Members of a `BATCH` come out as records of their own, each with a 48-byte frame where a sub-record has 8 bytes. A journal with little dead in it can therefore compact to more than its size, so compaction runs only when it frees bytes.
+   - A name bound to a capsule that isn't live is kept, since the index keeps it (open question 6).
+   - Memory: a live capsule is held as the offset of the record that holds its `CAPSULE`, which is read again when the new generation is written. Namespaces and names are held whole.
+   - The `FILE` record keeps `store_id`, `created_at` and `segment_id_floor`. A journal compacted down to no records still belongs to its store, and is refused with another store's data log or storage root.
+   - `serve-s3`'s reclaim pass compacts the journal once a quarter of it, and at least 1 MiB, is dead. Finding that out reads the whole journal, so a pass does it the first time after the store opens, and after that only when an estimate kept as records are appended says it may be worth it. The estimate is what the last reading found, plus every byte appended since, plus the average live `CAPSULE` record for each `DROP` among them. `spacectl compact` compacts the journal whenever anything in it is dead.
+   - The index's `journal_applied` moves to the new generation under the journal lock, so no commit lands in between. sled doesn't flush on every update, so a crash shortly after a compaction can still find the old position, and the index is then rebuilt.
 
 ## 15. Tests
 

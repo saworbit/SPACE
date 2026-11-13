@@ -7,11 +7,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::warn;
 
-use crate::journal::{Journal, JournalPosition};
+use crate::journal::{Journal, JournalPosition, JournalUsage};
 use crate::store::{MetadataStore, SledStore};
 
 mod journal;
 mod store;
+
+pub use journal::JournalCompaction;
 
 const DEFAULT_PAGE_SIZE: usize = 1024;
 
@@ -363,6 +365,8 @@ pub mod modular_pipeline {
         pub collected: usize,
         /// Bytes compaction reclaimed, when it ran (the NVRAM log).
         pub compacted: Option<u64>,
+        /// Bytes journal compaction reclaimed, when it ran.
+        pub journal_compacted: Option<u64>,
     }
 
     /// Whether a scheduled pass should compact `log`: once a quarter of it,
@@ -383,29 +387,31 @@ pub mod modular_pipeline {
     ///
     /// On a file backend it garbage-collects, with the pipeline locked: each
     /// unreferenced segment is a file to delete.
+    ///
+    /// Then, on either, it compacts the capsule journal if
+    /// [`CapsuleRegistry::compact_journal_if_worthwhile`](crate::CapsuleRegistry::compact_journal_if_worthwhile)
+    /// finds enough of it dead, also on a blocking thread without the
+    /// pipeline lock.
     pub async fn reclaim(
         pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
     ) -> Result<ReclaimReport> {
-        let log = {
+        let mut report = ReclaimReport::default();
+        let (log, registry) = {
             let mut handle = pipeline.lock().await;
-            match handle.data_log() {
-                Some(log) => log,
-                None => {
-                    return Ok(ReclaimReport {
-                        collected: handle.garbage_collect().await?,
-                        compacted: None,
-                    })
-                }
+            let log = handle.data_log();
+            if log.is_none() {
+                report.collected = handle.garbage_collect().await?;
             }
+            (log, handle.registry().clone())
         };
-        if !worth_compacting(&log) {
-            return Ok(ReclaimReport::default());
+        if let Some(log) = log.filter(worth_compacting) {
+            report.compacted = Some(tokio::task::spawn_blocking(move || log.compact()).await??);
         }
-        let reclaimed = tokio::task::spawn_blocking(move || log.compact()).await??;
-        Ok(ReclaimReport {
-            collected: 0,
-            compacted: Some(reclaimed),
-        })
+        report.journal_compacted =
+            tokio::task::spawn_blocking(move || registry.compact_journal_if_worthwhile())
+                .await??
+                .map(|done| done.reclaimed());
+        Ok(report)
     }
 
     /// Write a capsule from `reader` one segment at a time, so memory stays
@@ -781,6 +787,14 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
     }
 }
 
+/// A scheduled pass compacts the capsule journal once at least this many
+/// bytes of it, and a quarter of it, are dead.
+const JOURNAL_MIN_RECLAIM: u64 = 1 << 20;
+
+fn journal_worth_compacting(size: u64, reclaimable: u64) -> bool {
+    reclaimable >= JOURNAL_MIN_RECLAIM && reclaimable.saturating_mul(4) >= size
+}
+
 /// Capsule records, names and the content index, kept in sled as an index of
 /// the capsule journal (`docs/on-disk-format.md` §7). The journal sits next
 /// to the database (`space.journal` beside `space.db`) and is the durable
@@ -883,6 +897,52 @@ impl CapsuleRegistry {
     /// How many capsule entries reference each segment, from the index.
     pub fn segment_refs(&self) -> Result<HashMap<SegmentId, u32>> {
         self.store.segment_refs()
+    }
+
+    /// Compact the capsule journal now if anything in it is dead, as
+    /// `spacectl compact` does: write its live capsules, namespaces and
+    /// names to the next generation and rename that over it
+    /// (`docs/on-disk-format.md` §9.2). Commits wait only while the records
+    /// committed meanwhile are copied and the file is swapped. Returns
+    /// `None` if there was nothing to reclaim.
+    pub fn compact_journal(&self) -> Result<Option<JournalCompaction>> {
+        self.compact_journal_with(|usage| usage.reclaimable() > 0, |_| false)
+    }
+
+    /// Compact the capsule journal once a quarter of it, and at least 1 MiB,
+    /// is dead, as `serve-s3`'s reclaim pass does. Finding out reads the
+    /// whole journal, so a pass does it only the first time since the store
+    /// was opened, and then when an estimate the journal keeps as records
+    /// are appended says compaction may be worth it.
+    pub fn compact_journal_if_worthwhile(&self) -> Result<Option<JournalCompaction>> {
+        let (size, dead) = self.journal.reclaim_estimate();
+        let due = match dead {
+            None => size >= JOURNAL_MIN_RECLAIM,
+            Some(dead) => journal_worth_compacting(size, dead),
+        };
+        if !due {
+            return Ok(None);
+        }
+        self.compact_journal_with(
+            |usage| journal_worth_compacting(usage.size, usage.reclaimable()),
+            |_| false,
+        )
+    }
+
+    /// [`CapsuleRegistry::compact_journal`], with the decision and the
+    /// points to stop at left to the caller. The index records the new
+    /// generation under the journal lock, so no commit lands in between.
+    fn compact_journal_with(
+        &self,
+        worth: impl FnOnce(&JournalUsage) -> bool,
+        stop_at: impl FnMut(journal::Step) -> bool,
+    ) -> Result<Option<JournalCompaction>> {
+        let store = Arc::clone(&self.store);
+        self.journal.compact_with(
+            worth,
+            move |position| store.set_journal_position(&position),
+            stop_at,
+        )
     }
 
     /// Never allocate a segment id below `floor`.

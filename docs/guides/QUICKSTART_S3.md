@@ -139,7 +139,7 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ## Current limitations
 
 - No multipart upload.
-- DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. With the server stopped, `spacectl compact` compacts right away.
+- DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. The same pass compacts `space.journal`, which records every PUT and DELETE, once a quarter of it, and at least 1 MiB, is dead. With the server stopped, `spacectl compact` compacts both right away.
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
 
 ## Troubleshooting

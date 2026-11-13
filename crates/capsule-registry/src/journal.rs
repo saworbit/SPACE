@@ -2,16 +2,24 @@
 //! of `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND` and `BATCH` records.
 //! It's the durable record of which capsules and names exist; sled is an
 //! index rebuilt from it.
+//!
+//! Records are never removed in place. Compaction (§9.2,
+//! [`Journal::compact_with`]) writes the live state to the next generation
+//! of the file and renames it over the old one.
 
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use common::format::{FileHeader, FileKind, JournalRecord};
+use common::CapsuleId;
 use nvram_sim::record_file;
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Version of the index sled keeps. Bump it whenever the encoding of an index
@@ -33,16 +41,223 @@ pub struct JournalPosition {
     pub offset: u64,
 }
 
+/// A journal's size, and how much of it a compaction would keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalUsage {
+    /// Bytes in the journal.
+    pub size: u64,
+    /// Bytes the compacted journal would hold: its `FILE` record, then a
+    /// record for each live namespace, capsule and name.
+    pub live: u64,
+}
+
+impl JournalUsage {
+    /// Bytes compaction would free. Compaction writes the members of a
+    /// `BATCH` as records of their own, each with a frame, so a journal
+    /// with little dead in it can compact to more than its size; that
+    /// counts as nothing to free.
+    pub fn reclaimable(&self) -> u64 {
+        self.size.saturating_sub(self.live)
+    }
+}
+
+/// What a journal compaction did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalCompaction {
+    /// Size of the journal it replaced, including records appended while
+    /// it ran.
+    pub before: u64,
+    /// Size of the new generation.
+    pub after: u64,
+    /// The new generation.
+    pub generation: u64,
+}
+
+impl JournalCompaction {
+    pub fn reclaimed(&self) -> u64 {
+        self.before.saturating_sub(self.after)
+    }
+}
+
+/// Points in a compaction where a test can stop it, as a crash there would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// The next generation holds the live state as of the start; records
+    /// appended since haven't been copied.
+    Written,
+    /// The next generation is complete and fsynced, but not renamed.
+    Synced,
+    /// The next generation has replaced the journal on disk, and the index
+    /// hasn't recorded it.
+    Renamed,
+}
+
 struct Inner {
     file: File,
     header: FileHeader,
     data_start: u64,
     end: u64,
+    /// Bytes compaction could free, estimated from what it measured last
+    /// time and the records appended since; `None` until it has measured
+    /// the journal. See [`Journal::reclaim_estimate`].
+    dead_estimate: Option<u64>,
+    /// The average length of a live `CAPSULE` record when compaction last
+    /// measured the journal: what each `DROP` is estimated to free.
+    capsule_record_len: u64,
+    /// A compaction failed part way and the journal file couldn't be
+    /// reopened. Appends are refused until the store is opened again.
+    lost: bool,
 }
 
 pub struct Journal {
     inner: Mutex<Inner>,
     path: PathBuf,
+    /// Held while a compaction runs, so only one runs at a time.
+    compacting: Mutex<()>,
+}
+
+/// Where compaction writes the next generation before renaming it into
+/// place.
+fn compaction_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".compact");
+    PathBuf::from(name)
+}
+
+/// The records a record applies: those in a `BATCH`, or the record itself.
+fn members(record: &JournalRecord) -> &[JournalRecord] {
+    match record {
+        JournalRecord::Batch(records) => records,
+        other => std::slice::from_ref(other),
+    }
+}
+
+/// The live state of a journal, as compaction keeps it. A capsule is held
+/// as the offset of the record that holds its `CAPSULE`, which is read again
+/// when the new generation is written, so no manifest stays in memory.
+/// Namespaces and names are held whole.
+#[derive(Default)]
+struct Live {
+    /// Capsule → (offset of the record holding its `CAPSULE`, length of the
+    /// record compaction writes for it).
+    capsules: HashMap<CapsuleId, (u64, u64)>,
+    /// Namespace → (first creation time, record length).
+    namespaces: BTreeMap<String, (u64, u64)>,
+    /// (namespace, name) → (capsule, record length).
+    names: BTreeMap<(String, String), (CapsuleId, u64)>,
+}
+
+impl Live {
+    /// Apply the record at `pos` as the index does (`docs/on-disk-format.md`
+    /// §7): a `CAPSULE` for a live capsule and a `DROP` of one that isn't
+    /// live change nothing, and a namespace keeps its first creation time.
+    fn apply(&mut self, pos: u64, record: &JournalRecord) -> Result<()> {
+        for member in members(record) {
+            let len = || {
+                member
+                    .record_len()
+                    .map_err(|err| anyhow!("journal record at offset {pos}: {err}"))
+            };
+            match member {
+                JournalRecord::Capsule(manifest) => {
+                    if let Entry::Vacant(slot) = self.capsules.entry(manifest.capsule_id) {
+                        slot.insert((pos, len()?));
+                    }
+                }
+                JournalRecord::Drop(id) => {
+                    self.capsules.remove(id);
+                }
+                JournalRecord::Namespace { ns, created_at } => {
+                    if !self.namespaces.contains_key(ns) {
+                        self.namespaces.insert(ns.clone(), (*created_at, len()?));
+                    }
+                }
+                JournalRecord::Bind {
+                    ns,
+                    name,
+                    capsule_id,
+                } => {
+                    self.names
+                        .insert((ns.clone(), name.clone()), (*capsule_id, len()?));
+                }
+                JournalRecord::Unbind { ns, name } => {
+                    self.names.remove(&(ns.clone(), name.clone()));
+                }
+                JournalRecord::Batch(_) => {
+                    bail!("journal record at offset {pos}: a batch inside a batch")
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn capsule_bytes(&self) -> u64 {
+        self.capsules.values().map(|(_, len)| len).sum()
+    }
+
+    /// Bytes of the records compaction writes for this state.
+    fn bytes(&self) -> u64 {
+        self.capsule_bytes()
+            + self.namespaces.values().map(|(_, len)| len).sum::<u64>()
+            + self.names.values().map(|(_, len)| len).sum::<u64>()
+    }
+}
+
+fn put(out: &mut impl Write, written: &mut u64, record: &JournalRecord) -> Result<()> {
+    let bytes = record
+        .encode_record()
+        .map_err(|err| anyhow!("can't encode journal record: {err}"))?;
+    out.write_all(&bytes)?;
+    *written += bytes.len() as u64;
+    Ok(())
+}
+
+/// Write a record for each live namespace, capsule and name to `out`, after
+/// the `FILE` record that ends at `data_start`. Each capsule's `CAPSULE` is
+/// read again from `src`, so capsules keep their journal order. Returns
+/// where the records end.
+fn write_live(
+    src: &mut File,
+    out: &mut File,
+    data_start: u64,
+    snapshot_end: u64,
+    live: &Live,
+) -> Result<u64> {
+    let mut w = BufWriter::new(out);
+    let mut written = data_start;
+    for (ns, (created_at, _)) in &live.namespaces {
+        let record = JournalRecord::Namespace {
+            ns: ns.clone(),
+            created_at: *created_at,
+        };
+        put(&mut w, &mut written, &record)?;
+    }
+    let holders: HashSet<u64> = live.capsules.values().map(|(pos, _)| *pos).collect();
+    record_file::read_records(src, data_start, snapshot_end, |pos, frame, header| {
+        if !holders.contains(&pos) {
+            return Ok(());
+        }
+        let record = JournalRecord::decode(frame, header)
+            .map_err(|err| anyhow!("journal record at offset {pos}: {err}"))?;
+        for member in members(&record) {
+            if let JournalRecord::Capsule(manifest) = member {
+                if live.capsules.get(&manifest.capsule_id).map(|(at, _)| *at) == Some(pos) {
+                    put(&mut w, &mut written, member)?;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    for ((ns, name), (capsule_id, _)) in &live.names {
+        let record = JournalRecord::Bind {
+            ns: ns.clone(),
+            name: name.clone(),
+            capsule_id: *capsule_id,
+        };
+        put(&mut w, &mut written, &record)?;
+    }
+    w.flush()?;
+    Ok(written)
 }
 
 impl Journal {
@@ -55,6 +270,17 @@ impl Journal {
     /// checked; a torn last record is dropped. A journal with damage inside
     /// it is refused, since the records in the damaged range are lost.
     pub fn open(path: &Path) -> Result<Self> {
+        // A compaction that didn't get as far as its rename leaves the next
+        // generation behind. The journal it would have replaced is intact.
+        let unfinished = compaction_path(path);
+        if unfinished.exists() {
+            warn!(
+                path = %unfinished.display(),
+                "removing the file of a journal compaction that didn't finish; the journal is \
+                 intact"
+            );
+            std::fs::remove_file(&unfinished)?;
+        }
         let opened = record_file::open(path, FileKind::Journal, |pos, frame, header| {
             JournalRecord::decode(frame, header)
                 .map(|_| ())
@@ -75,8 +301,12 @@ impl Journal {
                 header: opened.header,
                 data_start: opened.data_start,
                 end: opened.end,
+                dead_estimate: None,
+                capsule_record_len: 0,
+                lost: false,
             }),
             path: path.to_path_buf(),
+            compacting: Mutex::new(()),
         })
     }
 
@@ -96,10 +326,12 @@ impl Journal {
         }
     }
 
-    /// Whether the journal holds any record after its `FILE` record.
+    /// Whether the journal has never held a record: none follows its `FILE`
+    /// record, and compaction has never replaced it. A journal compacted
+    /// down to nothing keeps its store.
     pub fn is_empty(&self) -> bool {
         let inner = self.inner.lock().unwrap();
-        inner.end == inner.data_start
+        inner.end == inner.data_start && inner.header.generation == 0
     }
 
     /// Whether `position` was recorded against this journal file.
@@ -110,6 +342,16 @@ impl Journal {
             && position.generation == inner.header.generation
             && position.offset >= inner.data_start
             && position.offset <= inner.end
+    }
+
+    /// The journal's size, and an estimate of the bytes compaction would
+    /// free: what it found when it last measured the journal, plus every
+    /// byte appended since, plus the average live `CAPSULE` record for each
+    /// `DROP` among them. The estimate is `None` until compaction has
+    /// measured the journal since it was opened.
+    pub fn reclaim_estimate(&self) -> (u64, Option<u64>) {
+        let inner = self.inner.lock().unwrap();
+        (inner.end, inner.dead_estimate)
     }
 
     /// Call `apply` with every record from `position` to the end, and the
@@ -146,10 +388,11 @@ impl Journal {
     }
 
     /// Give an empty journal another store's id, so it pairs with an
-    /// existing data log. Refused once the journal holds records.
+    /// existing data log. Refused once the journal holds records, or has
+    /// held them.
     pub fn adopt_store_id(&self, store_id: Uuid) -> Result<JournalPosition> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.end != inner.data_start {
+        if inner.end != inner.data_start || inner.header.generation != 0 {
             bail!(
                 "the capsule journal '{}' already holds records for store {}",
                 self.path.display(),
@@ -172,6 +415,195 @@ impl Journal {
             offset: end,
         })
     }
+
+    /// Replace the journal with the next generation of it, holding only the
+    /// live state (`docs/on-disk-format.md` §9.2), if `worth` says the
+    /// measured usage makes it worth it. Returns `None` if not.
+    ///
+    /// 1. Note where the journal ends.
+    /// 2. Without the journal lock, read it to find the live capsules,
+    ///    namespaces and names, then write `<journal>.compact`: a `FILE`
+    ///    record for the next generation, a `NAMESPACE` record for each live
+    ///    namespace, the `CAPSULE` record of each live capsule in journal
+    ///    order, and a `BIND` record for each name. Commits carry on.
+    /// 3. Under the journal lock, copy the records committed since step 1
+    ///    unchanged, fsync, rename the new file over the journal, and call
+    ///    `on_swap` with the position at its end, for the index to record.
+    ///
+    /// A crash before the rename leaves `<journal>.compact`, which the next
+    /// open removes; the old journal is intact. A crash after it leaves the
+    /// complete new generation, and an index position from the old one, so
+    /// the next open rebuilds the index from the new generation.
+    ///
+    /// `stop_at` is called at each [`Step`]. When it returns true,
+    /// compaction stops there and leaves the files as a crash would. Only
+    /// tests stop it; the journal must then be dropped and opened again.
+    pub(crate) fn compact_with(
+        &self,
+        worth: impl FnOnce(&JournalUsage) -> bool,
+        on_swap: impl FnOnce(JournalPosition) -> Result<()>,
+        mut stop_at: impl FnMut(Step) -> bool,
+    ) -> Result<Option<JournalCompaction>> {
+        let _running = match self.compacting.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                bail!(
+                    "a compaction of '{}' is already running",
+                    self.path.display()
+                )
+            }
+        };
+
+        // 1. Where the journal ends. Only appends change it, and they land
+        // after this point.
+        let (header, data_start, snapshot_end) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.header, inner.data_start, inner.end)
+        };
+
+        // 2. The live state, then the next generation. A handle of its own,
+        // so commits needn't wait; it's closed before the rename.
+        let mut src = File::open(&self.path)?;
+        let mut live = Live::default();
+        record_file::read_records(&mut src, data_start, snapshot_end, |pos, frame, header| {
+            let record = JournalRecord::decode(frame, header)
+                .map_err(|err| anyhow!("journal record at offset {pos}: {err}"))?;
+            live.apply(pos, &record)
+        })?;
+        let usage = JournalUsage {
+            size: snapshot_end,
+            live: data_start + live.bytes(),
+        };
+        let capsule_record_len = live
+            .capsule_bytes()
+            .checked_div(live.capsules.len() as u64)
+            .unwrap_or(0);
+        if !worth(&usage) {
+            let mut inner = self.inner.lock().unwrap();
+            let appended = inner.end - snapshot_end;
+            inner.dead_estimate = Some(usage.reclaimable() + appended);
+            inner.capsule_record_len = capsule_record_len;
+            return Ok(None);
+        }
+
+        let next_path = compaction_path(&self.path);
+        let next = FileHeader {
+            generation: header.generation + 1,
+            ..header
+        };
+        let mut out = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&next_path)?;
+        let written = (|| -> Result<u64> {
+            let start = record_file::write_new_file(&mut out, &next_path, &next)?;
+            if start != data_start {
+                bail!("the next generation's FILE record is {start} bytes, not {data_start}");
+            }
+            let end = write_live(&mut src, &mut out, data_start, snapshot_end, &live)?;
+            if end != usage.live {
+                bail!(
+                    "compaction wrote {end} bytes of journal where it expected {}",
+                    usage.live
+                );
+            }
+            Ok(end)
+        })();
+        drop(src);
+        let written = match written {
+            Ok(written) => written,
+            Err(err) => {
+                drop(out);
+                let _ = std::fs::remove_file(&next_path);
+                return Err(err);
+            }
+        };
+        if stop_at(Step::Written) {
+            bail!("compaction stopped at {:?}", Step::Written);
+        }
+
+        // 3. Catch up and swap, with commits held off.
+        let mut inner = self.inner.lock().unwrap();
+        let old_end = inner.end;
+        let caught_up = (|| -> Result<()> {
+            out.seek(SeekFrom::Start(written))?;
+            record_file::copy_range(&mut inner.file, &mut out, snapshot_end, old_end)?;
+            out.sync_all()?;
+            Ok(())
+        })();
+        if let Err(err) = caught_up {
+            drop(out);
+            let _ = std::fs::remove_file(&next_path);
+            return Err(err);
+        }
+        if stop_at(Step::Synced) {
+            bail!("compaction stopped at {:?}", Step::Synced);
+        }
+
+        // Windows won't rename over a file that's open, so close the old
+        // journal first. The new file can be renamed while open.
+        let old = std::mem::replace(&mut inner.file, out);
+        drop(old);
+        if let Err(err) = std::fs::rename(&next_path, &self.path) {
+            let restored = OpenOptions::new().read(true).write(true).open(&self.path);
+            let _ = std::fs::remove_file(&next_path);
+            return match restored {
+                Ok(old) => {
+                    inner.file = old;
+                    Err(anyhow!(
+                        "couldn't move the compacted journal into place: {err}; the journal is \
+                         unchanged"
+                    ))
+                }
+                Err(reopen) => {
+                    // The handle left is to the file just removed, so
+                    // anything appended to it would be lost.
+                    inner.lost = true;
+                    Err(anyhow!(
+                        "couldn't move the compacted journal into place ({err}) or reopen the \
+                         old one ({reopen}); commits are refused until the store is opened \
+                         again"
+                    ))
+                }
+            };
+        }
+        record_file::sync_parent_dir(&self.path);
+        if stop_at(Step::Renamed) {
+            bail!("compaction stopped at {:?}", Step::Renamed);
+        }
+
+        inner.header = next;
+        inner.end = written + (old_end - snapshot_end);
+        inner.dead_estimate = Some(old_end - snapshot_end);
+        inner.capsule_record_len = capsule_record_len;
+        let done = JournalCompaction {
+            before: old_end,
+            after: inner.end,
+            generation: next.generation,
+        };
+        on_swap(JournalPosition {
+            index_version: INDEX_VERSION,
+            store_id: next.store_id,
+            generation: next.generation,
+            offset: inner.end,
+        })
+        .context(
+            "the journal was compacted, but the index couldn't record its new generation; the \
+             next open rebuilds the index from it",
+        )?;
+        drop(inner);
+        info!(
+            path = %self.path.display(),
+            generation = done.generation,
+            before = done.before,
+            after = done.after,
+            "compacted the capsule journal"
+        );
+        Ok(Some(done))
+    }
 }
 
 /// The journal, locked by [`Journal::lock`].
@@ -187,6 +619,12 @@ impl JournalWriter<'_> {
             .encode_record()
             .map_err(|err| anyhow!("can't encode journal record: {err}"))?;
         let inner = &mut *self.inner;
+        if inner.lost {
+            bail!(
+                "the capsule journal was lost by a failed compaction; open the store again to \
+                 commit"
+            );
+        }
         let base = inner.end;
         let written: Result<()> = (|| {
             inner.file.seek(SeekFrom::Start(base))?;
@@ -200,6 +638,16 @@ impl JournalWriter<'_> {
             return Err(err);
         }
         inner.end = base + bytes.len() as u64;
+        let per_drop = inner.capsule_record_len;
+        if let Some(dead) = inner.dead_estimate.as_mut() {
+            let drops = members(record)
+                .iter()
+                .filter(|r| matches!(r, JournalRecord::Drop(_)))
+                .count() as u64;
+            *dead = dead
+                .saturating_add(bytes.len() as u64)
+                .saturating_add(drops.saturating_mul(per_drop));
+        }
         Ok(JournalPosition {
             index_version: INDEX_VERSION,
             store_id: inner.header.store_id,
@@ -281,5 +729,436 @@ mod tests {
             assert_eq!(records, 1, "cut at {cut}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Journal compaction through the registry (#136): the compacted journal
+/// holds only the live state, an index rebuilt from it is the same index,
+/// and a crash at any step opens with no manual step.
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+    use crate::{CapsuleRegistry, JOURNAL_MIN_RECLAIM};
+    use common::format::{CapsuleManifest, ManifestEntry};
+    use common::{CapsuleId, Policy, SegmentId};
+    use std::fs;
+
+    /// Namespaces the workload uses. The last is never created.
+    const NAMESPACES: [&str; 3] = ["s3:a", "s3:b", "s3:never"];
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("space_journal_compaction")
+            .join(format!("{name}_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A manifest of one to four entries drawn from 40 segments. A segment's
+    /// content hash follows from its id, as dedup makes it in a real store,
+    /// so capsules share segments the way dedup hits do.
+    fn manifest(rng: &mut Rng) -> CapsuleManifest {
+        let entries: Vec<ManifestEntry> = (0..1 + rng.below(4))
+            .map(|_| {
+                let segment = 1 + rng.below(40) as u64;
+                ManifestEntry {
+                    segment_id: SegmentId(segment),
+                    plain_len: 100 + segment as u32,
+                    content_hash: [segment as u8; 32],
+                }
+            })
+            .collect();
+        CapsuleManifest {
+            capsule_id: CapsuleId::new(),
+            created_at: 1_700_000_000 + rng.below(1000) as u64,
+            size: entries.iter().map(|e| u64::from(e.plain_len)).sum(),
+            digest: [7u8; 32],
+            dedupe: rng.below(5) != 0,
+            requires_encryption: false,
+            deduped_bytes: 0,
+            policy: Policy::default(),
+            entries,
+        }
+    }
+
+    fn take(live: &mut Vec<CapsuleId>, id: CapsuleId) -> bool {
+        match live.iter().position(|c| *c == id) {
+            Some(i) => {
+                live.swap_remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Commit `ops` of everything the journal records: writes that share
+    /// segments, deletes, S3 puts, overwrites and deletes, namespaces
+    /// created more than once, names bound to dropped capsules, and unbinds
+    /// of names that aren't bound.
+    fn churn(registry: &CapsuleRegistry, rng: &mut Rng, ops: usize) {
+        let mut live: Vec<CapsuleId> = registry.capsules().into_iter().map(|c| c.id).collect();
+        let mut dropped: Vec<CapsuleId> = Vec::new();
+        for _ in 0..ops {
+            let ns = NAMESPACES[rng.below(2)].to_string();
+            let name = format!("k{}", rng.below(12));
+            let held = registry.name(&ns, &name).unwrap();
+            match rng.below(8) {
+                0 | 1 => {
+                    let m = manifest(rng);
+                    live.push(m.capsule_id);
+                    registry.create_capsule(m).unwrap();
+                }
+                2 if !live.is_empty() => {
+                    let id = live.swap_remove(rng.below(live.len()));
+                    registry.delete_capsule(id).unwrap();
+                    dropped.push(id);
+                }
+                3 => {
+                    let created_at = rng.below(100) as u64;
+                    registry
+                        .commit(vec![JournalRecord::Namespace { ns, created_at }])
+                        .unwrap();
+                }
+                4 => {
+                    // An S3 PUT: a new key, or an overwrite that drops the
+                    // capsule the key held.
+                    let m = manifest(rng);
+                    let id = m.capsule_id;
+                    let mut records = vec![
+                        JournalRecord::Capsule(Box::new(m)),
+                        JournalRecord::Bind {
+                            ns,
+                            name,
+                            capsule_id: id,
+                        },
+                    ];
+                    if let Some(old) = held.filter(|old| take(&mut live, *old)) {
+                        records.push(JournalRecord::Drop(old));
+                        dropped.push(old);
+                    }
+                    registry.commit(records).unwrap();
+                    live.push(id);
+                }
+                5 => {
+                    // An S3 DELETE.
+                    let mut records = vec![JournalRecord::Unbind { ns, name }];
+                    if let Some(old) = held.filter(|old| take(&mut live, *old)) {
+                        records.push(JournalRecord::Drop(old));
+                        dropped.push(old);
+                    }
+                    registry.commit(records).unwrap();
+                }
+                6 => {
+                    let pool = if rng.below(2) == 0 { &dropped } else { &live };
+                    if !pool.is_empty() {
+                        let capsule_id = pool[rng.below(pool.len())];
+                        registry
+                            .commit(vec![JournalRecord::Bind {
+                                ns,
+                                name,
+                                capsule_id,
+                            }])
+                            .unwrap();
+                    }
+                }
+                _ => {
+                    registry
+                        .commit(vec![JournalRecord::Unbind { ns, name }])
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    /// Everything the index holds that the journal rebuilds.
+    #[derive(Debug, PartialEq)]
+    struct Index {
+        capsules: Vec<String>,
+        refs: Vec<(u64, u32)>,
+        content: Vec<(String, u64)>,
+        namespaces: Vec<Option<u64>>,
+        names: Vec<Vec<(String, CapsuleId)>>,
+    }
+
+    fn index(registry: &CapsuleRegistry) -> Index {
+        let mut capsules: Vec<String> = registry
+            .capsules()
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect();
+        capsules.sort();
+        let mut refs: Vec<(u64, u32)> = registry
+            .segment_refs()
+            .unwrap()
+            .into_iter()
+            .map(|(segment, count)| (segment.0, count))
+            .collect();
+        refs.sort();
+        let mut content: Vec<(String, u64)> = registry
+            .content_entries()
+            .into_iter()
+            .map(|(hash, segment)| (hash.0, segment.0))
+            .collect();
+        content.sort();
+        Index {
+            capsules,
+            refs,
+            content,
+            namespaces: NAMESPACES
+                .iter()
+                .map(|ns| registry.namespace_created_at(ns).unwrap())
+                .collect(),
+            names: NAMESPACES
+                .iter()
+                .map(|ns| registry.list_names(ns, "", None, usize::MAX).unwrap())
+                .collect(),
+        }
+    }
+
+    fn always(usage: &JournalUsage) -> bool {
+        usage.reclaimable() > 0
+    }
+
+    #[test]
+    fn compaction_keeps_only_the_live_state() {
+        let dir = scratch("live");
+        let db = dir.join("space.db");
+        let path = Journal::path_for(&db);
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        let mut rng = Rng(0x5eed);
+        churn(&registry, &mut rng, 400);
+        let before = index(&registry);
+        assert!(!before.capsules.is_empty() && !before.names[0].is_empty());
+        let size = fs::metadata(&path).unwrap().len();
+
+        let done = registry
+            .compact_journal()
+            .unwrap()
+            .expect("nothing reclaimed");
+        assert_eq!((done.before, done.generation), (size, 1));
+        assert!(done.after < size, "{done:?}");
+        assert_eq!(fs::metadata(&path).unwrap().len(), done.after);
+        assert_eq!(index(&registry), before);
+
+        // One record for each live capsule, namespace and name.
+        let (mut capsules, mut namespaces, mut names) = (0, 0, 0);
+        registry
+            .journal
+            .replay(&registry.journal.start(), |record, _| {
+                match record {
+                    JournalRecord::Capsule(_) => capsules += 1,
+                    JournalRecord::Namespace { .. } => namespaces += 1,
+                    JournalRecord::Bind { .. } => names += 1,
+                    other => panic!("compaction kept {other:?}"),
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(capsules, before.capsules.len());
+        assert_eq!(
+            namespaces,
+            before.namespaces.iter().filter(|t| t.is_some()).count()
+        );
+        assert_eq!(names, before.names.iter().map(Vec::len).sum::<usize>());
+
+        // The index has recorded the new generation, so nothing replays.
+        let position = registry.store.journal_position().unwrap().unwrap();
+        assert_eq!((position.generation, position.offset), (1, done.after));
+        assert!(registry.compact_journal().unwrap().is_none());
+
+        // Commits land in the new generation.
+        churn(&registry, &mut rng, 50);
+        let after = index(&registry);
+        drop(registry);
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(index(&registry), after);
+        drop(registry);
+
+        // An index rebuilt from the compacted journal is the same index.
+        fs::remove_dir_all(&db).unwrap();
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(index(&registry), after);
+
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_crash_at_any_step_of_compaction_opens_with_the_same_state() {
+        for step in [Step::Written, Step::Synced, Step::Renamed] {
+            let dir = scratch("crash");
+            let db = dir.join("space.db");
+            let unfinished = compaction_path(&Journal::path_for(&db));
+            let registry = CapsuleRegistry::open(&db).unwrap();
+            churn(&registry, &mut Rng(7), 300);
+            let before = index(&registry);
+
+            let err = registry
+                .compact_journal_with(always, |at| at == step)
+                .unwrap_err();
+            assert!(err.to_string().contains("stopped"), "{step:?}: {err:#}");
+            let renamed = step == Step::Renamed;
+            assert_eq!(unfinished.exists(), !renamed, "{step:?}");
+            drop(registry);
+
+            // Opening removes an unfinished generation. One that was renamed
+            // into place doesn't match the index's position, so the index
+            // is rebuilt from it.
+            let registry =
+                CapsuleRegistry::open(&db).unwrap_or_else(|err| panic!("{step:?}: {err:#}"));
+            assert!(!unfinished.exists(), "{step:?}");
+            assert_eq!(
+                registry.journal.start().generation,
+                u64::from(renamed),
+                "{step:?}"
+            );
+            assert_eq!(index(&registry), before, "{step:?}");
+
+            churn(&registry, &mut Rng(8), 20);
+            assert!(registry.compact_journal().unwrap().is_some(), "{step:?}");
+            drop(registry);
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_torn_compaction_file_is_removed_on_open() {
+        let dir = scratch("torn");
+        let db = dir.join("space.db");
+        let unfinished = compaction_path(&Journal::path_for(&db));
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        churn(&registry, &mut Rng(9), 50);
+        let before = index(&registry);
+        drop(registry);
+
+        fs::write(&unfinished, b"SPCR, cut short").unwrap();
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert!(!unfinished.exists());
+        assert_eq!(index(&registry), before);
+
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_committed_while_compaction_runs_are_kept() {
+        let dir = scratch("concurrent");
+        let db = dir.join("space.db");
+        let path = Journal::path_for(&db);
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        churn(&registry, &mut Rng(11), 300);
+
+        let other = registry.clone();
+        let mut rng = Rng(12);
+        let done = registry
+            .compact_journal_with(always, |step| {
+                if step == Step::Written {
+                    churn(&other, &mut rng, 60);
+                }
+                false
+            })
+            .unwrap()
+            .expect("nothing reclaimed");
+        drop(other);
+        let expected = index(&registry);
+        assert_eq!(fs::metadata(&path).unwrap().len(), done.after);
+        let position = registry.store.journal_position().unwrap().unwrap();
+        assert_eq!((position.generation, position.offset), (1, done.after));
+        drop(registry);
+
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(index(&registry), expected);
+        drop(registry);
+        fs::remove_dir_all(&db).unwrap();
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(index(&registry), expected);
+
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scheduled_pass_compacts_once_a_quarter_of_the_journal_is_dead() {
+        let dir = scratch("threshold");
+        let db = dir.join("space.db");
+        let registry = CapsuleRegistry::open(&db).unwrap();
+
+        // A journal under 1 MiB isn't worth reading.
+        registry
+            .commit(vec![JournalRecord::Bind {
+                ns: "s3:b".into(),
+                name: "kept".into(),
+                capsule_id: CapsuleId::new(),
+            }])
+            .unwrap();
+        assert!(registry.compact_journal_if_worthwhile().unwrap().is_none());
+        assert_eq!(registry.journal.reclaim_estimate().1, None);
+
+        // A capsule whose manifest is over 1 MiB on its own. The first pass
+        // over 1 MiB measures the journal, and finds nothing dead.
+        let entries = vec![
+            ManifestEntry {
+                segment_id: SegmentId(1),
+                plain_len: 1,
+                content_hash: [0u8; 32],
+            };
+            24_000
+        ];
+        let big = CapsuleManifest {
+            size: entries.len() as u64,
+            entries,
+            dedupe: false,
+            ..manifest(&mut Rng(13))
+        };
+        let big_id = big.capsule_id;
+        registry.create_capsule(big).unwrap();
+        assert!(registry.compact_journal_if_worthwhile().unwrap().is_none());
+        assert_eq!(registry.journal.reclaim_estimate().1, Some(0));
+
+        // A DROP is a small record, but the estimate counts what it frees.
+        registry.delete_capsule(big_id).unwrap();
+        let done = registry
+            .compact_journal_if_worthwhile()
+            .unwrap()
+            .expect("not compacted");
+        assert!(done.reclaimed() >= JOURNAL_MIN_RECLAIM, "{done:?}");
+        assert!(registry.compact_journal_if_worthwhile().unwrap().is_none());
+        assert!(registry.name("s3:b", "kept").unwrap().is_some());
+
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_journal_compacted_to_nothing_keeps_its_store() {
+        let dir = scratch("empty");
+        let db = dir.join("space.db");
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        let m = manifest(&mut Rng(14));
+        let id = m.capsule_id;
+        registry.create_capsule(m).unwrap();
+        registry.delete_capsule(id).unwrap();
+
+        let done = registry
+            .compact_journal()
+            .unwrap()
+            .expect("nothing reclaimed");
+        assert_eq!(done.after, registry.journal.start().offset);
+        let err = registry.bind_store(Uuid::new_v4()).unwrap_err();
+        assert!(err.to_string().contains("different stores"), "{err:#}");
+
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
