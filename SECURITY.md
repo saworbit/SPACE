@@ -55,7 +55,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 
 ### Network exposure
 
-- `spacectl serve-s3` has no authentication. It listens on 127.0.0.1 unless started with `--bind`, and sends no CORS headers, so web pages on other origins can't call it. Anyone who can reach the port can read, write and delete objects.
+- `spacectl serve-s3` has no authentication. It listens on 127.0.0.1 and ::1 unless started with `--bind`, and warns at startup when it isn't on loopback, and sends no CORS headers, so web pages on other origins can't call it. Anyone who can reach the port can read, write and delete objects.
 - There's no TLS.
 
 ### Code practices

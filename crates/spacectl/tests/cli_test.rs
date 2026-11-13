@@ -616,3 +616,82 @@ fn policy_files_refuse_unknown_and_unsupported_settings() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// serve-s3 logs one line with the addresses it actually listens on, the
+/// store and its settings, and serves on every one of them: with
+/// `--port 0`, the port the OS picked, on 127.0.0.1 and on ::1 where the
+/// host has IPv6 (#158, #170).
+#[test]
+fn serve_s3_reports_and_serves_every_address_it_listens_on() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+
+    /// Stops the server however the test ends, so a failed assertion
+    /// doesn't leave it running.
+    struct Server(Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let dir = scratch_dir("serve_addrs");
+    let mut server = Server(spawn(
+        &dir,
+        &["serve-s3", "--port", "0"],
+        &[("RUST_LOG", Path::new("info"))],
+    ));
+    let stderr = server.0.stderr.take().unwrap();
+    let (lines, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut before = Vec::new();
+    let listening = loop {
+        match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(line) if line.contains(" listening ") => break line,
+            Ok(line) => before.push(line),
+            Err(err) => panic!("no listening line ({err}): {before:?}"),
+        }
+    };
+    let field = |name: &str| {
+        listening
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name} in {listening}"))
+            .to_string()
+    };
+    assert_eq!(field("encryption"), "off");
+    assert_eq!(field("reclaim"), "300s");
+    assert_eq!(field("scrub"), "light:86400s,deep:604800s");
+    assert!(field("segments").ends_with("space.nvram"), "{listening}");
+    assert!(
+        !before.iter().any(|line| line.contains('\u{1F680}')),
+        "{before:?}"
+    );
+
+    let addrs: Vec<SocketAddr> = field("addr")
+        .split(',')
+        .map(|a| a.parse().unwrap())
+        .collect();
+    assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+    assert_ne!(addrs[0].port(), 0);
+    for addr in &addrs {
+        assert_eq!(addr.port(), addrs[0].port());
+        let mut stream = TcpStream::connect_timeout(addr, Duration::from_secs(5)).unwrap();
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{addr}: {response}");
+    }
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
