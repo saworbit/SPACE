@@ -5,7 +5,7 @@ use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
-use protocol_s3::{ListQuery, S3Error, S3View};
+use protocol_s3::{ListQuery, Preconditions, S3Error, S3View};
 use std::path::{Path, PathBuf};
 
 fn scratch(name: &str) -> PathBuf {
@@ -200,5 +200,42 @@ async fn an_overwrite_cut_short_leaves_the_old_object() {
     assert_eq!(registry.capsules().len(), 1);
 
     drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two create-only PUTs of one key race. Both pass the check made before
+/// their bodies are stored, but the one made at the commit lets only one
+/// of them win (#171).
+#[tokio::test]
+async fn only_one_racing_create_only_put_wins() {
+    let dir = scratch("create_only");
+    let (_registry, view) = open(&dir);
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    // Each body arrives only once both PUTs are waiting for one.
+    let gated = |data: &'static [u8]| {
+        let barrier = barrier.clone();
+        stream::once(async move {
+            barrier.wait().await;
+            Ok::<_, std::io::Error>(Bytes::from_static(data))
+        })
+    };
+    let create_only = Preconditions {
+        if_none_match: Some("*".to_string()),
+        ..Preconditions::default()
+    };
+    let (first, second) = tokio::join!(
+        view.put_object_if("b", "k", gated(b"first"), &create_only),
+        view.put_object_if("b", "k", gated(b"second"), &create_only),
+    );
+    let lost = [&first, &second]
+        .iter()
+        .filter(|put| matches!(put, Err(S3Error::PreconditionFailed)))
+        .count();
+    assert_eq!(lost, 1, "{first:?} {second:?}");
+    let winner: &[u8] = if first.is_ok() { b"first" } else { b"second" };
+    assert_eq!(read(&view, "b", "k").await, winner);
+    assert_eq!(keys(&view, "b"), ["k"]);
+
+    drop(view);
     let _ = std::fs::remove_dir_all(&dir);
 }
