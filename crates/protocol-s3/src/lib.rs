@@ -346,16 +346,26 @@ impl S3View {
             None => None,
         };
         let (offset, len) = range.map_or((0, meta.size), |(first, last)| (first, last - first + 1));
-        let stream = handle
+        let mut stream = handle
             .read_range_stream(meta.capsule_id, offset, len)
             .await?;
         let lease = self.lease(meta.capsule_id);
         drop(handle);
 
-        let body = stream.map(move |chunk| {
-            let _reading = &lease;
-            chunk.map_err(std::io::Error::other)
-        });
+        // Decode the first segment before answering, so a read that fails
+        // from the start, such as an encrypted object on a server without
+        // its key (#155), is an error response rather than a 200 whose body
+        // breaks off. A later segment can still fail mid-body.
+        let first = match stream.next().await {
+            Some(Err(err)) => return Err(err.into()),
+            first => first,
+        };
+        let body = futures::stream::iter(first)
+            .chain(stream)
+            .map(move |chunk| {
+                let _reading = &lease;
+                chunk.map_err(std::io::Error::other)
+            });
         Ok(ObjectBody {
             meta,
             range,

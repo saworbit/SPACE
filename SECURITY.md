@@ -43,7 +43,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 - Per-version keys are derived from a 32-byte master key with HKDF-HMAC-SHA256 and zeroized on drop. See [ENCRYPTION_IMPLEMENTATION.md](docs/implementation/ENCRYPTION_IMPLEMENTATION.md).
 - `spacectl create` and S3 PUT encrypt by default when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` picks another policy.
 - The master key comes from `SPACE_MASTER_KEY` (64 hex characters). `SPACE_MASTER_KEY_FILE` isn't supported; the library API does have a `FileKeyProvider`.
-- A malformed `SPACE_MASTER_KEY` is a startup error. With no key set, writes whose policy asks for encryption fail.
+- A malformed `SPACE_MASTER_KEY` is a startup error. With no key set, writes whose policy asks for encryption fail, and so do reads of encrypted capsules: `spacectl read` exits non-zero and S3 GET returns `InternalError`, rather than serving the ciphertext ([#155](https://github.com/saworbit/SPACE/issues/155)).
 - Encryption is deterministic so that dedup keeps working. Identical segments produce identical ciphertext, which reveals that they're equal.
 - Key rotation isn't persisted across restarts ([#98](https://github.com/saworbit/SPACE/issues/98)).
 
