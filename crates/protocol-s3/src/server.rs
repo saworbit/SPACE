@@ -44,13 +44,13 @@ pub fn spawn_reclaim(s3_view: Arc<S3View>, every: Duration) -> JoinHandle<()> {
 
 /// The S3 routes. Keys may contain '/', so the key is a wildcard (#88).
 /// A key can't be empty, so `/{bucket}/` is the bucket, as in S3 (#179).
-/// Anything else, an unrouted path or method, is a `NotImplemented` S3
-/// error (#156).
+/// The health check is `/-/health`: a new bucket's name can't start with
+/// `-`, so it can't hide a bucket (#164). Anything else, an unrouted path or method,
+/// is a `NotImplemented` S3 error (#156).
 pub fn router(s3_view: Arc<S3View>) -> Router {
     let bucket = || get(list_objects).put(create_bucket).head(head_bucket);
     Router::new()
-        // Health check
-        .route("/health", get(health_check))
+        .route("/-/health", get(health_check))
         // Bucket Operations
         .route("/{bucket}", bucket())
         .route("/{bucket}/", bucket())
@@ -117,7 +117,7 @@ impl S3Server {
 
         if let Some(addr) = self.listeners.first().and_then(|l| l.local_addr().ok()) {
             debug!(
-                "try: curl -X PUT http://{addr}/demo-bucket/hello.txt --data-binary 'Hello SPACE!'"
+                "try: curl -X PUT http://{addr}/demo-bucket && curl -X PUT http://{addr}/demo-bucket/hello.txt --data-binary 'Hello SPACE!'"
             );
         }
         let servers = self

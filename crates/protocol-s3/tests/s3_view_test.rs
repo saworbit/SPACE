@@ -21,6 +21,7 @@ async fn test_s3_put_and_get() {
     let test_data = b"Hello from S3 view! This is capsule storage.".to_vec();
 
     // PUT object
+    s3.create_bucket("test-bucket").unwrap();
     let capsule_id = s3
         .put_object(
             "test-bucket",
@@ -81,6 +82,8 @@ async fn test_s3_multiple_objects() {
     let s3 = S3View::new(registry, nvram).expect("open S3 view");
 
     // Create multiple objects
+    s3.create_bucket("bucket1").unwrap();
+    s3.create_bucket("bucket2").unwrap();
     s3.put_object(
         "bucket1",
         "file1.txt",
@@ -146,6 +149,7 @@ async fn test_s3_large_object() {
 
     println!("Creating large object: {} bytes", large_data.len());
 
+    s3.create_bucket("test").unwrap();
     s3.put_object("test", "large.bin", stream_from_vec(large_data.clone()))
         .await
         .unwrap();

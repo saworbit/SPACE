@@ -21,12 +21,13 @@ async fn a_scheduled_scrub_finds_a_damaged_object() {
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let view = S3View::new(registry.clone(), log.clone()).unwrap();
+    view.create_bucket("bkt").unwrap();
 
     let damaged = view
-        .put_object("b", "damaged", body(vec![7u8; 50_000]))
+        .put_object("bkt", "damaged", body(vec![7u8; 50_000]))
         .await
         .unwrap();
-    view.put_object("b", "fine", body(vec![9u8; 50_000]))
+    view.put_object("bkt", "fine", body(vec![9u8; 50_000]))
         .await
         .unwrap();
 

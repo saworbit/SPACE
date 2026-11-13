@@ -27,6 +27,7 @@ impl Scratch {
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
         let view = S3View::new(registry.clone(), log.clone()).unwrap();
+        view.create_bucket("bkt").unwrap();
         Self {
             dir,
             registry,
@@ -90,7 +91,7 @@ async fn a_get_in_flight_keeps_reading_the_object_it_started_on() {
     let old = noise(9 * MIB, 1);
     let old_id = s
         .view
-        .put_object("b", "k", body(old.clone()))
+        .put_object("bkt", "k", body(old.clone()))
         .await
         .unwrap();
 
@@ -100,11 +101,11 @@ async fn a_get_in_flight_keeps_reading_the_object_it_started_on() {
         segments.iter().filter(|seg| held.contains(seg)).count()
     };
 
-    let mut object = s.view.get_object("b", "k").await.unwrap();
+    let mut object = s.view.get_object("bkt", "k").await.unwrap();
     let mut got = object.body.next().await.unwrap().unwrap().to_vec();
 
     s.view
-        .put_object("b", "k", body(b"new".to_vec()))
+        .put_object("bkt", "k", body(b"new".to_vec()))
         .await
         .unwrap();
     // The overwrite commits at once; the reader only pins the old segments.
@@ -126,7 +127,7 @@ async fn a_get_in_flight_keeps_reading_the_object_it_started_on() {
     })
     .await;
     assert_eq!(
-        collect(s.view.get_object("b", "k").await.unwrap()).await,
+        collect(s.view.get_object("bkt", "k").await.unwrap()).await,
         b"new"
     );
 }
@@ -136,19 +137,19 @@ async fn compaction_keeps_the_segments_a_get_is_reading() {
     let s = Scratch::new("compact");
     let old = noise(9 * MIB, 4);
     s.view
-        .put_object("b", "k", body(old.clone()))
+        .put_object("bkt", "k", body(old.clone()))
         .await
         .unwrap();
     s.view
-        .put_object("b", "gone", body(noise(5 * MIB, 5)))
+        .put_object("bkt", "gone", body(noise(5 * MIB, 5)))
         .await
         .unwrap();
-    s.view.delete_object("b", "gone").await.unwrap();
+    s.view.delete_object("bkt", "gone").await.unwrap();
 
-    let mut object = s.view.get_object("b", "k").await.unwrap();
+    let mut object = s.view.get_object("bkt", "k").await.unwrap();
     let mut got = object.body.next().await.unwrap().unwrap().to_vec();
     s.view
-        .put_object("b", "k", body(b"new".to_vec()))
+        .put_object("bkt", "k", body(b"new".to_vec()))
         .await
         .unwrap();
 
@@ -172,7 +173,7 @@ async fn compaction_keeps_the_segments_a_get_is_reading() {
     .await;
     assert!(s.log.compact().unwrap() >= 9 * MIB as u64);
     assert_eq!(
-        collect(s.view.get_object("b", "k").await.unwrap()).await,
+        collect(s.view.get_object("bkt", "k").await.unwrap()).await,
         b"new"
     );
 }
@@ -184,16 +185,15 @@ async fn a_failed_upload_stores_nothing() {
         Ok(Bytes::from(noise(5 * MIB, 2))),
         Err(std::io::Error::other("client went away")),
     ];
-    let result = s.view.put_object("b", "k", stream::iter(chunks)).await;
+    let result = s.view.put_object("bkt", "k", stream::iter(chunks)).await;
 
     assert!(matches!(result, Err(S3Error::Internal(_))));
     assert!(s.registry.capsules().is_empty());
     assert!(s.registry.content_entries().is_empty(), "segments leaked");
     assert!(s.log.list_segment_ids().is_empty(), "segments leaked");
-    // The bucket would have been created in the same batch as the object.
     assert!(matches!(
-        s.view.head_object("b", "k"),
-        Err(S3Error::NoSuchBucket(_))
+        s.view.head_object("bkt", "k"),
+        Err(S3Error::NoSuchKey(_))
     ));
 }
 
@@ -206,7 +206,7 @@ async fn a_dropped_upload_is_cleaned_up() {
     )))]);
     let stalled = first.chain(stream::pending());
 
-    let put = s.view.put_object("b", "k", stalled);
+    let put = s.view.put_object("bkt", "k", stalled);
     assert!(tokio::time::timeout(Duration::from_millis(500), put)
         .await
         .is_err());
@@ -224,7 +224,7 @@ async fn ranges_cross_segment_boundaries() {
     let s = Scratch::new("ranges");
     let data = noise(9 * MIB, 4);
     s.view
-        .put_object("b", "k", body(data.clone()))
+        .put_object("bkt", "k", body(data.clone()))
         .await
         .unwrap();
 
@@ -254,7 +254,7 @@ async fn ranges_cross_segment_boundaries() {
     ] {
         let object = s
             .view
-            .get_object_range("b", "k", Some(range))
+            .get_object_range("bkt", "k", Some(range))
             .await
             .unwrap();
         assert_eq!(object.range, Some((first, last)));
@@ -270,7 +270,7 @@ async fn ranges_cross_segment_boundaries() {
         last: None,
     };
     assert!(matches!(
-        s.view.get_object_range("b", "k", Some(past_end)).await,
+        s.view.get_object_range("bkt", "k", Some(past_end)).await,
         Err(S3Error::InvalidRange(size)) if size == data.len() as u64
     ));
 }

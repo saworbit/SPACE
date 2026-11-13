@@ -53,6 +53,7 @@ fn keys(view: &S3View, bucket: &str) -> Vec<String> {
 async fn keys_and_buckets_survive_a_restart() {
     let dir = scratch("restart");
     let (registry, view) = open(&dir);
+    view.create_bucket("demo").unwrap();
     view.put_object("demo", "hello.txt", body(b"Hello SPACE!"))
         .await
         .unwrap();
@@ -76,21 +77,22 @@ async fn keys_and_buckets_survive_a_restart() {
 async fn overwrite_and_delete_free_the_old_capsule() {
     let dir = scratch("free");
     let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
 
     let first = view
-        .put_object("b", "k", body(b"version one"))
+        .put_object("bkt", "k", body(b"version one"))
         .await
         .unwrap();
     let second = view
-        .put_object("b", "k", body(b"version two"))
+        .put_object("bkt", "k", body(b"version two"))
         .await
         .unwrap();
     assert!(registry.get_capsule(first).unwrap().is_none());
     assert_eq!(registry.capsules().len(), 1);
     assert_eq!(registry.content_entries().len(), 1);
-    assert_eq!(read(&view, "b", "k").await, b"version two");
+    assert_eq!(read(&view, "bkt", "k").await, b"version two");
 
-    view.delete_object("b", "k").await.unwrap();
+    view.delete_object("bkt", "k").await.unwrap();
     assert!(registry.get_capsule(second).unwrap().is_none());
     assert!(registry.capsules().is_empty());
     assert!(registry.content_entries().is_empty());
@@ -103,15 +105,16 @@ async fn overwrite_and_delete_free_the_old_capsule() {
 async fn overwrite_with_the_same_bytes_keeps_the_shared_segment() {
     let dir = scratch("same");
     let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
 
-    view.put_object("b", "k", body(b"same bytes"))
+    view.put_object("bkt", "k", body(b"same bytes"))
         .await
         .unwrap();
-    view.put_object("b", "k", body(b"same bytes"))
+    view.put_object("bkt", "k", body(b"same bytes"))
         .await
         .unwrap();
     assert_eq!(registry.capsules().len(), 1);
-    assert_eq!(read(&view, "b", "k").await, b"same bytes");
+    assert_eq!(read(&view, "bkt", "k").await, b"same bytes");
 
     drop((registry, view));
     let _ = std::fs::remove_dir_all(&dir);
@@ -121,18 +124,19 @@ async fn overwrite_with_the_same_bytes_keeps_the_shared_segment() {
 async fn a_key_whose_capsule_is_gone_reads_as_missing() {
     let dir = scratch("dangling");
     let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
 
-    let id = view.put_object("b", "k", body(b"data")).await.unwrap();
+    let id = view.put_object("bkt", "k", body(b"data")).await.unwrap();
     // What `spacectl delete` leaves behind for the S3 view.
     registry.delete_capsule(id).unwrap();
 
     assert!(matches!(
-        view.head_object("b", "k"),
+        view.head_object("bkt", "k"),
         Err(S3Error::NoSuchKey(_))
     ));
-    assert!(keys(&view, "b").is_empty());
-    view.put_object("b", "k", body(b"again")).await.unwrap();
-    assert_eq!(read(&view, "b", "k").await, b"again");
+    assert!(keys(&view, "bkt").is_empty());
+    view.put_object("bkt", "k", body(b"again")).await.unwrap();
+    assert_eq!(read(&view, "bkt", "k").await, b"again");
 
     drop((registry, view));
     let _ = std::fs::remove_dir_all(&dir);
@@ -142,6 +146,8 @@ async fn a_key_whose_capsule_is_gone_reads_as_missing() {
 async fn keys_and_buckets_survive_losing_the_index() {
     let dir = scratch("lost_index");
     let (registry, view) = open(&dir);
+    view.create_bucket("photos").unwrap();
+    view.create_bucket("docs").unwrap();
     view.put_object("photos", "a/1.jpg", body(b"one"))
         .await
         .unwrap();
@@ -178,10 +184,11 @@ async fn keys_and_buckets_survive_losing_the_index() {
 async fn an_overwrite_cut_short_leaves_the_old_object() {
     let dir = scratch("torn_overwrite");
     let (registry, view) = open(&dir);
-    let old = view.put_object("b", "k", body(b"old")).await.unwrap();
+    view.create_bucket("bkt").unwrap();
+    let old = view.put_object("bkt", "k", body(b"old")).await.unwrap();
     let journal = dir.join("space.journal");
     let before = std::fs::metadata(&journal).unwrap().len();
-    view.put_object("b", "k", body(b"new")).await.unwrap();
+    view.put_object("bkt", "k", body(b"new")).await.unwrap();
     drop((registry, view));
 
     // A crash before the overwrite's batch was whole on disk.
@@ -195,8 +202,8 @@ async fn an_overwrite_cut_short_leaves_the_old_object() {
         .unwrap();
 
     let (registry, view) = open(&dir);
-    assert_eq!(read(&view, "b", "k").await, b"old");
-    assert_eq!(view.head_object("b", "k").unwrap().capsule_id(), old);
+    assert_eq!(read(&view, "bkt", "k").await, b"old");
+    assert_eq!(view.head_object("bkt", "k").unwrap().capsule_id(), old);
     assert_eq!(registry.capsules().len(), 1);
 
     drop((registry, view));
@@ -210,6 +217,7 @@ async fn an_overwrite_cut_short_leaves_the_old_object() {
 async fn only_one_racing_create_only_put_wins() {
     let dir = scratch("create_only");
     let (_registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     // Each body arrives only once both PUTs are waiting for one.
     let gated = |data: &'static [u8]| {
@@ -224,8 +232,8 @@ async fn only_one_racing_create_only_put_wins() {
         ..Preconditions::default()
     };
     let (first, second) = tokio::join!(
-        view.put_object_if("b", "k", gated(b"first"), &create_only),
-        view.put_object_if("b", "k", gated(b"second"), &create_only),
+        view.put_object_if("bkt", "k", gated(b"first"), &create_only),
+        view.put_object_if("bkt", "k", gated(b"second"), &create_only),
     );
     let lost = [&first, &second]
         .iter()
@@ -233,8 +241,8 @@ async fn only_one_racing_create_only_put_wins() {
         .count();
     assert_eq!(lost, 1, "{first:?} {second:?}");
     let winner: &[u8] = if first.is_ok() { b"first" } else { b"second" };
-    assert_eq!(read(&view, "b", "k").await, winner);
-    assert_eq!(keys(&view, "b"), ["k"]);
+    assert_eq!(read(&view, "bkt", "k").await, winner);
+    assert_eq!(keys(&view, "bkt"), ["k"]);
 
     drop(view);
     let _ = std::fs::remove_dir_all(&dir);

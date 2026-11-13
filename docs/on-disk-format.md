@@ -252,7 +252,8 @@ The fingerprint names the key without revealing it, or any key derived from it: 
 | Dedup hit | Nothing | Nothing (it's an entry in the eventual `CAPSULE`) | — |
 | Delete (`spacectl delete`) | Nothing | `DROP` | The `DROP` record is durable |
 | First open with a master key | Nothing | `KEY` | The `KEY` record is durable |
-| S3 PUT, new key | New segments | `BATCH[CAPSULE, BIND]` (plus `NAMESPACE` the first time a bucket is used) | The `BATCH` |
+| S3 CreateBucket | Nothing | `NAMESPACE` | The `NAMESPACE` record is durable |
+| S3 PUT, new key | New segments | `BATCH[CAPSULE, BIND]` | The `BATCH` |
 | S3 PUT, overwrite | New segments | `BATCH[CAPSULE, BIND, DROP old]` | The `BATCH` |
 | S3 DELETE | Nothing | `BATCH[UNBIND, DROP]` | The `BATCH` |
 | Multipart complete (future) | Nothing | `BATCH[CAPSULE composed, BIND, DROP part…]` | The `BATCH` |
