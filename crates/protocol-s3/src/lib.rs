@@ -39,7 +39,11 @@ pub enum S3Error {
     NoSuchBucket(String),
     #[error("The specified key does not exist")]
     NoSuchKey(String),
-    #[error("The specified bucket is not valid")]
+    #[error(
+        "The specified bucket is not valid. A bucket name is 3 to 63 lowercase letters, \
+         digits, dots and hyphens. It starts and ends with a letter or digit, has no two \
+         dots in a row, and isn't an IP address."
+    )]
     InvalidBucketName(String),
     #[error("{0}")]
     InvalidArgument(String),
@@ -346,10 +350,14 @@ impl S3View {
         }
     }
 
-    /// Create a bucket. Creating one that exists is not an error.
+    /// Create a bucket. Creating one that exists is not an error. A new
+    /// bucket's name must follow S3's naming rules.
     pub fn create_bucket(&self, bucket: &str) -> S3Result<()> {
-        check_bucket_name(bucket)?;
-        self.registry.create_namespace(&namespace(bucket))?;
+        let ns = namespace(bucket);
+        if self.registry.namespace_created_at(&ns)?.is_none() {
+            check_new_bucket_name(bucket)?;
+            self.registry.create_namespace(&ns)?;
+        }
         Ok(())
     }
 
@@ -360,11 +368,12 @@ impl S3View {
         }
     }
 
-    /// PUT object. Creates the bucket if needed. Overwriting a key deletes
-    /// the capsule it pointed at before (#86). The capsule, its key, the
-    /// bucket if it's new, and the drop of the capsule replaced commit as
-    /// one batch (`docs/on-disk-format.md` §6), so a crash can't leave the
-    /// new capsule without its key or the old one alive without one.
+    /// PUT object. As in S3, the bucket must exist (#164), so a typo in its
+    /// name is `NoSuchBucket` rather than a new bucket. Overwriting a key
+    /// deletes the capsule it pointed at before (#86). The capsule, its key
+    /// and the drop of the capsule replaced commit as one batch
+    /// (`docs/on-disk-format.md` §6), so a crash can't leave the new
+    /// capsule without its key or the old one alive without one.
     pub async fn put_object<S, E>(
         &self,
         bucket: &str,
@@ -394,9 +403,11 @@ impl S3View {
         S: Stream<Item = Result<Bytes, E>> + Send,
         E: Into<anyhow::Error>,
     {
-        check_bucket_name(bucket)?;
-        check_key(key)?;
         let ns = namespace(bucket);
+        // Check the bucket before storing the body. There's no DeleteBucket
+        // (#159), so it's still there at the commit.
+        self.head_bucket(bucket)?;
+        check_key(key)?;
         // Fail early when the conditions already fail, rather than store the
         // body first. They're checked again at the commit.
         conditions.check_write(self.live_capsule_created(&ns, key)?)?;
@@ -409,13 +420,7 @@ impl S3View {
 
         // Dropping `staged` on an error below aborts the write.
         let mut handle = self.pipeline.lock().await;
-        let mut with = Vec::with_capacity(3);
-        if self.registry.namespace_created_at(&ns)?.is_none() {
-            with.push(JournalRecord::Namespace {
-                ns: ns.clone(),
-                created_at: now_secs(),
-            });
-        }
+        let mut with = Vec::with_capacity(2);
         let current = self.live_capsule_created(&ns, key)?;
         conditions.check_write(current)?;
         let previous = current.map(|(id, _)| id);
@@ -673,20 +678,27 @@ async fn release_segments(handle: &mut RegistryPipelineHandle, capsule: &Capsule
     }
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// A bucket name ends at the first '/' of a path, and a namespace can't
-/// hold NUL, so a name can contain neither.
-fn check_bucket_name(bucket: &str) -> S3Result<()> {
-    if bucket.is_empty()
-        || bucket.contains(['/', '\0'])
-        || bucket.len() > MAX_JOURNAL_STR - NAMESPACE_PREFIX.len()
-    {
+/// A new bucket's name follows S3's rules (#164): 3 to 63 lowercase
+/// letters, digits, dots and hyphens, starting and ending with a letter or
+/// digit, with no two dots in a row, and not an IP address. So it can't
+/// start with `-`, which keeps `/-/health` out of the bucket namespace.
+/// Buckets created before these rules keep working; only new ones are
+/// checked.
+fn check_new_bucket_name(bucket: &str) -> S3Result<()> {
+    let edge = |c: Option<u8>| c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let ip = bucket.split('.').count() == 4
+        && bucket
+            .split('.')
+            .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()));
+    let valid = (3..=63).contains(&bucket.len())
+        && bucket
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+        && edge(bucket.bytes().next())
+        && edge(bucket.bytes().last())
+        && !bucket.contains("..")
+        && !ip;
+    if !valid {
         return Err(S3Error::InvalidBucketName(bucket.to_string()));
     }
     Ok(())

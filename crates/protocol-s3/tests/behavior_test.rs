@@ -68,6 +68,7 @@ impl Drop for TestHarness {
 #[tokio::test]
 async fn scenario_empty_bucket_put_object_retrieved_unchanged() {
     let h = TestHarness::new("roundtrip");
+    h.s3.create_bucket("docs").unwrap();
     let data = b"The quick brown fox jumps over the lazy dog.".to_vec();
 
     // When: PUT
@@ -96,6 +97,7 @@ async fn scenario_empty_bucket_put_object_retrieved_unchanged() {
 #[tokio::test]
 async fn scenario_existing_object_delete_becomes_inaccessible() {
     let h = TestHarness::new("delete");
+    h.s3.create_bucket("tmp").unwrap();
 
     // Given: one object exists
     h.s3.put_object("tmp", "ephemeral.bin", stream_from_vec(b"data".to_vec()))
@@ -128,6 +130,8 @@ async fn scenario_existing_object_delete_becomes_inaccessible() {
 #[tokio::test]
 async fn scenario_multi_bucket_lists_are_isolated() {
     let h = TestHarness::new("isolation");
+    h.s3.create_bucket("alpha").unwrap();
+    h.s3.create_bucket("beta").unwrap();
 
     // Given: objects in two buckets
     h.s3.put_object("alpha", "a1.txt", stream_from_vec(b"A1".to_vec()))
@@ -162,6 +166,7 @@ async fn scenario_multi_bucket_lists_are_isolated() {
 #[tokio::test]
 async fn scenario_overwrite_replaces_content() {
     let h = TestHarness::new("overwrite");
+    h.s3.create_bucket("repo").unwrap();
     let original = b"version 1".to_vec();
     let updated = b"version 2".to_vec();
 

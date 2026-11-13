@@ -809,7 +809,7 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
         assert_eq!(addr.port(), addrs[0].port());
         let mut stream = TcpStream::connect_timeout(addr, Duration::from_secs(5)).unwrap();
         stream
-            .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .write_all(b"GET /-/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
             .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();

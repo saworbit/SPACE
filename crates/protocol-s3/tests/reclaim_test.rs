@@ -71,6 +71,7 @@ fn nvram_store(dir: &std::path::Path) -> (NvramLog, Arc<S3View>) {
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let view = S3View::new(registry, log.clone()).unwrap();
+    view.create_bucket("bkt").unwrap();
     (log, Arc::new(view))
 }
 
@@ -79,23 +80,23 @@ async fn a_pass_compacts_once_a_quarter_of_the_log_is_reclaimable() {
     let dir = scratch("threshold");
     let (log, view) = nvram_store(&dir);
     let keep = noise(2 * MIB, 1);
-    view.put_object("b", "keep", body(keep.clone()))
+    view.put_object("bkt", "keep", body(keep.clone()))
         .await
         .unwrap();
-    view.put_object("b", "small", body(noise(MIB, 2)))
+    view.put_object("bkt", "small", body(noise(MIB, 2)))
         .await
         .unwrap();
-    view.put_object("b", "big", body(noise(5 * MIB, 3)))
+    view.put_object("bkt", "big", body(noise(5 * MIB, 3)))
         .await
         .unwrap();
     assert_eq!(view.reclaim().await.unwrap(), ReclaimReport::default());
 
     // Less than a segment's worth to gain.
-    view.delete_object("b", "small").await.unwrap();
+    view.delete_object("bkt", "small").await.unwrap();
     assert_eq!(view.reclaim().await.unwrap(), ReclaimReport::default());
     assert_eq!(log.file_header().generation, 0);
 
-    view.delete_object("b", "big").await.unwrap();
+    view.delete_object("bkt", "big").await.unwrap();
     let before = log.size();
     let reclaimable = log.reclaimable_bytes();
     let report = view.reclaim().await.unwrap();
@@ -104,7 +105,7 @@ async fn a_pass_compacts_once_a_quarter_of_the_log_is_reclaimable() {
     assert_eq!(log.size(), before - reclaimable);
     assert_eq!(log.file_header().generation, 1);
     assert_eq!(
-        collect(view.get_object("b", "keep").await.unwrap()).await,
+        collect(view.get_object("bkt", "keep").await.unwrap()).await,
         keep
     );
 
@@ -120,18 +121,22 @@ async fn under_a_storage_root_a_pass_deletes_unreferenced_segments() {
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let view =
         S3View::new_modular(registry_pipeline_from_fs_backend(storage, registry.clone()).unwrap());
+    view.create_bucket("bkt").unwrap();
 
     let old = noise(5 * MIB, 4);
-    let old_id = view.put_object("b", "k", body(old.clone())).await.unwrap();
+    let old_id = view
+        .put_object("bkt", "k", body(old.clone()))
+        .await
+        .unwrap();
     let old_segments = registry.get_capsule(old_id).unwrap().unwrap().segments;
-    view.put_object("b", "other", body(noise(MIB, 5)))
+    view.put_object("bkt", "other", body(noise(MIB, 5)))
         .await
         .unwrap();
 
     // A GET holds the old object while an overwrite drops it.
-    let mut object = view.get_object("b", "k").await.unwrap();
+    let mut object = view.get_object("bkt", "k").await.unwrap();
     let mut got = object.body.next().await.unwrap().unwrap().to_vec();
-    view.put_object("b", "k", body(b"new".to_vec()))
+    view.put_object("bkt", "k", body(b"new".to_vec()))
         .await
         .unwrap();
 
@@ -185,7 +190,7 @@ async fn under_a_storage_root_a_pass_deletes_unreferenced_segments() {
     assert!(remaining.is_empty(), "segments {remaining:?} stayed");
     assert_eq!(view.reclaim().await.unwrap().collected, 0);
     assert_eq!(
-        collect(view.get_object("b", "k").await.unwrap()).await,
+        collect(view.get_object("bkt", "k").await.unwrap()).await,
         b"new"
     );
 
@@ -197,15 +202,15 @@ async fn under_a_storage_root_a_pass_deletes_unreferenced_segments() {
 async fn the_background_loop_reclaims_on_its_own() {
     let dir = scratch("loop");
     let (log, view) = nvram_store(&dir);
-    view.put_object("b", "keep", body(noise(MIB, 6)))
+    view.put_object("bkt", "keep", body(noise(MIB, 6)))
         .await
         .unwrap();
-    view.put_object("b", "gone", body(noise(5 * MIB, 7)))
+    view.put_object("bkt", "gone", body(noise(5 * MIB, 7)))
         .await
         .unwrap();
 
     let task = spawn_reclaim(Arc::clone(&view), Duration::from_millis(20));
-    view.delete_object("b", "gone").await.unwrap();
+    view.delete_object("bkt", "gone").await.unwrap();
     until("a pass to compact the log", || {
         log.file_header().generation == 1
     })
@@ -218,7 +223,7 @@ async fn the_background_loop_reclaims_on_its_own() {
 }
 
 fn keys(view: &S3View) -> Vec<String> {
-    view.list_objects("b", &ListQuery::default())
+    view.list_objects("bkt", &ListQuery::default())
         .unwrap()
         .objects
         .iter()
@@ -234,18 +239,19 @@ async fn compacting_the_journal_keeps_every_object() {
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
         let view = S3View::new(registry.clone(), log).unwrap();
+        view.create_bucket("bkt").unwrap();
         for (seed, key) in ["a", "b", "c", "dir/d"].into_iter().enumerate() {
-            view.put_object("b", key, body(noise(1000, seed as u64)))
+            view.put_object("bkt", key, body(noise(1000, seed as u64)))
                 .await
                 .unwrap();
         }
-        view.put_object("b", "a", body(noise(2000, 10)))
+        view.put_object("bkt", "a", body(noise(2000, 10)))
             .await
             .unwrap();
-        view.put_object("b", "a", body(latest.clone()))
+        view.put_object("bkt", "a", body(latest.clone()))
             .await
             .unwrap();
-        view.delete_object("b", "b").await.unwrap();
+        view.delete_object("bkt", "b").await.unwrap();
         let listed = keys(&view);
         assert_eq!(listed, ["a", "c", "dir/d"]);
 
@@ -265,15 +271,15 @@ async fn compacting_the_journal_keeps_every_object() {
     let (log, view) = nvram_store(&dir);
     assert_eq!(keys(&view), listed);
     assert_eq!(
-        collect(view.get_object("b", "a").await.unwrap()).await,
+        collect(view.get_object("bkt", "a").await.unwrap()).await,
         latest
     );
     assert_eq!(
-        collect(view.get_object("b", "dir/d").await.unwrap()).await,
+        collect(view.get_object("bkt", "dir/d").await.unwrap()).await,
         noise(1000, 3)
     );
     assert!(matches!(
-        view.get_object("b", "b").await,
+        view.get_object("bkt", "b").await,
         Err(S3Error::NoSuchKey(_))
     ));
 

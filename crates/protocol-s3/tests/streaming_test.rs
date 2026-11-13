@@ -17,6 +17,7 @@ async fn streaming_upload_round_trip() {
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
     let view = Arc::new(S3View::new(registry, nvram).expect("open S3 view"));
+    view.create_bucket("stream-bucket").unwrap();
 
     let app = server::router(view);
 

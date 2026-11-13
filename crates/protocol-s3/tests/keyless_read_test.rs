@@ -40,6 +40,8 @@ async fn encrypted_get_without_a_key_is_an_error() {
     std::env::set_var("SPACE_MASTER_KEY", "07".repeat(32));
     let keyed = router(&nvram, &registry);
     std::env::remove_var("SPACE_MASTER_KEY");
+    let create = Request::put("/sec").body(Body::empty()).unwrap();
+    assert_eq!(send(&keyed, create).await.0, StatusCode::OK);
     let put = Request::put("/sec/secret.txt")
         .body(Body::from(secret.clone()))
         .unwrap();

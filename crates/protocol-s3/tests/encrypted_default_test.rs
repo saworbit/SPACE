@@ -23,6 +23,7 @@ async fn put_encrypts_when_a_master_key_is_set() {
 
     let secret = b"TOP-SECRET-MARKER\n".to_vec();
     let body = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from(secret.clone()))]);
+    s3.create_bucket("bucket").unwrap();
     let id = s3.put_object("bucket", "secret.txt", body).await.unwrap();
 
     assert!(registry.lookup(id).unwrap().policy.encryption.is_enabled());

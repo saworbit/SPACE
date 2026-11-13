@@ -17,13 +17,20 @@ struct App {
 
 impl App {
     fn new(name: &str) -> Self {
+        Self::with_store(name, |_| {})
+    }
+
+    /// An app over a store `setup` has prepared, as an older build might
+    /// have left it.
+    fn with_store(name: &str, setup: impl FnOnce(&CapsuleRegistry)) -> Self {
         let dir = std::env::temp_dir().join(format!("s3_http_{name}_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let view = S3View::new(
-            CapsuleRegistry::open(dir.join("space.db")).unwrap(),
-            NvramLog::open(dir.join("space.nvram")).unwrap(),
-        )
-        .unwrap();
+        let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
+        let log = NvramLog::open(dir.join("space.nvram")).unwrap();
+        let view = S3View::new(registry.clone(), log).unwrap();
+        setup(&registry);
+        // Most tests use the bucket `demo`.
+        view.create_bucket("demo").unwrap();
         Self {
             router: server::router(Arc::new(view)),
             dir,
@@ -436,23 +443,28 @@ async fn deleting_a_missing_key_succeeds() {
 #[tokio::test]
 async fn a_trailing_slash_still_addresses_the_bucket() {
     let app = App::new("trailing_slash");
-    assert_eq!(app.send("HEAD", "/b2/", b"").await.0, StatusCode::NOT_FOUND);
-    let (status, headers, _) = app.send("PUT", "/b2/", b"").await;
+    assert_eq!(
+        app.send("HEAD", "/trail/", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, headers, _) = app.send("PUT", "/trail/", b"").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(headers[header::LOCATION], "/b2");
-    assert_eq!(app.send("HEAD", "/b2/", b"").await.0, StatusCode::OK);
+    assert_eq!(headers[header::LOCATION], "/trail");
+    assert_eq!(app.send("HEAD", "/trail/", b"").await.0, StatusCode::OK);
 
-    app.send("PUT", "/b2/dir/a.txt", b"x").await;
-    let (status, _, xml) = app.send("GET", "/b2/?list-type=2&delimiter=/", b"").await;
+    app.send("PUT", "/trail/dir/a.txt", b"x").await;
+    let (status, _, xml) = app
+        .send("GET", "/trail/?list-type=2&delimiter=/", b"")
+        .await;
     assert_eq!(status, StatusCode::OK, "{xml}");
     assert_eq!(tags(&xml, "Prefix"), ["", "dir/"]);
-    let (_, _, xml) = app.send("GET", "/b2/?location", b"").await;
+    let (_, _, xml) = app.send("GET", "/trail/?location", b"").await;
     assert!(xml.contains("<LocationConstraint"), "{xml}");
-    let (status, _, xml) = app.send("GET", "/b2/?versioning", b"").await;
+    let (status, _, xml) = app.send("GET", "/trail/?versioning", b"").await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{xml}");
 
     // Other methods on the bucket are still refused.
-    let (status, _, xml) = app.send("DELETE", "/b2/", b"").await;
+    let (status, _, xml) = app.send("DELETE", "/trail/", b"").await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(tags(&xml, "Code"), ["NotImplemented"]);
 }
@@ -463,16 +475,16 @@ async fn a_trailing_slash_still_addresses_the_bucket() {
 #[tokio::test]
 async fn keys_a_listing_cant_carry_are_refused() {
     let app = App::new("control_chars");
+    app.send("PUT", "/ctl", b"").await;
     for bad in ["bad%01key", "bad%00key", "bad%1Fkey", "bad%EF%BF%BEkey"] {
-        let (status, _, xml) = app.send("PUT", &format!("/c/{bad}"), b"x").await;
+        let (status, _, xml) = app.send("PUT", &format!("/ctl/{bad}"), b"x").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {xml}");
         assert_eq!(tags(&xml, "Code"), ["InvalidArgument"], "{bad}");
     }
-    assert_eq!(app.send("HEAD", "/c", b"").await.0, StatusCode::NOT_FOUND);
 
-    let (status, _, _) = app.send("PUT", "/c/tab%09nl%0Acr%0Dkey", b"x").await;
+    let (status, _, _) = app.send("PUT", "/ctl/tab%09nl%0Acr%0Dkey", b"x").await;
     assert_eq!(status, StatusCode::OK);
-    let (_, _, xml) = app.send("GET", "/c?list-type=2", b"").await;
+    let (_, _, xml) = app.send("GET", "/ctl?list-type=2", b"").await;
     assert_eq!(tags(&xml, "Key"), ["tab\tnl\ncr&#13;key"]);
 }
 
@@ -625,4 +637,114 @@ async fn conditional_requests_check_the_etag_and_dates() {
     assert_eq!(tags(&xml, "Key"), ["a.txt", "new.txt"]);
     let (_, _, body) = app.send("GET", "/demo/a.txt", b"").await;
     assert_eq!(body, "two");
+}
+
+/// As in S3, a PUT into a bucket that isn't there is `NoSuchBucket`, so a
+/// typo in a bucket name can't create a bucket (#164). The body isn't
+/// stored.
+#[tokio::test]
+async fn a_put_into_a_missing_bucket_creates_nothing() {
+    let app = App::new("missing_bucket");
+    let log = app.dir.join("space.nvram");
+    let before = std::fs::metadata(&log).map_or(0, |m| m.len());
+
+    let (status, _, xml) = app.send("PUT", "/dmeo/a.txt", b"typo").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{xml}");
+    assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
+    assert_eq!(tags(&xml, "Resource"), ["dmeo"]);
+    assert_eq!(
+        app.send("HEAD", "/dmeo", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(std::fs::metadata(&log).map_or(0, |m| m.len()), before);
+
+    let (status, _, _) = app.send("PUT", "/demo/a.txt", b"fine").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A new bucket's name follows S3's rules (#164).
+#[tokio::test]
+async fn bucket_names_follow_s3_rules() {
+    let app = App::new("bucket_names");
+    let long = "a".repeat(64);
+    for bad in [
+        "UPPER",
+        "with%20space",
+        "under_score",
+        "%F0%9F%9A%80",
+        "a..b",
+        "-lead",
+        "trail-",
+        ".dot",
+        "dot.",
+        "-",
+        "x",
+        "ab",
+        &long,
+        "192.168.5.4",
+    ] {
+        let (status, _, xml) = app.send("PUT", &format!("/{bad}"), b"").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {xml}");
+        assert_eq!(tags(&xml, "Code"), ["InvalidBucketName"], "{bad}");
+        assert!(xml.contains("3 to 63 lowercase letters"), "{xml}");
+        let (status, _, _) = app.send("HEAD", &format!("/{bad}"), b"").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{bad}");
+    }
+    let longest = "a".repeat(63);
+    for good in [
+        "abc",
+        "a.b-c",
+        "0-9",
+        "1.2.3",
+        "1.2.3.4x",
+        "my--bucket",
+        &longest,
+    ] {
+        let (status, _, xml) = app.send("PUT", &format!("/{good}"), b"").await;
+        assert_eq!(status, StatusCode::OK, "{good}: {xml}");
+        assert_eq!(
+            app.send("HEAD", &format!("/{good}"), b"").await.0,
+            StatusCode::OK
+        );
+    }
+}
+
+/// A store an older build wrote may hold buckets these rules refuse. They
+/// keep working, and creating one again is still not an error.
+#[tokio::test]
+async fn buckets_named_before_the_rules_keep_working() {
+    let app = App::with_store("old_names", |registry| {
+        // The namespace the S3 view keeps a bucket's keys in.
+        registry.create_namespace("s3:Old_Bucket").unwrap();
+    });
+    assert_eq!(app.send("HEAD", "/Old_Bucket", b"").await.0, StatusCode::OK);
+    assert_eq!(app.send("PUT", "/Old_Bucket", b"").await.0, StatusCode::OK);
+    assert_eq!(
+        app.send("PUT", "/Old_Bucket/a.txt", b"kept").await.0,
+        StatusCode::OK
+    );
+    let (_, _, body) = app.send("GET", "/Old_Bucket/a.txt", b"").await;
+    assert_eq!(body, "kept");
+    let (_, _, xml) = app.send("GET", "/Old_Bucket?list-type=2", b"").await;
+    assert_eq!(tags(&xml, "Key"), ["a.txt"]);
+    let (status, _, _) = app.send("DELETE", "/Old_Bucket/a.txt", b"").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+/// The health check is at `/-/health`, where no bucket can be, so a bucket
+/// named `health` lists like any other (#164).
+#[tokio::test]
+async fn the_health_check_hides_no_bucket() {
+    let app = App::new("health");
+    let (status, _, body) = app.send("GET", "/-/health", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("healthy"), "{body}");
+
+    assert_eq!(app.send("PUT", "/health", b"").await.0, StatusCode::OK);
+    app.send("PUT", "/health/a.txt", b"x").await;
+    for uri in ["/health", "/health?list-type=2"] {
+        let (status, _, xml) = app.send("GET", uri, b"").await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(tags(&xml, "Key"), ["a.txt"], "{uri}: {xml}");
+    }
 }

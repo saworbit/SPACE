@@ -49,7 +49,10 @@ It also scrubs the store, reading at most 64 MiB/s (`--scrub-rate`): each segmen
 
 ## 2. PUT an object
 
+Create a bucket, then PUT an object into it:
+
 ```bash
+curl -X PUT http://localhost:8080/demo-bucket
 curl -i -X PUT http://localhost:8080/demo-bucket/hello.txt \
   -d "Hello from SPACE! This is stored as a capsule."
 ```
@@ -95,7 +98,7 @@ curl http://localhost:8080/demo-bucket
 <?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>demo-bucket</Name><Prefix></Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated><Marker></Marker><Contents><Key>hello.txt</Key><LastModified>2026-10-28T19:17:00.000Z</LastModified><ETag>&quot;f1eec31a-8966-4ca1-9538-187d6529383b&quot;</ETag><Size>46</Size><StorageClass>STANDARD</StorageClass></Contents></ListBucketResult>
 ```
 
-This is S3's `ListBucketResult`. Add `?list-type=2` for ListObjectsV2. `prefix`, `delimiter`, `max-keys` and paging work. Keys may contain `/`. A PUT creates its bucket if needed, and `curl -X PUT http://localhost:8080/new-bucket` creates an empty one.
+This is S3's `ListBucketResult`. Add `?list-type=2` for ListObjectsV2. `prefix`, `delimiter`, `max-keys` and paging work. Keys may contain `/`. As in S3, a PUT into a bucket that doesn't exist fails with `NoSuchBucket`, and a new bucket's name is 3 to 63 lowercase letters, digits, dots and hyphens.
 
 ## 5. Round-trip a binary file
 
@@ -130,6 +133,7 @@ from botocore.config import Config
 s3 = boto3.client("s3", endpoint_url="http://localhost:8080",
                   aws_access_key_id="x", aws_secret_access_key="x", region_name="us-east-1",
                   config=Config(s3={"addressing_style": "path"}))
+s3.create_bucket(Bucket="demo-bucket")
 s3.put_object(Bucket="demo-bucket", Key="k.txt", Body=b"hi")
 print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ```
