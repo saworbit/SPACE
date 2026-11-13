@@ -46,6 +46,9 @@ pub enum S3Error {
     /// Carries the object size for the `Content-Range` header.
     #[error("The requested range is not satisfiable")]
     InvalidRange(u64),
+    /// An S3 operation, or an option of one, that the server doesn't do.
+    #[error("{0}")]
+    NotImplemented(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }

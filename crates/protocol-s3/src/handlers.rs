@@ -2,7 +2,7 @@ use anyhow::Error;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     Json,
 };
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tracing::{error, info};
 
-use crate::{ByteRange, ListPage, ListQuery, ObjectMapping, S3Error, S3View};
+use crate::{ByteRange, ListPage, ListQuery, ObjectMapping, S3Error, S3Result, S3View};
 
 pub type AppState = Arc<S3View>;
 
@@ -36,6 +36,7 @@ impl IntoResponse for S3Error {
             ),
             S3Error::InvalidArgument(_) => (StatusCode::BAD_REQUEST, "InvalidArgument", ""),
             S3Error::InvalidRange(_) => (StatusCode::RANGE_NOT_SATISFIABLE, "InvalidRange", ""),
+            S3Error::NotImplemented(_) => (StatusCode::NOT_IMPLEMENTED, "NotImplemented", ""),
             S3Error::Internal(err) => {
                 error!("request failed: {err:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "InternalError", "")
@@ -59,13 +60,114 @@ impl IntoResponse for S3Error {
     }
 }
 
+/// Query parameters any request may carry, which the server ignores:
+/// presigned-URL authentication, SigV4 and SigV2. Credentials aren't
+/// checked.
+const AUTH_PARAMS: &[&str] = &[
+    "X-Amz-Algorithm",
+    "X-Amz-Credential",
+    "X-Amz-Date",
+    "X-Amz-Expires",
+    "X-Amz-SignedHeaders",
+    "X-Amz-Signature",
+    "X-Amz-Security-Token",
+    "AWSAccessKeyId",
+    "Signature",
+    "Expires",
+];
+
+/// The ListObjects and ListObjectsV2 parameters `list_objects` reads, and
+/// `fetch-owner`, which asks for owners there are none of.
+const LIST_PARAMS: &[&str] = &[
+    "list-type",
+    "prefix",
+    "delimiter",
+    "max-keys",
+    "continuation-token",
+    "start-after",
+    "marker",
+    "encoding-type",
+    "fetch-owner",
+];
+
+/// A request's query parameters, decoded, in order.
+type RawQuery = Query<Vec<(String, String)>>;
+
+/// Refuse a request whose query asks for something its handler doesn't do
+/// (#156). S3 picks the operation from the query as well as the method:
+/// `PUT ?tagging` is PutObjectTagging, and run as a PutObject it would
+/// replace the object with the tagging XML. So every parameter must be one
+/// the handler reads (`allowed`) or authentication, and the SDKs' `x-id`
+/// operation tag must name one of `operations`.
+fn check_query(params: &[(String, String)], allowed: &[&str], operations: &[&str]) -> S3Result<()> {
+    for (name, value) in params {
+        if name == "x-id" {
+            if operations.contains(&value.as_str()) {
+                continue;
+            }
+            return Err(S3Error::NotImplemented(format!(
+                "{value} is not implemented"
+            )));
+        }
+        if !allowed.contains(&name.as_str())
+            && !AUTH_PARAMS.iter().any(|p| p.eq_ignore_ascii_case(name))
+        {
+            return Err(S3Error::NotImplemented(format!(
+                "the '{name}' query parameter is not implemented"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a PUT whose headers make it something other than a plain
+/// PutObject (#156): CopyObject, which would otherwise store the empty body
+/// as the copy, and an `aws-chunked` body, which would be stored with its
+/// chunk framing.
+fn check_put_headers(headers: &HeaderMap) -> S3Result<()> {
+    if headers.contains_key("x-amz-copy-source") {
+        return Err(S3Error::NotImplemented(
+            "CopyObject is not implemented".to_string(),
+        ));
+    }
+    let header_has = |name: &str, needle: &str| {
+        headers
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|v| v.to_ascii_lowercase().contains(needle))
+    };
+    if header_has("x-amz-content-sha256", "streaming-")
+        || header_has(header::CONTENT_ENCODING.as_str(), "aws-chunked")
+    {
+        return Err(S3Error::NotImplemented(
+            "aws-chunked uploads are not implemented; send the body unencoded".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Requests no route serves, such as ListBuckets (`GET /`), DeleteBucket,
+/// DeleteObjects and multipart uploads, get an S3 error a client can read
+/// instead of an empty 404 or 405 (#156).
+pub async fn not_implemented(method: Method, uri: Uri) -> Response {
+    S3Error::NotImplemented(format!("{method} {} is not implemented", uri.path())).into_response()
+}
+
 /// PUT /{bucket}/{key}
 pub async fn put_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): RawQuery,
+    request_headers: HeaderMap,
     body: Body,
 ) -> Response {
     info!("PUT (streaming) /{}/{}", bucket, key);
+    if let Err(e) =
+        check_query(&query, &[], &["PutObject"]).and_then(|()| check_put_headers(&request_headers))
+    {
+        return e.into_response();
+    }
 
     // Convert Axum Body into a standard futures::Stream
     let stream = body.into_data_stream().map_err(Error::from).into_stream();
@@ -88,9 +190,13 @@ pub async fn put_object(
 pub async fn get_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): RawQuery,
     request_headers: HeaderMap,
 ) -> Response {
     info!("GET /{}/{}", bucket, key);
+    if let Err(e) = check_query(&query, &[], &["GetObject"]) {
+        return e.into_response();
+    }
 
     let range = request_headers
         .get(header::RANGE)
@@ -126,8 +232,12 @@ pub async fn get_object(
 pub async fn head_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): RawQuery,
 ) -> Response {
     info!("HEAD /{}/{}", bucket, key);
+    if let Err(e) = check_query(&query, &[], &["HeadObject"]) {
+        return e.into_response();
+    }
 
     match s3.head_object(&bucket, &key) {
         Ok(mapping) => (StatusCode::OK, object_headers(&mapping)).into_response(),
@@ -139,8 +249,12 @@ pub async fn head_object(
 pub async fn delete_object(
     State(s3): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    Query(query): RawQuery,
 ) -> Response {
     info!("DELETE /{}/{}", bucket, key);
+    if let Err(e) = check_query(&query, &[], &["DeleteObject"]) {
+        return e.into_response();
+    }
 
     match s3.delete_object(&bucket, &key).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -149,8 +263,17 @@ pub async fn delete_object(
 }
 
 /// PUT /{bucket}
-pub async fn create_bucket(State(s3): State<AppState>, Path(bucket): Path<String>) -> Response {
+pub async fn create_bucket(
+    State(s3): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(query): RawQuery,
+) -> Response {
     info!("CREATE BUCKET /{}", bucket);
+    // `PUT /{bucket}?versioning` and the like configure a bucket; they
+    // mustn't create one.
+    if let Err(e) = check_query(&query, &[], &["CreateBucket"]) {
+        return e.into_response();
+    }
 
     match s3.create_bucket(&bucket) {
         Ok(()) => (StatusCode::OK, [(header::LOCATION, format!("/{bucket}"))]).into_response(),
@@ -159,7 +282,14 @@ pub async fn create_bucket(State(s3): State<AppState>, Path(bucket): Path<String
 }
 
 /// HEAD /{bucket}
-pub async fn head_bucket(State(s3): State<AppState>, Path(bucket): Path<String>) -> Response {
+pub async fn head_bucket(
+    State(s3): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(query): RawQuery,
+) -> Response {
+    if let Err(e) = check_query(&query, &[], &["HeadBucket"]) {
+        return e.into_response();
+    }
     match s3.head_bucket(&bucket) {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => e.into_response(),
@@ -181,13 +311,23 @@ pub struct ListParams {
 }
 
 /// GET /{bucket}: ListObjects (V1) or ListObjectsV2, as `ListBucketResult`
-/// XML (#89).
+/// XML (#89), or GetBucketLocation with `?location`.
 pub async fn list_objects(
     State(s3): State<AppState>,
     Path(bucket): Path<String>,
     Query(params): Query<ListParams>,
+    Query(query): RawQuery,
 ) -> Response {
+    if query.iter().any(|(name, _)| name == "location") {
+        return match check_query(&query, &["location"], &["GetBucketLocation"]) {
+            Ok(()) => bucket_location(&s3, &bucket),
+            Err(e) => e.into_response(),
+        };
+    }
     info!("LIST /{}", bucket);
+    if let Err(e) = check_query(&query, LIST_PARAMS, &["ListObjects", "ListObjectsV2"]) {
+        return e.into_response();
+    }
 
     let v2 = params.list_type.as_deref() == Some("2");
     let max_keys = match params.max_keys.as_deref().map(str::parse::<usize>) {
@@ -229,6 +369,21 @@ pub async fn list_objects(
             )
                 .into_response()
         }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// GetBucketLocation, which some clients, such as the MinIO SDK, call to
+/// pick a signing region. An empty constraint means us-east-1, the region
+/// they assume for a custom endpoint anyway.
+fn bucket_location(s3: &S3View, bucket: &str) -> Response {
+    match s3.head_bucket(bucket) {
+        Ok(()) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/xml")],
+            r#"<?xml version="1.0" encoding="UTF-8"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></LocationConstraint>"#,
+        )
+            .into_response(),
         Err(e) => e.into_response(),
     }
 }
