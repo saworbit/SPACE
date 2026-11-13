@@ -22,11 +22,18 @@ pub fn spawn_reclaim(s3_view: Arc<S3View>, every: Duration) -> JoinHandle<()> {
         loop {
             ticks.tick().await;
             match s3_view.reclaim().await {
-                Ok(report) if report.collected > 0 || report.compacted.is_some() => info!(
-                    collected = report.collected,
-                    compacted_bytes = report.compacted,
-                    "reclaimed space"
-                ),
+                Ok(report)
+                    if report.collected > 0
+                        || report.compacted.is_some()
+                        || report.journal_compacted.is_some() =>
+                {
+                    info!(
+                        collected = report.collected,
+                        compacted_bytes = report.compacted,
+                        journal_compacted_bytes = report.journal_compacted,
+                        "reclaimed space"
+                    )
+                }
                 Ok(_) => debug!("nothing worth reclaiming"),
                 Err(err) => warn!("reclaim pass failed: {err:#}"),
             }

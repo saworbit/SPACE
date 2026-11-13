@@ -890,6 +890,13 @@ impl JournalRecord {
         encode_head(self.kind(), JOURNAL_VERSION, 0, &self.encode_header()?, &[])
     }
 
+    /// The length of [`encode_record`](Self::encode_record)'s output,
+    /// without computing the checksums. A record inside a `BATCH` is
+    /// measured as a record of its own.
+    pub fn record_len(&self) -> Result<u64, FormatError> {
+        Ok((FRAME_LEN + self.encode_header()?.len()) as u64)
+    }
+
     /// Decode a journal record from a frame and header whose head checksum
     /// has been verified.
     pub fn decode(frame: &Frame, header: &[u8]) -> Result<Self, FormatError> {
@@ -1222,6 +1229,13 @@ mod tests {
 
         let nested = JournalRecord::Batch(vec![batch.clone()]);
         assert!(nested.encode_record().is_err());
+
+        for record in records.iter().chain([&batch]) {
+            assert_eq!(
+                record.record_len().unwrap(),
+                record.encode_record().unwrap().len() as u64
+            );
+        }
 
         // Sub-records carry no magic, so a scan for the next record after a
         // torn batch can't find one inside it (docs/on-disk-format.md §8.1).

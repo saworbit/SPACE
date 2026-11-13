@@ -164,7 +164,8 @@ fn gc_and_compact_reclaim_what_no_capsule_references() {
     );
     assert!(stdout.contains("run `spacectl compact`"), "{stdout}");
 
-    let before = std::fs::metadata(dir.join("space.nvram")).unwrap().len();
+    let size = |name: &str| std::fs::metadata(dir.join(name)).unwrap().len();
+    let (log_before, journal_before) = (size("space.nvram"), size("space.journal"));
     let out = spacectl(&dir, &["compact"]);
     assert!(
         out.status.success(),
@@ -172,32 +173,41 @@ fn gc_and_compact_reclaim_what_no_capsule_references() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
-    let reclaimed: u64 = stdout
-        .strip_prefix("Reclaimed ")
-        .and_then(|rest| rest.split(' ').next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("unexpected output: {stdout}"));
-    assert!(reclaimed > 200_000, "{stdout}");
-    assert!(stdout.contains("generation 1"), "{stdout}");
-    assert_eq!(
-        std::fs::metadata(dir.join("space.nvram")).unwrap().len(),
-        before - reclaimed
-    );
+    let reclaimed = |file: &str| -> u64 {
+        let line = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{file}: reclaimed ")))
+            .unwrap_or_else(|| panic!("no {file} line: {stdout}"));
+        assert!(line.ends_with(", now generation 1"), "{stdout}");
+        line.split(' ').next().unwrap().parse().unwrap()
+    };
+    // The deleted capsule's segment, and its CAPSULE and DROP records.
+    let (log_reclaimed, journal_reclaimed) = (reclaimed("space.nvram"), reclaimed("space.journal"));
+    assert!(log_reclaimed > 200_000, "{stdout}");
+    assert!(journal_reclaimed > 0, "{stdout}");
+    assert_eq!(size("space.nvram"), log_before - log_reclaimed);
+    assert_eq!(size("space.journal"), journal_before - journal_reclaimed);
 
     let read = spacectl(&dir, &["read", &kept_id]);
     assert!(read.status.success());
     assert!(read.stdout == kept, "kept capsule changed");
+    let list = spacectl(&dir, &["list"]);
+    let listed = String::from_utf8(list.stdout).unwrap();
+    assert!(
+        listed.contains(&kept_id) && !listed.contains(&gone_id),
+        "{listed}"
+    );
     let again = spacectl(&dir, &["compact"]);
     assert_eq!(
         String::from_utf8(again.stdout).unwrap(),
-        "Nothing to reclaim\n"
+        "space.nvram: nothing to reclaim\nspace.journal: nothing to reclaim\n"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn compact_has_nothing_to_do_under_a_storage_root() {
+fn compact_under_a_storage_root_compacts_only_the_journal() {
     let dir = scratch_dir("storage_root");
     let out = Command::new(env!("CARGO_BIN_EXE_spacectl"))
         .arg("compact")
@@ -206,9 +216,17 @@ fn compact_has_nothing_to_do_under_a_storage_root() {
         .env("SPACE_STORAGE_ROOT", dir.join("storage"))
         .output()
         .unwrap();
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("nothing to compact"), "{stderr}");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("need no compaction"), "{stdout}");
+    assert!(
+        stdout.ends_with("space.journal: nothing to reclaim\n"),
+        "{stdout}"
+    );
     assert!(!dir.join("space.nvram").exists());
 
     let _ = std::fs::remove_dir_all(&dir);

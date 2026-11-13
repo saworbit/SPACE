@@ -130,8 +130,9 @@ enum Commands {
     /// Remove segments no capsule references, such as those an interrupted
     /// write left behind. In space.nvram their bytes stay until `compact`.
     Gc,
-    /// Reclaim the bytes of segments no capsule references by writing a new
-    /// generation of space.nvram.
+    /// Reclaim space by writing new generations of space.nvram, without the
+    /// segments no capsule references, and of space.journal, with only the
+    /// live capsules, buckets and keys.
     Compact,
     /// Check every segment's integrity now, and exit non-zero if any fails.
     /// This checks each segment record's checksums, in space.nvram or in its
@@ -153,8 +154,9 @@ enum Commands {
         bind: IpAddr,
         /// Seconds between passes that reclaim space: compacting space.nvram
         /// once a quarter of it is reclaimable, or deleting unreferenced
-        /// segments under SPACE_STORAGE_ROOT. The first runs at startup. 0
-        /// turns them off.
+        /// segments under SPACE_STORAGE_ROOT, then compacting space.journal
+        /// once a quarter of it is dead. The first runs at startup. 0 turns
+        /// them off.
         #[arg(long, default_value_t = 300, value_name = "SECONDS")]
         reclaim_interval: u64,
         #[command(flatten)]
@@ -299,25 +301,31 @@ async fn main() -> Result<()> {
         }
         Commands::Compact => {
             let store = open_store(open_registry()?).await?;
-            let Some(log) = store.data_log() else {
-                bail!(
-                    "segments under SPACE_STORAGE_ROOT are files of their own, so there is \
-                     nothing to compact; `spacectl gc` deletes the unreferenced ones"
-                );
-            };
-            let before = log.size();
-            match log.compact()? {
-                0 => println!("Nothing to reclaim"),
-                reclaimed => {
-                    println!(
-                        "Reclaimed {} of {before}",
-                        plural(reclaimed, "byte", "bytes")
-                    );
-                    println!(
-                        "space.nvram is now generation {}",
-                        log.file_header().generation
-                    );
+            match store.data_log() {
+                Some(log) => {
+                    let before = log.size();
+                    match log.compact()? {
+                        0 => println!("space.nvram: nothing to reclaim"),
+                        reclaimed => println!(
+                            "space.nvram: reclaimed {} of {before}, now generation {}",
+                            plural(reclaimed, "byte", "bytes"),
+                            log.file_header().generation
+                        ),
+                    }
                 }
+                None => println!(
+                    "Segments under SPACE_STORAGE_ROOT are files of their own and need no \
+                     compaction; `spacectl gc` deletes the unreferenced ones"
+                ),
+            }
+            match store.registry().compact_journal()? {
+                None => println!("space.journal: nothing to reclaim"),
+                Some(done) => println!(
+                    "space.journal: reclaimed {} of {}, now generation {}",
+                    plural(done.reclaimed(), "byte", "bytes"),
+                    done.before,
+                    done.generation
+                ),
             }
         }
         Commands::List => {

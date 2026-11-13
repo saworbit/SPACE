@@ -304,6 +304,8 @@ The registry has two parts:
 
 Each journal record, or each whole `BATCH`, is applied to the index in one sled transaction that also records the new position. On open, records past that position are replayed; an index that doesn't match the journal, or a missing `space.db`, is rebuilt from it.
 
+**Journal compaction** (`CapsuleRegistry::compact_journal()`) stops the journal growing without bound under deletes and overwrites ([on-disk-format.md](on-disk-format.md) §9.2). It writes the live capsules, namespaces and names to `space.journal.compact`, the journal's next generation, while commits carry on. Then, under the journal lock, it copies the records committed meanwhile, renames the new file over the journal, and moves the index's position to the new generation. A crash before the rename leaves the old journal, and open deletes the unfinished file. A crash after it leaves the new generation, and open rebuilds the index from it. `serve-s3`'s reclaim pass compacts the journal once a quarter of it, and at least 1 MiB, is dead, and `spacectl compact` compacts it whenever anything in it is.
+
 Names are opaque strings to the registry. The S3 view keeps each bucket as the namespace `s3:<bucket>` and each key as a name in it.
 
 Segment metadata isn't in the registry: the descriptor is written once, in the segment's record in the NVRAM log, through `StorageBackend::begin_txn()…commit()`, and the log's in-memory ref counts are set from the index when a pipeline opens. See [§9.3](#93-metadata-commits) for the commit order.
@@ -494,8 +496,9 @@ Segments still referenced by other Capsules remain. `spacectl delete` leaves any
 
 - On the NVRAM log it compacts once a quarter of the log, and at least one default segment (4 MiB), is reclaimable, on a blocking thread and without the pipeline lock, so requests carry on.
 - Under `SPACE_STORAGE_ROOT` it garbage-collects, with the pipeline lock held.
+- On either, it then compacts the capsule journal once a quarter of it, and at least 1 MiB, is dead, also without the pipeline lock ([§4.3](#43-capsule-registry)).
 
-`spacectl gc` and `spacectl compact` run the two steps on demand, with the server stopped, since only one process can open a store.
+`spacectl gc` and `spacectl compact` run the steps on demand, with the server stopped, since only one process can open a store. `spacectl compact` compacts both `space.nvram` and `space.journal`.
 
 ### Race-freedom
 
@@ -809,7 +812,7 @@ Holds across restarts: ref counts aren't stored, and opening a pipeline sets the
 ```
 rebuild(journal) == index
 ```
-Deleting `space.db` and reopening gives the same capsules, reference counts and content index, and a stale index catches up by replaying the journal past its position. Tested by `losing_the_index_rebuilds_it_from_the_journal` and `records_the_index_missed_are_replayed_on_open` in [journal_test.rs](../crates/capsule-registry/tests/journal_test.rs).
+Deleting `space.db` and reopening gives the same capsules, reference counts and content index, and a stale index catches up by replaying the journal past its position. Tested by `losing_the_index_rebuilds_it_from_the_journal` and `records_the_index_missed_are_replayed_on_open` in [journal_test.rs](../crates/capsule-registry/tests/journal_test.rs). It holds after journal compaction too: `compaction_keeps_only_the_live_state` and `records_committed_while_compaction_runs_are_kept` in [journal.rs](../crates/capsule-registry/src/journal.rs) rebuild the index from a compacted journal, and compare its capsules, reference counts, content index, namespaces and names with the index before.
 
 ### Crash recovery
 
@@ -819,7 +822,7 @@ open() succeeds
 all committed Capsules remain readable
 no Capsule is partially visible
 ```
-Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). A record the crash cut short is truncated away on open; the nvram-sim tests cut the last record at every byte offset. It holds after a crash during compaction too: the nvram-sim tests stop a compaction at each step and reopen the log.
+Checked by killing `spacectl create` mid-write: this holds, but the interrupted write's segments stay in the log until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). A record the crash cut short is truncated away on open; the nvram-sim tests cut the last record at every byte offset. It holds after a crash during compaction too: the nvram-sim tests stop a data log compaction at each step and reopen the log, and `a_crash_at_any_step_of_compaction_opens_with_the_same_state` does the same for the journal.
 
 ### Segment metadata is truth
 

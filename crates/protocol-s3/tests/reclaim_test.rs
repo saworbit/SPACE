@@ -1,6 +1,7 @@
 //! Reclaim passes (#97): the data log is compacted once enough of it is
 //! reclaimable, unreferenced segments under a storage root are deleted, and
 //! `serve-s3` runs passes on its own. Segments a GET still reads are kept.
+//! Compacting the capsule journal (#136) keeps every bucket and object.
 
 use bytes::Bytes;
 use capsule_registry::modular_pipeline::{
@@ -11,7 +12,7 @@ use common::traits::{StorageBackend, StorageTransaction};
 use common::{Segment, SegmentId};
 use futures::{stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
-use protocol_s3::{server::spawn_reclaim, ObjectBody, S3View};
+use protocol_s3::{server::spawn_reclaim, ListQuery, ObjectBody, S3Error, S3View};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -211,6 +212,70 @@ async fn the_background_loop_reclaims_on_its_own() {
     .await;
     assert!(log.size() < 2 * MIB as u64);
     task.abort();
+
+    drop((log, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn keys(view: &S3View) -> Vec<String> {
+    view.list_objects("b", &ListQuery::default())
+        .unwrap()
+        .objects
+        .iter()
+        .map(|object| object.key().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn compacting_the_journal_keeps_every_object() {
+    let dir = scratch("journal");
+    let latest = noise(3000, 11);
+    let listed = {
+        let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
+        let log = NvramLog::open(dir.join("space.nvram")).unwrap();
+        let view = S3View::new(registry.clone(), log).unwrap();
+        for (seed, key) in ["a", "b", "c", "dir/d"].into_iter().enumerate() {
+            view.put_object("b", key, body(noise(1000, seed as u64)))
+                .await
+                .unwrap();
+        }
+        view.put_object("b", "a", body(noise(2000, 10)))
+            .await
+            .unwrap();
+        view.put_object("b", "a", body(latest.clone()))
+            .await
+            .unwrap();
+        view.delete_object("b", "b").await.unwrap();
+        let listed = keys(&view);
+        assert_eq!(listed, ["a", "c", "dir/d"]);
+
+        // Two overwritten capsules, one deleted, and their keys' records.
+        let done = registry
+            .compact_journal()
+            .unwrap()
+            .expect("nothing reclaimed");
+        assert_eq!(done.generation, 1);
+        assert!(done.reclaimed() > 0, "{done:?}");
+        assert_eq!(keys(&view), listed);
+        listed
+    };
+
+    // Rebuild the index from the compacted journal.
+    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    let (log, view) = nvram_store(&dir);
+    assert_eq!(keys(&view), listed);
+    assert_eq!(
+        collect(view.get_object("b", "a").await.unwrap()).await,
+        latest
+    );
+    assert_eq!(
+        collect(view.get_object("b", "dir/d").await.unwrap()).await,
+        noise(1000, 3)
+    );
+    assert!(matches!(
+        view.get_object("b", "b").await,
+        Err(S3Error::NoSuchKey(_))
+    ));
 
     drop((log, view));
     let _ = std::fs::remove_dir_all(&dir);

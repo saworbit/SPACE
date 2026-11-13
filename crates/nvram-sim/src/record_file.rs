@@ -65,6 +65,21 @@ pub fn sync_parent_dir(path: &Path) {
     let _ = path;
 }
 
+/// Copy the bytes `start..end` of `src` to the current position of `dst`, a
+/// buffer at a time. Compaction uses it to move records unchanged.
+pub fn copy_range(src: &mut File, dst: &mut File, start: u64, end: u64) -> Result<()> {
+    src.seek(SeekFrom::Start(start))?;
+    let want = end - start;
+    let copied = std::io::copy(&mut Read::by_ref(src).take(want), dst)?;
+    if copied != want {
+        bail!(
+            "the file ended at byte {} while copying bytes {start}..{end}",
+            start + copied
+        );
+    }
+    Ok(())
+}
+
 /// The outcome of reading a record's frame and header at some offset.
 enum Probe {
     Valid(Frame, Vec<u8>),

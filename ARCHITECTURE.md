@@ -27,7 +27,7 @@ The data log and the journal are the truth; `space.db` can be rebuilt from them.
 
 `serve-s3` runs two loops. `spacectl` runs each on demand, with the server stopped:
 
-- **Reclaim** (`--reclaim-interval`; `spacectl gc` and `spacectl compact`): compacts `space.nvram` into its next generation once enough of it is unreferenced, or deletes unreferenced segment files under `SPACE_STORAGE_ROOT`. See [capsule.md §7](docs/capsule.md#7-deletion-ref-counting-and-gc).
+- **Reclaim** (`--reclaim-interval`; `spacectl gc` and `spacectl compact`): compacts `space.nvram` into its next generation once enough of it is unreferenced, or deletes unreferenced segment files under `SPACE_STORAGE_ROOT`. Then it compacts `space.journal` once enough of it is dead: deleted and overwritten capsules, and removed S3 keys. See [capsule.md §7](docs/capsule.md#7-deletion-ref-counting-and-gc).
 - **Scrub** (`--scrub-interval` and `--deep-scrub-interval`; `spacectl scrub`): light scrub checks each record's checksums, and deep scrub checks MACs and content hashes. See [capsule.md §8](docs/capsule.md#8-scrub-continuous-integrity).
 
 ## Status

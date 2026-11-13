@@ -116,21 +116,6 @@ enum Step {
     Renamed,
 }
 
-/// Copy the bytes `start..end` of `src` to the current position of `dst`, a
-/// buffer at a time.
-fn copy_range(src: &mut File, dst: &mut File, start: u64, end: u64) -> Result<()> {
-    src.seek(SeekFrom::Start(start))?;
-    let want = end - start;
-    let copied = std::io::copy(&mut Read::by_ref(src).take(want), dst)?;
-    if copied != want {
-        bail!(
-            "the data log ended at byte {} while copying bytes {start}..{end}",
-            start + copied
-        );
-    }
-    Ok(())
-}
-
 impl NvramLog {
     /// Open the data log at `path`, creating it if it doesn't exist.
     ///
@@ -640,7 +625,12 @@ impl NvramLog {
             let mut src = File::open(&self.path)?;
             let mut moved = HashMap::with_capacity(live.len());
             for entry in &live {
-                copy_range(&mut src, &mut out, entry.record_offset, entry.record_end())?;
+                record_file::copy_range(
+                    &mut src,
+                    &mut out,
+                    entry.record_offset,
+                    entry.record_end(),
+                )?;
                 moved.insert(entry.segment.id, pos);
                 pos += entry.record_end() - entry.record_offset;
             }
@@ -666,7 +656,7 @@ impl NvramLog {
         let tail_base = pos;
         let caught_up = (|| -> Result<u64> {
             // Records appended since step 1 sit together at the end.
-            copy_range(&mut file, &mut out, snapshot_end, old_end)?;
+            record_file::copy_range(&mut file, &mut out, snapshot_end, old_end)?;
             let mut pos = tail_base + (old_end - snapshot_end);
             // A segment with no references can't gain one, since nothing
             // can find it to dedup against. Copy any that did anyway.
@@ -684,7 +674,12 @@ impl NvramLog {
                     segment = entry.segment.id.0,
                     "a segment gained references during compaction; copying it"
                 );
-                copy_range(&mut file, &mut out, entry.record_offset, entry.record_end())?;
+                record_file::copy_range(
+                    &mut file,
+                    &mut out,
+                    entry.record_offset,
+                    entry.record_end(),
+                )?;
                 moved.insert(entry.segment.id, pos);
                 pos += entry.record_end() - entry.record_offset;
             }
