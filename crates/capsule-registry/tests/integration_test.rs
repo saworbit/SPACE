@@ -98,11 +98,11 @@ async fn hybrid_kyber_with_dedup_is_rejected_at_pipeline_boundary() {
     let err = pipeline
         .write_capsule_with_policy(b"unused", &policy)
         .await
-        .expect_err("HybridKyber + dedupe must be rejected");
+        .expect_err("HybridKyber must be rejected");
     let msg = err.to_string();
     assert!(
-        msg.contains("HybridKyber") && msg.contains("dedupe"),
-        "error must mention HybridKyber and dedupe; got: {msg}"
+        msg.contains("HybridKyber") && msg.contains("not supported"),
+        "error must say HybridKyber isn't supported; got: {msg}"
     );
 
     cleanup_path(log_path.to_string_lossy().as_ref());

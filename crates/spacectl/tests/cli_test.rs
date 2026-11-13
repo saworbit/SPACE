@@ -386,3 +386,61 @@ fn reading_an_encrypted_capsule_needs_its_key() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A misspelled key in a policy file is an error, not a setting silently
+/// left at its default (#161), and so is a setting nothing implements
+/// (#162). Settings the file leaves out keep the default.
+#[test]
+fn policy_files_refuse_unknown_and_unsupported_settings() {
+    let dir = scratch_dir("policy_file");
+    std::fs::write(dir.join("a.txt"), b"policy file test").unwrap();
+    for (name, yaml, expected) in [
+        (
+            "typo.yaml",
+            "dedup: false\ncompresion: None\n",
+            "unknown field `dedup`",
+        ),
+        (
+            "kyber.yaml",
+            "crypto_profile: HybridKyber\n",
+            "unknown field `crypto_profile`",
+        ),
+        (
+            "layout.yaml",
+            "layout:\n  strategy: AdaptiveEntropy\n",
+            "a layout strategy other than Fixed is not supported",
+        ),
+    ] {
+        std::fs::write(dir.join(name), yaml).unwrap();
+        let out = spacectl(&dir, &["create", "-f", "a.txt", "--policy-file", name]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{name} was accepted");
+        assert!(stderr.contains(expected), "{name}: {stderr}");
+        assert!(
+            stderr.contains(&format!("invalid policy file {name}")),
+            "{stderr}"
+        );
+    }
+    let list = spacectl(&dir, &["list"]);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("(no capsules)"));
+
+    std::fs::write(
+        dir.join("ok.yaml"),
+        "compression: !Zstd { level: 3 }\ndedupe: false\nlayout:\n  strategy: !Fixed { segment_size: 4 }\n",
+    )
+    .unwrap();
+    let out = spacectl(&dir, &["create", "-f", "a.txt", "--policy-file", "ok.yaml"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let list = String::from_utf8_lossy(&spacectl(&dir, &["list"]).stdout).into_owned();
+    // 16 bytes in 4-byte segments.
+    assert!(
+        list.lines().any(|line| line.trim_end().ends_with(" 4")),
+        "{list}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

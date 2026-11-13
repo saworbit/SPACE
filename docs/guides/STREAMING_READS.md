@@ -68,4 +68,4 @@ cargo test -p capsule-registry --test range_read_test
 
 ## Not implemented: read-time transforms
 
-`Policy.transform` deserializes a list of WASM transform definitions, but there is no WASM runtime on this branch, so they are never applied.
+`Policy.transform` deserializes a list of WASM transform definitions, but there is no WASM runtime on this branch, so `Policy::validate` refuses a write whose policy names one ([#162](https://github.com/saworbit/SPACE/issues/162)).

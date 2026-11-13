@@ -232,9 +232,17 @@ Presets (`Policy::default()`, `text_optimized()`, `precompressed()`, `edge_optim
 On this branch only `compression`, `dedupe`, `encryption` and `layout` change what the write path does:
 
 - With `dedupe = false`, every segment is new, and its hash is not registered, so later writes can't attach to it.
-- `compact_interval_secs`, `erasure_profile`, `federation` and `transform` are stored, but nothing reads them.
-- `CryptoProfile::HybridKyber` only affects `Policy::validate`; there's no ML-KEM code.
-- `spacectl create` and S3 PUT use `Policy::default()`, with encryption turned on when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` takes a YAML policy instead.
+- `compact_interval_secs` and `erasure_profile` are stored, but nothing reads them.
+- `Policy::validate` refuses `CryptoProfile::HybridKyber` (there's no ML-KEM code), a non-empty `federation` or `transform`, and any layout strategy but `Fixed`, since nothing implements them ([#162](https://github.com/saworbit/SPACE/issues/162)). Every write runs it.
+- `spacectl create` and S3 PUT use `Policy::default()`, with encryption turned on when `SPACE_MASTER_KEY` is set. `spacectl create --policy-file` reads a YAML file that can set `compression`, `dedupe`, `encryption` and `layout`. Settings it leaves out keep that default, and any other key, including a misspelled one, is an error ([#161](https://github.com/saworbit/SPACE/issues/161)):
+
+  ```yaml
+  compression: !Zstd { level: 3 }   # or None, or !LZ4 { level: 1 }
+  dedupe: false
+  encryption: !XtsAes256 { key_version: null }   # or Disabled; needs SPACE_MASTER_KEY
+  layout:
+    strategy: !Fixed { segment_size: 1048576 }   # 1 byte to 16 MiB
+  ```
 
 ### 3.7 `Event`
 

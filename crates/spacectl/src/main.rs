@@ -5,7 +5,7 @@ use capsule_registry::CapsuleRegistry;
 use clap::{Parser, Subcommand};
 
 use common::scrub::{ScrubConfig, ScrubKind, ScrubResult};
-use common::{CapsuleId, Policy, SegmentId};
+use common::{CapsuleId, Policy, PolicyFile, SegmentId};
 use futures::StreamExt;
 
 use std::collections::{HashMap, HashSet};
@@ -109,7 +109,9 @@ enum Commands {
         /// Input file path
         #[arg(short, long)]
         file: String,
-        /// YAML policy file. Without one, the capsule is encrypted when
+        /// YAML policy file setting any of compression, dedupe, encryption
+        /// and layout (docs/capsule.md). Unknown keys are errors. Settings
+        /// it leaves out keep the default: the capsule is encrypted when
         /// SPACE_MASTER_KEY is set and stored unencrypted otherwise.
         #[arg(long)]
         policy_file: Option<PathBuf>,
@@ -230,9 +232,12 @@ fn describe_scrub_error(
     format!("segment {}: {what}{held_by}", segment.0)
 }
 
-fn load_policy_file(path: &PathBuf) -> Result<Policy> {
+/// A policy file's settings over `base`. Unknown keys and settings nothing
+/// implements are errors (#161, #162).
+fn load_policy_file(path: &PathBuf, base: Policy) -> Result<Policy> {
     let text = fs::read_to_string(path)?;
-    serde_norway::from_str(&text).map_err(|err| anyhow!(err))
+    let file: PolicyFile = serde_norway::from_str(&text).map_err(|err| anyhow!(err))?;
+    Ok(file.apply(base)?)
 }
 
 #[tokio::main]
@@ -252,7 +257,7 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("can't open {file}"))?;
             let store = open_store(open_registry()?).await?;
             let policy = match policy_file {
-                Some(path) => load_policy_file(&path)
+                Some(path) => load_policy_file(&path, store.default_policy())
                     .with_context(|| format!("invalid policy file {}", path.display()))?,
                 None => store.default_policy(),
             };
