@@ -265,3 +265,67 @@ fn scrub_names_the_damaged_segment_and_its_capsule() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn spacectl_in_root(dir: &Path, root: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_spacectl"))
+        .args(args)
+        .current_dir(dir)
+        .env_remove("SPACE_MASTER_KEY")
+        .env("SPACE_STORAGE_ROOT", root)
+        .output()
+        .unwrap()
+}
+
+fn segment_files(root: &Path) -> Vec<String> {
+    std::fs::read_dir(root.join("segments"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".seg"))
+        .collect()
+}
+
+#[test]
+fn create_read_and_delete_use_the_storage_root() {
+    let dir = scratch_dir("root_commands");
+    let root = dir.join("storage");
+    let data = noise(100_000, 9);
+    std::fs::write(dir.join("a.bin"), &data).unwrap();
+
+    let id = created_id(&spacectl_in_root(&dir, &root, &["create", "-f", "a.bin"]));
+    assert_eq!(segment_files(&root).len(), 1);
+
+    let read = spacectl_in_root(&dir, &root, &["read", &id]);
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    assert!(read.stdout == data, "read returned the wrong bytes");
+
+    let scrub = spacectl_in_root(&dir, &root, &["scrub"]);
+    assert!(
+        scrub.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scrub.stderr)
+    );
+
+    let delete = spacectl_in_root(&dir, &root, &["delete", &id]);
+    assert!(
+        delete.status.success(),
+        "{}",
+        String::from_utf8_lossy(&delete.stderr)
+    );
+    assert!(
+        segment_files(&root).is_empty(),
+        "delete left the segment file"
+    );
+    assert!(!spacectl_in_root(&dir, &root, &["read", &id])
+        .status
+        .success());
+    assert!(
+        !dir.join("space.nvram").exists(),
+        "something used space.nvram"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

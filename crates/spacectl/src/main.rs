@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle};
-use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
+use capsule_registry::CapsuleRegistry;
 
 use clap::{Parser, Subcommand};
 
@@ -8,16 +8,15 @@ use common::scrub::{ScrubConfig, ScrubKind, ScrubResult};
 use common::{CapsuleId, Policy, SegmentId};
 use futures::StreamExt;
 
-use nvram_sim::NvramLog;
-
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
+use tokio::sync::Mutex as TokioMutex;
 use tracing_subscriber::EnvFilter;
 
 const NVRAM_PATH: &str = "space.nvram";
@@ -56,6 +55,11 @@ fn init_tracing(default_level: &str) {
 #[derive(Parser)]
 #[command(name = "spacectl")]
 #[command(about = "SPACE storage control utility", long_about = None)]
+#[command(
+    after_help = "Every command uses the store in the current directory: space.db and \
+                  space.journal, with segments under SPACE_STORAGE_ROOT when that's set \
+                  and in space.nvram otherwise."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -79,14 +83,10 @@ fn open_registry() -> Result<CapsuleRegistry> {
     })
 }
 
-fn open_registry_and_nvram() -> Result<(CapsuleRegistry, NvramLog)> {
-    let registry = open_registry()?;
-    let nvram = NvramLog::open(NVRAM_PATH)?;
-    Ok((registry, nvram))
-}
-
 /// The store's pipeline, as `serve-s3` opens it: segments under
-/// `SPACE_STORAGE_ROOT` when that's set, in `space.nvram` otherwise.
+/// `SPACE_STORAGE_ROOT` when that's set, in `space.nvram` otherwise. Every
+/// command that touches segments opens it this way, so they all use the
+/// store the capsule journal is paired with.
 async fn open_store(registry: CapsuleRegistry) -> Result<RegistryPipelineHandle> {
     match std::env::var("SPACE_STORAGE_ROOT") {
         Ok(root) => {
@@ -248,23 +248,22 @@ async fn main() -> Result<()> {
             let input = tokio::fs::File::open(&file)
                 .await
                 .with_context(|| format!("can't open {file}"))?;
-            let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::open(registry, nvram)?;
+            let store = open_store(open_registry()?).await?;
             let policy = match policy_file {
                 Some(path) => load_policy_file(&path)
                     .with_context(|| format!("invalid policy file {}", path.display()))?,
-                None => pipeline.default_policy().await,
+                None => store.default_policy(),
             };
-            let (id, size) = pipeline.write_reader(input, &policy).await?;
+            let store = Arc::new(TokioMutex::new(store));
+            let (id, size) = modular_pipeline::write_from_reader(&store, input, &policy).await?;
             println!("Capsule created: {}", id.as_uuid());
             println!("Size: {size} bytes");
         }
         Commands::Read { capsule_id } => {
             let uuid = capsule_id.parse()?;
             let id = CapsuleId::from_uuid(uuid);
-            let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::open(registry, nvram)?;
-            let mut stream = pipeline.read_stream(id).await?;
+            let store = open_store(open_registry()?).await?;
+            let mut stream = store.read_capsule_stream(id).await?;
             let mut stdout = io::stdout().lock();
             while let Some(chunk) = stream.next().await {
                 stdout.write_all(&chunk?)?;
@@ -273,9 +272,8 @@ async fn main() -> Result<()> {
         }
         Commands::Delete { capsule_id } => {
             let id = CapsuleId::from_uuid(capsule_id.parse()?);
-            let (registry, nvram) = open_registry_and_nvram()?;
-            let pipeline = WritePipeline::open(registry, nvram)?;
-            pipeline.delete_capsule(id).await?;
+            let mut store = open_store(open_registry()?).await?;
+            store.delete_capsule(id).await?;
             println!("Capsule deleted: {}", id.as_uuid());
         }
         Commands::Gc => {

@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `spacectl create`, `read` and `delete` honour `SPACE_STORAGE_ROOT`, as `gc`, `compact`, `scrub` and `serve-s3` already did. They always used `space.nvram`, so capsules the CLI created weren't where `serve-s3` looked, and now that the journal is paired with its store, the next command over the storage root was refused.
 - Segment files under `SPACE_STORAGE_ROOT` are fsynced before they're renamed into place, and the directory after, so a crash can't leave an empty or partial segment that a committed capsule refers to. After losing `space.db`, the segment allocator restarts above the highest segment file instead of at 0, which could overwrite existing segments. A scrub reports a segment whose record header is damaged as corrupted rather than unreadable (#135).
 - `serve-s3` no longer deep-scrubs the whole store on every start. When each segment was last scrubbed is kept in `space.db`, so a restart scrubs only segments that are new or due, and the next cycle runs when the next segment falls due rather than a whole interval later. `spacectl scrub` records its results there too (#134).
 - `NOTICE` said SPACE was licensed under Apache-2.0; it now matches `LICENSE` (BUSL-1.1).

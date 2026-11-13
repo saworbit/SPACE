@@ -29,7 +29,7 @@ cargo build --release -p spacectl
 
 A store created before on-disk format 1 has a `space.nvram.segments` file as well. This version refuses to open it.
 
-Set `SPACE_STORAGE_ROOT` to store segments as files under a directory instead of the NVRAM log: one checksummed file per segment, plus a `store` file that pairs the directory with `./space.db`. A directory written by builds before on-disk format 1 is refused.
+Set `SPACE_STORAGE_ROOT` to store segments as files under a directory instead of the NVRAM log: one checksummed file per segment, plus a `store` file that pairs the directory with `./space.db`. A directory written by builds before on-disk format 1 is refused. Set it for every `spacectl` command run against the store, not just `serve-s3`: the journal is paired with one store, so a command run without it opens `space.nvram` and is refused.
 
 ```bash
 SPACE_STORAGE_ROOT=./space.storage ./target/release/spacectl serve-s3 --port 8080
