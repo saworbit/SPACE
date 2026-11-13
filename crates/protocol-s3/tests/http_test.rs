@@ -31,11 +31,21 @@ impl App {
     }
 
     async fn send(&self, method: &str, uri: &str, body: &[u8]) -> (StatusCode, HeaderMap, String) {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .body(Body::from(body.to_vec()))
-            .unwrap();
+        self.send_with(method, uri, &[], body).await
+    }
+
+    async fn send_with(
+        &self,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> (StatusCode, HeaderMap, String) {
+        let mut request = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request.body(Body::from(body.to_vec())).unwrap();
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();
@@ -295,4 +305,110 @@ async fn range_requests_get_partial_content() {
         assert_eq!((status, got.as_str()), (StatusCode::OK, "0123456789"));
         assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
     }
+}
+
+/// S3 picks the operation from the query and headers as well as the
+/// method. Operations the server doesn't do must be refused, not run as the
+/// plain PUT, GET or DELETE of the same path (#156).
+#[tokio::test]
+async fn unimplemented_operations_are_refused_not_misrun() {
+    let app = App::new("unimplemented");
+    app.send("PUT", "/demo/a.txt", b"original").await;
+    app.send("PUT", "/demo/src.txt", b"source").await;
+
+    let refused = |method: &'static str, uri: &'static str, headers, body: &'static str| {
+        let app = &app;
+        async move {
+            let (status, _, xml) = app.send_with(method, uri, headers, body.as_bytes()).await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}: {xml}");
+            assert_eq!(tags(&xml, "Code"), ["NotImplemented"], "{method} {uri}");
+        }
+    };
+    for (method, uri, body) in [
+        // Object subresources: tagging, ACLs, parts, response overrides.
+        ("PUT", "/demo/a.txt?tagging", "<Tagging><TagSet/></Tagging>"),
+        ("PUT", "/demo/a.txt?acl", "<AccessControlPolicy/>"),
+        ("DELETE", "/demo/a.txt?tagging", ""),
+        ("GET", "/demo/a.txt?tagging", ""),
+        ("GET", "/demo/a.txt?acl", ""),
+        ("GET", "/demo/a.txt?partNumber=1", ""),
+        ("GET", "/demo/a.txt?response-content-type=text/html", ""),
+        ("PUT", "/demo/a.txt?x-id=PutObjectTagging", "<Tagging/>"),
+        // Bucket configuration, which mustn't create the bucket either.
+        ("PUT", "/demo?versioning", "<VersioningConfiguration/>"),
+        ("PUT", "/other?versioning", "<VersioningConfiguration/>"),
+        ("GET", "/demo?versioning", ""),
+        // Operations with no route.
+        ("POST", "/demo?delete", "<Delete/>"),
+        ("POST", "/demo/big.bin?uploads", ""),
+        ("DELETE", "/demo", ""),
+        ("GET", "/", ""),
+    ] {
+        refused(method, uri, &[], body).await;
+    }
+    // CopyObject, and a body in aws-chunked framing.
+    refused(
+        "PUT",
+        "/demo/dst.txt",
+        &[("x-amz-copy-source", "/demo/src.txt")],
+        "",
+    )
+    .await;
+    refused(
+        "PUT",
+        "/demo/a.txt",
+        &[
+            ("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER"),
+            ("content-encoding", "aws-chunked"),
+        ],
+        "5\r\nhello\r\n0\r\n\r\n",
+    )
+    .await;
+
+    // None of it touched the store.
+    let (status, _, body) = app.send("GET", "/demo/a.txt", b"").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "original"));
+    let (status, _, _) = app.send("HEAD", "/demo/dst.txt", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = app.send("HEAD", "/other", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, _, xml) = app.send("GET", "/demo?list-type=2", b"").await;
+    assert_eq!(tags(&xml, "Key"), ["a.txt", "src.txt"]);
+}
+
+/// Presigned URLs and the SDKs' `x-id` tag don't change the operation, so
+/// they're accepted.
+#[tokio::test]
+async fn presigned_and_sdk_query_parameters_are_accepted() {
+    let app = App::new("presigned");
+    let sigv4 = "X-Amz-Algorithm=AWS4-HMAC-SHA256\
+                 &X-Amz-Credential=x%2F20261113%2Fus-east-1%2Fs3%2Faws4_request\
+                 &X-Amz-Date=20261113T000000Z&X-Amz-Expires=3600\
+                 &X-Amz-SignedHeaders=host&X-Amz-Signature=abc";
+
+    let uri = format!("/demo/a.txt?x-id=PutObject&{sigv4}");
+    assert_eq!(app.send("PUT", &uri, b"hi").await.0, StatusCode::OK);
+    let uri = format!("/demo/a.txt?x-id=GetObject&{sigv4}");
+    let (status, _, body) = app.send("GET", &uri, b"").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "hi"));
+    let uri = "/demo/a.txt?AWSAccessKeyId=x&Signature=y&Expires=1893456000";
+    let (status, _, body) = app.send("GET", uri, b"").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "hi"));
+    let (status, _, xml) = app
+        .send("GET", "/demo?list-type=2&fetch-owner=true", b"")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(tags(&xml, "Key"), ["a.txt"]);
+
+    // GetBucketLocation answers with the default region.
+    let (status, _, xml) = app.send("GET", "/demo?location", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(xml.contains("<LocationConstraint"), "{xml}");
+    assert!(!xml.contains("<ListBucketResult"), "{xml}");
+    let (status, _, xml) = app.send("GET", "/never?location", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
+
+    let uri = "/demo/a.txt?x-id=DeleteObject";
+    assert_eq!(app.send("DELETE", uri, b"").await.0, StatusCode::NO_CONTENT);
 }

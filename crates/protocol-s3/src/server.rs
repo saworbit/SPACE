@@ -42,6 +42,8 @@ pub fn spawn_reclaim(s3_view: Arc<S3View>, every: Duration) -> JoinHandle<()> {
 }
 
 /// The S3 routes. Keys may contain '/', so the key is a wildcard (#88).
+/// Anything else, an unrouted path or method, is a `NotImplemented` S3
+/// error (#156).
 pub fn router(s3_view: Arc<S3View>) -> Router {
     Router::new()
         // Health check
@@ -59,6 +61,8 @@ pub fn router(s3_view: Arc<S3View>) -> Router {
                 .head(head_object)
                 .delete(delete_object),
         )
+        .method_not_allowed_fallback(not_implemented)
+        .fallback(not_implemented)
         .with_state(s3_view)
         .layer(TraceLayer::new_for_http())
 }
