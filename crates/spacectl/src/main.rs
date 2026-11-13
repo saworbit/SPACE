@@ -261,7 +261,8 @@ enum Commands {
         /// YAML policy file setting any of compression, dedupe, encryption
         /// and layout (docs/capsule.md). Unknown keys are errors. Settings
         /// it leaves out keep the default: the capsule is encrypted when
-        /// SPACE_MASTER_KEY is set and stored unencrypted otherwise.
+        /// SPACE_MASTER_KEY is set. Without it, the capsule is stored
+        /// unencrypted, unless the store has a key, which refuses it.
         #[arg(long)]
         policy_file: Option<PathBuf>,
     },
@@ -442,6 +443,8 @@ fn log_startup(
     } else {
         "off"
     };
+    // Names the store's key, so a log shows which one a server ran with.
+    let key = store.store_key().map(|key| key.fingerprint_hex());
     let reclaim = match reclaim_interval {
         0 => "off".to_string(),
         secs => format!("{secs}s"),
@@ -459,6 +462,7 @@ fn log_startup(
         store = %absolute(dir),
         segments = %segments,
         encryption = %encryption,
+        key = key.as_deref().map(tracing::field::display),
         reclaim = %reclaim,
         scrub = %scrub,
         "listening"
@@ -696,6 +700,8 @@ async fn run(cli: Cli) -> Result<()> {
             let listeners = listen(bind, port).await?;
             let registry = open_registry(dir, Open::OrCreate)?;
             let store = open_store(dir, registry).await?;
+            // Without its key, an encrypted store would refuse every PUT.
+            store.check_writable()?;
             let addrs = listeners
                 .iter()
                 .map(TcpListener::local_addr)

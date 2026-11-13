@@ -1,7 +1,7 @@
 //! The capsule journal (`docs/on-disk-format.md` §5–§7): an append-only file
-//! of `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND` and `BATCH` records.
-//! It's the durable record of which capsules and names exist; sled is an
-//! index rebuilt from it.
+//! of `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `KEY` and `BATCH`
+//! records. It's the durable record of which capsules and names exist, and
+//! of an encrypted store's key; sled is an index rebuilt from it.
 //!
 //! Records are never removed in place. Compaction (§9.2,
 //! [`Journal::compact_with`]) writes the live state to the next generation
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 
 use anyhow::{anyhow, bail, Context, Result};
-use common::format::{FileHeader, FileKind, JournalRecord};
+use common::format::{FileHeader, FileKind, JournalRecord, StoreKey};
 use common::CapsuleId;
 use nvram_sim::record_file;
 use serde::{Deserialize, Serialize};
@@ -46,8 +46,9 @@ pub struct JournalPosition {
 pub struct JournalUsage {
     /// Bytes in the journal.
     pub size: u64,
-    /// Bytes the compacted journal would hold: its `FILE` record, then a
-    /// record for each live namespace, capsule and name.
+    /// Bytes the compacted journal would hold: its `FILE` record, the
+    /// store's `KEY` record, then a record for each live namespace, capsule
+    /// and name.
     pub live: u64,
 }
 
@@ -107,6 +108,8 @@ struct Inner {
     /// A compaction failed part way and the journal file couldn't be
     /// reopened. Appends are refused until the store is opened again.
     lost: bool,
+    /// The last `KEY` record's key: the store's.
+    key: Option<StoreKey>,
 }
 
 pub struct Journal {
@@ -145,6 +148,8 @@ struct Live {
     namespaces: BTreeMap<String, (u64, u64)>,
     /// (namespace, name) → (capsule, record length).
     names: BTreeMap<(String, String), (CapsuleId, u64)>,
+    /// The last `KEY` record's key, and its record length.
+    key: Option<(StoreKey, u64)>,
 }
 
 impl Live {
@@ -183,6 +188,7 @@ impl Live {
                 JournalRecord::Unbind { ns, name } => {
                     self.names.remove(&(ns.clone(), name.clone()));
                 }
+                JournalRecord::Key(key) => self.key = Some((*key, len()?)),
                 JournalRecord::Batch(_) => {
                     bail!("journal record at offset {pos}: a batch inside a batch")
                 }
@@ -198,6 +204,7 @@ impl Live {
     /// Bytes of the records compaction writes for this state.
     fn bytes(&self) -> u64 {
         self.capsule_bytes()
+            + self.key.map_or(0, |(_, len)| len)
             + self.namespaces.values().map(|(_, len)| len).sum::<u64>()
             + self.names.values().map(|(_, len)| len).sum::<u64>()
     }
@@ -212,8 +219,9 @@ fn put(out: &mut impl Write, written: &mut u64, record: &JournalRecord) -> Resul
     Ok(())
 }
 
-/// Write a record for each live namespace, capsule and name to `out`, after
-/// the `FILE` record that ends at `data_start`. Each capsule's `CAPSULE` is
+/// Write the store's `KEY` record, then a record for each live namespace,
+/// capsule and name to `out`, after the `FILE` record that ends at
+/// `data_start`. Each capsule's `CAPSULE` is
 /// read again from `src`, so capsules keep their journal order. Returns
 /// where the records end.
 fn write_live(
@@ -225,6 +233,10 @@ fn write_live(
 ) -> Result<u64> {
     let mut w = BufWriter::new(out);
     let mut written = data_start;
+    // Without it, the store would open without its key after compaction.
+    if let Some((key, _)) = live.key {
+        put(&mut w, &mut written, &JournalRecord::Key(key))?;
+    }
     for (ns, (created_at, _)) in &live.namespaces {
         let record = JournalRecord::Namespace {
             ns: ns.clone(),
@@ -281,10 +293,14 @@ impl Journal {
             );
             std::fs::remove_file(&unfinished)?;
         }
+        let mut key = None;
         let opened = record_file::open(path, FileKind::Journal, |pos, frame, header| {
-            JournalRecord::decode(frame, header)
-                .map(|_| ())
-                .map_err(|err| anyhow!("journal record at offset {pos}: {err}"))
+            let record = JournalRecord::decode(frame, header)
+                .map_err(|err| anyhow!("journal record at offset {pos}: {err}"))?;
+            if let JournalRecord::Key(found) = record {
+                key = Some(found);
+            }
+            Ok(())
         })?;
         if let Some(first) = opened.damage.first() {
             bail!(
@@ -304,6 +320,7 @@ impl Journal {
                 dead_estimate: None,
                 capsule_record_len: 0,
                 lost: false,
+                key,
             }),
             path: path.to_path_buf(),
             compacting: Mutex::new(()),
@@ -312,6 +329,12 @@ impl Journal {
 
     pub fn store_id(&self) -> Uuid {
         self.inner.lock().unwrap().header.store_id
+    }
+
+    /// The store's key, from the last `KEY` record. `None` for a store that
+    /// has never been opened with one.
+    pub fn store_key(&self) -> Option<StoreKey> {
+        self.inner.lock().unwrap().key
     }
 
     /// Position before the first record, as an index that has applied
@@ -421,11 +444,12 @@ impl Journal {
     /// measured usage makes it worth it. Returns `None` if not.
     ///
     /// 1. Note where the journal ends.
-    /// 2. Without the journal lock, read it to find the live capsules,
-    ///    namespaces and names, then write `<journal>.compact`: a `FILE`
-    ///    record for the next generation, a `NAMESPACE` record for each live
-    ///    namespace, the `CAPSULE` record of each live capsule in journal
-    ///    order, and a `BIND` record for each name. Commits carry on.
+    /// 2. Without the journal lock, read it to find the store's key and the
+    ///    live capsules, namespaces and names, then write
+    ///    `<journal>.compact`: a `FILE` record for the next generation, the
+    ///    last `KEY` record, a `NAMESPACE` record for each live namespace,
+    ///    the `CAPSULE` record of each live capsule in journal order, and a
+    ///    `BIND` record for each name. Commits carry on.
     /// 3. Under the journal lock, copy the records committed since step 1
     ///    unchanged, fsync, rename the new file over the journal, and call
     ///    `on_swap` with the position at its end, for the index to record.
@@ -612,6 +636,11 @@ pub struct JournalWriter<'a> {
 }
 
 impl JournalWriter<'_> {
+    /// The store's key, as [`Journal::store_key`].
+    pub fn store_key(&self) -> Option<StoreKey> {
+        self.inner.key
+    }
+
     /// Append `record` and fsync it. The record is durable, and so
     /// committed, once this returns. Returns the position just past it.
     pub fn append(&mut self, record: &JournalRecord) -> Result<JournalPosition> {
@@ -638,6 +667,9 @@ impl JournalWriter<'_> {
             return Err(err);
         }
         inner.end = base + bytes.len() as u64;
+        if let JournalRecord::Key(key) = record {
+            inner.key = Some(*key);
+        }
         let per_drop = inner.capsule_record_len;
         if let Some(dead) = inner.dead_estimate.as_mut() {
             let drops = members(record)

@@ -805,6 +805,8 @@ fn apply_record(
         JournalRecord::Unbind { ns, name } => {
             t.names.remove(name_key(ns, name))?;
         }
+        // The journal keeps the store's key itself.
+        JournalRecord::Key(_) => {}
         JournalRecord::Batch(records) => {
             for record in records {
                 apply_record(record, t)?;
