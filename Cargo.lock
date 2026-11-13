@@ -2103,11 +2103,10 @@ dependencies = [
  "futures",
  "lru",
  "nvram-sim",
- "serde",
- "serde_json",
  "tokio",
  "tokio-uring",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

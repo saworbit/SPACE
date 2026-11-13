@@ -134,8 +134,8 @@ enum Commands {
     /// generation of space.nvram.
     Compact,
     /// Check every segment's integrity now, and exit non-zero if any fails.
-    /// In space.nvram this checks each record's checksum; under
-    /// SPACE_STORAGE_ROOT, each segment's length.
+    /// This checks each segment record's checksums, in space.nvram or in its
+    /// file under SPACE_STORAGE_ROOT.
     Scrub {
         /// Also check each segment's MAC (needs SPACE_MASTER_KEY) or content
         /// hash, which catches tampering as well as damage.

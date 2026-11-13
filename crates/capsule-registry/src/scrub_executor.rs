@@ -266,24 +266,31 @@ impl<B: StorageBackend> ScrubExecutor<B> {
         report
     }
 
+    /// `seg_id`'s metadata. If it can't be read, a backend that checksums
+    /// its own records can say whether the record is damaged, as a segment
+    /// file with a damaged header is, rather than unreadable for now.
+    async fn metadata_or_damage(&self, seg_id: SegmentId) -> Result<common::Segment, ScrubResult> {
+        match self.backend.metadata(seg_id).await {
+            Ok(meta) => Ok(meta),
+            Err(err) => Err(match self.backend.verify_stored(seg_id).await {
+                Ok(Some(false)) => ScrubResult::ContentCorrupted { segment: seg_id },
+                _ => ScrubResult::ReadError {
+                    segment: seg_id,
+                    error: err.to_string(),
+                },
+            }),
+        }
+    }
+
     // -- Light check ----------------------------------------------------------
 
     /// Returns `(result, bytes_read, legacy_hash_hit)`. `legacy_hash_hit` is
     /// always `false` for light scrubs — only deep scrubs can match via the
     /// legacy bare-hash fallback.
     async fn light_check(&self, seg_id: SegmentId) -> (ScrubResult, u64, bool) {
-        let meta = match self.backend.metadata(seg_id).await {
+        let meta = match self.metadata_or_damage(seg_id).await {
             Ok(m) => m,
-            Err(err) => {
-                return (
-                    ScrubResult::ReadError {
-                        segment: seg_id,
-                        error: err.to_string(),
-                    },
-                    0,
-                    false,
-                );
-            }
+            Err(result) => return (result, 0, false),
         };
 
         // A backend that checksums its own bytes, as the data log's record
@@ -348,18 +355,9 @@ impl<B: StorageBackend> ScrubExecutor<B> {
     /// fallback (pre-fix layout); the outer loop bumps
     /// `ScrubReport::legacy_hash_hits` accordingly.
     async fn deep_check(&self, seg_id: SegmentId) -> (ScrubResult, u64, bool) {
-        let meta = match self.backend.metadata(seg_id).await {
+        let meta = match self.metadata_or_damage(seg_id).await {
             Ok(m) => m,
-            Err(err) => {
-                return (
-                    ScrubResult::ReadError {
-                        segment: seg_id,
-                        error: err.to_string(),
-                    },
-                    0,
-                    false,
-                );
-            }
+            Err(result) => return (result, 0, false),
         };
 
         let stored = match self.backend.read(seg_id).await {

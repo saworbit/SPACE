@@ -138,6 +138,7 @@ fn describe(kind: FileKind) -> &'static str {
         FileKind::DataLog => "data log",
         FileKind::Journal => "capsule journal",
         FileKind::Checkpoint => "checkpoint",
+        FileKind::StorageRoot => "storage root store file",
     }
 }
 
