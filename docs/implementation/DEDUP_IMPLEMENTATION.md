@@ -34,7 +34,7 @@ Dedup happens before encryption, and the hash is taken over the pre-encryption b
 - `Pipeline::delete_capsule` decrements the count for each of the capsule's segments. When a count reaches zero it drops the segment from the log's in-memory map and unregisters the hash. The segment's record stays in the log until `NvramLog::compact()` writes the next generation without it; reopening the log in the meantime maps it again, with no references.
 - `Pipeline::garbage_collect` removes segments that no capsule references and nothing pins, such as leftovers from failed or interrupted writes. An open write pins its segments, and a capsule an S3 overwrite or DELETE dropped pins its own until it's released.
 - `spacectl delete` calls `delete_capsule`. S3 DELETE and overwrites commit the `DROP` in the same `BATCH` as the key change, then release the dropped capsule's segments the same way once no GET is reading it.
-- `serve-s3` runs a reclaim pass at startup and every 5 minutes: it compacts `space.nvram` once a quarter of it, and at least 4 MiB, is reclaimable, or garbage-collects a `SPACE_STORAGE_ROOT` store. `spacectl gc` and `spacectl compact` run the two steps on demand.
+- `serve-s3` runs a reclaim pass at startup and every 5 minutes: it compacts `space.nvram` once a quarter of it, and at least 4 MiB, is reclaimable, or garbage-collects a `SPACE_STORAGE_ROOT` store. Then it compacts `space.journal` once a quarter of it, and at least 1 MiB, is dead. `spacectl gc` and `spacectl compact` run the steps on demand.
 
 ## Using it
 

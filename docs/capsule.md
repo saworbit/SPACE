@@ -319,7 +319,7 @@ Segment metadata isn't in the registry: the descriptor is written once, in the s
 | `InMemoryBackend` | `storage` | Tests; ephemeral workloads. `Arc<Mutex<Inner>>` — clones share state. |
 | `NvramBackend` | `storage` (wraps `nvram_sim::NvramLog`) | Primary durable store; append-only log on disk. |
 | `TokioFsBackend` | `storage` | A storage root: `root/store` holds the store id, and `root/segments/<id>.seg` holds one framed `SEGMENT` record per segment ([on-disk-format.md](on-disk-format.md) §10), written to a `.tmp` file, fsynced and renamed into place. Ref counts are kept in memory and recounted when a pipeline opens. |
-| `AutoFsBackend` | `storage` | Uses io_uring on Linux when `storage` is built with the `uring` feature, tokio-fs otherwise. `serve-s3` uses it when `SPACE_STORAGE_ROOT` is set. |
+| `AutoFsBackend` | `storage` | Uses io_uring on Linux when `storage` is built with the `uring` feature, tokio-fs otherwise. `spacectl` uses it, for every command, when `SPACE_STORAGE_ROOT` is set. |
 | `CachedBackend<B>` | `storage` | Byte-bounded LRU wrapper around any backend; invalidates on commit. Not used by `spacectl` or the S3 view. |
 
 The capsule layer is backend-agnostic. The only assumption is that the backend implements the `StorageBackend` trait correctly (see [§9.2](#92-the-storagebackend-trait)).
