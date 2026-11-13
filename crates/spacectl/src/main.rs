@@ -162,8 +162,8 @@ enum Commands {
     },
 }
 
-/// When `serve-s3` scrubs the store. Which segments were checked when is
-/// kept in memory, so a restart starts over, with a deep scrub.
+/// When `serve-s3` scrubs the store. When each segment was last checked is
+/// kept in space.db, so a restart only scrubs segments that are due.
 #[derive(clap::Args, Debug, Clone, Copy, PartialEq, Eq)]
 struct ScrubArgs {
     /// Seconds between light scrubs, which check each segment without a key.
@@ -171,7 +171,7 @@ struct ScrubArgs {
     #[arg(long, default_value_t = 86_400, value_name = "SECONDS")]
     scrub_interval: u64,
     /// Seconds between deep scrubs, which also check MACs and content
-    /// hashes. The first runs at startup.
+    /// hashes. The first runs at startup, for segments that are due.
     #[arg(
         long,
         default_value_t = 604_800,

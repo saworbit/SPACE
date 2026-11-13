@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use common::scrub::ScrubTimes;
 use common::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, CryptoProfile, EncryptionPolicy,
     FederationStrategy, LayoutPolicy, Policy, SegmentId,
@@ -10,6 +11,7 @@ use sled::transaction::{
 };
 use sled::{Db, Transactional};
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 use crate::journal::JournalPosition;
@@ -48,6 +50,11 @@ pub trait MetadataStore: Send + Sync {
     fn has_records(&self) -> Result<bool>;
     /// How many capsule entries reference each segment.
     fn segment_refs(&self) -> Result<std::collections::HashMap<SegmentId, u32>>;
+    /// When each segment was last scrubbed (#134). It isn't journal state,
+    /// and an index rebuild keeps it: segment ids are never reused.
+    fn scrub_times(&self) -> Result<Vec<(SegmentId, ScrubTimes)>>;
+    /// Set segments' scrub times, or forget a segment's with `None`.
+    fn put_scrub_times(&self, changes: &[(SegmentId, Option<ScrubTimes>)]) -> Result<()>;
     /// Remove `hash` from the content index if it points at `segment` and no
     /// capsule references `segment`.
     fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool>;
@@ -259,6 +266,8 @@ pub struct SledStore {
     namespaces: sled::Tree,
     /// Namespace and name ([`name_key`]) to the capsule the name points at.
     names: sled::Tree,
+    /// Segment id to when it was last light- and deep-scrubbed.
+    scrub_schedule: sled::Tree,
 }
 
 /// Trees that held S3 buckets and keys before names moved to the journal.
@@ -272,6 +281,16 @@ fn name_key(ns: &str, name: &str) -> Vec<u8> {
     out.push(0);
     out.extend_from_slice(name.as_bytes());
     out
+}
+
+/// A scrub time as milliseconds since the Unix epoch, 0 meaning none.
+fn scrub_millis(time: Option<SystemTime>) -> u64 {
+    time.and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+fn scrub_time(millis: u64) -> Option<SystemTime> {
+    (millis != 0).then(|| UNIX_EPOCH + Duration::from_millis(millis))
 }
 
 fn decode_capsule_id(bytes: Option<sled::IVec>) -> Result<Option<CapsuleId>> {
@@ -288,6 +307,7 @@ impl SledStore {
         let counters = db.open_tree("counters")?;
         let namespaces = db.open_tree("namespaces")?;
         let names = db.open_tree("names")?;
+        let scrub_schedule = db.open_tree("scrub_schedule")?;
 
         // Initialize the segment counter if it doesn't exist yet.
         let _ = counters.compare_and_swap(
@@ -305,6 +325,7 @@ impl SledStore {
             counters,
             namespaces,
             names,
+            scrub_schedule,
         })
     }
 
@@ -506,6 +527,38 @@ impl MetadataStore for SledStore {
             out.insert(bincode::deserialize(&key)?, bincode::deserialize(&value)?);
         }
         Ok(out)
+    }
+
+    fn scrub_times(&self) -> Result<Vec<(SegmentId, ScrubTimes)>> {
+        let mut out = Vec::new();
+        for entry in self.scrub_schedule.iter() {
+            let (key, value) = entry?;
+            let (light, deep): (u64, u64) = bincode::deserialize(&value)?;
+            out.push((
+                bincode::deserialize(&key)?,
+                ScrubTimes {
+                    light: scrub_time(light),
+                    deep: scrub_time(deep),
+                },
+            ));
+        }
+        Ok(out)
+    }
+
+    fn put_scrub_times(&self, changes: &[(SegmentId, Option<ScrubTimes>)]) -> Result<()> {
+        let mut batch = sled::Batch::default();
+        for (segment, times) in changes {
+            let key = bincode::serialize(segment)?;
+            match times {
+                Some(t) => batch.insert(
+                    key,
+                    bincode::serialize(&(scrub_millis(t.light), scrub_millis(t.deep)))?,
+                ),
+                None => batch.remove(key),
+            }
+        }
+        self.scrub_schedule.apply_batch(batch)?;
+        self.flush()
     }
 
     fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
@@ -764,6 +817,69 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrub_times_round_trip_and_survive_a_reopen() {
+        let dir = std::env::temp_dir().join(format!("space_scrub_times_{}", uuid::Uuid::new_v4()));
+        let path = dir.to_str().unwrap().to_string();
+        let light = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        let deep = UNIX_EPOCH + Duration::from_millis(1_700_000_500_456);
+        {
+            let store = SledStore::open(&path).unwrap();
+            store
+                .put_scrub_times(&[
+                    (
+                        SegmentId(7),
+                        Some(ScrubTimes {
+                            light: Some(light),
+                            deep: Some(deep),
+                        }),
+                    ),
+                    (
+                        SegmentId(8),
+                        Some(ScrubTimes {
+                            light: Some(light),
+                            deep: None,
+                        }),
+                    ),
+                    (
+                        SegmentId(9),
+                        Some(ScrubTimes {
+                            light: Some(light),
+                            deep: None,
+                        }),
+                    ),
+                ])
+                .unwrap();
+            store.put_scrub_times(&[(SegmentId(9), None)]).unwrap();
+            // A rebuild keeps the schedule: segment ids are never reused.
+            store.clear_index().unwrap();
+        }
+        let store = SledStore::open(&path).unwrap();
+        let mut times = store.scrub_times().unwrap();
+        times.sort_by_key(|(id, _)| id.0);
+        assert_eq!(
+            times,
+            vec![
+                (
+                    SegmentId(7),
+                    ScrubTimes {
+                        light: Some(light),
+                        deep: Some(deep)
+                    }
+                ),
+                (
+                    SegmentId(8),
+                    ScrubTimes {
+                        light: Some(light),
+                        deep: None
+                    }
+                ),
+            ]
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn to_hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
