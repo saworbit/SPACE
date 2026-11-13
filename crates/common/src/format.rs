@@ -55,6 +55,8 @@ pub mod kind {
     pub const BIND: u8 = 0x13;
     /// Removes a name.
     pub const UNBIND: u8 = 0x14;
+    /// Records the store's encryption key.
+    pub const KEY: u8 = 0x15;
     /// Several journal records applied all or nothing.
     pub const BATCH: u8 = 0x1F;
 }
@@ -68,6 +70,9 @@ pub const JOURNAL_VERSION: u8 = 1;
 
 /// `NAMESPACE` op: create the namespace.
 const NAMESPACE_CREATE: u8 = 1;
+
+/// `KEY` cipher: XTS-AES-256 with a BLAKE3 MAC.
+const KEY_CIPHER_XTS: u8 = 1;
 
 const SUM_LEN: usize = 16;
 
@@ -791,6 +796,57 @@ pub fn check_namespace(ns: &str) -> Result<(), FormatError> {
     Ok(())
 }
 
+/// The key an encrypted store was opened with (#157). The last `KEY`
+/// record in the journal is the store's: once there is one, the store opens
+/// only with that key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreKey {
+    /// The key version new writes use.
+    pub key_version: u32,
+    /// Names the master key without revealing it.
+    pub fingerprint: [u8; 16],
+}
+
+impl StoreKey {
+    /// Encoded size of a version 1 `KEY` header.
+    pub const LEN: usize = 24;
+
+    /// The first 8 bytes of the fingerprint in hex: enough to tell keys
+    /// apart in a message.
+    pub fn fingerprint_hex(&self) -> String {
+        self.fingerprint[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(KEY_CIPHER_XTS);
+        w.bytes(&[0; 3]);
+        w.u32(self.key_version);
+        w.bytes(&self.fingerprint);
+        w.0
+    }
+
+    fn decode(header: &[u8]) -> Result<Self, FormatError> {
+        let mut r = Reader::new(header);
+        if r.u8()? != KEY_CIPHER_XTS {
+            return Err(FormatError::Invalid("unknown KEY cipher"));
+        }
+        if r.array::<3>()? != [0; 3] {
+            return Err(FormatError::Invalid("reserved KEY bytes aren't zero"));
+        }
+        let key_version = r.u32()?;
+        let fingerprint = r.array()?;
+        r.finish()?;
+        Ok(Self {
+            key_version,
+            fingerprint,
+        })
+    }
+}
+
 /// A record in the capsule journal.
 #[derive(Debug, Clone)]
 pub enum JournalRecord {
@@ -812,6 +868,8 @@ pub enum JournalRecord {
     },
     /// Removes `name` from `ns`, if it's there.
     Unbind { ns: String, name: String },
+    /// Records the store's encryption key. Never in a batch.
+    Key(StoreKey),
     /// Records applied in order, all or nothing. Never nested.
     Batch(Vec<JournalRecord>),
 }
@@ -824,6 +882,7 @@ impl JournalRecord {
             Self::Namespace { .. } => kind::NAMESPACE,
             Self::Bind { .. } => kind::BIND,
             Self::Unbind { .. } => kind::UNBIND,
+            Self::Key(_) => kind::KEY,
             Self::Batch(_) => kind::BATCH,
         }
     }
@@ -859,6 +918,7 @@ impl JournalRecord {
                 w.str(name)?;
                 Ok(w.0)
             }
+            Self::Key(key) => Ok(key.encode()),
             Self::Batch(records) => {
                 let count = u32::try_from(records.len())
                     .map_err(|_| FormatError::Invalid("batch too large"))?;
@@ -867,6 +927,9 @@ impl JournalRecord {
                 for record in records {
                     if matches!(record, Self::Batch(_)) {
                         return Err(FormatError::Invalid("batches can't nest"));
+                    }
+                    if matches!(record, Self::Key(_)) {
+                        return Err(FormatError::Invalid("a KEY record can't be in a batch"));
                     }
                     // No magic and no sums: the batch's head_sum covers
                     // these bytes, and without the magic a scan after a
@@ -909,7 +972,13 @@ impl JournalRecord {
     fn decode_header(kind: u8, version: u8, header: &[u8]) -> Result<Self, FormatError> {
         if !matches!(
             kind,
-            kind::CAPSULE | kind::DROP | kind::NAMESPACE | kind::BIND | kind::UNBIND | kind::BATCH
+            kind::CAPSULE
+                | kind::DROP
+                | kind::NAMESPACE
+                | kind::BIND
+                | kind::UNBIND
+                | kind::KEY
+                | kind::BATCH
         ) {
             return Err(FormatError::UnknownKind(kind));
         }
@@ -956,6 +1025,7 @@ impl JournalRecord {
                 check_namespace(&ns)?;
                 Ok(Self::Unbind { ns, name })
             }
+            kind::KEY => Ok(Self::Key(StoreKey::decode(header)?)),
             _ => {
                 let mut r = Reader::new(header);
                 let count = r.u32()? as usize;
@@ -970,6 +1040,9 @@ impl JournalRecord {
                     let sub_header = r.take(sub_len)?;
                     if sub_kind == kind::BATCH {
                         return Err(FormatError::Invalid("batches can't nest"));
+                    }
+                    if sub_kind == kind::KEY {
+                        return Err(FormatError::Invalid("a KEY record can't be in a batch"));
                     }
                     records.push(Self::decode_header(sub_kind, sub_version, sub_header)?);
                 }
@@ -1333,6 +1406,47 @@ mod tests {
         .unwrap();
         header[0] = 2;
         let bytes = encode_head(kind::NAMESPACE, JOURNAL_VERSION, 0, &header, &[]).unwrap();
+        assert!(matches!(
+            decode_record(&bytes),
+            Err(FormatError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn key_round_trips_with_documented_layout() {
+        let key = StoreKey {
+            key_version: 3,
+            fingerprint: [0xab; 16],
+        };
+        let bytes = JournalRecord::Key(key).encode_record().unwrap();
+        let header = &bytes[FRAME_LEN..];
+        assert_eq!(header.len(), StoreKey::LEN);
+        assert_eq!(header[0], KEY_CIPHER_XTS);
+        assert_eq!(&header[1..4], &[0; 3]);
+        assert_eq!(&header[4..8], &3u32.to_le_bytes());
+        assert_eq!(&header[8..24], &[0xab; 16]);
+        assert!(matches!(decode_record(&bytes), Ok(JournalRecord::Key(k)) if k == key));
+        assert_eq!(key.fingerprint_hex(), "abababababababab");
+
+        // An unknown cipher, or reserved bytes that aren't zero.
+        for (at, value) in [(0, 2u8), (2, 1)] {
+            let mut header = header.to_vec();
+            header[at] = value;
+            let bytes = encode_head(kind::KEY, JOURNAL_VERSION, 0, &header, &[]).unwrap();
+            assert!(matches!(
+                decode_record(&bytes),
+                Err(FormatError::Invalid(_))
+            ));
+        }
+
+        // Changing the store's key is a commit of its own.
+        let batch = JournalRecord::Batch(vec![JournalRecord::Key(key)]);
+        assert!(batch.encode_record().is_err());
+        let mut header = 1u32.to_le_bytes().to_vec();
+        header.extend_from_slice(&[kind::KEY, JOURNAL_VERSION, 0, 0]);
+        header.extend_from_slice(&(StoreKey::LEN as u32).to_le_bytes());
+        header.extend_from_slice(&key.encode());
+        let bytes = encode_head(kind::BATCH, JOURNAL_VERSION, 0, &header, &[]).unwrap();
         assert!(matches!(
             decode_record(&bytes),
             Err(FormatError::Invalid(_))

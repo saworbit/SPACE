@@ -1,11 +1,11 @@
 use anyhow::{anyhow, bail, Result};
 
-use common::format::{CapsuleManifest, JournalRecord};
+use common::format::{CapsuleManifest, JournalRecord, StoreKey};
 use common::*;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::journal::{Journal, JournalPosition, JournalUsage};
 use crate::store::{MetadataStore, SledStore};
@@ -31,7 +31,7 @@ pub mod modular_pipeline {
     use std::time::Duration;
 
     use anyhow::Result;
-    use common::format::JournalRecord;
+    use common::format::{JournalRecord, StoreKey};
     use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubState};
     use common::traits::StorageBackend;
     use common::{traits::DataStream, Capsule, CapsuleId, EncryptionPolicy, Policy, SegmentId};
@@ -284,6 +284,18 @@ pub mod modular_pipeline {
                 Self::FsEncrypted(p) => p.keyring().map(KeyManagerKeyring::manager),
                 Self::Plain(_) | Self::FsPlain(_) => None,
             }
+        }
+
+        /// The key this pipeline encrypts with, as the store records it.
+        /// `None` without a key.
+        pub fn store_key(&self) -> Option<StoreKey> {
+            self.key_manager().map(|manager| store_key_of(&manager))
+        }
+
+        /// Fails when this pipeline refuses writes: it was opened without
+        /// the key of an encrypted store (#157).
+        pub fn check_writable(&self) -> Result<()> {
+            self.registry().check_writable()
         }
 
         /// Scrub the store in the background on `config`'s schedule
@@ -609,7 +621,7 @@ pub mod modular_pipeline {
 
     fn registry_pipeline_from_nvram_backend(
         storage: NvramBackend,
-        registry: crate::CapsuleRegistry,
+        mut registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
         // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
         // fallback to the plain pipeline (#84).
@@ -618,7 +630,7 @@ pub mod modular_pipeline {
             let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
         } else {
-            recount_references(&storage, &registry)?;
+            recount_references(&storage, &mut registry, None, plaintext_allowed()?)?;
             Ok(RegistryPipelineHandle::Plain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -633,7 +645,7 @@ pub mod modular_pipeline {
 
     pub fn registry_pipeline_from_fs_backend(
         storage: AutoFsBackend,
-        registry: crate::CapsuleRegistry,
+        mut registry: crate::CapsuleRegistry,
     ) -> Result<RegistryPipelineHandle> {
         // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
         // fallback to the plain pipeline (#84).
@@ -642,7 +654,7 @@ pub mod modular_pipeline {
             let pipeline = build_fs_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::FsEncrypted(pipeline))
         } else {
-            recount_fs_references(&storage, &registry)?;
+            recount_fs_references(&storage, &mut registry, None, plaintext_allowed()?)?;
             Ok(RegistryPipelineHandle::FsPlain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -655,16 +667,43 @@ pub mod modular_pipeline {
         }
     }
 
+    /// The store's record of `key_manager`'s key.
+    fn store_key_of(key_manager: &Mutex<KeyManager>) -> StoreKey {
+        let manager = key_manager.lock().unwrap_or_else(|e| e.into_inner());
+        StoreKey {
+            key_version: manager.current_version(),
+            fingerprint: manager.fingerprint(),
+        }
+    }
+
+    /// Whether `SPACE_ALLOW_PLAINTEXT=1` lets an encrypted store open
+    /// without its key, storing new objects unencrypted (#157).
+    fn plaintext_allowed() -> Result<bool> {
+        match std::env::var_os("SPACE_ALLOW_PLAINTEXT") {
+            None => Ok(false),
+            Some(value) if value == "1" => Ok(true),
+            Some(value) => anyhow::bail!("SPACE_ALLOW_PLAINTEXT must be 1 or unset, not {value:?}"),
+        }
+    }
+
     /// Ref counts aren't stored in the data log (docs/on-disk-format.md §2),
     /// so set them from the capsules the registry holds before the pipeline
     /// serves any write or delete.
     ///
-    /// It also pairs the registry's journal with the data log, and keeps the
-    /// segment allocator above every id the log has held, including ones
-    /// from writes that never committed and ones compaction removed.
-    fn recount_references(storage: &NvramBackend, registry: &crate::CapsuleRegistry) -> Result<()> {
+    /// It also pairs the registry's journal with the data log, checks `key`
+    /// against the store's ([`crate::CapsuleRegistry::check_store_key`]),
+    /// and keeps the segment allocator above every id the log has held,
+    /// including ones from writes that never committed and ones compaction
+    /// removed.
+    fn recount_references(
+        storage: &NvramBackend,
+        registry: &mut crate::CapsuleRegistry,
+        key: Option<StoreKey>,
+        allow_plaintext: bool,
+    ) -> Result<()> {
         let log = storage.log();
         registry.bind_store(log.store_id())?;
+        registry.check_store_key(key, allow_plaintext)?;
         registry.ensure_segment_floor(log.segment_id_floor())?;
         let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
         let report = log.recount_references(&counts);
@@ -686,14 +725,17 @@ pub mod modular_pipeline {
 
     /// [`recount_references`] for a storage root: ref counts aren't stored
     /// in its segment files either (docs/on-disk-format.md §10). The journal
-    /// is paired with the root's store id, and the allocator is kept above
-    /// every segment file, so a lost `space.db` can't lead to an id that
-    /// overwrites one.
+    /// is paired with the root's store id, `key` is checked, and the
+    /// allocator is kept above every segment file, so a lost `space.db`
+    /// can't lead to an id that overwrites one.
     fn recount_fs_references(
         storage: &AutoFsBackend,
-        registry: &crate::CapsuleRegistry,
+        registry: &mut crate::CapsuleRegistry,
+        key: Option<StoreKey>,
+        allow_plaintext: bool,
     ) -> Result<()> {
         registry.bind_store(storage.store_id())?;
+        registry.check_store_key(key, allow_plaintext)?;
         registry.ensure_segment_floor(storage.segment_id_floor()?)?;
         let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
         let report = storage.recount_references(&counts)?;
@@ -715,10 +757,11 @@ pub mod modular_pipeline {
 
     fn build_nvram_encrypted_pipeline(
         storage: NvramBackend,
-        registry: crate::CapsuleRegistry,
+        mut registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryEncryptedPipeline> {
-        recount_references(&storage, &registry)?;
+        let key = Some(store_key_of(&key_manager));
+        recount_references(&storage, &mut registry, key, false)?;
         Ok(Pipeline::new(
             compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),
@@ -732,10 +775,11 @@ pub mod modular_pipeline {
 
     fn build_fs_encrypted_pipeline(
         storage: AutoFsBackend,
-        registry: crate::CapsuleRegistry,
+        mut registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryFsEncryptedPipeline> {
-        recount_fs_references(&storage, &registry)?;
+        let key = Some(store_key_of(&key_manager));
+        recount_fs_references(&storage, &mut registry, key, false)?;
         Ok(Pipeline::new(
             compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),
@@ -807,6 +851,9 @@ pub struct CapsuleRegistry {
     /// index only when a `CAPSULE` record that holds them is applied, so a
     /// crash can't leave an index entry for a segment compaction removes.
     pending: Arc<Mutex<HashMap<ContentHash, SegmentId>>>,
+    /// The store's key, when a pipeline opened this registry without it:
+    /// writes are then refused (#157). Each clone has its own.
+    writes_need: Option<StoreKey>,
 }
 
 /// The registry's scrub schedule, as a [`common::scrub::ScheduleStore`].
@@ -868,6 +915,7 @@ impl CapsuleRegistry {
             store,
             journal,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            writes_need: None,
         })
     }
 
@@ -898,6 +946,75 @@ impl CapsuleRegistry {
         }
         let position = self.journal.adopt_store_id(store_id)?;
         self.store.set_journal_position(&position)
+    }
+
+    /// The key the store was first opened with, from its journal. `None`
+    /// for a store that has never been opened with one.
+    pub fn store_key(&self) -> Option<StoreKey> {
+        self.journal.store_key()
+    }
+
+    /// Check the key a pipeline opens with, `key`, against the one the
+    /// journal records (#157). A store's first open with a key records it.
+    /// From then on another key is refused, and without one this registry
+    /// refuses writes, unless `allow_plaintext` is set: new objects are
+    /// stored unencrypted only when someone asked for that. Reads, deletes
+    /// and maintenance need no key.
+    pub fn check_store_key(&mut self, key: Option<StoreKey>, allow_plaintext: bool) -> Result<()> {
+        self.writes_need = None;
+        let mut journal = self.journal.lock();
+        match (journal.store_key(), key) {
+            (None, None) => Ok(()),
+            (None, Some(key)) => {
+                let record = JournalRecord::Key(key);
+                let position = journal.append(&record)?;
+                self.store.apply_journal(&record, &position)?;
+                info!(
+                    key = %key.fingerprint_hex(),
+                    "this store is now encrypted: from now on it refuses another key, and \
+                     writes without this one"
+                );
+                Ok(())
+            }
+            (Some(stored), Some(key)) if stored.fingerprint == key.fingerprint => Ok(()),
+            (Some(stored), Some(key)) => bail!(
+                "SPACE_MASTER_KEY isn't this store's key: the store's key has fingerprint {}, \
+                 and this one has {}",
+                stored.fingerprint_hex(),
+                key.fingerprint_hex()
+            ),
+            (Some(stored), None) if allow_plaintext => {
+                warn!(
+                    key = %stored.fingerprint_hex(),
+                    "this store is encrypted, but SPACE_ALLOW_PLAINTEXT=1 is set and \
+                     SPACE_MASTER_KEY isn't: new objects are stored unencrypted, and encrypted \
+                     ones can't be read"
+                );
+                Ok(())
+            }
+            (Some(stored), None) => {
+                info!(
+                    key = %stored.fingerprint_hex(),
+                    "this store is encrypted and SPACE_MASTER_KEY isn't set, so writes are refused"
+                );
+                self.writes_need = Some(stored);
+                Ok(())
+            }
+        }
+    }
+
+    /// Fails, naming SPACE_MASTER_KEY, when this registry's pipeline was
+    /// opened without the key of an encrypted store (#157).
+    pub fn check_writable(&self) -> Result<()> {
+        match self.writes_need {
+            None => Ok(()),
+            Some(stored) => bail!(
+                "this store is encrypted: set SPACE_MASTER_KEY to its key (fingerprint {}) to \
+                 write to it. To store new objects unencrypted anyway, set \
+                 SPACE_ALLOW_PLAINTEXT=1",
+                stored.fingerprint_hex()
+            ),
+        }
     }
 
     /// How many capsule entries reference each segment, from the index.
@@ -971,6 +1088,8 @@ impl CapsuleRegistry {
         for record in &records {
             match record {
                 JournalRecord::Capsule(manifest) => {
+                    // A write of segments it found by dedup allocates none.
+                    self.check_writable()?;
                     let id = manifest.capsule_id;
                     if created.contains(&id) || self.store.get_capsule(&id)?.is_some() {
                         bail!("Capsule collision (extremely unlikely)");
@@ -989,6 +1108,9 @@ impl CapsuleRegistry {
                     dropped.push(capsule);
                 }
                 JournalRecord::Batch(_) => bail!("a batch can't hold another batch"),
+                JournalRecord::Key(_) => {
+                    bail!("the store's key is recorded by check_store_key")
+                }
                 JournalRecord::Namespace { .. }
                 | JournalRecord::Bind { .. }
                 | JournalRecord::Unbind { .. } => {}
@@ -1060,6 +1182,8 @@ impl CapsuleRegistry {
     }
 
     pub fn alloc_segment(&self) -> Result<SegmentId> {
+        // Every new segment starts here, so nothing reaches the store.
+        self.check_writable()?;
         self.store
             .allocate_segment_id()
             .map_err(|err| anyhow!("failed to allocate segment id: {err}"))
@@ -1184,6 +1308,7 @@ impl Clone for CapsuleRegistry {
             store: Arc::clone(&self.store),
             journal: Arc::clone(&self.journal),
             pending: Arc::clone(&self.pending),
+            writes_need: self.writes_need,
         }
     }
 }

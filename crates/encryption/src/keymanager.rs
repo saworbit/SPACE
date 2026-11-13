@@ -33,6 +33,9 @@ pub const MASTER_KEY_SIZE: usize = 32;
 /// Key derivation context string
 const HKDF_INFO_CONTEXT: &[u8] = b"SPACE-XTS-AES-256-KEY-V1";
 const HKDF_SALT_DOMAIN: &[u8] = b"SPACE-HKDF-SALT-V1";
+/// BLAKE3 key derivation context for [`KeyManager::fingerprint`]. A context
+/// of its own keeps the fingerprint unrelated to every key derived for use.
+const FINGERPRINT_CONTEXT: &str = "SPACE 2026-11-13 master key fingerprint";
 const HKDF_SALT_SIZE: usize = 32;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -322,6 +325,16 @@ impl KeyManager {
         self.current_version
     }
 
+    /// Names the master key without revealing it, so a store can record
+    /// which key it was opened with and refuse another (#157). It's a
+    /// BLAKE3 derivation under a context no other key uses.
+    pub fn fingerprint(&self) -> [u8; 16] {
+        let derived = blake3::derive_key(FINGERPRINT_CONTEXT, &self.master_key);
+        let mut fingerprint = [0u8; 16];
+        fingerprint.copy_from_slice(&derived[..16]);
+        fingerprint
+    }
+
     /// Check if rotation is in progress
     pub fn is_rotating(&self) -> bool {
         self.rotating
@@ -396,6 +409,24 @@ impl std::fmt::Debug for KeyManager {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn fingerprint_names_the_master_key() {
+        let mut a = KeyManager::new([7u8; MASTER_KEY_SIZE]);
+        let fingerprint = a.fingerprint();
+        assert_eq!(
+            fingerprint,
+            KeyManager::new([7u8; MASTER_KEY_SIZE]).fingerprint()
+        );
+        assert_ne!(
+            fingerprint,
+            KeyManager::new([8u8; MASTER_KEY_SIZE]).fingerprint()
+        );
+        // Not a prefix of the key, or of a key derived from it.
+        let key1 = *a.get_key(1).unwrap().key1();
+        assert_ne!(fingerprint, [7u8; 16]);
+        assert_ne!(&fingerprint[..], &key1[..16]);
+    }
 
     #[test]
     #[serial]

@@ -71,6 +71,7 @@ Rotation is in memory only: every constructor starts at version 1, so a restart 
 ### Missing or invalid keys
 
 - If `SPACE_MASTER_KEY` is unset, the registry pipeline builders choose the plaintext pipeline (`NoopEncryptor`). A write whose policy asks for encryption then fails instead of storing plaintext.
+- A store remembers its key ([#157](https://github.com/saworbit/SPACE/issues/157)). The first time it's opened with one, its journal records a `KEY` record holding the key's fingerprint (`KeyManager::fingerprint`, [on-disk format §5.9](../on-disk-format.md)). After that, another key is refused when the store opens. Without a key, it opens, but every write is refused before a segment is stored, and `serve-s3` won't start. `SPACE_ALLOW_PLAINTEXT=1` lets new objects be stored unencrypted anyway.
 - If `SPACE_MASTER_KEY` is set but invalid, building the pipeline fails.
 - `EnvKeyProvider` fails when its variable is unset. There is no fallback key.
 

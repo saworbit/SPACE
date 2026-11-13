@@ -1,5 +1,6 @@
 //! An encrypted object on a server without `SPACE_MASTER_KEY` is an error
-//! response, not its ciphertext with a 200 (#155).
+//! response, not its ciphertext with a 200 (#155), and a PUT there is refused
+//! rather than stored unencrypted (#157).
 //!
 //! This binary holds a single test because it changes a process-wide
 //! environment variable.
@@ -45,8 +46,16 @@ async fn encrypted_get_without_a_key_is_an_error() {
     assert_eq!(send(&keyed, put).await.0, StatusCode::OK);
     drop(keyed);
 
-    // The same store, served without the key.
+    // The same store, served without the key. It refuses writes, rather
+    // than storing them unencrypted (#157).
     let keyless = router(&nvram, &registry);
+    let put = Request::put("/sec/plain.txt")
+        .body(Body::from("not secret"))
+        .unwrap();
+    let (status, body) = send(&keyless, put).await;
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{text}");
+    assert!(text.contains("set SPACE_MASTER_KEY"), "{text}");
     for range in [None, Some("bytes=4-9")] {
         let mut get = Request::get("/sec/secret.txt");
         if let Some(range) = range {

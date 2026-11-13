@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. Journal compaction (§9.2) is in `capsule-registry`, and runs in the same reclaim pass. Storage roots (§10) keep one `SEGMENT` record per file, in `storage`. The checkpoint is not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, `KEY`, §5.3–§5.7, §5.9 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. Journal compaction (§9.2) is in `capsule-registry`, and runs in the same reclaim pass. Storage roots (§10) keep one `SEGMENT` record per file, in `storage`. The checkpoint is not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -33,7 +33,7 @@ The observation the design rests on: **ref counts are the only segment metadata 
 
 | File | Holds | Authority |
 |---|---|---|
-| `space.journal` | `FILE`, `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH` records | Truth for capsules and names |
+| `space.journal` | `FILE`, `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, `KEY` records | Truth for capsules, names and an encrypted store's key |
 | `space.nvram` | `FILE`, `SEGMENT` records | Truth for segment bytes and descriptors |
 | `<root>/store`, `<root>/segments/<id>.seg` | Under `SPACE_STORAGE_ROOT`, instead of `space.nvram`: a `FILE` record, and one `SEGMENT` record per segment file (§10) | Truth for segment bytes and descriptors |
 | `space.nvram.ckpt` | Snapshot of the segment map (§8.2) | Optional cache, never authoritative |
@@ -96,6 +96,7 @@ The sums are BLAKE3 because it's already a dependency. CRC32C would be cheaper p
 | `0x12` | `NAMESPACE` | journal | Creates a namespace (an S3 bucket) |
 | `0x13` | `BIND` | journal | Points a name at a capsule |
 | `0x14` | `UNBIND` | journal | Removes a name |
+| `0x15` | `KEY` | journal | Records an encrypted store's key (§5.9) |
 | `0x1F` | `BATCH` | journal | Several journal records applied atomically |
 
 ## 5. Record layouts
@@ -230,6 +231,19 @@ The sub-records apply in order, all or nothing. This is what makes compound oper
 
 A checkpoint file is a `FILE` record (`file_kind` 3, the data log's `store_id` and `generation`) followed by one `CHECKPOINT` record. It's written to a temp file, fsynced and renamed. It's used only if its `store_id` and `generation` match the data log.
 
+### 5.9 `KEY`
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 0 | 1 | `cipher` | 1 XTS-AES-256 with a BLAKE3 MAC. Other values reserved. |
+| 1 | 3 | reserved | 0 |
+| 4 | 4 | `key_version` | The key version new writes use |
+| 8 | 16 | `fingerprint` | `BLAKE3-derive_key("SPACE 2026-11-13 master key fingerprint", master key)[0..16]` |
+
+The first time a store is opened with a master key, the journal gets a `KEY` record for it ([#157](https://github.com/saworbit/SPACE/issues/157)). The last `KEY` record is the store's. Opening a store with a key whose fingerprint differs from it fails. Opening it without a key works, but writes are refused before any segment is stored, and `serve-s3` won't start, unless `SPACE_ALLOW_PLAINTEXT=1` is set. A `KEY` record is never in a `BATCH`.
+
+The fingerprint names the key without revealing it, or any key derived from it: the derivation context is used for nothing else. Nothing changes `key_version` yet; it's there for key rotation ([#98](https://github.com/saworbit/SPACE/issues/98)).
+
 ## 6. What each operation writes
 
 | Operation | Data log | Journal | Commit point |
@@ -237,6 +251,7 @@ A checkpoint file is a `FILE` record (`file_kind` 3, the data log's `store_id` a
 | Write a capsule | One `SEGMENT` per new segment | `CAPSULE` | The `CAPSULE` record is durable |
 | Dedup hit | Nothing | Nothing (it's an entry in the eventual `CAPSULE`) | — |
 | Delete (`spacectl delete`) | Nothing | `DROP` | The `DROP` record is durable |
+| First open with a master key | Nothing | `KEY` | The `KEY` record is durable |
 | S3 PUT, new key | New segments | `BATCH[CAPSULE, BIND]` (plus `NAMESPACE` the first time a bucket is used) | The `BATCH` |
 | S3 PUT, overwrite | New segments | `BATCH[CAPSULE, BIND, DROP old]` | The `BATCH` |
 | S3 DELETE | Nothing | `BATCH[UNBIND, DROP]` | The `BATCH` |
@@ -260,6 +275,7 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 | `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`; at 0, deregister the hash if it points at `seg`. |
 | `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists. |
 | `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name). |
+| `KEY` | Nothing. The journal keeps the last one in memory, found when it's opened. |
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
 
@@ -315,7 +331,7 @@ A crash before the rename leaves `space.nvram.compact` behind, which open delete
 Under churn the journal grows with dead records: the manifest of each deleted or overwritten capsule and the `DROP` that removed it, and each name that was replaced or removed. Compaction writes the live state to the next generation, as the data log's does:
 
 1. Note where the journal ends.
-2. Without the journal lock, read the journal to find the live capsules, namespaces and names, as replay would leave them (§7). Then write `space.journal.compact`: a `FILE` record with `generation + 1`, a `NAMESPACE` record for each namespace with its first creation time, the `CAPSULE` record of each live capsule in journal order, and a `BIND` record for each name. Commits carry on.
+2. Without the journal lock, read the journal to find the live capsules, namespaces and names, as replay would leave them (§7). Then write `space.journal.compact`: a `FILE` record with `generation + 1`, the last `KEY` record, a `NAMESPACE` record for each namespace with its first creation time, the `CAPSULE` record of each live capsule in journal order, and a `BIND` record for each name. Commits carry on.
 3. Under the journal lock, copy the records committed since step 1 unchanged, fsync, rename the new file over `space.journal`, fsync the directory, and set `journal_applied` to the new generation and end offset.
 
 A crash before the rename leaves `space.journal.compact`, which open deletes; the journal is intact. A crash after it leaves the new generation with a `journal_applied` from the old one, so open rebuilds the index from the new generation (§7). There's no marker file and no manual step. §14 (PR 7) has the details of the implementation.

@@ -15,6 +15,7 @@ fn spacectl(dir: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(dir)
         .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_ALLOW_PLAINTEXT")
         .env_remove("SPACE_STORAGE_ROOT")
         .env_remove("SPACE_STORE_DIR")
         .env("RUST_LOG", "debug")
@@ -84,6 +85,7 @@ fn spawn(dir: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Child {
         .args(args)
         .current_dir(dir)
         .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_ALLOW_PLAINTEXT")
         .env_remove("SPACE_STORAGE_ROOT")
         .env_remove("SPACE_STORE_DIR")
         .stdout(Stdio::piped())
@@ -92,6 +94,19 @@ fn spawn(dir: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Child {
         command.env(name, value);
     }
     command.spawn().unwrap()
+}
+
+/// What `child` printed once it exits, which it must do within a minute.
+fn exit_of(mut child: Child, what: &str) -> Output {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("{what}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().unwrap()
 }
 
 /// Only `create` and `serve-s3` create a store. Every other command in a
@@ -215,16 +230,8 @@ fn serve_s3_on_a_busy_port_leaves_no_store() {
     let dir = scratch_dir("busy_port");
     let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = held.local_addr().unwrap().port().to_string();
-    let mut child = spawn(&dir, &["serve-s3", "--port", &port], &[]);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            panic!("serve-s3 started on a port that's in use");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let out = child.wait_with_output().unwrap();
+    let child = spawn(&dir, &["serve-s3", "--port", &port], &[]);
+    let out = exit_of(child, "serve-s3 started on a port that's in use");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
     assert!(
@@ -460,6 +467,7 @@ fn spacectl_in_root(dir: &Path, root: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(dir)
         .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_ALLOW_PLAINTEXT")
         .env_remove("SPACE_STORE_DIR")
         .env("SPACE_STORAGE_ROOT", root)
         .output()
@@ -521,13 +529,129 @@ fn create_read_and_delete_use_the_storage_root() {
 }
 
 fn spacectl_with_key(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_spacectl"))
+    spacectl_with(dir, args, &[("SPACE_MASTER_KEY", &"07".repeat(32))])
+}
+
+/// spacectl with no SPACE_* variables but `envs`.
+fn spacectl_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_spacectl"));
+    command
         .args(args)
         .current_dir(dir)
-        .env("SPACE_MASTER_KEY", "07".repeat(32))
+        .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_ALLOW_PLAINTEXT")
         .env_remove("SPACE_STORAGE_ROOT")
-        .output()
-        .unwrap()
+        .env_remove("SPACE_STORE_DIR");
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+/// A store opened once with SPACE_MASTER_KEY remembers the key (#157).
+/// Another key is refused. Without one, `create` fails before writing
+/// anything and `serve-s3` won't start, while commands that write no
+/// capsule still work. SPACE_ALLOW_PLAINTEXT=1 lets new objects be stored
+/// unencrypted.
+#[test]
+fn an_encrypted_store_needs_its_key() {
+    let dir = scratch_dir("store_key");
+    std::fs::write(dir.join("secret.txt"), b"TOP SECRET PAYLOAD").unwrap();
+    std::fs::write(dir.join("plain.txt"), b"not secret").unwrap();
+    let secret = created_id(&spacectl_with_key(&dir, &["create", "-f", "secret.txt"]));
+    let sizes =
+        || ["space.journal", "space.nvram"].map(|f| std::fs::metadata(dir.join(f)).unwrap().len());
+    let before = sizes();
+
+    let other_key = "08".repeat(32);
+    for (args, envs, expected) in [
+        (
+            &["create", "-f", "plain.txt"][..],
+            &[][..],
+            "this store is encrypted: set SPACE_MASTER_KEY",
+        ),
+        (
+            &["create", "-f", "plain.txt"],
+            &[("SPACE_MASTER_KEY", other_key.as_str())],
+            "SPACE_MASTER_KEY isn't this store's key",
+        ),
+        (
+            &["gc"],
+            &[("SPACE_MASTER_KEY", other_key.as_str())],
+            "SPACE_MASTER_KEY isn't this store's key",
+        ),
+    ] {
+        let out = spacectl_with(&dir, args, envs);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} {envs:?} succeeded");
+        assert!(stderr.contains(expected), "{args:?} {envs:?}: {stderr}");
+    }
+    let out = exit_of(
+        spawn(&dir, &["serve-s3", "--port", "0"], &[]),
+        "serve-s3 started without the store's key",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("set SPACE_MASTER_KEY"), "{stderr}");
+    // Checked before compact, which would reclaim a stray segment.
+    assert_eq!(
+        sizes(),
+        before,
+        "something was written without the store's key"
+    );
+    for args in [&["list"][..], &["gc"], &["compact"], &["scrub"]] {
+        let out = spacectl(&dir, args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(
+        sizes(),
+        before,
+        "something was written without the store's key"
+    );
+
+    // Asked for, new objects are stored unencrypted. The encrypted one
+    // still needs the key (#155).
+    let plaintext = [("SPACE_ALLOW_PLAINTEXT", "1")];
+    let plain = created_id(&spacectl_with(
+        &dir,
+        &["create", "-f", "plain.txt"],
+        &plaintext,
+    ));
+    let out = spacectl_with(&dir, &["read", &plain], &plaintext);
+    assert_eq!(out.stdout, b"not secret");
+    let out = spacectl_with(&dir, &["read", &secret], &plaintext);
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("SPACE_MASTER_KEY"));
+    let out = spacectl_with_key(&dir, &["read", &secret]);
+    assert_eq!(out.stdout, b"TOP SECRET PAYLOAD");
+
+    // A storage root's store is checked the same way.
+    let root = dir.join("root");
+    let root_dir = scratch_dir("store_key_root");
+    let root_str = root.to_str().unwrap();
+    let keyed = [
+        ("SPACE_MASTER_KEY", "07".repeat(32)),
+        ("SPACE_STORAGE_ROOT", root_str.to_string()),
+    ];
+    let keyed: Vec<(&str, &str)> = keyed.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    std::fs::write(root_dir.join("secret.txt"), b"TOP SECRET PAYLOAD").unwrap();
+    created_id(&spacectl_with(
+        &root_dir,
+        &["create", "-f", "secret.txt"],
+        &keyed,
+    ));
+    let out = spacectl_in_root(&root_dir, &root, &["create", "-f", "secret.txt"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("set SPACE_MASTER_KEY"), "{stderr}");
+
+    let _ = std::fs::remove_dir_all(&root_dir);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
