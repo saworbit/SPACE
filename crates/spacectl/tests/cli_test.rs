@@ -347,3 +347,42 @@ fn create_read_and_delete_use_the_storage_root() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn spacectl_with_key(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_spacectl"))
+        .args(args)
+        .current_dir(dir)
+        .env("SPACE_MASTER_KEY", "07".repeat(32))
+        .env_remove("SPACE_STORAGE_ROOT")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn reading_an_encrypted_capsule_needs_its_key() {
+    let dir = scratch_dir("keyless_read");
+    let secret = b"TOP SECRET PAYLOAD";
+    std::fs::write(dir.join("secret.txt"), secret).unwrap();
+    let id = created_id(&spacectl_with_key(&dir, &["create", "-f", "secret.txt"]));
+
+    // Without the key, read used to print the ciphertext and exit 0 (#155).
+    let out = spacectl(&dir, &["read", &id]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "read succeeded without the key");
+    assert!(
+        out.stdout.is_empty(),
+        "read wrote {} bytes without the key",
+        out.stdout.len()
+    );
+    assert!(stderr.contains("SPACE_MASTER_KEY"), "{stderr}");
+
+    let out = spacectl_with_key(&dir, &["read", &id]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, secret);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

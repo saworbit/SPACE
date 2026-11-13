@@ -46,14 +46,19 @@ impl Encryptor for NoopEncryptor {
         Ok((data.into_owned(), summary))
     }
 
+    /// Reads only call `decrypt` for segments stored encrypted, and without a
+    /// key there is no way to recover their plaintext. Handing back the
+    /// stored bytes would serve ciphertext as the capsule's contents (#155).
     fn decrypt(
         &self,
-        data: &[u8],
+        _data: &[u8],
         _policy: &EncryptionPolicy,
         _segment: SegmentId,
         _ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
-        Ok(data.to_vec())
+        Err(anyhow!(
+            "it is encrypted and no key is configured (set SPACE_MASTER_KEY)"
+        ))
     }
 
     fn compute_mac(
@@ -1685,15 +1690,19 @@ mod tests {
     }
 
     #[test]
-    fn test_noop_decrypt_returns_data_unchanged() {
+    fn test_noop_decrypt_refuses_without_a_key() {
         let enc = NoopEncryptor;
-        let data = b"NoopEncryptor decrypt";
         let ctx = DecryptContext::default();
 
-        let result = enc
-            .decrypt(data, &EncryptionPolicy::Disabled, SegmentId(1), &ctx)
-            .unwrap();
-        assert_eq!(result, data);
+        let err = enc
+            .decrypt(
+                b"ciphertext",
+                &EncryptionPolicy::Disabled,
+                SegmentId(1),
+                &ctx,
+            )
+            .expect_err("noop decrypt must not hand back stored bytes");
+        assert!(err.to_string().contains("SPACE_MASTER_KEY"), "{err}");
     }
 
     #[test]
@@ -2281,6 +2290,34 @@ mod tests {
 
         assert!(p.read_capsule(id).await.is_err());
         assert!(p.read_range(id, 0, 16).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_without_a_key_fails_instead_of_returning_ciphertext() {
+        let mut keyed = xts_pipeline();
+        // Two segments, so the range read skips one and decodes the other.
+        let policy = with_segment_size(encrypted_policy(), 64);
+        let data: Vec<u8> = (0..100u8).collect();
+        let id = keyed.write_capsule(&data, &policy).await.unwrap();
+        assert_eq!(keyed.catalog.lookup_capsule(id).unwrap().segments.len(), 2);
+
+        // The same store, opened without a key (#155).
+        let keyless: InMemoryPipeline = PipelineBuilder::new()
+            .with_storage(keyed.storage.clone())
+            .with_catalog(keyed.catalog.clone())
+            .build();
+
+        let err = keyless
+            .read_capsule(id)
+            .await
+            .expect_err("read_capsule returned bytes without a key");
+        assert!(format!("{err:#}").contains("SPACE_MASTER_KEY"), "{err:#}");
+        assert!(keyless.read_range(id, 70, 10).await.is_err());
+        let mut stream = keyless.read_range_stream(id, 0, 100).await.unwrap();
+        assert!(
+            stream.next().await.unwrap().is_err(),
+            "the stream yielded bytes without a key"
+        );
     }
 
     // ── Policy enforcement ────────────────────────────────────────────
