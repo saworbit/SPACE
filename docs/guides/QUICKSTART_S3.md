@@ -121,7 +121,7 @@ Buckets and keys are recorded in `space.journal` too, so objects are still there
 
 ## Using an S3 SDK
 
-With path-style addressing, boto3's `create_bucket`, `head_bucket`, `put_object`, `get_object`, `head_object`, `delete_object`, `list_objects` and `list_objects_v2` work, paginators included. Ranged GETs work, so `download_file` does too. Credentials are ignored.
+With path-style addressing, these boto3 calls work: `create_bucket`, `head_bucket`, `get_bucket_location`, `put_object`, `get_object`, `head_object`, `delete_object`, `list_objects` and `list_objects_v2`, paginators included. Ranged GETs work, so `download_file` does too. Credentials are ignored, so presigned URLs work too. Anything else raises a `NotImplemented` error and leaves the store unchanged; see [Current limitations](#current-limitations).
 
 ```python
 import boto3
@@ -134,11 +134,18 @@ s3.put_object(Bucket="demo-bucket", Key="k.txt", Body=b"hi")
 print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ```
 
-`upload_file` fails above the 8 MiB multipart threshold, because there is no multipart upload. The AWS CLI hasn't been tested.
+`upload_file` fails with `NotImplemented` above the 8 MiB multipart threshold, because there is no multipart upload. The AWS CLI hasn't been tested.
 
 ## Current limitations
 
-- No multipart upload.
+- These S3 operations aren't implemented, and each gets a `501 NotImplemented` error:
+  - multipart upload;
+  - CopyObject;
+  - object tagging and ACLs, and bucket configuration such as `?versioning`;
+  - ListBuckets, DeleteBucket and DeleteObjects;
+  - the `response-*` header overrides on GET.
+
+  A PUT with an `aws-chunked` body is refused the same way, so send the body unencoded. Before [#156](https://github.com/saworbit/SPACE/issues/156), some of these ran as a plain PUT or DELETE and overwrote or deleted the object.
 - DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. The same pass compacts `space.journal`, which records every PUT and DELETE, once a quarter of it, and at least 1 MiB, is dead. With the server stopped, `spacectl compact` compacts both right away.
 - Objects are encrypted only when `SPACE_MASTER_KEY` is set. There is no per-request choice.
 
