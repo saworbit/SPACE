@@ -8,11 +8,12 @@ use common::{
     Segment, SegmentId,
 };
 use futures::future::{self, BoxFuture};
-use nvram_sim::{NvramLog, NvramTransaction};
-use tokio::io::AsyncWriteExt;
+use nvram_sim::{NvramLog, NvramTransaction, RecountReport};
 
 mod cache;
+mod fs_root;
 pub use cache::{CacheInvalidatingTransaction, CachedBackend};
+use fs_root::{on_root, FsRoot};
 
 #[cfg(all(target_os = "linux", feature = "uring"))]
 mod uring;
@@ -323,135 +324,62 @@ impl NvramBackend {
     }
 }
 
-/// Filesystem-backed storage backend.
+/// Filesystem-backed storage backend: a storage root in on-disk format 1
+/// (`docs/on-disk-format.md` §10).
 ///
 /// Layout:
-/// - `root/segments/<id>.bin` data payload (hot)
-/// - `root/segments/<id>.bin` JSON stub payload (cold, `SPACE_STUB_V1`)
-/// - `root/metadata/<id>.json` segment metadata
+/// - `root/store`: a `FILE` record holding the store id
+/// - `root/segments/<id>.seg`: one framed `SEGMENT` record per segment, its
+///   descriptor and stored bytes
 #[derive(Clone)]
 pub struct TokioFsBackend {
-    root: Arc<std::path::PathBuf>,
+    root: Arc<FsRoot>,
 }
 
 impl TokioFsBackend {
-    pub async fn open<P: AsRef<std::path::Path>>(root: P) -> Result<Self> {
+    /// Open the storage root at `root`, creating it if it's new. A root in
+    /// the layout from before on-disk format 1 is refused.
+    pub async fn open<P: AsRef<Path>>(root: P) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        tokio::fs::create_dir_all(root.join("segments")).await?;
-        tokio::fs::create_dir_all(root.join("metadata")).await?;
+        let root = tokio::task::spawn_blocking(move || FsRoot::open(&root)).await??;
         Ok(Self {
             root: Arc::new(root),
         })
     }
 
-    fn metadata_path(&self, segment: SegmentId) -> std::path::PathBuf {
-        self.root
-            .join("metadata")
-            .join(format!("{}.json", segment.0))
+    /// The store id in `root/store`. The capsule journal is paired with it.
+    pub fn store_id(&self) -> uuid::Uuid {
+        self.root.store_id()
     }
 
-    fn data_path(&self, segment: SegmentId) -> std::path::PathBuf {
-        self.root
-            .join("segments")
-            .join(format!("{}.bin", segment.0))
+    /// One past the highest segment id with a file.
+    pub fn segment_id_floor(&self) -> Result<u64> {
+        self.root.segment_id_floor()
     }
 
-    fn stub_path(&self, segment: SegmentId) -> std::path::PathBuf {
-        self.root
-            .join("segments")
-            .join(format!("{}.stub.json", segment.0))
+    /// Set every segment's ref count from `counts`, as
+    /// [`NvramLog::recount_references`] does. Ref counts aren't stored, so
+    /// this must run before the root serves writes or deletes.
+    pub fn recount_references(&self, counts: &HashMap<SegmentId, u32>) -> Result<RecountReport> {
+        self.root.recount_references(counts)
     }
-
-    async fn read_bytes(&self, segment: SegmentId) -> Result<Vec<u8>> {
-        let data_path = self.data_path(segment);
-        if tokio::fs::try_exists(&data_path).await.unwrap_or(false) {
-            let raw = tokio::fs::read(&data_path).await?;
-            if is_cold_stub(&raw) {
-                return Err(anyhow!(
-                    "segment {} is a cold stub and cannot be read",
-                    segment.0
-                ));
-            }
-            return Ok(raw);
-        }
-
-        let stub_path = self.stub_path(segment);
-        if tokio::fs::try_exists(&stub_path).await.unwrap_or(false) {
-            return Err(anyhow!(
-                "segment {} is a cold stub and cannot be read",
-                segment.0
-            ));
-        }
-
-        Err(anyhow!("segment {:?} not found", segment))
-    }
-}
-
-fn is_cold_stub(bytes: &[u8]) -> bool {
-    bytes.starts_with(br#"{"magic":"SPACE_STUB_V1""#)
 }
 
 pub struct TokioFsTransaction {
-    root: Arc<std::path::PathBuf>,
+    root: Arc<FsRoot>,
     staged_segments: HashMap<SegmentId, Vec<u8>>,
     staged_metadata: HashMap<SegmentId, Segment>,
     deleted: Vec<SegmentId>,
 }
 
 impl TokioFsTransaction {
-    fn new(root: Arc<std::path::PathBuf>) -> Self {
+    fn new(root: Arc<FsRoot>) -> Self {
         Self {
             root,
             staged_segments: HashMap::new(),
             staged_metadata: HashMap::new(),
             deleted: Vec::new(),
         }
-    }
-
-    fn data_path(&self, segment: SegmentId) -> std::path::PathBuf {
-        self.root
-            .join("segments")
-            .join(format!("{}.bin", segment.0))
-    }
-
-    fn stub_path(&self, segment: SegmentId) -> std::path::PathBuf {
-        self.root
-            .join("segments")
-            .join(format!("{}.stub.json", segment.0))
-    }
-
-    fn metadata_path(&self, segment: SegmentId) -> std::path::PathBuf {
-        self.root
-            .join("metadata")
-            .join(format!("{}.json", segment.0))
-    }
-
-    async fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
-        let tmp = path.with_extension(format!(
-            "{}.tmp",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let mut file = tokio::fs::File::create(&tmp).await?;
-        file.write_all(bytes).await?;
-        file.flush().await?;
-        drop(file);
-
-        let _ = tokio::fs::remove_file(path).await;
-        tokio::fs::rename(&tmp, path).await?;
-        Ok(())
-    }
-
-    async fn delete_segment_files(&self, segment: SegmentId) -> Result<()> {
-        let _ = tokio::fs::remove_file(self.data_path(segment)).await;
-        let _ = tokio::fs::remove_file(self.stub_path(segment)).await;
-        let _ = tokio::fs::remove_file(self.metadata_path(segment)).await;
-        Ok(())
     }
 }
 
@@ -475,43 +403,17 @@ impl StorageTransaction for TokioFsTransaction {
         Box::pin(async { Ok(()) })
     }
 
+    /// Each segment's file is written whole, with its descriptor, and
+    /// fsynced before this returns.
     fn commit(self) -> BoxFuture<'static, Result<()>> {
-        Box::pin(async move {
-            let root = Arc::clone(&self.root);
-
-            for (segment, data) in self.staged_segments {
-                let path = root.join("segments").join(format!("{}.bin", segment.0));
-                Self::atomic_write(&path, &data).await?;
-                let _ = tokio::fs::remove_file(
-                    root.join("segments")
-                        .join(format!("{}.stub.json", segment.0)),
-                )
-                .await;
-            }
-
-            for (segment, metadata) in self.staged_metadata {
-                let path = root.join("metadata").join(format!("{}.json", segment.0));
-                let bytes = serde_json::to_vec_pretty(&metadata)?;
-                Self::atomic_write(&path, &bytes).await?;
-            }
-
-            for segment in self.deleted {
-                let _ = tokio::fs::remove_file(
-                    root.join("segments").join(format!("{}.bin", segment.0)),
-                )
-                .await;
-                let _ = tokio::fs::remove_file(
-                    root.join("segments")
-                        .join(format!("{}.stub.json", segment.0)),
-                )
-                .await;
-                let _ = tokio::fs::remove_file(
-                    root.join("metadata").join(format!("{}.json", segment.0)),
-                )
-                .await;
-            }
-
-            Ok(())
+        let Self {
+            root,
+            staged_segments,
+            staged_metadata,
+            deleted,
+        } = self;
+        on_root(&root, move |root| {
+            root.commit(staged_segments, staged_metadata, deleted)
         })
     }
 
@@ -523,61 +425,40 @@ impl StorageTransaction for TokioFsTransaction {
 impl StorageBackend for TokioFsBackend {
     type Transaction = TokioFsTransaction;
 
+    /// Write a segment with no descriptor beyond its bytes: stored as is,
+    /// with no content hash.
     fn append<'a>(&'a mut self, segment: SegmentId, data: &'a [u8]) -> BoxFuture<'a, Result<()>> {
-        let root = Arc::clone(&self.root);
         let payload = data.to_vec();
-        Box::pin(async move {
-            tokio::fs::create_dir_all(root.join("segments")).await.ok();
-            let path = root.join("segments").join(format!("{}.bin", segment.0));
-            TokioFsTransaction::atomic_write(&path, &payload).await?;
-            Ok(())
+        on_root(&self.root, move |root| {
+            root.write_segment(segment, &payload, None)
         })
     }
 
     fn read(&self, segment: SegmentId) -> BoxFuture<'_, Result<Vec<u8>>> {
-        Box::pin(async move { self.read_bytes(segment).await })
+        on_root(&self.root, move |root| root.read(segment))
     }
 
     fn metadata(&self, segment: SegmentId) -> BoxFuture<'_, Result<Segment>> {
-        let path = self.metadata_path(segment);
-        Box::pin(async move {
-            let bytes = tokio::fs::read(&path).await?;
-            Ok(serde_json::from_slice(&bytes)?)
-        })
+        on_root(&self.root, move |root| root.metadata(segment))
     }
 
     fn delete<'a>(&'a mut self, segment: SegmentId) -> BoxFuture<'a, Result<()>> {
-        let root = Arc::clone(&self.root);
-        Box::pin(async move {
-            let txn = TokioFsTransaction::new(root);
-            txn.delete_segment_files(segment).await?;
-            Ok(())
-        })
+        on_root(&self.root, move |root| root.delete(segment))
     }
 
     fn segment_ids(&self) -> BoxFuture<'_, Result<Vec<SegmentId>>> {
-        let root = Arc::clone(&self.root);
-        Box::pin(async move {
-            let mut out = Vec::new();
-            let mut dir = tokio::fs::read_dir(root.join("metadata")).await?;
-            while let Some(entry) = dir.next_entry().await? {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(id) = stem.parse::<u64>() {
-                        out.push(SegmentId(id));
-                    }
-                }
-            }
-            Ok(out)
-        })
+        on_root(&self.root, |root| root.segment_ids())
     }
 
     fn begin_txn(&mut self) -> BoxFuture<'_, Result<Self::Transaction>> {
-        let root = Arc::clone(&self.root);
-        Box::pin(future::ready(Ok(TokioFsTransaction::new(root))))
+        Box::pin(future::ready(Ok(TokioFsTransaction::new(Arc::clone(
+            &self.root,
+        )))))
+    }
+
+    /// Each segment file's record checksums its descriptor and stored bytes.
+    fn verify_stored(&self, segment: SegmentId) -> BoxFuture<'_, Result<Option<bool>>> {
+        on_root(&self.root, move |root| root.verify(segment).map(Some))
     }
 }
 
@@ -611,6 +492,34 @@ impl AutoFsBackend {
         }
 
         Ok(Self::Tokio(TokioFsBackend::open(root).await?))
+    }
+
+    /// The store id in `root/store`. The capsule journal is paired with it.
+    pub fn store_id(&self) -> uuid::Uuid {
+        match self {
+            Self::Tokio(backend) => backend.store_id(),
+            #[cfg(all(target_os = "linux", feature = "uring"))]
+            Self::Uring(backend) => backend.store_id(),
+        }
+    }
+
+    /// One past the highest segment id with a file.
+    pub fn segment_id_floor(&self) -> Result<u64> {
+        match self {
+            Self::Tokio(backend) => backend.segment_id_floor(),
+            #[cfg(all(target_os = "linux", feature = "uring"))]
+            Self::Uring(backend) => backend.segment_id_floor(),
+        }
+    }
+
+    /// Set every segment's ref count from `counts`; see
+    /// [`TokioFsBackend::recount_references`].
+    pub fn recount_references(&self, counts: &HashMap<SegmentId, u32>) -> Result<RecountReport> {
+        match self {
+            Self::Tokio(backend) => backend.recount_references(counts),
+            #[cfg(all(target_os = "linux", feature = "uring"))]
+            Self::Uring(backend) => backend.recount_references(counts),
+        }
     }
 }
 
@@ -720,6 +629,14 @@ impl StorageBackend for AutoFsBackend {
                 let txn = backend.begin_txn().await?;
                 Ok(AutoFsTransaction::Uring(txn))
             }),
+        }
+    }
+
+    fn verify_stored(&self, segment: SegmentId) -> BoxFuture<'_, Result<Option<bool>>> {
+        match self {
+            Self::Tokio(backend) => backend.verify_stored(segment),
+            #[cfg(all(target_os = "linux", feature = "uring"))]
+            Self::Uring(backend) => backend.verify_stored(segment),
         }
     }
 }

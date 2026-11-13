@@ -636,6 +636,7 @@ pub mod modular_pipeline {
             let pipeline = build_fs_encrypted_pipeline(storage, registry, km)?;
             Ok(RegistryPipelineHandle::FsEncrypted(pipeline))
         } else {
+            recount_fs_references(&storage, &registry)?;
             Ok(RegistryPipelineHandle::FsPlain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -677,6 +678,35 @@ pub mod modular_pipeline {
         Ok(())
     }
 
+    /// [`recount_references`] for a storage root: ref counts aren't stored
+    /// in its segment files either (docs/on-disk-format.md §10). The journal
+    /// is paired with the root's store id, and the allocator is kept above
+    /// every segment file, so a lost `space.db` can't lead to an id that
+    /// overwrites one.
+    fn recount_fs_references(
+        storage: &AutoFsBackend,
+        registry: &crate::CapsuleRegistry,
+    ) -> Result<()> {
+        registry.bind_store(storage.store_id())?;
+        registry.ensure_segment_floor(storage.segment_id_floor()?)?;
+        let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
+        let report = storage.recount_references(&counts)?;
+        if let Some(first) = report.missing.first() {
+            warn!(
+                missing = report.missing.len(),
+                first = first.0,
+                "capsules reference segments the storage root doesn't hold; those capsules can't be read"
+            );
+        }
+        if !report.orphans.is_empty() {
+            info!(
+                orphans = report.orphans.len(),
+                "the storage root holds segments no capsule references; garbage collection deletes them"
+            );
+        }
+        Ok(())
+    }
+
     fn build_nvram_encrypted_pipeline(
         storage: NvramBackend,
         registry: crate::CapsuleRegistry,
@@ -699,6 +729,7 @@ pub mod modular_pipeline {
         registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryFsEncryptedPipeline> {
+        recount_fs_references(&storage, &registry)?;
         Ok(Pipeline::new(
             compression::Lz4ZstdCompressor,
             dedup::Blake3Deduper::default(),

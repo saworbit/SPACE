@@ -1,6 +1,6 @@
 # On-disk format (draft)
 
-> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
+> **Status: draft, partly implemented.** The data log (§4, `FILE` and `SEGMENT` records, scan-on-open and torn-tail handling from §8.1–§8.2) is in `common::format` and `nvram-sim`. The capsule journal (`CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH`, §5.3–§5.7 and §7) is in `capsule-registry`, and the S3 view keeps its buckets and keys there. Data log compaction by generation swap (§9.1) is in `nvram-sim`, and `serve-s3` schedules it along with scrub. Storage roots (§10) keep one `SEGMENT` record per file, in `storage`. The checkpoint and journal compaction are not implemented. §14 lists where the code differs from this draft. It proposes format 1 of the store: a framed segment log plus a capsule journal. It targets [#96](https://github.com/saworbit/SPACE/issues/96) (losing the sidecar loses everything), [#97](https://github.com/saworbit/SPACE/issues/97) (crashes leak segments and inflate ref counts) and [#108](https://github.com/saworbit/SPACE/issues/108) (compaction isn't crash-safe). Stores written by the current code won't open under it (§13).
 
 ---
 
@@ -35,6 +35,7 @@ The observation the design rests on: **ref counts are the only segment metadata 
 |---|---|---|
 | `space.journal` | `FILE`, `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `BATCH` records | Truth for capsules and names |
 | `space.nvram` | `FILE`, `SEGMENT` records | Truth for segment bytes and descriptors |
+| `<root>/store`, `<root>/segments/<id>.seg` | Under `SPACE_STORAGE_ROOT`, instead of `space.nvram`: a `FILE` record, and one `SEGMENT` record per segment file (§10) | Truth for segment bytes and descriptors |
 | `space.nvram.ckpt` | Snapshot of the segment map (§8.2) | Optional cache, never authoritative |
 | `space.db` | sled: capsules, refs, content index, names, `journal_applied` | Index of the journal, rebuildable |
 
@@ -48,7 +49,7 @@ The observation the design rests on: **ref counts are the only segment metadata 
 
 The cost is one extra fsync per write: the data log before the commit, the journal for it (§6).
 
-Both files start with a `FILE` record carrying a `store_id`. Opening a journal and a data log with different `store_id`s fails. `spacectl` uses cwd-relative paths, so mixing files from two stores is an easy mistake to make.
+The journal, the data log and a storage root's `store` file each start with a `FILE` record carrying a `store_id`. Opening a journal with a data log or storage root of another store fails. `spacectl` uses cwd-relative paths, so mixing files from two stores is an easy mistake to make.
 
 ## 4. Record frame
 
@@ -103,7 +104,7 @@ The sums are BLAKE3 because it's already a dependency. CRC32C would be cheaper p
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 0 | 1 | `file_kind` | 1 data log, 2 journal, 3 checkpoint |
+| 0 | 1 | `file_kind` | 1 data log, 2 journal, 3 checkpoint, 4 storage root (§10) |
 | 1 | 1 | reserved | 0 |
 | 2 | 2 | `format` | Store format. 1 for this document. |
 | 4 | 16 | `store_id` | `uuid`, chosen when the store is created |
@@ -318,7 +319,14 @@ Under churn the journal grows with dead manifests. Journal compaction writes `sp
 - **`TokioFsBackend`, `UringBackend`, `AutoFsBackend`.** Replace each segment's `segments/<id>.bin` and `metadata/<id>.json` with one file, `segments/<id>.seg`, holding a single `SEGMENT` record. Write it as `<id>.seg.tmp`, fsync, rename and fsync the directory, all before the commit record. The segment map is a directory listing; reclaiming a segment deletes its file, so there's no compaction. The `store_id` goes in a `FILE` record at `root/store`. The cold-stub path (`SPACE_STUB_V1`) is pre-reset tiering residue and goes away.
 - **`InMemoryBackend`.** Gets an in-memory journal for tests.
 
-The NVRAM log comes first; the file backends follow once the journal exists.
+The file backends are **done** ([#135](https://github.com/saworbit/SPACE/issues/135)), with these details:
+
+- The layout code is shared (`storage::fs_root`); `UringBackend` uses io_uring only to read and write whole segment files.
+- `root/store` holds a `FILE` record of kind 4. A root without one must be new: one holding `segments/<id>.bin`, `segments/<id>.stub.json` or a `metadata` directory is refused as predating format 1 (§13), and one holding `.seg` files is refused because it can't be paired with its journal.
+- Ref counts aren't stored, as in the data log. Opening a pipeline sets them from the index, pairs the journal with the root's `store_id`, and raises the segment allocator to one past the highest segment file, so a lost `space.db` can't lead to an id that overwrites a file. Deleted ids can come back after that, which nothing depends on.
+- Reads check the record's frame, `head_sum` and segment id, but not `body_sum`: the MAC or content hash checks the bytes, as for the data log. Light scrub checks both sums.
+- Opening a root deletes leftover `.tmp` files, which are writes that never reached their rename. Windows can't fsync a directory, so that step is skipped there, as for the data log.
+- `InMemoryBackend` has no journal of its own yet.
 
 ## 11. Logical digest
 

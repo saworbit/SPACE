@@ -372,6 +372,8 @@ pub enum FileKind {
     DataLog,
     Journal,
     Checkpoint,
+    /// `root/store` of a storage root (`docs/on-disk-format.md` §10).
+    StorageRoot,
 }
 
 impl FileKind {
@@ -380,6 +382,7 @@ impl FileKind {
             Self::DataLog => 1,
             Self::Journal => 2,
             Self::Checkpoint => 3,
+            Self::StorageRoot => 4,
         }
     }
 
@@ -388,6 +391,7 @@ impl FileKind {
             1 => Ok(Self::DataLog),
             2 => Ok(Self::Journal),
             3 => Ok(Self::Checkpoint),
+            4 => Ok(Self::StorageRoot),
             _ => Err(FormatError::Invalid("unknown file kind")),
         }
     }

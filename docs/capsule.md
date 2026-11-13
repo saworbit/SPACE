@@ -316,7 +316,7 @@ Segment metadata isn't in the registry: the descriptor is written once, in the s
 |---|---|---|
 | `InMemoryBackend` | `storage` | Tests; ephemeral workloads. `Arc<Mutex<Inner>>` — clones share state. |
 | `NvramBackend` | `storage` (wraps `nvram_sim::NvramLog`) | Primary durable store; append-only log on disk. |
-| `TokioFsBackend` | `storage` | Generic file-per-segment backend; `.tmp`+rename atomicity. |
+| `TokioFsBackend` | `storage` | A storage root: `root/store` holds the store id, and `root/segments/<id>.seg` holds one framed `SEGMENT` record per segment ([on-disk-format.md](on-disk-format.md) §10), written to a `.tmp` file, fsynced and renamed into place. Ref counts are kept in memory and recounted when a pipeline opens. |
 | `AutoFsBackend` | `storage` | Uses io_uring on Linux when `storage` is built with the `uring` feature, tokio-fs otherwise. `serve-s3` uses it when `SPACE_STORAGE_ROOT` is set. |
 | `CachedBackend<B>` | `storage` | Byte-bounded LRU wrapper around any backend; invalidates on commit. Not used by `spacectl` or the S3 view. |
 
@@ -511,10 +511,10 @@ Capsules are durable only if their bytes still match their hashes and MACs. Scru
 
 | Kind | What it verifies | I/O | CPU |
 |---|---|---|---|
-| **Light** | In `space.nvram`, each record's own checksum (`body_sum` and `head_sum`). Elsewhere, that the stored byte count matches `segment.len`. | Full read | BLAKE3 |
+| **Light** | In `space.nvram` and in a storage root's segment files, each record's own checksum (`body_sum` and `head_sum`). In `InMemoryBackend`, that the stored byte count matches `segment.len`. | Full read | BLAKE3 |
 | **Deep** | MAC tag (encrypted) or content hash (unencrypted) | Full read | BLAKE3 / AES |
 
-Light scrub needs no key. In the data log it catches media damage in any segment, encrypted or not; the length check is all a file backend allows ([#135](https://github.com/saworbit/SPACE/issues/135)). Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
+Light scrub needs no key. In the data log and under `SPACE_STORAGE_ROOT` it catches media damage in any segment, encrypted or not ([#135](https://github.com/saworbit/SPACE/issues/135)). A segment file whose header is damaged has no readable metadata, and both scrubs report it as corrupted rather than unreadable. Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
 
 The executor tracks when each segment was last checked, and a cycle scrubs only segments that are due. `serve-s3` and `spacectl scrub` keep those times in `space.db`, in the `scrub_schedule` tree, so a restart picks up where the last run left off; losing them costs one full scrub. It forgets segments that have been deleted. A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
 
