@@ -56,23 +56,29 @@ impl Encryptor for NoopEncryptor {
         _segment: SegmentId,
         _ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
-        Err(anyhow!(
-            "it is encrypted and no key is configured (set SPACE_MASTER_KEY)"
-        ))
+        Err(no_key())
     }
 
+    /// A MAC needs the key too. An empty tag, or a check that always
+    /// passes, would let a caller treat unverified bytes as authentic
+    /// (#176).
     fn compute_mac(
         &self,
         _data: &[u8],
         _segment: SegmentId,
         _ctx: &DecryptContext,
     ) -> Result<Vec<u8>> {
-        Ok(Vec::new())
+        Err(no_key())
     }
 
     fn verify_mac(&self, _data: &[u8], _segment: SegmentId, _ctx: &DecryptContext) -> Result<()> {
-        Ok(())
+        Err(no_key())
     }
+}
+
+/// What [`NoopEncryptor`] says for anything that needs a key.
+fn no_key() -> anyhow::Error {
+    anyhow!("it is encrypted and no key is configured (set SPACE_MASTER_KEY)")
 }
 
 /// Real encryptor backed by the encryption crate.
@@ -1706,11 +1712,17 @@ mod tests {
     }
 
     #[test]
-    fn test_noop_verify_mac_always_ok() {
+    fn test_noop_mac_methods_refuse_without_a_key() {
         let enc = NoopEncryptor;
         let ctx = DecryptContext::default();
-        enc.verify_mac(b"any data", SegmentId(1), &ctx)
-            .expect("noop verify_mac should always succeed");
+        let err = enc
+            .verify_mac(b"any data", SegmentId(1), &ctx)
+            .expect_err("noop verify_mac must not pass bytes it can't check");
+        assert!(err.to_string().contains("SPACE_MASTER_KEY"), "{err}");
+        let err = enc
+            .compute_mac(b"any data", SegmentId(1), &ctx)
+            .expect_err("noop compute_mac must not return an empty tag");
+        assert!(err.to_string().contains("SPACE_MASTER_KEY"), "{err}");
     }
 
     // ── Encrypt+MAC end-to-end ──────────────────────────────────────

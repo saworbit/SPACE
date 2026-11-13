@@ -19,14 +19,12 @@ pub mod format;
 pub mod policy;
 pub mod qos;
 pub mod scrub;
-pub mod stub;
 pub mod traits;
 pub use policy::{
     ArtifactVerification, CompressionPolicy, CryptoProfile, EncryptionPolicy, FederationPolicy,
     FederationStrategy, LayoutPolicy, LayoutStrategy, MerkleAlgo, Policy, PolicyError,
     ResourceLimits, TransferPriority, TransformDef, TransformTrigger, MAX_SEGMENT_SIZE,
 };
-pub use stub::StorageStub;
 
 /// Default segment size: 4 MiB.
 ///
