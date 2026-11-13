@@ -398,7 +398,7 @@ Suggested PRs:
    - `segment_id_floor` is one past every id the data log has held, including ones it removed, rather than the allocator's next id; the `FILE` record is rewritten with it after the catch-up. Opening a pipeline raises the allocator to the log's floor, which is the larger of that field and one past the highest id scanned.
    - The catch-up in step 3 also copies any segment that gained references after step 1. Nothing should revive a dead segment, since nothing can find one to dedup against, but the copy costs nothing when there are none.
    - A log with nothing to reclaim isn't rewritten.
-   - The old file is closed before the rename, and the new one is renamed while open. If the rename fails, the old file is reopened and the log carries on unchanged.
+   - The old file is closed before the rename, and the new one is renamed while open. If the rename fails, the old file is reopened and the log carries on unchanged. If the reopen fails too, the log is marked lost and refuses reads and appends until the store is opened again, as the journal does (#150).
    - There's no checkpoint, so step 4 doesn't apply.
    - A `.compacting` marker from the in-place compaction of earlier builds is still refused.
 5. Schedule GC and compaction, with `spacectl` commands for them (the rest of #97). **Done**:

@@ -72,9 +72,20 @@ struct Shared {
     refs_known: AtomicBool,
     /// Held while a compaction runs, so only one runs at a time.
     compacting: Mutex<()>,
+    /// Set when a compaction couldn't rename its new generation into place
+    /// or reopen the old log. `file` is then a handle to a removed file and
+    /// the map holds the old generation's offsets, so reads and appends are
+    /// refused until the log is opened again (#150).
+    lost: AtomicBool,
     /// Called by `read` once it has looked up the segment's offset.
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Make compaction's rename, or its reopen of the old log after a
+    /// failed rename, fail.
+    #[cfg(test)]
+    fail_rename: AtomicBool,
+    #[cfg(test)]
+    fail_reopen: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -211,8 +222,13 @@ impl NvramLog {
                 id_floor: AtomicU64::new(id_floor),
                 refs_known: AtomicBool::new(refs_known),
                 compacting: Mutex::new(()),
+                lost: AtomicBool::new(false),
                 #[cfg(test)]
                 read_hook: Mutex::new(None),
+                #[cfg(test)]
+                fail_rename: AtomicBool::new(false),
+                #[cfg(test)]
+                fail_reopen: AtomicBool::new(false),
             }),
             path,
             data_start: opened.data_start,
@@ -243,7 +259,20 @@ impl NvramLog {
         &self.damage
     }
 
+    /// Refuse to use a log a failed compaction lost. Check it holding
+    /// `file`, since that's what the compaction holds when it sets `lost`.
+    fn ensure_not_lost(&self) -> Result<()> {
+        if self.shared.lost.load(Ordering::SeqCst) {
+            bail!(
+                "the data log at '{}' was lost by a failed compaction; open the store again",
+                self.path.display()
+            );
+        }
+        Ok(())
+    }
+
     fn ensure_writable(&self) -> Result<()> {
+        self.ensure_not_lost()?;
         if let Some(first) = self.damage.first() {
             bail!(
                 "the data log at '{}' is open read-only: {} damaged range(s), the first at \
@@ -319,6 +348,7 @@ impl NvramLog {
         }
 
         let mut file = self.shared.file.write().unwrap();
+        self.ensure_not_lost()?;
         let mut next_offset = self.shared.next_offset.write().unwrap();
         let base = *next_offset;
         let mut pos = base;
@@ -422,6 +452,7 @@ impl NvramLog {
         // The file lock first: compaction swaps the file and the offsets
         // under it, so an offset is only good for the file it was read with.
         let mut file = self.shared.file.write().unwrap();
+        self.ensure_not_lost()?;
         let segment = self
             .shared
             .segment_map
@@ -452,6 +483,7 @@ impl NvramLog {
     /// needs no key. Ok(false) means a checksum didn't match.
     pub fn verify_record(&self, seg_id: SegmentId) -> Result<bool> {
         let mut file = self.shared.file.write().unwrap();
+        self.ensure_not_lost()?;
         let entry = self
             .shared
             .segment_map
@@ -706,8 +738,8 @@ impl NvramLog {
         // first. The new file can be renamed while open.
         let old = std::mem::replace(&mut *file, out);
         drop(old);
-        if let Err(err) = std::fs::rename(&next_path, &self.path) {
-            let restored = OpenOptions::new().read(true).write(true).open(&self.path);
+        if let Err(err) = self.rename_into_place(&next_path) {
+            let restored = self.reopen_after_failed_rename();
             let _ = std::fs::remove_file(&next_path);
             return match restored {
                 Ok(old) => {
@@ -716,10 +748,18 @@ impl NvramLog {
                         "couldn't move the compacted log into place: {err}; the log is unchanged"
                     ))
                 }
-                Err(reopen) => Err(anyhow!(
-                    "couldn't move the compacted log into place ({err}) or reopen the old one \
-                     ({reopen}); reopen the store"
-                )),
+                Err(reopen) => {
+                    // The handle left is to the file just removed, and the
+                    // map still holds the old generation's offsets. An
+                    // append would be lost and a read would look in the
+                    // wrong file.
+                    self.shared.lost.store(true, Ordering::SeqCst);
+                    Err(anyhow!(
+                        "couldn't move the compacted log into place ({err}) or reopen the old \
+                         one ({reopen}); reads and appends are refused until the store is \
+                         opened again"
+                    ))
+                }
             };
         }
         record_file::sync_parent_dir(&self.path);
@@ -754,6 +794,24 @@ impl NvramLog {
             "compacted the data log"
         );
         Ok(reclaimed)
+    }
+
+    /// Rename compaction's new generation over the log.
+    fn rename_into_place(&self, next_path: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.shared.fail_rename.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected rename failure"));
+        }
+        std::fs::rename(next_path, &self.path)
+    }
+
+    /// Open the old log again after the rename failed.
+    fn reopen_after_failed_rename(&self) -> std::io::Result<File> {
+        #[cfg(test)]
+        if self.shared.fail_reopen.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected reopen failure"));
+        }
+        OpenOptions::new().read(true).write(true).open(&self.path)
     }
 
     pub fn begin_transaction(&self) -> Result<NvramTransaction> {
@@ -1336,6 +1394,56 @@ mod tests {
             let log = tmp.open();
             assert_eq!(sorted_ids(&log), [SegmentId(1), SegmentId(2)], "{step:?}");
         }
+    }
+
+    #[test]
+    fn a_failed_rename_leaves_the_log_usable() {
+        let tmp = TempLog::new("rename_fails");
+        let log = half_live(&tmp);
+        log.shared.fail_rename.store(true, Ordering::SeqCst);
+        let err = log.compact().unwrap_err();
+        assert!(err.to_string().contains("the log is unchanged"), "{err:#}");
+        assert!(!compaction_file(&tmp.path).exists());
+        assert_eq!(log.file_header().generation, 0);
+        assert_eq!(log.read(SegmentId(2)).unwrap(), payload(2));
+        commit_described(&log, 5, b"after a failed rename");
+        drop(log);
+
+        let log = tmp.open();
+        assert_eq!(log.read(SegmentId(5)).unwrap(), b"after a failed rename");
+    }
+
+    #[test]
+    fn a_swap_that_cant_recover_refuses_reads_and_appends() {
+        let tmp = TempLog::new("swap_lost");
+        let log = half_live(&tmp);
+        log.shared.fail_rename.store(true, Ordering::SeqCst);
+        log.shared.fail_reopen.store(true, Ordering::SeqCst);
+        let err = log.compact().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("refused until the store is opened again"),
+            "{err:#}"
+        );
+
+        let lost = |err: anyhow::Error| err.to_string().contains("lost by a failed compaction");
+        assert!(lost(log.append(SegmentId(5), b"lost").unwrap_err()));
+        let mut txn = log.begin_transaction().unwrap();
+        txn.append_segment(SegmentId(6), b"lost too").unwrap();
+        assert!(lost(txn.commit().unwrap_err()));
+        assert!(lost(log.read(SegmentId(1)).unwrap_err()));
+        assert!(lost(log.verify_record(SegmentId(1)).unwrap_err()));
+        assert!(lost(log.compact().unwrap_err()));
+        drop(log);
+
+        // The old log is intact, and opening it again recovers.
+        let log = tmp.open();
+        assert_eq!(sorted_ids(&log), (1..=4).map(SegmentId).collect::<Vec<_>>());
+        for i in 1..=2 {
+            assert_eq!(log.read(SegmentId(i)).unwrap(), payload(i));
+        }
+        commit_described(&log, 5, b"after reopening");
+        assert_eq!(log.read(SegmentId(5)).unwrap(), b"after reopening");
     }
 
     #[test]
