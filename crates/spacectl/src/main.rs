@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
-use std::sync::{Arc, Once};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Once};
 use std::time::Duration;
 
 use tokio::sync::Mutex as TokioMutex;
@@ -21,7 +21,29 @@ use tracing_subscriber::EnvFilter;
 
 const NVRAM_PATH: &str = "space.nvram";
 const REGISTRY_DB_PATH: &str = "space.db";
+const JOURNAL_PATH: &str = "space.journal";
 const LIST_PAGE_SIZE: usize = 256;
+/// The shortest capsule id prefix `read` and `delete` accept.
+const MIN_PREFIX: usize = 4;
+
+/// `spacectl --version`: the build, and the on-disk format it reads and
+/// writes (#168).
+static VERSION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{} (on-disk format {})",
+        env!("CARGO_PKG_VERSION"),
+        common::format::FORMAT_VERSION
+    )
+});
+
+/// Print a line of command output. Unlike `println!`, a stdout whose reader
+/// has gone away is an error rather than a panic, and `main` ends quietly
+/// on it (#167).
+macro_rules! say {
+    ($($arg:tt)*) => {
+        writeln!(io::stdout(), $($arg)*)?
+    };
+}
 
 /// Logs go to stderr so they never mix with capsule bytes or IDs on stdout.
 /// Colour is used only when stderr is a terminal.
@@ -55,20 +77,55 @@ fn init_tracing(default_level: &str) {
 #[derive(Parser)]
 #[command(name = "spacectl")]
 #[command(about = "SPACE storage control utility", long_about = None)]
+#[command(version = VERSION.as_str())]
 #[command(
-    after_help = "Every command uses the store in the current directory: space.db and \
-                  space.journal, with segments under SPACE_STORAGE_ROOT when that's set \
-                  and in space.nvram otherwise."
+    after_help = "Every command uses the store in --store, the current directory unless \
+                  told otherwise: space.db and space.journal, with segments under \
+                  SPACE_STORAGE_ROOT when that's set and in space.nvram otherwise. Only \
+                  create and serve-s3 create a store."
 )]
 struct Cli {
+    /// The store's directory, which holds space.db, space.journal and
+    /// space.nvram.
+    #[arg(
+        long,
+        global = true,
+        env = "SPACE_STORE_DIR",
+        default_value = ".",
+        value_name = "DIR"
+    )]
+    store: PathBuf,
     #[command(subcommand)]
     command: Commands,
 }
 
+/// Whether a command may create the store it opens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Open {
+    /// `create` and `serve-s3`.
+    OrCreate,
+    /// Everything else: a missing store is an error, not a new empty one
+    /// that reads as if the data were gone (#166).
+    Existing,
+}
+
 /// sled allows one process per store, so a second spacectl (or a running
 /// serve-s3) in the same directory fails to open it.
-fn open_registry() -> Result<CapsuleRegistry> {
-    CapsuleRegistry::open(REGISTRY_DB_PATH).map_err(|err| {
+fn open_registry(dir: &Path, open: Open) -> Result<CapsuleRegistry> {
+    match open {
+        Open::OrCreate => fs::create_dir_all(dir)
+            .with_context(|| format!("can't create the store directory {}", dir.display()))?,
+        Open::Existing => {
+            if !dir.join(JOURNAL_PATH).exists() && !dir.join(REGISTRY_DB_PATH).exists() {
+                bail!(
+                    "no SPACE store in {} (looked for {JOURNAL_PATH}); use --store or cd \
+                     into the store",
+                    dir.display()
+                );
+            }
+        }
+    }
+    CapsuleRegistry::open(dir.join(REGISTRY_DB_PATH)).map_err(|err| {
         let locked = err
             .chain()
             .any(|cause| cause.to_string().contains("could not acquire lock"));
@@ -83,17 +140,107 @@ fn open_registry() -> Result<CapsuleRegistry> {
     })
 }
 
+/// `SPACE_STORAGE_ROOT`, if it's set. Set but empty is an error: an empty
+/// path is the current directory, which would quietly become a storage
+/// root (#165).
+fn storage_root() -> Result<Option<PathBuf>> {
+    match std::env::var_os("SPACE_STORAGE_ROOT") {
+        None => Ok(None),
+        Some(root) if root.is_empty() => bail!(
+            "SPACE_STORAGE_ROOT is set but empty. Unset it to keep segments in space.nvram, \
+             or set it to a directory."
+        ),
+        Some(root) => Ok(Some(PathBuf::from(root))),
+    }
+}
+
 /// The store's pipeline, as `serve-s3` opens it: segments under
 /// `SPACE_STORAGE_ROOT` when that's set, in `space.nvram` otherwise. Every
 /// command that touches segments opens it this way, so they all use the
 /// store the capsule journal is paired with.
-async fn open_store(registry: CapsuleRegistry) -> Result<RegistryPipelineHandle> {
-    match std::env::var("SPACE_STORAGE_ROOT") {
-        Ok(root) => {
-            let storage = storage::AutoFsBackend::open(PathBuf::from(root)).await?;
-            modular_pipeline::registry_pipeline_from_fs_backend(storage, registry)
+///
+/// A journal that already holds records belongs to the store its segments
+/// are in. When that place has no store yet, opening it would start a new
+/// one, so it's refused before anything is created there (#165).
+async fn open_store(dir: &Path, registry: CapsuleRegistry) -> Result<RegistryPipelineHandle> {
+    let nvram = dir.join(NVRAM_PATH);
+    let established = !registry.journal_is_empty();
+    match storage_root()? {
+        Some(root) => {
+            if established && !root.join("store").exists() {
+                let fix = if nvram.exists() {
+                    "It keeps its segments in space.nvram, so unset SPACE_STORAGE_ROOT."
+                } else {
+                    "Set SPACE_STORAGE_ROOT to the directory its segments are in."
+                };
+                bail!(
+                    "SPACE_STORAGE_ROOT is '{}', which holds no store, but the store in {} \
+                     already has records. {fix}",
+                    root.display(),
+                    dir.display()
+                );
+            }
+            let storage = storage::AutoFsBackend::open(&root).await?;
+            modular_pipeline::registry_pipeline_from_fs_backend(storage, registry).with_context(
+                || {
+                    format!(
+                        "couldn't open the segments under SPACE_STORAGE_ROOT '{}'",
+                        root.display()
+                    )
+                },
+            )
         }
-        Err(_) => modular_pipeline::registry_pipeline_from_env(NVRAM_PATH, registry),
+        None => {
+            if established && !nvram.exists() {
+                bail!(
+                    "the store in {} has records but no {NVRAM_PATH}, so its segments are \
+                     under a storage root. Set SPACE_STORAGE_ROOT to that directory.",
+                    dir.display()
+                );
+            }
+            modular_pipeline::registry_pipeline_from_env(&nvram, registry)
+                .with_context(|| format!("couldn't open {}", nvram.display()))
+        }
+    }
+}
+
+/// The capsule an argument names: its full id, or a prefix of one as `list`
+/// prints them that only one capsule has (#168).
+fn resolve_capsule(registry: &CapsuleRegistry, arg: &str) -> Result<CapsuleId> {
+    if let Ok(uuid) = arg.parse::<uuid::Uuid>() {
+        let id = CapsuleId::from_uuid(uuid);
+        if registry.get_capsule(id)?.is_none() {
+            bail!("no capsule {uuid} in this store");
+        }
+        return Ok(id);
+    }
+    let prefix = arg.to_ascii_lowercase();
+    if prefix.len() < MIN_PREFIX || !prefix.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+        bail!(
+            "'{arg}' is not a capsule id, or a prefix of one at least {MIN_PREFIX} characters \
+             long"
+        );
+    }
+    let mut found = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = registry.list_capsules(LIST_PAGE_SIZE, cursor)?;
+        let Some(last) = page.last().copied() else {
+            break;
+        };
+        cursor = Some(last);
+        found.extend(
+            page.into_iter()
+                .filter(|id| id.as_uuid().to_string().starts_with(&prefix)),
+        );
+    }
+    match found.as_slice() {
+        [] => bail!("no capsule in this store has an id starting with {arg}"),
+        [id] => Ok(*id),
+        _ => bail!(
+            "{arg} could be any of {} capsules; give more of the id",
+            found.len()
+        ),
     }
 }
 
@@ -118,7 +265,7 @@ enum Commands {
     },
     /// Read capsule contents
     Read {
-        /// Capsule UUID
+        /// Capsule ID, or a prefix of one that only one capsule has
         capsule_id: String,
     },
     /// List all capsules
@@ -126,7 +273,7 @@ enum Commands {
     /// Delete a capsule. Segments no other capsule shares are freed. An S3
     /// key that pointed at it then reads as missing.
     Delete {
-        /// Capsule UUID
+        /// Capsule ID, or a prefix of one that only one capsule has
         capsule_id: String,
     },
     /// Remove segments no capsule references, such as those an interrupted
@@ -249,13 +396,31 @@ async fn main() -> Result<()> {
     };
     init_tracing(default_level);
 
+    match run(cli).await {
+        // A reader that stopped early, such as `head`, isn't a failure.
+        Err(err) if broken_pipe(&err) => Ok(()),
+        result => result,
+    }
+}
+
+/// Whether an error is stdout's reader having gone away (#167).
+fn broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|err| err.kind() == io::ErrorKind::BrokenPipe)
+    })
+}
+
+async fn run(cli: Cli) -> Result<()> {
+    let dir = cli.store.as_path();
     match cli.command {
         Commands::Create { file, policy_file } => {
             // Read one segment at a time rather than the whole file (#99).
             let input = tokio::fs::File::open(&file)
                 .await
                 .with_context(|| format!("can't open {file}"))?;
-            let store = open_store(open_registry()?).await?;
+            let store = open_store(dir, open_registry(dir, Open::OrCreate)?).await?;
             let policy = match policy_file {
                 Some(path) => load_policy_file(&path, store.default_policy())
                     .with_context(|| format!("invalid policy file {}", path.display()))?,
@@ -263,13 +428,13 @@ async fn main() -> Result<()> {
             };
             let store = Arc::new(TokioMutex::new(store));
             let (id, size) = modular_pipeline::write_from_reader(&store, input, &policy).await?;
-            println!("Capsule created: {}", id.as_uuid());
-            println!("Size: {size} bytes");
+            say!("Capsule created: {}", id.as_uuid());
+            say!("Size: {size} bytes");
         }
         Commands::Read { capsule_id } => {
-            let uuid = capsule_id.parse()?;
-            let id = CapsuleId::from_uuid(uuid);
-            let store = open_store(open_registry()?).await?;
+            let registry = open_registry(dir, Open::Existing)?;
+            let id = resolve_capsule(&registry, &capsule_id)?;
+            let store = open_store(dir, registry).await?;
             let mut stream = store.read_capsule_stream(id).await?;
             let mut stdout = io::stdout().lock();
             while let Some(chunk) = stream.next().await {
@@ -278,15 +443,16 @@ async fn main() -> Result<()> {
             stdout.flush()?;
         }
         Commands::Delete { capsule_id } => {
-            let id = CapsuleId::from_uuid(capsule_id.parse()?);
-            let mut store = open_store(open_registry()?).await?;
+            let registry = open_registry(dir, Open::Existing)?;
+            let id = resolve_capsule(&registry, &capsule_id)?;
+            let mut store = open_store(dir, registry).await?;
             store.delete_capsule(id).await?;
-            println!("Capsule deleted: {}", id.as_uuid());
+            say!("Capsule deleted: {}", id.as_uuid());
         }
         Commands::Gc => {
-            let mut store = open_store(open_registry()?).await?;
+            let mut store = open_store(dir, open_registry(dir, Open::Existing)?).await?;
             let collected = store.garbage_collect().await?;
-            println!(
+            say!(
                 "Removed {}",
                 plural(
                     collected as u64,
@@ -297,7 +463,7 @@ async fn main() -> Result<()> {
             if let Some(log) = store.data_log() {
                 let reclaimable = log.reclaimable_bytes();
                 if reclaimable > 0 {
-                    println!(
+                    say!(
                         "{} of space.nvram can be reclaimed; run `spacectl compact`",
                         plural(reclaimable, "byte", "bytes")
                     );
@@ -305,27 +471,27 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Compact => {
-            let store = open_store(open_registry()?).await?;
+            let store = open_store(dir, open_registry(dir, Open::Existing)?).await?;
             match store.data_log() {
                 Some(log) => {
                     let before = log.size();
                     match log.compact()? {
-                        0 => println!("space.nvram: nothing to reclaim"),
-                        reclaimed => println!(
+                        0 => say!("space.nvram: nothing to reclaim"),
+                        reclaimed => say!(
                             "space.nvram: reclaimed {} of {before}, now generation {}",
                             plural(reclaimed, "byte", "bytes"),
                             log.file_header().generation
                         ),
                     }
                 }
-                None => println!(
+                None => say!(
                     "Segments under SPACE_STORAGE_ROOT are files of their own and need no \
                      compaction; `spacectl gc` deletes the unreferenced ones"
                 ),
             }
             match store.registry().compact_journal()? {
-                None => println!("space.journal: nothing to reclaim"),
-                Some(done) => println!(
+                None => say!("space.journal: nothing to reclaim"),
+                Some(done) => say!(
                     "space.journal: reclaimed {} of {}, now generation {}",
                     plural(done.reclaimed(), "byte", "bytes"),
                     done.before,
@@ -334,7 +500,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::List => {
-            let registry = open_registry()?;
+            let registry = open_registry(dir, Open::Existing)?;
             let mut cursor = None;
             let mut printed = false;
 
@@ -345,7 +511,7 @@ async fn main() -> Result<()> {
                 }
 
                 if !printed {
-                    println!("Capsule ID\tSize (bytes)\tSegments");
+                    say!("Capsule ID\tSize (bytes)\tSegments");
                     printed = true;
                 }
 
@@ -354,7 +520,7 @@ async fn main() -> Result<()> {
                 for id in capsule_ids {
                     match registry.lookup(id) {
                         Ok(capsule) => {
-                            println!(
+                            say!(
                                 "{}\t{:>12}\t{:>3}",
                                 capsule.id.as_uuid(),
                                 capsule.size,
@@ -362,39 +528,39 @@ async fn main() -> Result<()> {
                             );
                         }
                         Err(err) => {
-                            println!("{} \t<error: {}>", id.as_uuid(), err);
+                            say!("{} \t<error: {}>", id.as_uuid(), err);
                         }
                     }
                 }
             }
 
             if !printed {
-                println!("(no capsules)");
+                say!("(no capsules)");
             }
         }
         Commands::Scrub { deep } => {
-            let registry = open_registry()?;
-            let store = open_store(registry.clone()).await?;
+            let registry = open_registry(dir, Open::Existing)?;
+            let store = open_store(dir, registry.clone()).await?;
             let (kind, name) = if deep {
                 (ScrubKind::Deep, "Deep")
             } else {
                 (ScrubKind::Light, "Light")
             };
             let report = store.scrub_all(kind).await;
-            println!(
+            say!(
                 "{name} scrub: checked {} ({}) in {:.1?}",
                 plural(report.segments_checked as u64, "segment", "segments"),
                 plural(report.bytes_checked, "byte", "bytes"),
                 report.duration
             );
             if report.segments_skipped > 0 {
-                println!(
+                say!(
                     "Skipped {}: set SPACE_MASTER_KEY to check encrypted segments' MACs",
                     plural(report.segments_skipped as u64, "segment", "segments")
                 );
             }
             if report.errors.is_empty() {
-                println!("All healthy");
+                say!("All healthy");
             } else {
                 let mut owners: HashMap<SegmentId, Vec<CapsuleId>> = HashMap::new();
                 let failed: HashSet<SegmentId> = report
@@ -408,7 +574,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 for error in &report.errors {
-                    println!("{}", describe_scrub_error(error, &owners));
+                    say!("{}", describe_scrub_error(error, &owners));
                 }
                 let damaged =
                     report.mac_failures + report.content_failures + report.metadata_failures;
@@ -432,12 +598,17 @@ async fn main() -> Result<()> {
         } => {
             use protocol_s3::{server::S3Server, S3View};
 
-            println!("Starting SPACE S3 Protocol View...");
-
-            let s3_view = S3View::new_modular(open_store(open_registry()?).await?);
+            // Listen before opening the store, so a port that's in use
+            // doesn't leave a new store behind (#166).
+            let addr = SocketAddr::new(bind, port);
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("couldn't listen on {addr}; try another --port"))?;
+            let registry = open_registry(dir, Open::OrCreate)?;
+            let s3_view = S3View::new_modular(open_store(dir, registry).await?);
             let reclaim_every =
                 (reclaim_interval > 0).then(|| Duration::from_secs(reclaim_interval));
-            let server = S3Server::new(s3_view, SocketAddr::new(bind, port))
+            let server = S3Server::new(s3_view, listener)
                 .reclaim_every(reclaim_every)
                 .scrub(scrub.config());
             server.run().await?;
@@ -450,6 +621,83 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::format::CapsuleManifest;
+
+    #[test]
+    fn capsules_resolve_by_full_id_or_unique_prefix() {
+        let dir = std::env::temp_dir().join(format!("spacectl_resolve_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = CapsuleRegistry::open(dir.join(REGISTRY_DB_PATH)).unwrap();
+        let ids = [
+            "69b97199-3eec-4acd-adb2-e6ee831001c8",
+            "69b97299-0000-4000-8000-000000000000",
+            "e49ef47a-1de2-4f9c-a750-32305ba380a6",
+        ];
+        for id in ids {
+            registry
+                .create_capsule(CapsuleManifest {
+                    capsule_id: CapsuleId::from_uuid(id.parse().unwrap()),
+                    created_at: 0,
+                    size: 0,
+                    digest: [0; 32],
+                    dedupe: true,
+                    requires_encryption: false,
+                    deduped_bytes: 0,
+                    policy: Policy::default(),
+                    entries: Vec::new(),
+                })
+                .unwrap();
+        }
+        let resolve = |arg: &str| {
+            resolve_capsule(&registry, arg)
+                .map(|id| id.as_uuid().to_string())
+                .map_err(|err| err.to_string())
+        };
+
+        assert_eq!(resolve(ids[0]).unwrap(), ids[0]);
+        assert_eq!(resolve(&ids[0].to_uppercase()).unwrap(), ids[0]);
+        assert_eq!(resolve("69b971").unwrap(), ids[0]);
+        assert_eq!(resolve("E49E").unwrap(), ids[2]);
+        assert_eq!(resolve("e49ef47a-1de2").unwrap(), ids[2]);
+        assert!(resolve("69b9")
+            .unwrap_err()
+            .contains("69b9 could be any of 2 capsules"));
+        assert!(resolve("0000")
+            .unwrap_err()
+            .contains("no capsule in this store has an id starting with 0000"));
+        for bad in ["69b", "not-a-uuid", ""] {
+            assert!(
+                resolve(bad)
+                    .unwrap_err()
+                    .contains(&format!("'{bad}' is not a capsule id")),
+                "{bad}"
+            );
+        }
+        let missing = "00000000-0000-0000-0000-000000000001";
+        assert_eq!(
+            resolve(missing).unwrap_err(),
+            format!("no capsule {missing} in this store")
+        );
+
+        drop(registry);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn version_names_the_on_disk_format() {
+        let err = Cli::try_parse_from(["spacectl", "--version"])
+            .err()
+            .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            err.to_string().trim(),
+            format!(
+                "spacectl {} (on-disk format {})",
+                env!("CARGO_PKG_VERSION"),
+                common::format::FORMAT_VERSION
+            )
+        );
+    }
 
     #[test]
     fn serve_s3_listens_on_loopback_by_default() {

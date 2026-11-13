@@ -19,7 +19,7 @@ cargo build --release -p spacectl
 ./target/release/spacectl serve-s3 --port 8080
 ```
 
-`--port` (or `-p`) defaults to 8080. The server stores its data in the current directory:
+`--port` (or `-p`) defaults to 8080. The server stores its data in the current directory, or the one `--store <dir>` (or `SPACE_STORE_DIR`) names:
 
 | Path | Contents |
 |------|----------|
@@ -153,10 +153,12 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 
 **Port already in use:** pick another port with `--port 9000`. To see what holds the port, run `lsof -i :8080` on Linux/macOS or `netstat -ano | findstr :8080` on Windows.
 
-**`spacectl` fails with "could not acquire lock" on `space.db`** (`list` panics; the other commands print an error): a `serve-s3` process is still running in that directory.
+**`spacectl` fails with `space.db is locked by another process`**: a `serve-s3` process, or another `spacectl` command, is still using that store. Only one can use a store at a time.
+
+**`no SPACE store in .`**: `spacectl` only creates a store with `create` or `serve-s3`. Run the command from the store's directory, or point at it with `--store <dir>`.
 
 **Start from an empty store (deletes all data):**
 
 ```bash
-rm -rf space.db space.journal space.nvram space.nvram.segments
+rm -rf space.db space.journal space.nvram space.nvram.segments space.storage
 ```

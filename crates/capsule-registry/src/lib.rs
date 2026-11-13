@@ -876,6 +876,12 @@ impl CapsuleRegistry {
         self.journal.store_id()
     }
 
+    /// Whether the capsule journal has never held a record. Until it has,
+    /// it can still be paired with any store's data.
+    pub fn journal_is_empty(&self) -> bool {
+        self.journal.is_empty()
+    }
+
     /// Pair the journal with a data log whose store id is `store_id`. A
     /// journal with no records takes the log's id; one with records must
     /// already have it.
