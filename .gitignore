@@ -9,6 +9,9 @@
 *.nvram.segments
 *.metadata
 **/space.db/
+**/space.journal
+*.compact
+**/space.storage/
 
 # Test files
 test.txt

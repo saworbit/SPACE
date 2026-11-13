@@ -2,10 +2,10 @@ use anyhow::Result;
 
 use axum::{routing::get, Router};
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
@@ -72,16 +72,18 @@ pub fn router(s3_view: Arc<S3View>) -> Router {
 /// a trusted network.
 pub struct S3Server {
     s3_view: Arc<S3View>,
-    addr: SocketAddr,
+    listener: TcpListener,
     reclaim_every: Option<Duration>,
     scrub: Option<ScrubConfig>,
 }
 
 impl S3Server {
-    pub fn new(s3_view: S3View, addr: SocketAddr) -> Self {
+    /// Serve `s3_view` on `listener`. The caller binds it, so it can fail
+    /// on a port in use before opening the store.
+    pub fn new(s3_view: S3View, listener: TcpListener) -> Self {
         Self {
             s3_view: Arc::new(s3_view),
-            addr,
+            listener,
             reclaim_every: None,
             scrub: None,
         }
@@ -112,8 +114,8 @@ impl S3Server {
         };
         let app = router(self.s3_view);
 
-        let addr = self.addr;
-        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let listener = self.listener;
+        let addr = listener.local_addr()?;
 
         info!("🚀 SPACE S3 Protocol View listening on http://{}", addr);
         info!("📦 Ready to serve capsules via S3 API");

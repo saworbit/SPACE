@@ -1,7 +1,8 @@
 //! Runs the real `spacectl` binary in a scratch directory.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("spacectl_{name}_{}", uuid::Uuid::new_v4()));
@@ -15,6 +16,7 @@ fn spacectl(dir: &Path, args: &[&str]) -> Output {
         .current_dir(dir)
         .env_remove("SPACE_MASTER_KEY")
         .env_remove("SPACE_STORAGE_ROOT")
+        .env_remove("SPACE_STORE_DIR")
         .env("RUST_LOG", "debug")
         .output()
         .unwrap()
@@ -61,6 +63,175 @@ fn locked_store_is_an_error_not_a_panic() {
     assert!(!out.status.success());
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert!(stderr.contains("locked by another process"), "{stderr}");
+
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// spacectl with no SPACE_* variables, its output piped.
+fn spawn(dir: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_spacectl"));
+    command
+        .args(args)
+        .current_dir(dir)
+        .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_STORAGE_ROOT")
+        .env_remove("SPACE_STORE_DIR")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    command.spawn().unwrap()
+}
+
+/// Only `create` and `serve-s3` create a store. Every other command in a
+/// directory without one fails and leaves the directory empty, and
+/// `--store` or SPACE_STORE_DIR point at a store elsewhere (#166).
+#[test]
+fn commands_other_than_create_need_an_existing_store() {
+    let dir = scratch_dir("no_store");
+    let id = "00000000-0000-0000-0000-000000000001";
+    for args in [
+        &["list"][..],
+        &["read", id],
+        &["delete", id],
+        &["gc"],
+        &["compact"],
+        &["scrub"],
+    ] {
+        let out = spacectl(&dir, args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(stderr.contains("no SPACE store in ."), "{args:?}: {stderr}");
+    }
+    assert_eq!(entries(&dir), Vec::<String>::new());
+
+    std::fs::write(dir.join("a.txt"), b"elsewhere").unwrap();
+    let store = dir.join("store");
+    let store_arg = store.to_str().unwrap();
+    let id = created_id(&spacectl(
+        &dir,
+        &["--store", store_arg, "create", "-f", "a.txt"],
+    ));
+    assert!(store.join("space.journal").exists());
+    let read = spacectl(&dir, &["read", &id, "--store", store_arg]);
+    assert_eq!(read.stdout, b"elsewhere");
+    let list = spawn(&dir, &["list"], &[("SPACE_STORE_DIR", &store)])
+        .wait_with_output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&list.stdout).contains(&id));
+    assert_eq!(entries(&dir), ["a.txt", "store"]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A reader that stops early, as `head` does, ends the command quietly with
+/// status 0 rather than a panic or an error (#167).
+#[test]
+fn a_closed_stdout_is_a_clean_exit() {
+    let dir = scratch_dir("closed_stdout");
+    std::fs::write(dir.join("a.txt"), b"some bytes").unwrap();
+    let id = created_id(&spacectl(&dir, &["create", "-f", "a.txt"]));
+    for args in [&["list"][..], &["read", &id]] {
+        let mut child = spawn(&dir, args, &[]);
+        // Closed before the command can have opened the store.
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.is_empty(), "{args:?}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SPACE_STORAGE_ROOT set but empty is an error. A store's journal is
+/// checked against where its segments are before anything new is created,
+/// and the errors say which setting to change (#165).
+#[test]
+fn a_wrong_storage_root_creates_nothing() {
+    let dir = scratch_dir("wrong_root");
+    std::fs::write(dir.join("a.txt"), b"in space.nvram").unwrap();
+    let id = created_id(&spacectl(&dir, &["create", "-f", "a.txt"]));
+    let before = entries(&dir);
+
+    let failure = |dir: &Path, root: Option<&Path>, args: &[&str]| {
+        let envs: Vec<(&str, &Path)> = root
+            .map(|r| ("SPACE_STORAGE_ROOT", r))
+            .into_iter()
+            .collect();
+        let out = spawn(dir, args, &envs).wait_with_output().unwrap();
+        assert!(!out.status.success(), "{args:?} succeeded");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    for args in [&["read", &id][..], &["create", "-f", "a.txt"]] {
+        let stderr = failure(&dir, Some(Path::new("")), args);
+        assert!(
+            stderr.contains("SPACE_STORAGE_ROOT is set but empty"),
+            "{stderr}"
+        );
+        let stderr = failure(&dir, Some(&dir.join("sr")), args);
+        assert!(stderr.contains("holds no store"), "{stderr}");
+        assert!(stderr.contains("unset SPACE_STORAGE_ROOT"), "{stderr}");
+    }
+    assert_eq!(entries(&dir), before);
+
+    // A store under a root, opened without it.
+    let rooted = scratch_dir("rooted");
+    let root = rooted.join("root");
+    std::fs::write(rooted.join("a.txt"), b"under a root").unwrap();
+    let rooted_id = created_id(&spacectl_in_root(
+        &rooted,
+        &root,
+        &["create", "-f", "a.txt"],
+    ));
+    let stderr = failure(&rooted, None, &["read", &rooted_id]);
+    assert!(stderr.contains("Set SPACE_STORAGE_ROOT"), "{stderr}");
+    assert!(!rooted.join("space.nvram").exists());
+
+    // Another store's root names the setting.
+    let stderr = failure(&dir, Some(&root), &["read", &id]);
+    assert!(stderr.contains("SPACE_STORAGE_ROOT"), "{stderr}");
+    assert!(stderr.contains("different stores"), "{stderr}");
+    assert_eq!(entries(&dir), before);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&rooted);
+}
+
+/// serve-s3 listens before it opens the store, so a port in use is an
+/// error naming the address and leaves no store behind (#166).
+#[test]
+fn serve_s3_on_a_busy_port_leaves_no_store() {
+    let dir = scratch_dir("busy_port");
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port().to_string();
+    let mut child = spawn(&dir, &["serve-s3", "--port", &port], &[]);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("serve-s3 started on a port that's in use");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains(&format!("couldn't listen on 127.0.0.1:{port}")),
+        "{stderr}"
+    );
+    assert_eq!(entries(&dir), Vec::<String>::new());
 
     drop(held);
     let _ = std::fs::remove_dir_all(&dir);
@@ -209,13 +380,13 @@ fn gc_and_compact_reclaim_what_no_capsule_references() {
 #[test]
 fn compact_under_a_storage_root_compacts_only_the_journal() {
     let dir = scratch_dir("storage_root");
-    let out = Command::new(env!("CARGO_BIN_EXE_spacectl"))
-        .arg("compact")
-        .current_dir(&dir)
-        .env_remove("SPACE_MASTER_KEY")
-        .env("SPACE_STORAGE_ROOT", dir.join("storage"))
-        .output()
-        .unwrap();
+    std::fs::write(dir.join("a.txt"), b"under a root").unwrap();
+    created_id(&spacectl_in_root(
+        &dir,
+        &dir.join("storage"),
+        &["create", "-f", "a.txt"],
+    ));
+    let out = spacectl_in_root(&dir, &dir.join("storage"), &["compact"]);
     assert!(
         out.status.success(),
         "{}",
@@ -289,6 +460,7 @@ fn spacectl_in_root(dir: &Path, root: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(dir)
         .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_STORE_DIR")
         .env("SPACE_STORAGE_ROOT", root)
         .output()
         .unwrap()
