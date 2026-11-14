@@ -163,7 +163,8 @@ pub fn router_allowing(s3_view: Arc<S3View>, hosts: AllowedHosts) -> Router {
             get(get_object)
                 .put(put_object)
                 .head(head_object)
-                .delete(delete_object),
+                .delete(delete_object)
+                .post(post_object),
         )
         .method_not_allowed_fallback(not_implemented)
         .fallback(not_implemented)

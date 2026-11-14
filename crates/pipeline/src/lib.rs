@@ -542,6 +542,9 @@ pub struct CapsuleWrite {
     entries: Vec<ManifestEntry>,
     /// BLAKE3 over the logical bytes so far.
     digest: blake3::Hasher,
+    /// The digest of a composed write, which the caller computed from the
+    /// bytes it reads ([`Pipeline::begin_composed_write`]).
+    composed_digest: Option<[u8; 32]>,
     stats: DedupStats,
     size: u64,
     ended: bool,
@@ -659,11 +662,70 @@ where
             segments: Vec::new(),
             entries: Vec::new(),
             digest: blake3::Hasher::new(),
+            composed_digest: None,
             stats: DedupStats::new(),
             size: 0,
             ended: false,
         };
         Ok(write)
+    }
+
+    /// Start a write made of segments other capsules already hold, in
+    /// logical byte order: the parts of an S3 multipart upload (#201). No
+    /// bytes are written. Each segment gains a reference, as a dedup hit's
+    /// does, and is pinned until the write commits or aborts. `digest` is
+    /// BLAKE3 of the composed bytes, which the caller read to compute it.
+    /// Every segment must be encrypted exactly when `policy` asks for it, so
+    /// the capsule reads back the way its policy says. Commit it with
+    /// [`Pipeline::finish_write_with`]; on an error the references already
+    /// taken are released.
+    pub async fn begin_composed_write(
+        &mut self,
+        policy: &Policy,
+        segments: &[SegmentId],
+        digest: [u8; 32],
+    ) -> Result<CapsuleWrite> {
+        let mut write = self.begin_write(policy)?;
+        write.composed_digest = Some(digest);
+        write.ended = true;
+        for &segment in segments {
+            if let Err(err) = self.compose_segment(&mut write, segment).await {
+                self.abort_after_error(write).await;
+                return Err(err);
+            }
+        }
+        Ok(write)
+    }
+
+    async fn compose_segment(
+        &mut self,
+        write: &mut CapsuleWrite,
+        segment: SegmentId,
+    ) -> Result<()> {
+        let mut metadata = self.storage.metadata(segment).await?;
+        if metadata.encrypted != write.encryption_policy.is_enabled() {
+            return Err(anyhow!(
+                "segment {segment:?} is {}encrypted, unlike the capsule it would join",
+                if metadata.encrypted { "" } else { "not " }
+            ));
+        }
+        let plain_len = match metadata.plain_len {
+            Some(len) => len as usize,
+            None if !metadata.compressed => metadata.len as usize,
+            None => return Err(anyhow!("segment {segment:?} doesn't record its length")),
+        };
+        metadata.ref_count += 1;
+        metadata.deduplicated = metadata.ref_count > 1;
+        let entry = manifest_entry(segment, &metadata, plain_len)?;
+        let mut txn = self.storage.begin_txn().await?;
+        txn.set_segment_metadata(segment, metadata).await?;
+        txn.commit().await?;
+        // Recorded before anything else can fail, so an abort releases it.
+        write.segments.push(segment);
+        self.pin(&[segment]);
+        write.entries.push(entry);
+        write.size += plain_len as u64;
+        Ok(())
     }
 
     /// Store the next chunk of an open write as one segment. Every chunk but
@@ -826,7 +888,9 @@ where
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             size: write.size,
-            digest: *write.digest.finalize().as_bytes(),
+            digest: write
+                .composed_digest
+                .unwrap_or_else(|| *write.digest.finalize().as_bytes()),
             dedupe: write.dedupe,
             requires_encryption: write.encryption_policy.is_enabled(),
             deduped_bytes: write.stats.bytes_saved,

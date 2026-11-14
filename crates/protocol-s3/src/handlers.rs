@@ -17,7 +17,7 @@ use tracing::{error, info};
 use crate::checksum::{self, Algorithm};
 use crate::{
     ByteRange, ChunkedBody, ListPage, ListQuery, ObjectMapping, Preconditions, PutOptions, S3Error,
-    S3Result, S3View, STORED_HEADERS, USER_METADATA_PREFIX,
+    S3Result, S3View, MAX_PART_NUMBER, STORED_HEADERS, USER_METADATA_PREFIX,
 };
 
 pub type AppState = Arc<S3View>;
@@ -33,6 +33,10 @@ impl IntoResponse for S3Error {
                 (StatusCode::NOT_FOUND, "NoSuchBucket", bucket.as_str())
             }
             S3Error::NoSuchKey(key) => (StatusCode::NOT_FOUND, "NoSuchKey", key.as_str()),
+            S3Error::NoSuchUpload(id) => (StatusCode::NOT_FOUND, "NoSuchUpload", id.as_str()),
+            S3Error::InvalidPart(_) => (StatusCode::BAD_REQUEST, "InvalidPart", ""),
+            S3Error::InvalidPartOrder => (StatusCode::BAD_REQUEST, "InvalidPartOrder", ""),
+            S3Error::EntityTooSmall(_) => (StatusCode::BAD_REQUEST, "EntityTooSmall", ""),
             S3Error::BucketNotEmpty(bucket) => {
                 (StatusCode::CONFLICT, "BucketNotEmpty", bucket.as_str())
             }
@@ -422,6 +426,9 @@ pub async fn put_object(
     body: Body,
 ) -> Response {
     info!("PUT (streaming) /{}/{}", bucket, key);
+    if query_param(&query, "uploadId").is_some() || query_param(&query, "partNumber").is_some() {
+        return upload_part(&s3, &bucket, &key, &query, &request_headers, body).await;
+    }
     if let Err(e) =
         check_query(&query, &[], &["PutObject"]).and_then(|()| check_put_headers(&request_headers))
     {
@@ -468,6 +475,9 @@ pub async fn get_object(
     request_headers: HeaderMap,
 ) -> Response {
     info!("GET /{}/{}", bucket, key);
+    if let Some(upload_id) = query_param(&query, "uploadId") {
+        return list_parts(&s3, &bucket, &key, upload_id, &query);
+    }
     let allowed = RESPONSE_OVERRIDES.map(|(param, _)| param);
     let overrides = match check_query(&query, &allowed, &["GetObject"])
         .and_then(|()| response_overrides(&query))
@@ -539,6 +549,15 @@ pub async fn delete_object(
     Query(query): RawQuery,
 ) -> Response {
     info!("DELETE /{}/{}", bucket, key);
+    if let Some(upload_id) = query_param(&query, "uploadId") {
+        if let Err(e) = check_query(&query, &["uploadId"], &["AbortMultipartUpload"]) {
+            return e.into_response();
+        }
+        return match s3.abort_multipart_upload(&bucket, &key, upload_id).await {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => e.into_response(),
+        };
+    }
     if let Err(e) = check_query(&query, &[], &["DeleteObject"]) {
         return e.into_response();
     }
@@ -844,6 +863,302 @@ fn parse_delete(body: &[u8]) -> S3Result<DeleteRequest> {
         )));
     }
     Ok(request)
+}
+
+/// The last value of query parameter `name`, if it's there.
+fn query_param<'a>(query: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    query
+        .iter()
+        .rev()
+        .find(|(p, _)| p == name)
+        .map(|(_, v)| v.as_str())
+}
+
+fn xml_response(x: String) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/xml")],
+        x,
+    )
+        .into_response()
+}
+
+/// POST /{bucket}/{key}: CreateMultipartUpload (`?uploads`) and
+/// CompleteMultipartUpload (`?uploadId=`) (#201).
+pub async fn post_object(
+    State(s3): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    Query(query): RawQuery,
+    request_headers: HeaderMap,
+    body: Body,
+) -> Response {
+    info!("POST /{}/{}", bucket, key);
+    if query.iter().any(|(name, _)| name == "uploads") {
+        let created = async {
+            check_query(&query, &["uploads"], &["CreateMultipartUpload"])?;
+            check_put_headers(&request_headers)?;
+            let metadata = stored_metadata(&request_headers)?;
+            s3.create_multipart_upload(&bucket, &key, metadata).await
+        };
+        return match created.await {
+            Ok(upload_id) => {
+                let mut x = String::from(
+                    r#"<?xml version="1.0" encoding="UTF-8"?><InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+                );
+                element(&mut x, "Bucket", &bucket);
+                element(&mut x, "Key", &key);
+                element(&mut x, "UploadId", &upload_id);
+                x.push_str("</InitiateMultipartUploadResult>");
+                xml_response(x)
+            }
+            Err(e) => e.into_response(),
+        };
+    }
+    let Some(upload_id) = query_param(&query, "uploadId") else {
+        return S3Error::NotImplemented(format!(
+            "POST /{bucket}/{key} is implemented only as CreateMultipartUpload (?uploads) and \
+             CompleteMultipartUpload (?uploadId)"
+        ))
+        .into_response();
+    };
+    if let Err(e) = check_query(&query, &["uploadId"], &["CompleteMultipartUpload"]) {
+        return e.into_response();
+    }
+    let parts = match axum::body::to_bytes(body, MAX_COMPLETE_BODY).await {
+        Ok(bytes) => parse_complete(&bytes),
+        Err(_) => Err(S3Error::MalformedXML(format!(
+            "the CompleteMultipartUpload document can be at most {MAX_COMPLETE_BODY} bytes"
+        ))),
+    };
+    let completed = match parts {
+        Ok(parts) => {
+            s3.complete_multipart_upload(&bucket, &key, upload_id, &parts)
+                .await
+        }
+        Err(e) => Err(e),
+    };
+    match completed {
+        Ok(capsule_id) => {
+            let mut x = String::from(
+                r#"<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+            );
+            element(
+                &mut x,
+                "Location",
+                &format!("/{bucket}/{}", url_encode(&key)),
+            );
+            element(&mut x, "Bucket", &bucket);
+            element(&mut x, "Key", &key);
+            element(&mut x, "ETag", &etag(capsule_id));
+            x.push_str("</CompleteMultipartUploadResult>");
+            xml_response(x)
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// PUT /{bucket}/{key}?partNumber=&uploadId=: UploadPart. Its body is
+/// checked against its digest headers and trailer as a PUT's is.
+async fn upload_part(
+    s3: &S3View,
+    bucket: &str,
+    key: &str,
+    query: &[(String, String)],
+    request_headers: &HeaderMap,
+    body: Body,
+) -> Response {
+    let options = (|| -> S3Result<PutOptions> {
+        check_query(query, &["uploadId", "partNumber"], &["UploadPart"])?;
+        check_put_headers(request_headers)?;
+        Ok(PutOptions {
+            digests: expected_digests(request_headers)?,
+            chunked: chunked_body(request_headers)?,
+            ..PutOptions::default()
+        })
+    })();
+    let options = match options {
+        Ok(options) => options,
+        Err(e) => return e.into_response(),
+    };
+    let (Some(upload_id), Some(number)) = (
+        query_param(query, "uploadId"),
+        query_param(query, "partNumber"),
+    ) else {
+        return S3Error::InvalidArgument(
+            "UploadPart needs both partNumber and uploadId".to_string(),
+        )
+        .into_response();
+    };
+    let Ok(number) = number.parse::<u32>() else {
+        return S3Error::InvalidArgument(format!(
+            "Part number must be an integer between 1 and {MAX_PART_NUMBER}, inclusive"
+        ))
+        .into_response();
+    };
+    let stream = body.into_data_stream().map_err(Error::from).into_stream();
+    match s3
+        .upload_part(bucket, key, upload_id, number, stream, &options)
+        .await
+    {
+        Ok(capsule_id) => (StatusCode::OK, [(header::ETAG, etag(capsule_id))]).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// GET /{bucket}/{key}?uploadId=: ListParts, with `max-parts` (at most
+/// 1000) and `part-number-marker`.
+fn list_parts(
+    s3: &S3View,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    query: &[(String, String)],
+) -> Response {
+    let listed = (|| -> S3Result<(u32, u32, Vec<crate::Part>)> {
+        check_query(
+            query,
+            &["uploadId", "max-parts", "part-number-marker"],
+            &["ListParts"],
+        )?;
+        let number = |name: &str, default: u32, max: u32| match query_param(query, name) {
+            None => Ok(default),
+            Some(v) => v.parse::<u32>().ok().filter(|n| *n <= max).ok_or_else(|| {
+                S3Error::InvalidArgument(format!("{name} must be an integer up to {max}"))
+            }),
+        };
+        let max = number("max-parts", 1000, 1000)?.max(1);
+        let marker = number("part-number-marker", 0, MAX_PART_NUMBER)?;
+        let parts = s3.list_parts(bucket, key, upload_id)?;
+        Ok((max, marker, parts))
+    })();
+    let (max, marker, parts) = match listed {
+        Ok(listed) => listed,
+        Err(e) => return e.into_response(),
+    };
+    let after: Vec<_> = parts.into_iter().filter(|p| p.number > marker).collect();
+    let truncated = after.len() > max as usize;
+    let page = &after[..after.len().min(max as usize)];
+
+    let mut x = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    element(&mut x, "Bucket", bucket);
+    element(&mut x, "Key", key);
+    element(&mut x, "UploadId", upload_id);
+    element(&mut x, "PartNumberMarker", &marker.to_string());
+    if let Some(last) = page.last() {
+        element(&mut x, "NextPartNumberMarker", &last.number.to_string());
+    }
+    element(&mut x, "MaxParts", &max.to_string());
+    element(
+        &mut x,
+        "IsTruncated",
+        if truncated { "true" } else { "false" },
+    );
+    element(&mut x, "StorageClass", "STANDARD");
+    for part in page {
+        x.push_str("<Part>");
+        element(&mut x, "PartNumber", &part.number.to_string());
+        element(&mut x, "LastModified", &iso8601(part.created_at));
+        element(&mut x, "ETag", &etag(part.capsule_id));
+        element(&mut x, "Size", &part.size.to_string());
+        x.push_str("</Part>");
+    }
+    x.push_str("</ListPartsResult>");
+    xml_response(x)
+}
+
+/// A CompleteMultipartUpload document names at most 10000 parts, each in a
+/// few hundred bytes.
+const MAX_COMPLETE_BODY: usize = 4 * 1024 * 1024;
+
+/// Read a `CompleteMultipartUpload` document: each `Part`'s `PartNumber`
+/// and `ETag`, in the order given. A part's checksum elements are ignored:
+/// each part was checked against its own when it was uploaded. Anything
+/// else is `MalformedXML`.
+fn parse_complete(body: &[u8]) -> S3Result<Vec<(u32, String)>> {
+    let bad = |why: &str| S3Error::MalformedXML(why.to_string());
+    let doc = std::str::from_utf8(body).map_err(|_| bad("the document isn't UTF-8"))?;
+    let leaf = |name: &str| {
+        matches!(
+            name,
+            "PartNumber"
+                | "ETag"
+                | "ChecksumCRC32"
+                | "ChecksumCRC32C"
+                | "ChecksumCRC64NVME"
+                | "ChecksumSHA1"
+                | "ChecksumSHA256"
+        )
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    let mut text = String::new();
+    let (mut number, mut tag) = (None, None);
+    let mut parts = Vec::new();
+    let mut seen_root = false;
+    for event in xml_events(doc.trim_start_matches('\u{feff}'))? {
+        match event {
+            XmlEvent::Open(name) => {
+                let allowed = match stack.as_slice() {
+                    [] => name == "CompleteMultipartUpload" && !seen_root,
+                    ["CompleteMultipartUpload"] => name == "Part",
+                    ["CompleteMultipartUpload", "Part"] => leaf(name),
+                    _ => false,
+                };
+                if !allowed {
+                    return Err(bad(&format!("unexpected element <{name}>")));
+                }
+                seen_root = true;
+                if name == "Part" {
+                    (number, tag) = (None, None);
+                }
+                stack.push(name);
+                text.clear();
+            }
+            XmlEvent::Text(t) => {
+                if stack.last().is_some_and(|name| leaf(name)) {
+                    text.push_str(&t);
+                } else if !t.trim().is_empty() {
+                    return Err(bad("text outside an element that holds text"));
+                }
+            }
+            XmlEvent::Close(name) => {
+                if stack.pop() != Some(name) {
+                    return Err(bad(&format!("unmatched </{name}>")));
+                }
+                match name {
+                    "PartNumber" => {
+                        number = Some(
+                            text.trim()
+                                .parse::<u32>()
+                                .map_err(|_| bad("a PartNumber that isn't a number"))?,
+                        )
+                    }
+                    "ETag" => tag = Some(std::mem::take(&mut text)),
+                    "Part" => {
+                        let number = number
+                            .take()
+                            .ok_or_else(|| bad("a Part without a PartNumber"))?;
+                        let tag = tag.take().ok_or_else(|| bad("a Part without an ETag"))?;
+                        parts.push((number, tag));
+                    }
+                    _ => {}
+                }
+                text.clear();
+            }
+        }
+    }
+    if !seen_root || !stack.is_empty() {
+        return Err(bad(
+            "the document isn't one whole <CompleteMultipartUpload> element",
+        ));
+    }
+    if parts.len() > MAX_PART_NUMBER as usize {
+        return Err(bad(&format!(
+            "a CompleteMultipartUpload names at most {MAX_PART_NUMBER} Parts"
+        )));
+    }
+    Ok(parts)
 }
 
 /// Split an XML document into elements and text, decoding entities and

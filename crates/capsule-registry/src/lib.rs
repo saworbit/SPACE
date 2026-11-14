@@ -149,6 +149,22 @@ pub mod modular_pipeline {
             }
         }
 
+        /// A write made of segments other capsules hold
+        /// ([`Pipeline::begin_composed_write`]).
+        pub async fn begin_composed_write(
+            &mut self,
+            policy: &Policy,
+            segments: &[SegmentId],
+            digest: [u8; 32],
+        ) -> Result<CapsuleWrite> {
+            match self {
+                Self::Encrypted(p) => p.begin_composed_write(policy, segments, digest).await,
+                Self::Plain(p) => p.begin_composed_write(policy, segments, digest).await,
+                Self::FsEncrypted(p) => p.begin_composed_write(policy, segments, digest).await,
+                Self::FsPlain(p) => p.begin_composed_write(policy, segments, digest).await,
+            }
+        }
+
         pub async fn write_chunk(&mut self, write: &mut CapsuleWrite, chunk: &[u8]) -> Result<()> {
             match self {
                 Self::Encrypted(p) => p.write_chunk(write, chunk).await,

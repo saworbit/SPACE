@@ -16,7 +16,7 @@ See [RESET.md](RESET.md) for why the hard restart happened and what was kept.
 
 - Modular pipeline as the default path.
 - Automatic background GC and working reference counting. **Done:** reference counts are derived from the capsule journal, and `serve-s3` compacts and garbage-collects on a schedule ([#97](https://github.com/saworbit/SPACE/issues/97), [#108](https://github.com/saworbit/SPACE/issues/108)).
-- S3 view: multipart upload.
+- S3 view: multipart upload. **Done** ([#201](https://github.com/saworbit/SPACE/issues/201)).
 - spacectl polish (progress, doctor, config, completions).
 - Property tests and basic benchmarks for the pipeline.
 - External review of the encryption crate when the core is stable.
