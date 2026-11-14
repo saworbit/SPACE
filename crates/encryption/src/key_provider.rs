@@ -36,16 +36,7 @@ pub type EnvProvider = EnvKeyProvider;
 #[async_trait]
 impl KeyProvider for EnvKeyProvider {
     async fn fetch_master_key(&self) -> Result<Zeroizing<Vec<u8>>> {
-        // No fallback key: a missing variable must not silently encrypt
-        // under a fixed, public key (#84).
-        let key_material = std::env::var(&self.var).map_err(|_| {
-            EncryptionError::InvalidConfiguration(format!(
-                "{} environment variable not set",
-                self.var
-            ))
-        })?;
-        let bytes = parse_key_material(&key_material, &format!("env:{}", self.var))?;
-        Ok(Zeroizing::new(bytes))
+        Ok(Zeroizing::new(master_key_from_env(&self.var)?.to_vec()))
     }
 }
 
@@ -74,22 +65,23 @@ impl KeyProvider for FileKeyProvider {
             ))
         })?;
 
+        // A key file holds the key in hex, as the variable does, or as its
+        // 32 raw bytes.
         let trimmed = trim_ascii_whitespace(&raw);
-
-        let bytes = match std::str::from_utf8(trimmed) {
-            Ok(s) => parse_key_material(s, &format!("file:{}", self.path.display()))?,
-            Err(_) => {
-                if trimmed.len() != MASTER_KEY_SIZE {
-                    return Err(EncryptionError::InvalidKeyLength {
-                        expected: MASTER_KEY_SIZE,
-                        actual: trimmed.len(),
-                    });
-                }
-                trimmed.to_vec()
-            }
-        };
-
-        Ok(Zeroizing::new(bytes))
+        let source = format!("the master key file {}", self.path.display());
+        if let Some(key) = std::str::from_utf8(trimmed)
+            .ok()
+            .and_then(|text| parse_master_key(text, &source).ok())
+        {
+            return Ok(Zeroizing::new(key.to_vec()));
+        }
+        if trimmed.len() != MASTER_KEY_SIZE {
+            return Err(EncryptionError::InvalidKeyLength {
+                expected: MASTER_KEY_SIZE,
+                actual: trimmed.len(),
+            });
+        }
+        Ok(Zeroizing::new(trimmed.to_vec()))
     }
 }
 
@@ -124,33 +116,44 @@ impl KeyProvider for HashiCorpVaultProvider {
     }
 }
 
-fn parse_key_material(raw: &str, source: &str) -> Result<Vec<u8>> {
+/// Parse a master key given as text, as `SPACE_MASTER_KEY` holds it: 64 hex
+/// characters, such as `openssl rand -hex 32` prints, optionally after
+/// `0x` and with whitespace around them. Anything else is an error, so a
+/// key reads the same wherever it's read (#193). `source` names where it
+/// came from; the error never holds the key.
+pub fn parse_master_key(raw: &str, source: &str) -> Result<Zeroizing<[u8; MASTER_KEY_SIZE]>> {
     let raw = raw.trim();
-    let raw = raw
+    let hex = raw
         .strip_prefix("0x")
         .or_else(|| raw.strip_prefix("0X"))
         .unwrap_or(raw);
-
-    // Compatibility: many docs use `openssl rand -hex 32` (64 hex chars).
-    if raw.len() == MASTER_KEY_SIZE * 2 && raw.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
-        let bytes = hex::decode(raw).map_err(|e| {
-            EncryptionError::InvalidConfiguration(format!(
-                "invalid hex master key in {}: {}",
-                source, e
-            ))
-        })?;
-        debug_assert_eq!(bytes.len(), MASTER_KEY_SIZE);
-        return Ok(bytes);
+    let invalid = |why: String| {
+        EncryptionError::InvalidConfiguration(format!(
+            "{source} must be 64 hex characters, such as `openssl rand -hex 32` prints: {why}"
+        ))
+    };
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid("it has characters that aren't hex".to_string()));
     }
-
-    let bytes = raw.as_bytes().to_vec();
-    if bytes.len() != MASTER_KEY_SIZE {
-        return Err(EncryptionError::InvalidKeyLength {
-            expected: MASTER_KEY_SIZE,
-            actual: bytes.len(),
-        });
+    if hex.len() != MASTER_KEY_SIZE * 2 {
+        return Err(invalid(format!("it has {} of them", hex.len())));
     }
-    Ok(bytes)
+    let mut key = Zeroizing::new([0u8; MASTER_KEY_SIZE]);
+    hex::decode_to_slice(hex, key.as_mut_slice()).map_err(|err| invalid(err.to_string()))?;
+    Ok(key)
+}
+
+/// The master key in environment variable `var` ([`parse_master_key`]). A
+/// variable that isn't set is an error, and so is one that's set but
+/// invalid: there's no fallback key (#84).
+pub fn master_key_from_env(var: &str) -> Result<Zeroizing<[u8; MASTER_KEY_SIZE]>> {
+    let raw = std::env::var(var).map_err(|err| {
+        EncryptionError::InvalidConfiguration(match err {
+            std::env::VarError::NotPresent => format!("{var} environment variable not set"),
+            std::env::VarError::NotUnicode(_) => format!("{var} isn't valid text"),
+        })
+    })?;
+    parse_master_key(&raw, var)
 }
 
 fn trim_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
@@ -190,6 +193,92 @@ mod tests {
         let provider = EnvKeyProvider::new("SPACE_TEST_KEY_PROVIDER_UNSET");
         std::env::remove_var("SPACE_TEST_KEY_PROVIDER_UNSET");
         assert!(block_on(provider.fetch_master_key()).is_err());
+    }
+
+    /// Both ways of reading the variable take the same spellings, and refuse
+    /// the same ones (#193).
+    #[test]
+    fn every_reader_takes_the_same_spellings() {
+        let var = "SPACE_TEST_KEY_SPELLINGS";
+        let hex = "07".repeat(32);
+        let accepted = [
+            hex.clone(),
+            format!("0x{hex}"),
+            format!("0X{}", hex.to_uppercase()),
+            format!("{hex}\n"),
+            format!("  {hex}  "),
+        ];
+        let refused = [
+            ("z".repeat(32), "aren't hex"),
+            ("not-valid-hex!".to_string(), "aren't hex"),
+            ("07".repeat(16), "it has 32 of them"),
+            (format!("{hex}0"), "it has 65 of them"),
+            (String::new(), "it has 0 of them"),
+        ];
+        for value in &accepted {
+            std::env::set_var(var, value);
+            let provided = block_on(EnvKeyProvider::new(var).fetch_master_key()).unwrap();
+            let read = master_key_from_env(var).unwrap();
+            assert_eq!(provided.as_slice(), &[7u8; MASTER_KEY_SIZE], "{value:?}");
+            assert_eq!(read.as_slice(), provided.as_slice(), "{value:?}");
+        }
+        for (value, why) in &refused {
+            std::env::set_var(var, value);
+            let provided = block_on(EnvKeyProvider::new(var).fetch_master_key()).unwrap_err();
+            let read = master_key_from_env(var).unwrap_err();
+            assert_eq!(provided.to_string(), read.to_string(), "{value:?}");
+            assert!(read.to_string().contains(why), "{value:?}: {read}");
+            assert!(read.to_string().contains("64 hex characters"), "{read}");
+        }
+        std::env::remove_var(var);
+    }
+
+    /// A value that isn't valid text is named as such, not as unset.
+    #[test]
+    fn a_key_that_isnt_text_is_not_reported_as_unset() {
+        let var = "SPACE_TEST_KEY_NOT_TEXT";
+        #[cfg(windows)]
+        let value = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xD800])
+        };
+        #[cfg(unix)]
+        let value = {
+            use std::os::unix::ffi::OsStrExt;
+            std::ffi::OsStr::from_bytes(&[0xff]).to_os_string()
+        };
+        std::env::set_var(var, &value);
+        let err = master_key_from_env(var).unwrap_err().to_string();
+        std::env::remove_var(var);
+        assert!(err.contains("isn't valid text"), "{err}");
+    }
+
+    #[test]
+    fn a_key_file_holds_hex_or_raw_bytes() {
+        let dir = std::env::temp_dir().join(format!("space_key_file_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key");
+        for (contents, key) in [
+            (
+                format!("{}\n", "07".repeat(32)).into_bytes(),
+                [7u8; MASTER_KEY_SIZE],
+            ),
+            (
+                [0xA5u8; MASTER_KEY_SIZE].to_vec(),
+                [0xA5u8; MASTER_KEY_SIZE],
+            ),
+            (
+                b"0123456789abcdefghijklmnopqrstuv".to_vec(),
+                *b"0123456789abcdefghijklmnopqrstuv",
+            ),
+        ] {
+            std::fs::write(&path, &contents).unwrap();
+            let got = block_on(FileKeyProvider::new(&path).fetch_master_key()).unwrap();
+            assert_eq!(got.as_slice(), &key);
+        }
+        std::fs::write(&path, b"short").unwrap();
+        assert!(block_on(FileKeyProvider::new(&path).fetch_master_key()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

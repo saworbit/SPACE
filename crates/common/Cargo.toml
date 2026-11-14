@@ -15,7 +15,6 @@ hex = { workspace = true }
 blake3 = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "macros", "fs"] }
 bytes = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 

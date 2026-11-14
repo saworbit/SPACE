@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 use common::format::{self, FileHeader, FileKind, Frame, SegmentDescriptor, FRAME_LEN};
 use common::{Segment, SegmentId};
-use nvram_sim::record_file::sync_parent_dir;
+use nvram_sim::record_file::{self, sync_parent_dir};
 use nvram_sim::RecountReport;
 
 const STORE_FILE: &str = "store";
@@ -358,37 +358,24 @@ fn segment_file_id(name: &std::ffi::OsStr) -> Option<u64> {
     name.to_str()?.strip_suffix(".seg")?.parse().ok()
 }
 
+/// Read `<root>/store`: a single `FILE` record, checked as every format 1
+/// file's is ([`record_file::check_file_record`]).
 fn read_store_file(path: &Path) -> Result<FileHeader> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let invalid = |why: &str| {
-        anyhow!(
-            "{} isn't a storage root's store file: {why}",
-            path.display()
-        )
-    };
+    let invalid =
+        |why: &dyn std::fmt::Display| record_file::not_format_one(path, FileKind::StorageRoot, why);
     let frame_bytes: &[u8; FRAME_LEN] = bytes
         .get(..FRAME_LEN)
         .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| invalid("too short"))?;
-    let frame = Frame::parse(frame_bytes).map_err(|err| invalid(&err.to_string()))?;
-    if frame.kind != format::kind::FILE || frame.record_len() != bytes.len() as u64 {
-        return Err(invalid("not a single FILE record"));
-    }
-    let header = &bytes[FRAME_LEN..frame.head_len() as usize];
-    frame
-        .verify_head(header)
-        .map_err(|err| invalid(&err.to_string()))?;
-    let header = FileHeader::decode(header).map_err(|err| invalid(&err.to_string()))?;
-    if header.file_kind != FileKind::StorageRoot {
-        return Err(invalid("its FILE record is for another kind of file"));
-    }
-    if header.format != format::FORMAT_VERSION {
-        bail!(
-            "{} is in store format {}; this build reads format {}",
-            path.display(),
-            header.format,
-            format::FORMAT_VERSION
-        );
+        .ok_or_else(|| invalid(&"too short"))?;
+    let frame = Frame::parse(frame_bytes).map_err(|err| invalid(&err))?;
+    let header = bytes
+        .get(FRAME_LEN..frame.head_len() as usize)
+        .ok_or_else(|| invalid(&"record runs past the end of the file"))?;
+    frame.verify_head(header).map_err(|err| invalid(&err))?;
+    let header = record_file::check_file_record(path, &frame, header, FileKind::StorageRoot)?;
+    if frame.record_len() != bytes.len() as u64 {
+        return Err(invalid(&"it holds more than its FILE record"));
     }
     Ok(header)
 }
