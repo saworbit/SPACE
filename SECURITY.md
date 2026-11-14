@@ -56,7 +56,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 
 ### Network exposure
 
-- `spacectl serve-s3` has no authentication. It listens on 127.0.0.1 and ::1 unless started with `--bind`, and warns at startup when it isn't on loopback, and sends no CORS headers, so web pages on other origins can't call it. Anyone who can reach the port can read, write and delete objects.
+- `spacectl serve-s3` has no authentication. It listens on 127.0.0.1 and ::1 unless started with `--bind`, and warns at startup when it isn't on loopback. It answers only requests whose `Host` header names `localhost`, an IP address, or a name given with `--allow-host`, so a web page that points its own name at this machine (DNS rebinding) can't reach it. It refuses requests that carry an `Origin` header for any other origin than the one they're sent to, so a page on another site can't make the browser send one, not even a DeleteObjects POST, which a browser sends without asking first. It sends no CORS headers ([#200](https://github.com/saworbit/SPACE/issues/200)). Anyone who can reach the port with an S3 client can read, write and delete objects.
 - There's no TLS.
 
 ### Code practices

@@ -57,6 +57,9 @@ pub enum S3Error {
     NoSuchBucket(String),
     #[error("The bucket you tried to delete is not empty")]
     BucketNotEmpty(String),
+    /// A request from a host or web page the server doesn't answer (#200).
+    #[error("Access Denied: {0}")]
+    AccessDenied(String),
     #[error(
         "Your metadata headers exceed the maximum allowed metadata size: the names and \
          values of the x-amz-meta-* headers can add up to at most 2048 bytes"

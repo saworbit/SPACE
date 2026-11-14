@@ -763,7 +763,7 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
     let dir = scratch_dir("serve_addrs");
     let mut server = Server(spawn(
         &dir,
-        &["serve-s3", "--port", "0"],
+        &["serve-s3", "--port", "0", "--allow-host", "Space.Test"],
         &[("RUST_LOG", Path::new("info"))],
     ));
     let stderr = server.0.stderr.take().unwrap();
@@ -793,6 +793,7 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
     assert_eq!(field("encryption"), "off");
     assert_eq!(field("reclaim"), "300s");
     assert_eq!(field("scrub"), "light:86400s,deep:604800s");
+    assert_eq!(field("allow_host"), "space.test");
     assert!(field("segments").ends_with("space.nvram"), "{listening}");
     assert!(
         !before.iter().any(|line| line.contains('\u{1F680}')),
@@ -805,15 +806,32 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
         .collect();
     assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
     assert_ne!(addrs[0].port(), 0);
-    for addr in &addrs {
-        assert_eq!(addr.port(), addrs[0].port());
+    let health = |addr: &SocketAddr, host: &str| {
         let mut stream = TcpStream::connect_timeout(addr, Duration::from_secs(5)).unwrap();
-        stream
-            .write_all(b"GET /-/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        let request =
+            format!("GET /-/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    for addr in &addrs {
+        assert_eq!(addr.port(), addrs[0].port());
+        let response = health(addr, &addr.to_string());
         assert!(response.starts_with("HTTP/1.1 200"), "{addr}: {response}");
+    }
+    // Only localhost, IP addresses and --allow-host names are answered,
+    // so DNS rebinding can't reach the server (#200).
+    for (host, status) in [
+        ("localhost", "200"),
+        ("space.test:1", "200"),
+        ("attacker.example", "403"),
+    ] {
+        let response = health(&addrs[0], host);
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{host}: {response}"
+        );
     }
 
     drop(server);

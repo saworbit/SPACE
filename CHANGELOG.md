@@ -95,6 +95,7 @@ The remaining entries in this section describe the pre-reset tree (foundry, fede
 
 ### Security
 
+- `serve-s3` answers only requests whose `Host` header names `localhost`, an IP address, or a name given with the new `--allow-host` flag, and refuses requests that carry an `Origin` header for another origin, with `403 AccessDenied` (#200). Before, any web page open in a browser on the same machine could read, change and delete every object: by pointing its own name at 127.0.0.1 (DNS rebinding), and for DeleteObjects, by a plain cross-site POST, which a browser sends without asking first. S3 clients send the right `Host` and no `Origin`, so they're not affected. Clients that reach a server by a DNS name need that name in `--allow-host`. `serve-s3`'s startup line shows the names.
 - `cargo audit --deny warnings` and `cargo deny check` pass, and CI runs both. The S3 streaming test's HTTP client moved to reqwest 0.13 without TLS, which drops h2 0.3 and the rustls 0.21 stack along with their five advisories; none of them were in `spacectl`. Policy files are parsed with serde_norway, a maintained fork of the deprecated serde_yaml, so the unmaintained unsafe-libyaml is gone; `--policy-file` reads the same YAML as before. rustix is updated to 1.1.6. `.cargo/audit.toml` and `deny.toml` now ignore only the three unmaintained-crate advisories the dependency tree still triggers (bincode, fxhash, instant), instead of about 30 left from before the reset, and `deny.toml` drops 74 stale `skip` entries (#143).
 
 ### Changed

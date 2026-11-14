@@ -35,6 +35,7 @@ impl IntoResponse for S3Error {
             S3Error::BucketNotEmpty(bucket) => {
                 (StatusCode::CONFLICT, "BucketNotEmpty", bucket.as_str())
             }
+            S3Error::AccessDenied(_) => (StatusCode::FORBIDDEN, "AccessDenied", ""),
             S3Error::InvalidBucketName(bucket) => (
                 StatusCode::BAD_REQUEST,
                 "InvalidBucketName",

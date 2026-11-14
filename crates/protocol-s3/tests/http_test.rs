@@ -5,7 +5,7 @@ use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
 use capsule_registry::CapsuleRegistry;
 use nvram_sim::NvramLog;
-use protocol_s3::{server, S3View};
+use protocol_s3::{server, server::AllowedHosts, S3View};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -1051,4 +1051,136 @@ async fn delete_objects_deletes_the_keys_it_names() {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
+}
+
+/// A request must name localhost, an IP address or an allowed name in
+/// Host. A page that points its own name at 127.0.0.1 (DNS rebinding)
+/// sends that name, so it can't reach the server (#200).
+#[tokio::test]
+async fn requests_naming_another_host_are_refused() {
+    let app = App::new("hosts");
+    for host in [
+        "localhost",
+        "localhost:8080",
+        "LocalHost:1",
+        "127.0.0.1",
+        "127.0.0.1:8080",
+        "10.1.2.3:80",
+        "[::1]",
+        "[::1]:8080",
+        "[fe80::1]:9",
+    ] {
+        let (status, _, xml) = app.send_with("GET", "/demo", &[("host", host)], b"").await;
+        assert_eq!(status, StatusCode::OK, "{host}: {xml}");
+    }
+    for host in [
+        "attacker.example",
+        "attacker.example:8080",
+        "localhost.attacker.example",
+        "127.0.0.1.nip.io:8080",
+        "localhost.",
+        "space.lan",
+        "1.2.3",
+        "[::1",
+        "[evil]:80",
+    ] {
+        let (status, _, xml) = app
+            .send_with("PUT", "/demo/a.txt", &[("host", host)], b"x")
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{host}: {xml}");
+        assert_eq!(tags(&xml, "Code"), ["AccessDenied"], "{host}");
+    }
+    assert_eq!(
+        app.send("HEAD", "/demo/a.txt", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _, _) = app
+        .send_with("GET", "/-/health", &[("host", "attacker.example")], b"")
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // A Host that isn't ASCII can't name an allowed host.
+    let request = Request::get("/-/health")
+        .header(
+            "host",
+            axum::http::HeaderValue::from_bytes(b"caf\xc3\xa9.example").unwrap(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = app.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// A page on another origin can send a DeleteObjects POST without the
+/// browser asking the server first. The browser names the page in Origin,
+/// and S3 clients send none, so a request with an Origin is refused unless
+/// it comes from the origin its Host names (#200).
+#[tokio::test]
+async fn requests_from_other_origins_are_refused() {
+    let app = App::new("origins");
+    app.send("PUT", "/demo/a.txt", b"x").await;
+    let delete = b"<Delete><Object><Key>a.txt</Key></Object></Delete>";
+    for origin in [
+        "https://evil.example",
+        "http://localhost:3000",
+        "http://127.0.0.1:8080",
+        "null",
+    ] {
+        let headers = [("host", "localhost:8080"), ("origin", origin)];
+        let (status, _, xml) = app
+            .send_with("POST", "/demo?delete", &headers, delete)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{origin}: {xml}");
+        assert_eq!(tags(&xml, "Code"), ["AccessDenied"], "{origin}");
+    }
+    let headers = [("origin", "http://localhost:8080")];
+    let (status, _, _) = app
+        .send_with("POST", "/demo?delete", &headers, delete)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an Origin with no Host");
+    assert_eq!(app.send("HEAD", "/demo/a.txt", b"").await.0, StatusCode::OK);
+
+    // A page the server serves itself is on the same origin.
+    let headers = [
+        ("host", "localhost:8080"),
+        ("origin", "http://LOCALHOST:8080"),
+    ];
+    let (status, _, xml) = app
+        .send_with("POST", "/demo?delete", &headers, delete)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(
+        app.send("HEAD", "/demo/a.txt", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// Names given to the server, as `serve-s3 --allow-host` does, are
+/// answered too, whatever their case (#200).
+#[tokio::test]
+async fn names_given_to_the_server_are_answered() {
+    let dir = std::env::temp_dir().join(format!("s3_http_named_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let view = S3View::new(
+        CapsuleRegistry::open(dir.join("space.db")).unwrap(),
+        NvramLog::open(dir.join("space.nvram")).unwrap(),
+    )
+    .unwrap();
+    let hosts = AllowedHosts::with_names(["Space.LAN".to_string()]);
+    let app = App {
+        router: server::router_allowing(Arc::new(view), hosts),
+        dir,
+    };
+    for (host, expected) in [
+        ("space.lan:8080", StatusCode::OK),
+        ("SPACE.lan", StatusCode::OK),
+        ("localhost", StatusCode::OK),
+        ("other.lan", StatusCode::FORBIDDEN),
+        ("space.lan.evil", StatusCode::FORBIDDEN),
+    ] {
+        let (status, _, _) = app
+            .send_with("GET", "/-/health", &[("host", host)], b"")
+            .await;
+        assert_eq!(status, expected, "{host}");
+    }
 }
