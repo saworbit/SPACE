@@ -913,7 +913,7 @@ impl S3View {
         tokio::task::JoinHandle<()>,
         tokio::sync::watch::Receiver<ScrubState>,
     ) {
-        self.pipeline.lock().await.spawn_scrub(config)
+        modular_pipeline::spawn_scrub(&self.pipeline, config).await
     }
 
     /// The capsule a key points at and when it was created, unless

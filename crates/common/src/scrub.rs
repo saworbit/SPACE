@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::SegmentId;
+use crate::{CapsuleId, SegmentId};
 
 /// Configuration for the background scrub scheduler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +66,9 @@ pub enum ScrubResult {
     MacMismatch { segment: SegmentId },
     /// Segment data could not be read.
     ReadError { segment: SegmentId, error: String },
+    /// A capsule whose segments, each sound on its own, don't read back as
+    /// its bytes: the whole read doesn't match its digest (#140).
+    CapsuleCorrupted { capsule: CapsuleId, reason: String },
     /// Integrity could not be verified right now due to a transient condition
     /// (e.g. no key manager available for an encrypted segment).
     ///
@@ -90,7 +93,9 @@ impl ScrubResult {
             | ScrubResult::ContentCorrupted { segment }
             | ScrubResult::MacMismatch { segment }
             | ScrubResult::ReadError { segment, .. } => Some(*segment),
-            ScrubResult::Ok | ScrubResult::Skipped { .. } => None,
+            ScrubResult::Ok
+            | ScrubResult::Skipped { .. }
+            | ScrubResult::CapsuleCorrupted { .. } => None,
         }
     }
 
@@ -115,6 +120,31 @@ impl ScrubResult {
             self,
             ScrubResult::Skipped { .. } | ScrubResult::ReadError { .. }
         )
+    }
+}
+
+/// What a deep scrub's capsule pass found (#140): it reads each capsule
+/// whole and checks the bytes against its digest.
+#[derive(Debug, Clone, Default)]
+pub struct CapsuleScrub {
+    pub checked: usize,
+    pub without_digest: usize,
+    pub without_key: usize,
+    /// Bytes the reads returned.
+    pub bytes: u64,
+    /// A [`ScrubResult::CapsuleCorrupted`] for each capsule that failed.
+    pub errors: Vec<ScrubResult>,
+}
+
+impl ScrubReport {
+    /// Fold a capsule pass's findings into this report.
+    pub fn add_capsules(&mut self, found: CapsuleScrub) {
+        self.capsules_checked += found.checked;
+        self.capsules_without_digest += found.without_digest;
+        self.capsules_without_key += found.without_key;
+        self.capsule_failures += found.errors.len();
+        self.capsule_bytes_checked += found.bytes;
+        self.errors.extend(found.errors);
     }
 }
 
@@ -202,6 +232,25 @@ pub struct ScrubReport {
     /// reached `max_segments_per_cycle`.
     #[serde(default)]
     pub segments_deferred: usize,
+    /// Segments this cycle checked and recorded, sound or not. A deep
+    /// cycle's capsule pass checks the capsules that hold them (#140).
+    #[serde(default)]
+    pub segments_scrubbed: Vec<SegmentId>,
+    /// Capsules whose whole read was checked against their digest (#140).
+    #[serde(default)]
+    pub capsules_checked: usize,
+    /// Bytes the capsule pass read, apart from `bytes_checked`.
+    #[serde(default)]
+    pub capsule_bytes_checked: u64,
+    /// Capsules skipped because they record no digest.
+    #[serde(default)]
+    pub capsules_without_digest: usize,
+    /// Encrypted capsules skipped because there's no key to read them.
+    #[serde(default)]
+    pub capsules_without_key: usize,
+    /// Capsules that don't read back as their digest. Subset of `errors`.
+    #[serde(default)]
+    pub capsule_failures: usize,
 }
 
 /// Whether a scrub cycle is light (length-only) or deep (content verification).

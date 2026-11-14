@@ -409,7 +409,7 @@ Suggested PRs:
    - sled also keeps an `indexed` tree, segment to content-index key, so a `DROP` that takes a segment to zero references can remove its hash.
    - The segment allocator is still the sled counter. A pipeline open raises it above the highest id in the data log, rather than deriving it in memory (§8.3).
    - A journal with damage inside it is refused rather than opened read-only.
-   - Every full read of a capsule checks the digest, streamed or not ([#190](https://github.com/saworbit/SPACE/issues/190)). A range read can't, and scrub and the S3 ETag don't use it yet.
+   - Every full read of a capsule checks the digest, streamed or not ([#190](https://github.com/saworbit/SPACE/issues/190)). A range read can't. A deep scrub reads capsules whole to check it ([#140](https://github.com/saworbit/SPACE/issues/140)). The S3 ETag doesn't use it yet.
    - `BATCH` is encoded, decoded and applied, but nothing writes one until the S3 view moves onto the journal.
 3. `NAMESPACE`, `BIND`, `UNBIND`; the S3 view moves onto the journal. **Done**, with these differences from the draft:
    - `BATCH` sub-records lost their frame (§5.7). Embedded whole records made a torn `BATCH` look like damage in the middle of the journal, which refuses to open.
