@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Corrected capsule.md: write order, tweak derivation, recovery behaviour, and features removed in the reset.
   - Corrected SECURITY.md's hardening summary, CONTRIBUTING.md, README.md, ARCHITECTURE.md and docs/guides/BUILD.md.
   - Issues: #103, #104, #105, #110.
+- Dependabot labels its PRs `dependencies`, a label the repo now has, and no longer labels every cargo bump `security` (#203). That label is now added by hand to PRs that fix an advisory.
 
 ### Fixed
 

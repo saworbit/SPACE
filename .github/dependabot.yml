@@ -7,8 +7,9 @@ updates:
       interval: "weekly"  # Changed from monthly for better security
       day: "monday"
       time: "03:00"
+    # Not "security": most bumps are routine. Add it by hand to a PR that
+    # fixes an advisory, so the label stays a filter for real security work.
     labels:
-      - "security"
       - "dependencies"
     commit-message:
       prefix: "deps"
