@@ -10,7 +10,7 @@
 - **Nothing is updated in place.** A write appends records and a delete appends a record. Only compaction rewrites, and it does that by writing a new file.
 - **Each operation has one commit point**, a single record.
 - **Torn writes at the end of a file are detected and dropped without operator steps.** Corruption in the middle of a file is detected and reported.
-- **This document defines the bytes.** Record layouts are fixed little-endian structures, not whatever a serde derive emits, so the format doesn't change when a Rust struct does. (`store.rs` already carries legacy bincode decoders for exactly that reason.)
+- **This document defines the bytes.** Record layouts are fixed little-endian structures, not whatever a serde derive emits, so the format doesn't change when a Rust struct does. (`space.db`, an index rebuilt from these files, uses little-endian numbers and JSON capsule records since [#152](https://github.com/saworbit/SPACE/issues/152); it used to be bincode.)
 
 Not goals for format 1: aligned records for O_DIRECT, multi-node anything, an export bundle (it falls out later: a manifest plus its segment records), and moving view metadata such as content type into the capsule.
 
