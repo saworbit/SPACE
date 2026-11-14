@@ -32,6 +32,13 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+# Checking a PUT body against the digests its headers give (#196)
+md-5 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+
 # Utilities
 bytes = { version = "^1.10.1" } # 2025-11-03 sw: pinned to release used in audit
 httpdate = "1.0"

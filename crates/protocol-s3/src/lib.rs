@@ -15,6 +15,7 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio_util::io::StreamReader;
 use tracing::warn;
 
+pub mod checksum;
 pub mod handlers;
 pub mod server;
 
@@ -57,6 +58,9 @@ pub enum S3Error {
     NoSuchBucket(String),
     #[error("The bucket you tried to delete is not empty")]
     BucketNotEmpty(String),
+    /// The body doesn't have the digest a header gave for it (#196).
+    #[error("{}", bad_digest_message(.0))]
+    BadDigest(checksum::Expected),
     /// A request from a host or web page the server doesn't answer (#200).
     #[error("Access Denied: {0}")]
     AccessDenied(String),
@@ -75,6 +79,9 @@ pub enum S3Error {
     InvalidBucketName(String),
     #[error("{0}")]
     InvalidArgument(String),
+    /// A `Content-MD5` that isn't an MD5 digest in base64.
+    #[error("{0}")]
+    InvalidDigest(String),
     /// A request body that isn't the XML document the operation takes.
     #[error("The XML you provided was not well-formed or did not validate: {0}")]
     MalformedXML(String),
@@ -218,6 +225,25 @@ pub struct PutOptions {
     /// Headers stored with the object, which GET and HEAD return (#163):
     /// any of [`STORED_HEADERS`], and `x-amz-meta-*`. Names are lowercase.
     pub metadata: Vec<(String, String)>,
+    /// Digests the body must have (#196). They're computed as it streams
+    /// in, and a body without them stores nothing.
+    pub digests: Vec<checksum::Expected>,
+}
+
+fn bad_digest_message(expected: &checksum::Expected) -> String {
+    match (expected.header.as_str(), expected.algorithm) {
+        ("x-amz-content-sha256", _) => {
+            "The provided 'x-amz-content-sha256' header does not match what was computed."
+                .to_string()
+        }
+        (_, checksum::Algorithm::Md5) => {
+            "The Content-MD5 you specified did not match what we received.".to_string()
+        }
+        (_, algorithm) => format!(
+            "The {} you specified did not match the calculated checksum.",
+            algorithm.name()
+        ),
+    }
 }
 
 /// The conditional headers of a request (RFC 9110 §13), compared with the
@@ -526,12 +552,29 @@ impl S3View {
         // Fail early when the conditions already fail, rather than store the
         // body first. They're checked again at the commit.
         conditions.check_write(self.live_capsule_created(&ns, key)?)?;
-        let reader =
-            StreamReader::new(data_stream.map_err(|err| std::io::Error::other(err.into())));
+        let running = Arc::new(Mutex::new(checksum::Running::new(&options.digests)));
+        let digests = Arc::clone(&running);
+        let reader = StreamReader::new(
+            data_stream
+                .map_err(|err| std::io::Error::other(err.into()))
+                .inspect_ok(move |chunk| {
+                    digests
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .update(chunk)
+                }),
+        );
         // The body is stored one segment at a time as it arrives (#99).
         let policy = self.pipeline.lock().await.default_policy();
         let staged = stage_from_reader(&self.pipeline, reader, &policy).await?;
         let capsule_id = staged.capsule_id();
+        // A body that doesn't have the digests its headers give stores
+        // nothing: its segments are released before the error is returned.
+        let mismatch = running.lock().unwrap_or_else(|e| e.into_inner()).mismatch();
+        if let Some(expected) = mismatch {
+            staged.abort().await;
+            return Err(S3Error::BadDigest(expected));
+        }
 
         // Dropping `staged` on an error below aborts the write.
         let mut handle = self.pipeline.lock().await;

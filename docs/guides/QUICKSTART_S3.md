@@ -143,13 +143,16 @@ print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 
 `upload_file` fails with `NotImplemented` above the 8 MiB multipart threshold, because there is no multipart upload ([#201](https://github.com/saworbit/SPACE/issues/201)). The AWS CLI hasn't been tested.
 
+A PUT body is checked against the digests its headers give, as S3 does: `Content-MD5`, `x-amz-checksum-crc32`, `-crc32c`, `-crc64nvme`, `-sha1` and `-sha256`, and a hex `x-amz-content-sha256`. A body that doesn't match gets `400 BadDigest` (`XAmzContentSHA256Mismatch` for the last) and stores nothing ([#196](https://github.com/saworbit/SPACE/issues/196)). The SDKs send a CRC32 or CRC64NVME by default, so their uploads are checked.
+
 ## Current limitations
 
 - These S3 operations aren't implemented, and each gets a `501 NotImplemented` error:
   - multipart upload ([#201](https://github.com/saworbit/SPACE/issues/201));
   - CopyObject;
   - object tagging and ACLs, and bucket configuration such as `?versioning`;
-  - object versions: DeleteObjects reports a key given with a version id other than `null` as an error, and leaves it.
+  - object versions: DeleteObjects reports a key given with a version id other than `null` as an error, and leaves it;
+  - PUT headers asking for something the server can't do: Object Lock, server-side encryption options (objects are encrypted when the server has `SPACE_MASTER_KEY`), `x-amz-tagging`, ACLs other than `x-amz-acl: private`, storage classes other than `STANDARD`, website redirects, and checksum algorithms other than those above.
 
   A PUT with an `aws-chunked` body is refused the same way, so send the body unencoded. Before [#156](https://github.com/saworbit/SPACE/issues/156), some of these ran as a plain PUT or DELETE and overwrote or deleted the object.
 - DELETE and overwrites free the old capsule at once, but its bytes stay in `space.nvram` until compaction. The server runs a reclaim pass at startup and every 5 minutes (`--reclaim-interval <seconds>`, `0` to turn it off), and compacts once a quarter of the log, and at least 4 MiB, can be reclaimed. The same pass compacts `space.journal`, which records every PUT and DELETE, once a quarter of it, and at least 1 MiB, is dead. With the server stopped, `spacectl compact` compacts both right away.
