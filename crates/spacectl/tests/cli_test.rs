@@ -837,3 +837,44 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A store whose space.journal is missing isn't opened, so nothing reclaims
+/// its segments: not `compact`, and not the pass `serve-s3` runs at startup
+/// (#194).
+#[test]
+fn a_store_missing_its_journal_keeps_its_segments() {
+    let dir = scratch_dir("missing_journal");
+    std::fs::write(dir.join("a.bin"), noise(300_000, 9)).unwrap();
+    assert!(spacectl(&dir, &["create", "-f", "a.bin"]).status.success());
+    let log = std::fs::read(dir.join("space.nvram")).unwrap();
+    std::fs::remove_file(dir.join("space.journal")).unwrap();
+
+    let serve = |what: &str| {
+        let child = spawn(&dir, &["serve-s3", "--port", "0"], &[]);
+        exit_of(child, &format!("serve-s3 started {what}"))
+    };
+    for out in [
+        spacectl(&dir, &["list"]),
+        spacectl(&dir, &["compact"]),
+        spacectl(&dir, &["gc"]),
+        serve("without its journal"),
+    ] {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{stderr}");
+        assert!(stderr.contains("space.journal' is missing"), "{stderr}");
+    }
+    assert!(!dir.join("space.journal").exists());
+    assert_eq!(std::fs::read(dir.join("space.nvram")).unwrap(), log);
+
+    // Without space.db either, a new journal can't take over the data log.
+    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    let out = serve("over another store's segments");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("is new"), "{stderr}");
+    let out = spacectl(&dir, &["create", "-f", "a.bin"]);
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(dir.join("space.nvram")).unwrap(), log);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

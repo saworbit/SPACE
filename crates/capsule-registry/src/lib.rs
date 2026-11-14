@@ -703,7 +703,7 @@ pub mod modular_pipeline {
         allow_plaintext: bool,
     ) -> Result<()> {
         let log = storage.log();
-        registry.bind_store(log.store_id())?;
+        registry.bind_store(log.store_id(), !log.list_segment_ids().is_empty())?;
         registry.check_store_key(key, allow_plaintext)?;
         registry.ensure_segment_floor(log.segment_id_floor())?;
         let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
@@ -735,9 +735,10 @@ pub mod modular_pipeline {
         key: Option<StoreKey>,
         allow_plaintext: bool,
     ) -> Result<()> {
-        registry.bind_store(storage.store_id())?;
+        let floor = storage.segment_id_floor()?;
+        registry.bind_store(storage.store_id(), floor > 0)?;
         registry.check_store_key(key, allow_plaintext)?;
-        registry.ensure_segment_floor(storage.segment_id_floor()?)?;
+        registry.ensure_segment_floor(floor)?;
         let counts: HashMap<SegmentId, u32> = registry.segment_refs()?;
         let report = storage.recount_references(&counts)?;
         if let Some(first) = report.missing.first() {
@@ -880,11 +881,25 @@ impl CapsuleRegistry {
     /// Open the registry database at `path` and the capsule journal next to
     /// it. Records the index hasn't applied yet are replayed; an index that
     /// doesn't match the journal is rebuilt from it.
+    ///
+    /// The journal is the record of what the store holds, so a database
+    /// that has been used is never opened without it (#194). A new journal
+    /// would rebuild the index as empty, and the next reclaim would then
+    /// delete every segment.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
         let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
         let journal_path = Journal::path_for(path);
+        if !journal_path.exists() && store.journal_position()?.is_some() {
+            bail!(
+                "the capsule journal '{}' is missing, but '{path_str}' shows this store has \
+                 been used. The journal records every capsule, bucket and key, so the store \
+                 won't open without it, and nothing has been changed. Restore the journal \
+                 from the same copy as the rest of the store.",
+                journal_path.display()
+            );
+        }
         let journal = Arc::new(Journal::open(&journal_path)?);
 
         let apply = |record: &JournalRecord, position: JournalPosition| {
@@ -931,10 +946,14 @@ impl CapsuleRegistry {
         self.journal.is_empty()
     }
 
-    /// Pair the journal with a data log whose store id is `store_id`. A
-    /// journal with no records takes the log's id; one with records must
-    /// already have it.
-    pub fn bind_store(&self, store_id: uuid::Uuid) -> Result<()> {
+    /// Pair the journal with a data log or storage root whose store id is
+    /// `store_id`, and which holds segments if `holds_segments`. A journal
+    /// with no records takes a new store's id; one with records must
+    /// already have it. A journal with no records is refused for a store
+    /// that already holds segments (#194): the journal that records them
+    /// is missing, and with this one every segment would look unreferenced,
+    /// so the next reclaim would delete it.
+    pub fn bind_store(&self, store_id: uuid::Uuid, holds_segments: bool) -> Result<()> {
         if self.journal.store_id() == store_id {
             return Ok(());
         }
@@ -943,6 +962,15 @@ impl CapsuleRegistry {
                 "the capsule journal belongs to store {} but the data log belongs to store \
                  {store_id}; they come from different stores",
                 self.journal.store_id()
+            );
+        }
+        if holds_segments {
+            bail!(
+                "the capsule journal '{}' is new, but the store's segments already hold data \
+                 for store {store_id}. The journal that records them is missing, and without \
+                 it the next reclaim would delete every segment, so the store won't open. \
+                 Restore the journal from the same copy as the segments.",
+                self.journal.path().display()
             );
         }
         let position = self.journal.adopt_store_id(store_id)?;

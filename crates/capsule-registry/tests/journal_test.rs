@@ -462,8 +462,10 @@ fn s3_names_from_before_the_journal_are_refused_or_dropped() {
             .unwrap();
         db.flush().unwrap();
     }
-    // A new journal belongs to a new store, so the index no longer matches.
-    fs::remove_file(store.journal_path()).unwrap();
+    // Another store's journal doesn't match the index, so it's rebuilt.
+    let other = Store::new("legacy_other");
+    drop(CapsuleRegistry::open(other.db_path()).unwrap());
+    fs::copy(other.journal_path(), store.journal_path()).unwrap();
     drop(CapsuleRegistry::open(store.db_path()).unwrap());
     let db = sled::open(store.db_path()).unwrap();
     assert!(!db
@@ -529,4 +531,39 @@ async fn compaction_keeps_the_segments_of_an_open_write() {
     let (_registry, log, handle) = store.open();
     assert_eq!(log.file_header().generation, 1);
     assert_eq!(handle.read_capsule(id).await.unwrap(), data);
+}
+
+/// A store whose capsule journal is missing doesn't open, and nothing in it
+/// changes (#194). A new journal would rebuild the index as empty, and the
+/// next reclaim would delete every segment.
+#[tokio::test]
+async fn a_store_missing_its_journal_is_refused() {
+    let store = Store::new("missing_journal");
+    {
+        let (_registry, _log, mut handle) = store.open();
+        handle
+            .write_capsule(&patterned(300_000, 21), &Policy::default())
+            .await
+            .unwrap();
+    }
+    let nvram = store.dir.join("space.nvram");
+    let log_bytes = fs::read(&nvram).unwrap();
+
+    // space.db shows the store was used, so it isn't opened without its
+    // journal, and no new journal is made.
+    fs::remove_file(store.journal_path()).unwrap();
+    let err = CapsuleRegistry::open(store.db_path()).err().unwrap();
+    assert!(err.to_string().contains("is missing"), "{err}");
+    assert!(!store.journal_path().exists());
+
+    // With space.db gone too, a new journal can't take over a data log that
+    // holds segments.
+    fs::remove_dir_all(store.db_path()).unwrap();
+    let registry = CapsuleRegistry::open(store.db_path()).unwrap();
+    let log = NvramLog::open(&nvram).unwrap();
+    let err = registry_pipeline_from_log_with_key(log, registry, Arc::clone(&store.key))
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("is new"), "{err}");
+    assert_eq!(fs::read(&nvram).unwrap(), log_bytes);
 }
