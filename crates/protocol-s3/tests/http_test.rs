@@ -346,11 +346,16 @@ async fn unimplemented_operations_are_refused_not_misrun() {
         ("PUT", "/demo?versioning", "<VersioningConfiguration/>"),
         ("PUT", "/other?versioning", "<VersioningConfiguration/>"),
         ("GET", "/demo?versioning", ""),
+        // Bucket configuration deletes, which mustn't delete the bucket.
+        ("DELETE", "/demo?policy", ""),
+        ("DELETE", "/demo?cors", ""),
+        ("DELETE", "/demo?x-id=DeleteBucketPolicy", ""),
+        // A form upload, and ListBuckets options it doesn't read.
+        ("POST", "/demo", "x"),
+        ("GET", "/?bucket-region=us-east-1", ""),
         // Operations with no route.
-        ("POST", "/demo?delete", "<Delete/>"),
         ("POST", "/demo/big.bin?uploads", ""),
-        ("DELETE", "/demo", ""),
-        ("GET", "/", ""),
+        ("PUT", "/", ""),
     ] {
         refused(method, uri, &[], body).await;
     }
@@ -463,8 +468,22 @@ async fn a_trailing_slash_still_addresses_the_bucket() {
     let (status, _, xml) = app.send("GET", "/trail/?versioning", b"").await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{xml}");
 
-    // Other methods on the bucket are still refused.
+    // DeleteBucket too.
     let (status, _, xml) = app.send("DELETE", "/trail/", b"").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(tags(&xml, "Code"), ["BucketNotEmpty"]);
+    app.send("DELETE", "/trail/dir/a.txt", b"").await;
+    assert_eq!(
+        app.send("DELETE", "/trail/", b"").await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        app.send("HEAD", "/trail/", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Other methods on the bucket are still refused.
+    let (status, _, xml) = app.send("PATCH", "/demo/", b"").await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(tags(&xml, "Code"), ["NotImplemented"]);
 }
@@ -875,4 +894,161 @@ async fn a_header_value_that_isnt_ascii_is_refused() {
         app.send("HEAD", "/demo/a.txt", b"").await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+/// ListBuckets lists every bucket in byte order with when it was created,
+/// a page at a time (#159).
+#[tokio::test]
+async fn list_buckets_pages_through_every_bucket() {
+    let app = App::new("list_buckets");
+    for bucket in ["photos", "logs-b", "logs-a"] {
+        assert_eq!(
+            app.send("PUT", &format!("/{bucket}"), b"").await.0,
+            StatusCode::OK
+        );
+    }
+    let (status, headers, xml) = app.send("GET", "/", b"").await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(header(&headers, "content-type"), Some("application/xml"));
+    assert!(xml.contains("<ListAllMyBucketsResult"), "{xml}");
+    assert_eq!(tags(&xml, "Name"), ["demo", "logs-a", "logs-b", "photos"]);
+    let dates = tags(&xml, "CreationDate");
+    assert_eq!(dates.len(), 4);
+    assert!(
+        dates
+            .iter()
+            .all(|d| d.ends_with(".000Z") && d.starts_with("20")),
+        "{dates:?}"
+    );
+    assert!(tags(&xml, "ContinuationToken").is_empty());
+
+    let (_, _, xml) = app.send("GET", "/?prefix=logs-", b"").await;
+    assert_eq!(tags(&xml, "Name"), ["logs-a", "logs-b"]);
+    assert_eq!(tags(&xml, "Prefix"), ["logs-"]);
+
+    let mut seen = Vec::new();
+    let mut uri = Some("/?max-buckets=3".to_string());
+    let mut pages = 0;
+    while let Some(page) = uri.take() {
+        pages += 1;
+        assert!(pages <= 2, "{seen:?}");
+        let (_, _, xml) = app.send("GET", &page, b"").await;
+        seen.extend(tags(&xml, "Name").into_iter().map(str::to_string));
+        uri = tags(&xml, "ContinuationToken")
+            .first()
+            .map(|token| format!("/?max-buckets=3&continuation-token={token}"));
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(seen, ["demo", "logs-a", "logs-b", "photos"]);
+
+    for bad in [
+        "/?max-buckets=0",
+        "/?max-buckets=10001",
+        "/?continuation-token=zz",
+    ] {
+        let (status, _, xml) = app.send("GET", bad, b"").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {xml}");
+        assert_eq!(tags(&xml, "Code"), ["InvalidArgument"], "{bad}");
+    }
+}
+
+/// DeleteBucket deletes an empty bucket, refuses one with objects in it,
+/// and a bucket deleted can be created again, empty (#159).
+#[tokio::test]
+async fn delete_bucket_deletes_only_an_empty_bucket() {
+    let app = App::new("delete_bucket");
+    app.send("PUT", "/full", b"").await;
+    app.send("PUT", "/full/a.txt", b"x").await;
+    let (status, _, xml) = app.send("DELETE", "/full", b"").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(tags(&xml, "Code"), ["BucketNotEmpty"]);
+    assert_eq!(tags(&xml, "Resource"), ["full"]);
+    let (_, _, body) = app.send("GET", "/full/a.txt", b"").await;
+    assert_eq!(body, "x");
+
+    app.send("DELETE", "/full/a.txt", b"").await;
+    assert_eq!(
+        app.send("DELETE", "/full", b"").await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        app.send("HEAD", "/full", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, _, xml) = app.send("GET", "/", b"").await;
+    assert_eq!(tags(&xml, "Name"), ["demo"]);
+    let (status, _, xml) = app.send("PUT", "/full/b.txt", b"x").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
+
+    let (status, _, xml) = app.send("DELETE", "/full", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
+
+    assert_eq!(app.send("PUT", "/full", b"").await.0, StatusCode::OK);
+    let (_, _, xml) = app.send("GET", "/full?list-type=2", b"").await;
+    assert_eq!(tags(&xml, "KeyCount"), ["0"]);
+}
+
+/// DeleteObjects deletes every key it names in one request, reports each,
+/// and leaves the rest (#159).
+#[tokio::test]
+async fn delete_objects_deletes_the_keys_it_names() {
+    let app = App::new("delete_objects");
+    for key in ["a", "b&c", "keep"] {
+        app.send("PUT", &format!("/demo/{}", key.replace('&', "%26")), b"x")
+            .await;
+    }
+    let doc = concat!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+        r#"<Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+        "<Object><Key>a</Key></Object>",
+        "<Object><Key>b&amp;c</Key></Object>",
+        "<Object><Key>never-there</Key></Object>",
+        "<Object><Key>keep</Key><VersionId>v1</VersionId></Object>",
+        "<Object><Key>a</Key></Object>",
+        "</Delete>",
+    );
+    let (status, headers, xml) = app.send("POST", "/demo?delete", doc.as_bytes()).await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(header(&headers, "content-type"), Some("application/xml"));
+    assert!(xml.contains("<DeleteResult"), "{xml}");
+    assert_eq!(
+        tags(&xml, "Key"),
+        ["a", "b&amp;c", "never-there", "keep", "a"],
+        "{xml}"
+    );
+    assert_eq!(tags(&xml, "Code"), ["NotImplemented"]);
+    let (_, _, xml) = app.send("GET", "/demo?list-type=2", b"").await;
+    assert_eq!(tags(&xml, "Key"), ["keep"]);
+
+    // Quiet: only errors are reported.
+    app.send("PUT", "/demo/q", b"x").await;
+    let quiet = "<Delete><Quiet>true</Quiet><Object><Key>q</Key></Object></Delete>";
+    let (status, _, xml) = app
+        .send("POST", "/demo/?delete&x-id=DeleteObjects", quiet.as_bytes())
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(tags(&xml, "Key").is_empty(), "{xml}");
+    assert_eq!(
+        app.send("HEAD", "/demo/q", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // A document that doesn't parse deletes nothing.
+    let broken = "<Delete><Object><Key>keep</Key></Object>";
+    let (status, _, xml) = app.send("POST", "/demo?delete", broken.as_bytes()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tags(&xml, "Code"), ["MalformedXML"]);
+    assert_eq!(app.send("HEAD", "/demo/keep", b"").await.0, StatusCode::OK);
+
+    let (status, _, xml) = app
+        .send(
+            "POST",
+            "/nobucket?delete",
+            b"<Delete><Object><Key>k</Key></Object></Delete>",
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(tags(&xml, "Code"), ["NoSuchBucket"]);
 }

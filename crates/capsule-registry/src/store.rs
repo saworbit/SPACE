@@ -75,6 +75,14 @@ pub trait MetadataStore: Send + Sync {
     /// creation time, and each name to the capsule it points at and its
     /// metadata. Only applying journal records changes them.
     fn get_namespace(&self, ns: &str) -> Result<Option<u64>>;
+    /// Namespaces that start with `prefix` and sort after `start_after`,
+    /// in byte order, with their creation times.
+    fn list_namespaces(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>>;
     fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>>;
     /// Names in `ns` that start with `prefix` and sort after `start_after`,
     /// in byte order.
@@ -625,6 +633,37 @@ impl MetadataStore for SledStore {
             .transpose()?)
     }
 
+    fn list_namespaces(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>> {
+        let scan = prefix.as_bytes().to_vec();
+        let start = match start_after {
+            Some(after) => {
+                // The smallest namespace that sorts after `after`.
+                let mut after = after.as_bytes().to_vec();
+                after.push(0);
+                after.max(scan.clone())
+            }
+            None => scan.clone(),
+        };
+        let mut out = Vec::new();
+        for entry in self.namespaces.range(start..) {
+            if out.len() >= limit {
+                break;
+            }
+            let (k, v) = entry?;
+            if !k.starts_with(&scan) {
+                break;
+            }
+            let ns = String::from_utf8(k.to_vec()).context("namespace is not UTF-8")?;
+            out.push((ns, bincode::deserialize(&v)?));
+        }
+        Ok(out)
+    }
+
     fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>> {
         self.names
             .get(name_key(ns, name))?
@@ -810,6 +849,9 @@ fn apply_record(
             if t.namespaces.get(ns.as_bytes())?.is_none() {
                 t.namespaces.insert(ns.as_bytes(), ser(created_at)?)?;
             }
+        }
+        JournalRecord::DropNamespace { ns, .. } => {
+            t.namespaces.remove(ns.as_bytes())?;
         }
         JournalRecord::Bind {
             ns,

@@ -45,11 +45,19 @@ pub fn spawn_reclaim(s3_view: Arc<S3View>, every: Duration) -> JoinHandle<()> {
 /// The S3 routes. Keys may contain '/', so the key is a wildcard (#88).
 /// A key can't be empty, so `/{bucket}/` is the bucket, as in S3 (#179).
 /// The health check is `/-/health`: a new bucket's name can't start with
-/// `-`, so it can't hide a bucket (#164). Anything else, an unrouted path or method,
-/// is a `NotImplemented` S3 error (#156).
+/// `-`, so it can't hide a bucket (#164). `GET /` is ListBuckets (#159).
+/// Anything else, an unrouted path or method, is a `NotImplemented` S3
+/// error (#156).
 pub fn router(s3_view: Arc<S3View>) -> Router {
-    let bucket = || get(list_objects).put(create_bucket).head(head_bucket);
+    let bucket = || {
+        get(list_objects)
+            .put(create_bucket)
+            .head(head_bucket)
+            .delete(delete_bucket)
+            .post(delete_objects)
+    };
     Router::new()
+        .route("/", get(list_buckets))
         .route("/-/health", get(health_check))
         // Bucket Operations
         .route("/{bucket}", bucket())

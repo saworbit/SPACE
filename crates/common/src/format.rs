@@ -73,6 +73,8 @@ pub const BIND_VERSION: u8 = 2;
 
 /// `NAMESPACE` op: create the namespace.
 const NAMESPACE_CREATE: u8 = 1;
+/// `NAMESPACE` op: delete the namespace.
+const NAMESPACE_DELETE: u8 = 2;
 
 /// `KEY` cipher: XTS-AES-256 with a BLAKE3 MAC.
 const KEY_CIPHER_XTS: u8 = 1;
@@ -863,6 +865,13 @@ pub enum JournalRecord {
         /// Unix seconds.
         created_at: u64,
     },
+    /// Deletes a namespace. Its names are left alone, so unbind them in
+    /// the same batch. Deleting one that doesn't exist changes nothing.
+    DropNamespace {
+        ns: String,
+        /// Unix seconds.
+        dropped_at: u64,
+    },
     /// Points `name` in `ns` at a capsule, replacing any earlier binding
     /// and its metadata.
     Bind {
@@ -886,7 +895,7 @@ impl JournalRecord {
         match self {
             Self::Capsule(_) => kind::CAPSULE,
             Self::Drop(_) => kind::DROP,
-            Self::Namespace { .. } => kind::NAMESPACE,
+            Self::Namespace { .. } | Self::DropNamespace { .. } => kind::NAMESPACE,
             Self::Bind { .. } => kind::BIND,
             Self::Unbind { .. } => kind::UNBIND,
             Self::Key(_) => kind::KEY,
@@ -910,6 +919,14 @@ impl JournalRecord {
                 let mut w = Writer::new();
                 w.u8(NAMESPACE_CREATE);
                 w.u64(*created_at);
+                w.str(ns)?;
+                Ok(w.0)
+            }
+            Self::DropNamespace { ns, dropped_at } => {
+                check_namespace(ns)?;
+                let mut w = Writer::new();
+                w.u8(NAMESPACE_DELETE);
+                w.u64(*dropped_at);
                 w.str(ns)?;
                 Ok(w.0)
             }
@@ -1021,14 +1038,16 @@ impl JournalRecord {
             }
             kind::NAMESPACE => {
                 let mut r = Reader::new(header);
-                if r.u8()? != NAMESPACE_CREATE {
-                    return Err(FormatError::Invalid("unknown NAMESPACE op"));
-                }
-                let created_at = r.u64()?;
+                let op = r.u8()?;
+                let at = r.u64()?;
                 let ns = r.str()?;
                 r.finish()?;
                 check_namespace(&ns)?;
-                Ok(Self::Namespace { ns, created_at })
+                match op {
+                    NAMESPACE_CREATE => Ok(Self::Namespace { ns, created_at: at }),
+                    NAMESPACE_DELETE => Ok(Self::DropNamespace { ns, dropped_at: at }),
+                    _ => Err(FormatError::Invalid("unknown NAMESPACE op")),
+                }
             }
             kind::BIND => {
                 let mut r = Reader::new(header);
@@ -1380,6 +1399,22 @@ mod tests {
             JournalRecord::Namespace { ns, created_at: 1_700_000_000 } if ns == "s3:demo"
         ));
 
+        let bytes = JournalRecord::DropNamespace {
+            ns: "s3:demo".into(),
+            dropped_at: 1_800_000_000,
+        }
+        .encode_record()
+        .unwrap();
+        let header = &bytes[FRAME_LEN..];
+        assert_eq!(frame_of(&bytes).kind, kind::NAMESPACE);
+        assert_eq!(header[0], 2);
+        assert_eq!(&header[1..9], &1_800_000_000u64.to_le_bytes());
+        assert_eq!(&header[11..], b"s3:demo");
+        assert!(matches!(
+            decode_record(&bytes).unwrap(),
+            JournalRecord::DropNamespace { ns, dropped_at: 1_800_000_000 } if ns == "s3:demo"
+        ));
+
         let metadata = vec![
             ("content-type".to_string(), "image/jpeg".to_string()),
             ("x-amz-meta-owner".to_string(), "qa".to_string()),
@@ -1472,7 +1507,7 @@ mod tests {
         }
         .encode_header()
         .unwrap();
-        header[0] = 2;
+        header[0] = 3;
         let bytes = encode_head(kind::NAMESPACE, JOURNAL_VERSION, 0, &header, &[]).unwrap();
         assert!(matches!(
             decode_record(&bytes),

@@ -93,7 +93,7 @@ The sums are BLAKE3 because it's already a dependency. CRC32C would be cheaper p
 | `0x02` | `CHECKPOINT` | checkpoint | Snapshot of the segment map |
 | `0x10` | `CAPSULE` | journal | Manifest; commits a write |
 | `0x11` | `DROP` | journal | Commits a delete |
-| `0x12` | `NAMESPACE` | journal | Creates a namespace (an S3 bucket) |
+| `0x12` | `NAMESPACE` | journal | Creates or deletes a namespace (an S3 bucket) |
 | `0x13` | `BIND` | journal | Points a name at a capsule |
 | `0x14` | `UNBIND` | journal | Removes a name |
 | `0x15` | `KEY` | journal | Records an encrypted store's key (§5.9) |
@@ -182,9 +182,11 @@ Notes:
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 0 | 1 | `op` | 1 create. Other values reserved (there's no DeleteBucket today). |
-| 1 | 8 | `created_at` | Unix seconds |
+| 0 | 1 | `op` | 1 create, 2 delete. Other values reserved. |
+| 1 | 8 | `created_at` | Unix seconds: when it was created, or for a delete, deleted |
 | 9 | 2 + n | `ns` | `str` |
+
+A delete leaves the namespace's names alone, so a writer unbinds them in the same `BATCH`. S3 DeleteBucket does that for keys whose capsule is gone, and refuses a bucket that still holds objects ([#159](https://github.com/saworbit/SPACE/issues/159)). Deleting a namespace that doesn't exist changes nothing. A build from before op 2 refuses a journal that holds one.
 
 ### 5.6 `BIND` and `UNBIND`
 
@@ -260,6 +262,8 @@ The fingerprint names the key without revealing it, or any key derived from it: 
 | S3 PUT, new key | New segments | `BATCH[CAPSULE, BIND]` | The `BATCH` |
 | S3 PUT, overwrite | New segments | `BATCH[CAPSULE, BIND, DROP old]` | The `BATCH` |
 | S3 DELETE | Nothing | `BATCH[UNBIND, DROP]` | The `BATCH` |
+| S3 DeleteObjects | Nothing | `BATCH[UNBIND, DROP, …]` for every key that's there | The `BATCH` |
+| S3 DeleteBucket | Nothing | `NAMESPACE` delete, in a `BATCH` after an `UNBIND` for each key whose capsule is gone | The record or `BATCH` |
 | Multipart complete (future) | Nothing | `BATCH[CAPSULE composed, BIND, DROP part…]` | The `BATCH` |
 | GC | Nothing: a segment with no references is simply not live | — | — |
 | Compaction | New data log generation (§9) | — | Rename |
@@ -278,7 +282,7 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 |---|---|
 | `CAPSULE` | Insert the capsule. For each entry `refs[seg] += 1`. If `DEDUPE` is set and the hash isn't in the content index, register `hash → seg`. |
 | `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`; at 0, deregister the hash if it points at `seg`. |
-| `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists. |
+| `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists, or delete it. |
 | `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name, holding the capsule id and the metadata). |
 | `KEY` | Nothing. The journal keeps the last one in memory, found when it's opened. |
 

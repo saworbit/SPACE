@@ -315,3 +315,76 @@ async fn metadata_s3_doesnt_store_is_refused() {
     drop((registry, view));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A deleted bucket stays deleted after a restart and a lost index, and a
+/// key whose capsule `spacectl delete` removed doesn't keep its bucket
+/// alive or come back with it (#159).
+#[tokio::test]
+async fn a_deleted_bucket_stays_deleted() {
+    let dir = scratch("delete_bucket");
+    let (registry, view) = open(&dir);
+    view.create_bucket("gone").unwrap();
+    let id = view.put_object("gone", "k", body(b"data")).await.unwrap();
+    registry.delete_capsule(id).unwrap();
+    view.delete_bucket("gone").await.unwrap();
+    view.create_bucket("kept").unwrap();
+    view.put_object("kept", "a", body(b"a")).await.unwrap();
+    view.put_object("kept", "b", body(b"b")).await.unwrap();
+    view.delete_objects("kept", &["a".to_string(), "missing".to_string()])
+        .await
+        .unwrap();
+    drop((registry, view));
+
+    for lose_index in [false, true] {
+        if lose_index {
+            std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+        }
+        let (registry, view) = open(&dir);
+        let buckets: Vec<String> = view
+            .list_buckets("", None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(buckets, ["kept"]);
+        assert!(matches!(
+            view.head_bucket("gone"),
+            Err(S3Error::NoSuchBucket(_))
+        ));
+        assert_eq!(keys(&view, "kept"), ["b"]);
+        assert_eq!(registry.capsules().len(), 1);
+        drop((registry, view));
+    }
+
+    let (registry, view) = open(&dir);
+    view.create_bucket("gone").unwrap();
+    assert!(keys(&view, "gone").is_empty());
+    assert!(registry.name("s3:gone", "k").unwrap().is_none());
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A PUT whose bucket is deleted while its body is being stored fails at
+/// the commit, and leaves nothing behind (#159).
+#[tokio::test]
+async fn a_put_into_a_bucket_deleted_meanwhile_stores_nothing() {
+    let dir = scratch("put_vs_delete_bucket");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let gated = stream::once(async move {
+        wait.await.unwrap();
+        Ok::<_, std::io::Error>(Bytes::from_static(b"body"))
+    });
+    let put = view.put_object("bkt", "k", gated);
+    let delete = async {
+        view.delete_bucket("bkt").await.unwrap();
+        go.send(()).unwrap();
+    };
+    let (put, ()) = tokio::join!(put, delete);
+    assert!(matches!(put, Err(S3Error::NoSuchBucket(_))), "{put:?}");
+    assert!(registry.capsules().is_empty());
+    assert!(registry.name("s3:bkt", "k").unwrap().is_none());
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
