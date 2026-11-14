@@ -6,6 +6,11 @@
 //!
 //! - A record that fails its checks with nothing valid after it is a torn
 //!   tail from an interrupted append. The file is truncated back to it.
+//!   So is a last record whose frame and header check out but whose bytes
+//!   run past the end of the file, or don't match its body checksum, and a
+//!   journal record whose header the file ends inside: nothing can follow
+//!   them inside the file, so any record in their bytes is part of them
+//!   (#137).
 //! - Invalid bytes with valid records after them are damage. They're
 //!   reported, and the scan carries on from the next valid record.
 //!
@@ -14,7 +19,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use common::format::{
-    self, FileHeader, FileKind, Frame, FILE_VERSION, FORMAT_VERSION, FRAME_LEN, MAGIC,
+    self, FileHeader, FileKind, Frame, HeaderPrefix, FILE_VERSION, FORMAT_VERSION, FRAME_LEN, MAGIC,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -83,6 +88,9 @@ pub fn copy_range(src: &mut File, dst: &mut File, start: u64, end: u64) -> Resul
 /// The outcome of reading a record's frame and header at some offset.
 enum Probe {
     Valid(Frame, Vec<u8>),
+    /// The frame and header check out, but the record runs past the end of
+    /// the file: an append cut short.
+    CutShort,
     Invalid(String),
 }
 
@@ -97,7 +105,7 @@ fn probe(file: &mut File, pos: u64, file_len: u64) -> std::io::Result<Probe> {
         Ok(frame) => frame,
         Err(err) => return Ok(Probe::Invalid(err.to_string())),
     };
-    if pos + frame.record_len() > file_len {
+    if pos + frame.head_len() > file_len {
         return Ok(Probe::Invalid(
             "record runs past the end of the file".into(),
         ));
@@ -107,7 +115,40 @@ fn probe(file: &mut File, pos: u64, file_len: u64) -> std::io::Result<Probe> {
     if let Err(err) = frame.verify_head(&header) {
         return Ok(Probe::Invalid(err.to_string()));
     }
+    if pos + frame.record_len() > file_len {
+        return Ok(Probe::CutShort);
+    }
     Ok(Probe::Valid(frame, header))
+}
+
+/// For a journal record at `pos` whose frame says it runs past the end of
+/// the file, how much of its header the file holds. `None` when the frame
+/// doesn't parse as a journal record's (which has no body), or says the
+/// record fits.
+fn journal_header_left(
+    file: &mut File,
+    pos: u64,
+    file_len: u64,
+) -> std::io::Result<Option<HeaderPrefix>> {
+    if file_len.saturating_sub(pos) < FRAME_LEN as u64 {
+        return Ok(None);
+    }
+    let mut frame_bytes = [0u8; FRAME_LEN];
+    file.seek(SeekFrom::Start(pos))?;
+    file.read_exact(&mut frame_bytes)?;
+    let Ok(frame) = Frame::parse(&frame_bytes) else {
+        return Ok(None);
+    };
+    if frame.body_len != 0 || pos + frame.record_len() <= file_len {
+        return Ok(None);
+    }
+    let mut prefix = vec![0u8; (file_len - pos) as usize - FRAME_LEN];
+    file.read_exact(&mut prefix)?;
+    Ok(format::journal_header_prefix(
+        frame.kind,
+        frame.version,
+        &prefix,
+    ))
 }
 
 /// Offset of the first valid record at or after `from`, if any.
@@ -165,6 +206,7 @@ fn read_file_header(
 ) -> Result<std::result::Result<(FileHeader, u64), String>> {
     let (frame, header) = match probe(file, 0, file_len)? {
         Probe::Valid(frame, header) => (frame, header),
+        Probe::CutShort => return Ok(Err("record runs past the end of the file".into())),
         Probe::Invalid(reason) => return Ok(Err(reason)),
     };
     let what = describe(kind);
@@ -292,11 +334,49 @@ where
                         pos = end;
                         continue;
                     }
-                    Err(reason) => reason,
+                    // The last record, with a whole frame and header: it ends
+                    // where they say, so nothing follows it in the file.
+                    Err(reason) => {
+                        torn_at = Some((pos, reason));
+                        break;
+                    }
                 }
+            }
+            Probe::CutShort => {
+                torn_at = Some((pos, "record runs past the end of the file".into()));
+                break;
             }
             Probe::Invalid(reason) => reason,
         };
+        // A journal record's header can't be checked until it's whole. If
+        // its layout runs out of bytes, they're the start of a header, cut
+        // short. If a whole header fits, the frame's length is wrong, which
+        // an append cut short can't do: that's damage.
+        if matches!(kind, FileKind::Journal) {
+            match journal_header_left(&mut file, pos, file_len)? {
+                Some(HeaderPrefix::CutShort) => {
+                    torn_at = Some((pos, reason));
+                    break;
+                }
+                Some(HeaderPrefix::Whole(_)) => {
+                    let next = find_next_record(&mut file, pos + 1, file_len)?.unwrap_or(file_len);
+                    warn!(
+                        path = %path.display(),
+                        start = pos,
+                        end = next,
+                        reason = "the record's header is whole, but its frame says it's longer",
+                        "record file is damaged"
+                    );
+                    damage.push(Damage {
+                        start: pos,
+                        end: next,
+                    });
+                    pos = next;
+                    continue;
+                }
+                None => {}
+            }
+        }
         match find_next_record(&mut file, pos + 1, file_len)? {
             None => {
                 torn_at = Some((pos, reason));
@@ -354,6 +434,7 @@ where
                 visit(pos, &frame, &header)?;
                 pos += frame.record_len();
             }
+            Probe::CutShort => bail!("record at offset {pos} runs past offset {to}"),
             Probe::Invalid(reason) => bail!("record at offset {pos} is invalid: {reason}"),
         }
     }
