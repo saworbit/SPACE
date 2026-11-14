@@ -57,31 +57,33 @@ pub type FileProvider = FileKeyProvider;
 #[async_trait]
 impl KeyProvider for FileKeyProvider {
     async fn fetch_master_key(&self) -> Result<Zeroizing<Vec<u8>>> {
-        let raw = std::fs::read(&self.path).map_err(|e| {
+        let raw = Zeroizing::new(std::fs::read(&self.path).map_err(|e| {
             EncryptionError::InvalidConfiguration(format!(
                 "failed to read master key file {}: {}",
                 self.path.display(),
                 e
             ))
-        })?;
+        })?);
 
-        // A key file holds the key in hex, as the variable does, or as its
-        // 32 raw bytes.
-        let trimmed = trim_ascii_whitespace(&raw);
+        // A key file holds the key's 32 raw bytes, or the key in hex as the
+        // variable does. A file of exactly 32 bytes is a raw key, taken as it
+        // is: a hex key needs 64 characters, and trimming would cut a raw
+        // key's own whitespace bytes (#216).
+        if raw.len() == MASTER_KEY_SIZE {
+            return Ok(Zeroizing::new(raw.to_vec()));
+        }
         let source = format!("the master key file {}", self.path.display());
-        if let Some(key) = std::str::from_utf8(trimmed)
+        std::str::from_utf8(&raw)
             .ok()
             .and_then(|text| parse_master_key(text, &source).ok())
-        {
-            return Ok(Zeroizing::new(key.to_vec()));
-        }
-        if trimmed.len() != MASTER_KEY_SIZE {
-            return Err(EncryptionError::InvalidKeyLength {
-                expected: MASTER_KEY_SIZE,
-                actual: trimmed.len(),
-            });
-        }
-        Ok(Zeroizing::new(trimmed.to_vec()))
+            .map(|key| Zeroizing::new(key.to_vec()))
+            .ok_or_else(|| {
+                EncryptionError::InvalidConfiguration(format!(
+                    "{source} must hold the key's {MASTER_KEY_SIZE} raw bytes, or 64 hex \
+                     characters such as `openssl rand -hex 32` prints: it holds {} bytes",
+                    raw.len()
+                ))
+            })
     }
 }
 
@@ -154,24 +156,6 @@ pub fn master_key_from_env(var: &str) -> Result<Zeroizing<[u8; MASTER_KEY_SIZE]>
         })
     })?;
     parse_master_key(&raw, var)
-}
-
-fn trim_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
-    while let Some((first, rest)) = bytes.split_first() {
-        if first.is_ascii_whitespace() {
-            bytes = rest;
-        } else {
-            break;
-        }
-    }
-    while let Some((last, rest)) = bytes.split_last() {
-        if last.is_ascii_whitespace() {
-            bytes = rest;
-        } else {
-            break;
-        }
-    }
-    bytes
 }
 
 #[cfg(test)]
@@ -278,6 +262,37 @@ mod tests {
         }
         std::fs::write(&path, b"short").unwrap();
         assert!(block_on(FileKeyProvider::new(&path).fetch_master_key()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A raw key whose first or last byte is ASCII whitespace loads as it is.
+    /// Trimming it cut the key short, so about 1 random key in 26 was
+    /// refused (#216).
+    #[test]
+    fn a_raw_key_file_keeps_whitespace_bytes_at_either_end() {
+        let dir = std::env::temp_dir().join(format!("space_key_file_ws_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key");
+        for byte in [0x09u8, 0x0A, 0x0C, 0x0D, 0x20] {
+            for at in [0, MASTER_KEY_SIZE - 1] {
+                let mut key = [0xABu8; MASTER_KEY_SIZE];
+                key[at] = byte;
+                std::fs::write(&path, key).unwrap();
+                let got = block_on(FileKeyProvider::new(&path).fetch_master_key())
+                    .unwrap_or_else(|e| panic!("{byte:#04x} at {at}: {e}"));
+                assert_eq!(got.as_slice(), &key, "{byte:#04x} at {at}");
+            }
+        }
+        // 32 raw bytes and a newline are neither form, and the error names
+        // both.
+        let mut padded = vec![0xABu8; MASTER_KEY_SIZE];
+        padded.push(b'\n');
+        std::fs::write(&path, &padded).unwrap();
+        let err = block_on(FileKeyProvider::new(&path).fetch_master_key())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("32 raw bytes"), "{err}");
+        assert!(err.contains("64 hex characters"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
