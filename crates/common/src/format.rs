@@ -65,8 +65,11 @@ pub mod kind {
 pub const FILE_VERSION: u8 = 1;
 /// Layout version of the `SEGMENT` header.
 pub const SEGMENT_VERSION: u8 = 1;
-/// Layout version of every journal record's header.
+/// Layout version of every other journal record's header.
 pub const JOURNAL_VERSION: u8 = 1;
+/// Layout version of the `BIND` header. Version 2 adds the name's
+/// metadata (#163). A version 1 `BIND` is still read, as a name with none.
+pub const BIND_VERSION: u8 = 2;
 
 /// `NAMESPACE` op: create the namespace.
 const NAMESPACE_CREATE: u8 = 1;
@@ -860,11 +863,15 @@ pub enum JournalRecord {
         /// Unix seconds.
         created_at: u64,
     },
-    /// Points `name` in `ns` at a capsule, replacing any earlier binding.
+    /// Points `name` in `ns` at a capsule, replacing any earlier binding
+    /// and its metadata.
     Bind {
         ns: String,
         name: String,
         capsule_id: CapsuleId,
+        /// Name and value pairs kept with the name, in order, such as the
+        /// headers an S3 PUT stores with an object (#163).
+        metadata: Vec<(String, String)>,
     },
     /// Removes `name` from `ns`, if it's there.
     Unbind { ns: String, name: String },
@@ -887,6 +894,13 @@ impl JournalRecord {
         }
     }
 
+    fn version(&self) -> u8 {
+        match self {
+            Self::Bind { .. } => BIND_VERSION,
+            _ => JOURNAL_VERSION,
+        }
+    }
+
     fn encode_header(&self) -> Result<Vec<u8>, FormatError> {
         match self {
             Self::Capsule(manifest) => manifest.encode(),
@@ -903,12 +917,20 @@ impl JournalRecord {
                 ns,
                 name,
                 capsule_id,
+                metadata,
             } => {
                 check_namespace(ns)?;
+                let count = u16::try_from(metadata.len())
+                    .map_err(|_| FormatError::Invalid("too many metadata entries"))?;
                 let mut w = Writer::new();
                 w.bytes(capsule_id.as_uuid().as_bytes());
                 w.str(ns)?;
                 w.str(name)?;
+                w.u16(count);
+                for (key, value) in metadata {
+                    w.str(key)?;
+                    w.str(value)?;
+                }
                 Ok(w.0)
             }
             Self::Unbind { ns, name } => {
@@ -938,7 +960,7 @@ impl JournalRecord {
                     let header_len = u32::try_from(header.len())
                         .map_err(|_| FormatError::Invalid("batch record too large"))?;
                     w.u8(record.kind());
-                    w.u8(JOURNAL_VERSION);
+                    w.u8(record.version());
                     w.u16(0);
                     w.u32(header_len);
                     w.bytes(&header);
@@ -950,7 +972,7 @@ impl JournalRecord {
 
     /// The whole record: frame and header. Journal records have no body.
     pub fn encode_record(&self) -> Result<Vec<u8>, FormatError> {
-        encode_head(self.kind(), JOURNAL_VERSION, 0, &self.encode_header()?, &[])
+        encode_head(self.kind(), self.version(), 0, &self.encode_header()?, &[])
     }
 
     /// The length of [`encode_record`](Self::encode_record)'s output,
@@ -982,7 +1004,11 @@ impl JournalRecord {
         ) {
             return Err(FormatError::UnknownKind(kind));
         }
-        if version != JOURNAL_VERSION {
+        let supported = match kind {
+            kind::BIND => version == 1 || version == BIND_VERSION,
+            _ => version == JOURNAL_VERSION,
+        };
+        if !supported {
             return Err(FormatError::UnsupportedVersion { kind, version });
         }
         match kind {
@@ -1009,12 +1035,20 @@ impl JournalRecord {
                 let capsule_id = CapsuleId::from_uuid(Uuid::from_bytes(r.array()?));
                 let ns = r.str()?;
                 let name = r.str()?;
+                let mut metadata = Vec::new();
+                if version == BIND_VERSION {
+                    for _ in 0..r.u16()? {
+                        let key = r.str()?;
+                        metadata.push((key, r.str()?));
+                    }
+                }
                 r.finish()?;
                 check_namespace(&ns)?;
                 Ok(Self::Bind {
                     ns,
                     name,
                     capsule_id,
+                    metadata,
                 })
             }
             kind::UNBIND => {
@@ -1289,6 +1323,7 @@ mod tests {
                 ns: "s3:b".into(),
                 name: "k".into(),
                 capsule_id: sample_manifest().capsule_id,
+                metadata: vec![("content-type".into(), "text/plain".into())],
             },
             JournalRecord::Drop(id),
         ]);
@@ -1297,7 +1332,10 @@ mod tests {
             panic!("not a BATCH record");
         };
         assert!(matches!(records[0], JournalRecord::Capsule(_)));
-        assert!(matches!(&records[1], JournalRecord::Bind { name, .. } if name == "k"));
+        assert!(matches!(
+            &records[1],
+            JournalRecord::Bind { name, metadata, .. } if name == "k" && metadata.len() == 1
+        ));
         assert!(matches!(records[2], JournalRecord::Drop(d) if d == id));
 
         let nested = JournalRecord::Batch(vec![batch.clone()]);
@@ -1342,23 +1380,53 @@ mod tests {
             JournalRecord::Namespace { ns, created_at: 1_700_000_000 } if ns == "s3:demo"
         ));
 
+        let metadata = vec![
+            ("content-type".to_string(), "image/jpeg".to_string()),
+            ("x-amz-meta-owner".to_string(), "qa".to_string()),
+        ];
         let bytes = JournalRecord::Bind {
             ns: "s3:demo".into(),
             name: "dir/a.txt".into(),
             capsule_id: id,
+            metadata: metadata.clone(),
         }
         .encode_record()
         .unwrap();
         let header = &bytes[FRAME_LEN..];
         assert_eq!(frame_of(&bytes).kind, kind::BIND);
+        assert_eq!(frame_of(&bytes).version, 2);
         assert_eq!(&header[0..16], id.as_uuid().as_bytes());
         assert_eq!(&header[16..18], &7u16.to_le_bytes());
         assert_eq!(&header[25..27], &9u16.to_le_bytes());
-        assert_eq!(header.len(), 16 + 2 + 7 + 2 + 9);
+        assert_eq!(&header[36..38], &2u16.to_le_bytes());
+        assert_eq!(&header[38..40], &12u16.to_le_bytes());
+        assert_eq!(&header[40..52], b"content-type");
+        assert_eq!(&header[52..54], &10u16.to_le_bytes());
+        assert_eq!(&header[54..64], b"image/jpeg");
+        assert_eq!(
+            header.len(),
+            16 + 2 + 7 + 2 + 9 + 2 + (2 + 12 + 2 + 10) + (2 + 16 + 2 + 2)
+        );
         assert!(matches!(
             decode_record(&bytes).unwrap(),
-            JournalRecord::Bind { ns, name, capsule_id }
-                if ns == "s3:demo" && name == "dir/a.txt" && capsule_id == id
+            JournalRecord::Bind { ns, name, capsule_id, metadata: m }
+                if ns == "s3:demo" && name == "dir/a.txt" && capsule_id == id && m == metadata
+        ));
+
+        // A version 1 BIND, as stores written before #163 hold, is a name
+        // with no metadata.
+        let v1 = encode_head(kind::BIND, 1, 0, &header[..36], &[]).unwrap();
+        assert!(matches!(
+            decode_record(&v1).unwrap(),
+            JournalRecord::Bind { name, metadata, .. } if name == "dir/a.txt" && metadata.is_empty()
+        ));
+        let v3 = encode_head(kind::BIND, 3, 0, header, &[]).unwrap();
+        assert!(matches!(
+            decode_record(&v3),
+            Err(FormatError::UnsupportedVersion {
+                kind: kind::BIND,
+                version: 3
+            })
         ));
 
         let bytes = JournalRecord::Unbind {

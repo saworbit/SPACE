@@ -25,6 +25,14 @@ const JOURNAL_POSITION_KEY: &[u8] = b"journal_position";
 /// Abstraction over the metadata storage backend.
 /// Allows swapping Sled for other engines (e.g., RocksDB, in-memory) without
 /// changing the registry surface.
+/// What a name points at: a capsule, and the metadata kept with the name
+/// (`docs/on-disk-format.md` §5.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub capsule_id: CapsuleId,
+    pub metadata: Vec<(String, String)>,
+}
+
 pub trait MetadataStore: Send + Sync {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
     fn put_capsule(&self, capsule: &Capsule) -> Result<()>;
@@ -64,10 +72,10 @@ pub trait MetadataStore: Send + Sync {
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>>;
 
     /// Names (`docs/on-disk-format.md` §5.5–§5.6). Each namespace maps to its
-    /// creation time, and each name to the capsule it points at. Only
-    /// applying journal records changes them.
+    /// creation time, and each name to the capsule it points at and its
+    /// metadata. Only applying journal records changes them.
     fn get_namespace(&self, ns: &str) -> Result<Option<u64>>;
-    fn get_name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>>;
+    fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>>;
     /// Names in `ns` that start with `prefix` and sort after `start_after`,
     /// in byte order.
     fn list_names(
@@ -76,7 +84,7 @@ pub trait MetadataStore: Send + Sync {
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(String, CapsuleId)>>;
+    ) -> Result<Vec<(String, Binding)>>;
 
     /// Covers capsules, content and the segment counter, not names.
     #[allow(dead_code)]
@@ -293,8 +301,13 @@ fn scrub_time(millis: u64) -> Option<SystemTime> {
     (millis != 0).then(|| UNIX_EPOCH + Duration::from_millis(millis))
 }
 
-fn decode_capsule_id(bytes: Option<sled::IVec>) -> Result<Option<CapsuleId>> {
-    Ok(bytes.map(|v| bincode::deserialize(&v)).transpose()?)
+/// A name's index record: its capsule, then its metadata.
+fn decode_binding(bytes: &[u8]) -> Result<Binding> {
+    let (capsule_id, metadata) = bincode::deserialize(bytes)?;
+    Ok(Binding {
+        capsule_id,
+        metadata,
+    })
 }
 
 impl SledStore {
@@ -612,8 +625,11 @@ impl MetadataStore for SledStore {
             .transpose()?)
     }
 
-    fn get_name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>> {
-        decode_capsule_id(self.names.get(name_key(ns, name))?)
+    fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>> {
+        self.names
+            .get(name_key(ns, name))?
+            .map(|v| decode_binding(&v))
+            .transpose()
     }
 
     fn list_names(
@@ -622,7 +638,7 @@ impl MetadataStore for SledStore {
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(String, CapsuleId)>> {
+    ) -> Result<Vec<(String, Binding)>> {
         let scan = name_key(ns, prefix);
         let start = match start_after {
             Some(after) => {
@@ -646,7 +662,7 @@ impl MetadataStore for SledStore {
             let name = std::str::from_utf8(&k[ns.len() + 1..])
                 .context("name is not UTF-8")?
                 .to_string();
-            out.push((name, bincode::deserialize(&v)?));
+            out.push((name, decode_binding(&v)?));
         }
         Ok(out)
     }
@@ -799,8 +815,10 @@ fn apply_record(
             ns,
             name,
             capsule_id,
+            metadata,
         } => {
-            t.names.insert(name_key(ns, name), ser(capsule_id)?)?;
+            t.names
+                .insert(name_key(ns, name), ser(&(capsule_id, metadata))?)?;
         }
         JournalRecord::Unbind { ns, name } => {
             t.names.remove(name_key(ns, name))?;
@@ -940,6 +958,19 @@ mod tests {
     fn name_keys_keep_their_on_disk_encoding() {
         assert_eq!(name_key("s3:demo", "dir/a.txt"), b"s3:demo\0dir/a.txt");
         assert_eq!(name_key("s3:demo", ""), b"s3:demo\0");
+
+        let id = sample_capsule().id;
+        let metadata = vec![("a".to_string(), "bc".to_string())];
+        let value = bincode::serialize(&(id, &metadata)).unwrap();
+        assert_eq!(
+            to_hex(&value),
+            format!(
+                "{CAPSULE_ID_HEX}{}{}{}{}{}",
+                "0100000000000000", "0100000000000000", "61", "0200000000000000", "6263"
+            )
+        );
+        let binding = decode_binding(&value).unwrap();
+        assert_eq!((binding.capsule_id, binding.metadata), (id, metadata));
     }
 
     #[test]

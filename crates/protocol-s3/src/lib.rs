@@ -28,6 +28,24 @@ const MAX_JOURNAL_STR: usize = u16::MAX as usize;
 /// Each bucket is a namespace in the registry, holding its keys as names.
 const NAMESPACE_PREFIX: &str = "s3:";
 
+/// The headers a PUT stores with an object and GET and HEAD return, besides
+/// `x-amz-meta-*` (#163). Names are lowercase.
+pub const STORED_HEADERS: [&str; 6] = [
+    "content-type",
+    "content-disposition",
+    "content-encoding",
+    "content-language",
+    "cache-control",
+    "expires",
+];
+
+/// The prefix of a user metadata header.
+pub const USER_METADATA_PREFIX: &str = "x-amz-meta-";
+
+/// S3's limit on user metadata: the bytes of each `x-amz-meta-*` name,
+/// without the prefix, and of each value, added up.
+const MAX_USER_METADATA: usize = 2048;
+
 fn namespace(bucket: &str) -> String {
     format!("{NAMESPACE_PREFIX}{bucket}")
 }
@@ -37,6 +55,11 @@ fn namespace(bucket: &str) -> String {
 pub enum S3Error {
     #[error("The specified bucket does not exist")]
     NoSuchBucket(String),
+    #[error(
+        "Your metadata headers exceed the maximum allowed metadata size: the names and \
+         values of the x-amz-meta-* headers can add up to at most 2048 bytes"
+    )]
+    MetadataTooLarge,
     #[error("The specified key does not exist")]
     NoSuchKey(String),
     #[error(
@@ -78,7 +101,11 @@ pub struct ObjectMapping {
     pub capsule_id: CapsuleId,
     pub size: u64,
     pub created_at: u64,
+    /// The type stored with the object, or one guessed from the key's
+    /// extension.
     pub content_type: String,
+    /// The other headers stored with the object (#163).
+    pub metadata: Vec<(String, String)>,
 }
 
 impl ObjectMapping {
@@ -102,13 +129,22 @@ impl ObjectMapping {
         &self.content_type
     }
 
-    fn new(key: &str, capsule: &Capsule) -> Self {
+    pub fn metadata(&self) -> &[(String, String)] {
+        &self.metadata
+    }
+
+    fn new(key: &str, capsule: &Capsule, mut metadata: Vec<(String, String)>) -> Self {
+        let content_type = match metadata.iter().position(|(name, _)| name == "content-type") {
+            Some(i) => metadata.remove(i).1,
+            None => detect_content_type(key).to_string(),
+        };
         Self {
             key: key.to_string(),
             capsule_id: capsule.id,
             size: capsule.size,
             created_at: capsule.created_at,
-            content_type: detect_content_type(key).to_string(),
+            content_type,
+            metadata,
         }
     }
 }
@@ -164,6 +200,16 @@ impl ByteRange {
             ByteRange::Suffix(n) => (n > 0 && size > 0).then(|| (size - n.min(size), size - 1)),
         }
     }
+}
+
+/// What a PUT asks for besides its body.
+#[derive(Debug, Clone, Default)]
+pub struct PutOptions {
+    /// Checked against the object the key holds when the PUT commits (#171).
+    pub conditions: Preconditions,
+    /// Headers stored with the object, which GET and HEAD return (#163):
+    /// any of [`STORED_HEADERS`], and `x-amz-meta-*`. Names are lowercase.
+    pub metadata: Vec<(String, String)>,
 }
 
 /// The conditional headers of a request (RFC 9110 §13), compared with the
@@ -384,20 +430,23 @@ impl S3View {
         S: Stream<Item = Result<Bytes, E>> + Send,
         E: Into<anyhow::Error>,
     {
-        self.put_object_if(bucket, key, data_stream, &Preconditions::default())
+        self.put_object_with(bucket, key, data_stream, &PutOptions::default())
             .await
     }
 
-    /// [`S3View::put_object`], if `conditions` hold for the object the key
-    /// holds when the PUT commits. They're checked under the same lock as
-    /// the commit, so two create-only or compare-and-swap PUTs can't both
-    /// win (#171). A PUT that fails them stores nothing.
-    pub async fn put_object_if<S, E>(
+    /// [`S3View::put_object`], storing `options.metadata` with the object,
+    /// if `options.conditions` hold for the object the key holds when the
+    /// PUT commits. They're checked under the same lock as the commit, so
+    /// two create-only or compare-and-swap PUTs can't both win (#171). A
+    /// PUT that fails them, or whose metadata is refused, stores nothing.
+    /// The metadata is in the same journal record as the key, so a crash
+    /// can't leave one without the other.
+    pub async fn put_object_with<S, E>(
         &self,
         bucket: &str,
         key: &str,
         data_stream: S,
-        conditions: &Preconditions,
+        options: &PutOptions,
     ) -> S3Result<CapsuleId>
     where
         S: Stream<Item = Result<Bytes, E>> + Send,
@@ -408,6 +457,8 @@ impl S3View {
         // (#159), so it's still there at the commit.
         self.head_bucket(bucket)?;
         check_key(key)?;
+        check_metadata(&options.metadata)?;
+        let conditions = &options.conditions;
         // Fail early when the conditions already fail, rather than store the
         // body first. They're checked again at the commit.
         conditions.check_write(self.live_capsule_created(&ns, key)?)?;
@@ -428,6 +479,7 @@ impl S3View {
             ns,
             name: key.to_string(),
             capsule_id,
+            metadata: options.metadata.clone(),
         });
         with.extend(previous.map(JournalRecord::Drop));
         for capsule in staged.commit(&mut handle, with).await? {
@@ -505,13 +557,13 @@ impl S3View {
 
     /// HEAD object - get metadata without reading data
     pub fn head_object(&self, bucket: &str, key: &str) -> S3Result<ObjectMapping> {
-        let Some(id) = self.registry.name(&namespace(bucket), key)? else {
+        let Some(binding) = self.registry.binding(&namespace(bucket), key)? else {
             return Err(self.missing(bucket, key));
         };
         // A key whose capsule was removed with `spacectl delete` reads as
         // missing.
-        match self.registry.get_capsule(id)? {
-            Some(capsule) => Ok(ObjectMapping::new(key, &capsule)),
+        match self.registry.get_capsule(binding.capsule_id)? {
+            Some(capsule) => Ok(ObjectMapping::new(key, &capsule, binding.metadata)),
             None => Err(S3Error::NoSuchKey(key.to_string())),
         }
     }
@@ -543,7 +595,7 @@ impl S3View {
             let full = batch.len() == LIST_BATCH;
             after = batch.last().map(|(key, _)| key.clone());
 
-            for (key, id) in batch {
+            for (key, binding) in batch {
                 let group = delimiter.and_then(|d| {
                     key[prefix_len..]
                         .find(d)
@@ -554,8 +606,8 @@ impl S3View {
                 }
                 let object = match group {
                     Some(_) => None,
-                    None => match self.registry.get_capsule(id)? {
-                        Some(capsule) => Some(ObjectMapping::new(&key, &capsule)),
+                    None => match self.registry.get_capsule(binding.capsule_id)? {
+                        Some(capsule) => Some(ObjectMapping::new(&key, &capsule, binding.metadata)),
                         // Removed with `spacectl delete`.
                         None => continue,
                     },
@@ -723,29 +775,70 @@ fn check_key(key: &str) -> S3Result<()> {
     Ok(())
 }
 
-/// Simple content-type detection based on file extension.
-///
-/// Returns a static string to avoid per-call allocations in the hot path.
-fn detect_content_type(key: &str) -> &'static str {
-    if key.ends_with(".txt") {
-        "text/plain"
-    } else if key.ends_with(".json") {
-        "application/json"
-    } else if key.ends_with(".html") {
-        "text/html"
-    } else if key.ends_with(".jpg") || key.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if key.ends_with(".png") {
-        "image/png"
-    } else if key.ends_with(".xml") {
-        "application/xml"
-    } else if key.ends_with(".css") {
-        "text/css"
-    } else if key.ends_with(".js") {
-        "application/javascript"
-    } else if key.ends_with(".pdf") {
-        "application/pdf"
-    } else {
-        "application/octet-stream"
+/// Metadata a PUT can store (#163): only [`STORED_HEADERS`] and
+/// `x-amz-meta-*` with a lowercase name, each with a value a header can
+/// carry, and user metadata within S3's 2 KB.
+fn check_metadata(metadata: &[(String, String)]) -> S3Result<()> {
+    let token =
+        |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_.!#$%&'*+^`|~".contains(&b);
+    let mut user = 0;
+    for (name, value) in metadata {
+        match name.strip_prefix(USER_METADATA_PREFIX) {
+            Some(rest) if !rest.is_empty() && rest.bytes().all(token) => {
+                user += rest.len() + value.len();
+            }
+            _ if STORED_HEADERS.contains(&name.as_str()) => {}
+            _ => {
+                return Err(S3Error::InvalidArgument(format!(
+                    "'{name}' can't be stored with an object"
+                )))
+            }
+        }
+        let header_value = |b: u8| b == b'\t' || (b' '..=b'~').contains(&b);
+        if value.len() > MAX_JOURNAL_STR || !value.bytes().all(header_value) {
+            return Err(S3Error::InvalidArgument(format!(
+                "the {name} header must be ASCII and at most {MAX_JOURNAL_STR} bytes"
+            )));
+        }
     }
+    if user > MAX_USER_METADATA {
+        return Err(S3Error::MetadataTooLarge);
+    }
+    Ok(())
+}
+
+/// The content type of an object stored without one, from its key's
+/// extension, ignoring case.
+fn detect_content_type(key: &str) -> &'static str {
+    const TYPES: &[(&str, &str)] = &[
+        ("txt", "text/plain"),
+        ("json", "application/json"),
+        ("html", "text/html"),
+        ("htm", "text/html"),
+        ("jpg", "image/jpeg"),
+        ("jpeg", "image/jpeg"),
+        ("png", "image/png"),
+        ("gif", "image/gif"),
+        ("webp", "image/webp"),
+        ("svg", "image/svg+xml"),
+        ("xml", "application/xml"),
+        ("css", "text/css"),
+        ("js", "application/javascript"),
+        ("csv", "text/csv"),
+        ("md", "text/markdown"),
+        ("pdf", "application/pdf"),
+        ("mp4", "video/mp4"),
+        ("webm", "video/webm"),
+        ("mp3", "audio/mpeg"),
+        ("wav", "audio/wav"),
+        ("wasm", "application/wasm"),
+        ("gz", "application/gzip"),
+        ("zip", "application/zip"),
+        ("tar", "application/x-tar"),
+    ];
+    let ext = key.rsplit_once('.').map_or("", |(_, ext)| ext);
+    TYPES
+        .iter()
+        .find(|(e, _)| e.eq_ignore_ascii_case(ext))
+        .map_or("application/octet-stream", |(_, t)| t)
 }

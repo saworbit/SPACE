@@ -15,7 +15,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use tracing::{error, info};
 
 use crate::{
-    ByteRange, ListPage, ListQuery, ObjectMapping, Preconditions, S3Error, S3Result, S3View,
+    ByteRange, ListPage, ListQuery, ObjectMapping, Preconditions, PutOptions, S3Error, S3Result,
+    S3View, STORED_HEADERS, USER_METADATA_PREFIX,
 };
 
 pub type AppState = Arc<S3View>;
@@ -37,6 +38,7 @@ impl IntoResponse for S3Error {
                 bucket.as_str(),
             ),
             S3Error::InvalidArgument(_) => (StatusCode::BAD_REQUEST, "InvalidArgument", ""),
+            S3Error::MetadataTooLarge => (StatusCode::BAD_REQUEST, "MetadataTooLarge", ""),
             S3Error::InvalidRange(_) => (StatusCode::RANGE_NOT_SATISFIABLE, "InvalidRange", ""),
             S3Error::NotImplemented(_) => (StatusCode::NOT_IMPLEMENTED, "NotImplemented", ""),
             S3Error::PreconditionFailed => {
@@ -214,6 +216,28 @@ fn check_put_headers(headers: &HeaderMap) -> S3Result<()> {
     Ok(())
 }
 
+/// The headers a PUT stores with the object (#163): [`STORED_HEADERS`] and
+/// `x-amz-meta-*`, sorted by name. A header sent more than once is stored
+/// once, with its values joined by commas.
+fn stored_metadata(headers: &HeaderMap) -> S3Result<Vec<(String, String)>> {
+    let mut metadata = Vec::new();
+    for name in headers.keys() {
+        let name = name.as_str();
+        if !STORED_HEADERS.contains(&name) && !name.starts_with(USER_METADATA_PREFIX) {
+            continue;
+        }
+        let values = headers
+            .get_all(name)
+            .iter()
+            .map(|v| v.to_str())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| S3Error::InvalidArgument(format!("the {name} header must be ASCII")))?;
+        metadata.push((name.to_string(), values.join(",")));
+    }
+    metadata.sort();
+    Ok(metadata)
+}
+
 /// Requests no route serves, such as ListBuckets (`GET /`), DeleteBucket,
 /// DeleteObjects and multipart uploads, get an S3 error a client can read
 /// instead of an empty 404 or 405 (#156).
@@ -236,11 +260,18 @@ pub async fn put_object(
         return e.into_response();
     }
 
+    let options = match stored_metadata(&request_headers) {
+        Ok(metadata) => PutOptions {
+            conditions: preconditions(&request_headers),
+            metadata,
+        },
+        Err(e) => return e.into_response(),
+    };
+
     // Convert Axum Body into a standard futures::Stream
     let stream = body.into_data_stream().map_err(Error::from).into_stream();
 
-    let conditions = preconditions(&request_headers);
-    match s3.put_object_if(&bucket, &key, stream, &conditions).await {
+    match s3.put_object_with(&bucket, &key, stream, &options).await {
         Ok(capsule_id) => {
             info!(
                 "Created capsule {} for {}/{}",
@@ -560,6 +591,11 @@ fn object_headers(meta: &ObjectMapping) -> HeaderMap {
         header::CONTENT_TYPE,
         meta.content_type.clone(),
     );
+    for (name, value) in &meta.metadata {
+        if let Ok(name) = HeaderName::from_bytes(name.as_bytes()) {
+            insert(&mut headers, name, value.clone());
+        }
+    }
     insert(&mut headers, header::ETAG, etag(meta.capsule_id));
     insert(
         &mut headers,
