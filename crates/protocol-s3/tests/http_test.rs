@@ -1184,3 +1184,169 @@ async fn names_given_to_the_server_are_answered() {
         assert_eq!(status, expected, "{host}");
     }
 }
+
+/// A PUT body must have the digests its headers give: `Content-MD5`, an
+/// `x-amz-checksum-*`, or a hex `x-amz-content-sha256`. One that doesn't
+/// stores nothing (#196).
+#[tokio::test]
+async fn put_bodies_are_checked_against_their_digests() {
+    let app = App::new("digests");
+    let sha = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    let zero_sha = "0".repeat(64);
+    for (header, good, bad, code) in [
+        (
+            "content-md5",
+            "XUFAKrxLKna5cZ2REBfFkg==",
+            "AAAAAAAAAAAAAAAAAAAAAA==",
+            "BadDigest",
+        ),
+        ("x-amz-checksum-crc32", "NhCmhg==", "AAAAAA==", "BadDigest"),
+        ("x-amz-checksum-crc32c", "mnG7TA==", "AAAAAA==", "BadDigest"),
+        (
+            "x-amz-checksum-crc64nvme",
+            "M3eFcAZSQlc=",
+            "AAAAAAAAAAA=",
+            "BadDigest",
+        ),
+        (
+            "x-amz-checksum-sha1",
+            "qvTGHdzF6KLavt4PO0gs2a6pQ00=",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "BadDigest",
+        ),
+        (
+            "x-amz-checksum-sha256",
+            "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "BadDigest",
+        ),
+        (
+            "x-amz-content-sha256",
+            sha,
+            zero_sha.as_str(),
+            "XAmzContentSHA256Mismatch",
+        ),
+    ] {
+        let uri = format!("/demo/{header}");
+        let (status, _, xml) = app.send_with("PUT", &uri, &[(header, bad)], b"hello").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{header}: {xml}");
+        assert_eq!(tags(&xml, "Code"), [code], "{header}");
+        assert_eq!(
+            app.send("HEAD", &uri, b"").await.0,
+            StatusCode::NOT_FOUND,
+            "{header}"
+        );
+
+        let (status, _, xml) = app
+            .send_with("PUT", &uri, &[(header, good)], b"hello")
+            .await;
+        assert_eq!(status, StatusCode::OK, "{header}: {xml}");
+        assert_eq!(app.send("GET", &uri, b"").await.2, "hello", "{header}");
+    }
+
+    // As boto3 sends them, together.
+    let boto3 = [
+        ("x-amz-checksum-crc32", "NhCmhg=="),
+        ("x-amz-sdk-checksum-algorithm", "CRC32"),
+        ("x-amz-content-sha256", sha),
+    ];
+    let (status, _, xml) = app.send_with("PUT", "/demo/boto3", &boto3, b"hello").await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    let unsigned = [
+        ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+        ("x-amz-checksum-type", "FULL_OBJECT"),
+    ];
+    let (status, _, xml) = app
+        .send_with("PUT", "/demo/unsigned", &unsigned, b"hello")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+
+    for (headers, status, code) in [
+        (
+            vec![("content-md5", "abc")],
+            StatusCode::BAD_REQUEST,
+            "InvalidDigest",
+        ),
+        (
+            vec![("content-md5", "NhCmhg==")],
+            StatusCode::BAD_REQUEST,
+            "InvalidDigest",
+        ),
+        (
+            vec![("x-amz-checksum-crc32", "!!")],
+            StatusCode::BAD_REQUEST,
+            "InvalidArgument",
+        ),
+        (
+            vec![("x-amz-content-sha256", "zz")],
+            StatusCode::BAD_REQUEST,
+            "InvalidArgument",
+        ),
+        (
+            vec![("x-amz-checksum-xxhash64", "AAAAAAAAAAA=")],
+            StatusCode::NOT_IMPLEMENTED,
+            "NotImplemented",
+        ),
+        (
+            vec![("x-amz-sdk-checksum-algorithm", "XXHASH64")],
+            StatusCode::NOT_IMPLEMENTED,
+            "NotImplemented",
+        ),
+        (
+            vec![("x-amz-checksum-type", "COMPOSITE")],
+            StatusCode::NOT_IMPLEMENTED,
+            "NotImplemented",
+        ),
+    ] {
+        let (got, _, xml) = app
+            .send_with("PUT", "/demo/refused", &headers, b"hello")
+            .await;
+        assert_eq!(got, status, "{headers:?}: {xml}");
+        assert_eq!(tags(&xml, "Code"), [code], "{headers:?}");
+    }
+    assert_eq!(
+        app.send("HEAD", "/demo/refused", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// Headers that ask S3 to lock, encrypt, tag, share or place an object
+/// are refused, since the server can't do it, rather than answered with a
+/// 200 (#196). The defaults they can name, `private` and `STANDARD`, pass.
+#[tokio::test]
+async fn put_headers_asking_for_protection_are_refused() {
+    let app = App::new("protection");
+    for header in [
+        ("x-amz-object-lock-mode", "COMPLIANCE"),
+        (
+            "x-amz-object-lock-retain-until-date",
+            "2030-01-01T00:00:00Z",
+        ),
+        ("x-amz-object-lock-legal-hold", "ON"),
+        ("x-amz-server-side-encryption", "aws:kms"),
+        ("x-amz-server-side-encryption-customer-algorithm", "AES256"),
+        ("x-amz-tagging", "a=b"),
+        ("x-amz-acl", "public-read"),
+        (
+            "x-amz-grant-read",
+            "uri=\"http://acs.amazonaws.com/groups/global/AllUsers\"",
+        ),
+        ("x-amz-storage-class", "GLACIER"),
+        ("x-amz-website-redirect-location", "/elsewhere"),
+    ] {
+        let (status, _, xml) = app.send_with("PUT", "/demo/t.txt", &[header], b"hi").await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{header:?}: {xml}");
+        assert!(xml.contains(header.0), "{xml}");
+    }
+    assert_eq!(
+        app.send("HEAD", "/demo/t.txt", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let defaults = [
+        ("x-amz-acl", "private"),
+        ("x-amz-storage-class", "STANDARD"),
+    ];
+    let (status, _, xml) = app.send_with("PUT", "/demo/t.txt", &defaults, b"hi").await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+}

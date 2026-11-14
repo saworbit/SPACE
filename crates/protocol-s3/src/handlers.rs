@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tracing::{error, info};
 
+use crate::checksum::{self, Algorithm};
 use crate::{
     ByteRange, ListPage, ListQuery, ObjectMapping, Preconditions, PutOptions, S3Error, S3Result,
     S3View, STORED_HEADERS, USER_METADATA_PREFIX,
@@ -36,6 +37,11 @@ impl IntoResponse for S3Error {
                 (StatusCode::CONFLICT, "BucketNotEmpty", bucket.as_str())
             }
             S3Error::AccessDenied(_) => (StatusCode::FORBIDDEN, "AccessDenied", ""),
+            S3Error::BadDigest(expected) if expected.header == "x-amz-content-sha256" => {
+                (StatusCode::BAD_REQUEST, "XAmzContentSHA256Mismatch", "")
+            }
+            S3Error::BadDigest(_) => (StatusCode::BAD_REQUEST, "BadDigest", ""),
+            S3Error::InvalidDigest(_) => (StatusCode::BAD_REQUEST, "InvalidDigest", ""),
             S3Error::InvalidBucketName(bucket) => (
                 StatusCode::BAD_REQUEST,
                 "InvalidBucketName",
@@ -218,7 +224,111 @@ fn check_put_headers(headers: &HeaderMap) -> S3Result<()> {
             "aws-chunked uploads are not implemented; send the body unencoded".to_string(),
         ));
     }
+    // Headers that ask S3 to protect, encrypt or place the object (#196).
+    // The server can't do what they ask, so they're refused rather than
+    // answered with a 200 that says it did.
+    for name in headers.keys() {
+        let name = name.as_str();
+        let refused = if name.starts_with("x-amz-object-lock-") {
+            Some("Object Lock is not implemented")
+        } else if name.starts_with("x-amz-server-side-encryption") {
+            Some(
+                "server-side encryption options are not implemented; objects are encrypted \
+                 when the server has SPACE_MASTER_KEY",
+            )
+        } else if name == "x-amz-tagging" {
+            Some("object tagging is not implemented")
+        } else if name.starts_with("x-amz-grant-")
+            || (name == "x-amz-acl" && !header_is(headers, name, "private"))
+        {
+            Some("ACLs are not implemented")
+        } else if name == "x-amz-storage-class" && !header_is(headers, name, "STANDARD") {
+            Some("storage classes other than STANDARD are not implemented")
+        } else if name == "x-amz-website-redirect-location" {
+            Some("website redirects are not implemented")
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            return Err(S3Error::NotImplemented(format!("{why} ({name})")));
+        }
+    }
     Ok(())
+}
+
+/// Whether every `name` header is `value`, ignoring case.
+fn header_is(headers: &HeaderMap, name: &str, value: &str) -> bool {
+    headers.get_all(name).iter().all(|v| {
+        v.to_str()
+            .is_ok_and(|v| v.trim().eq_ignore_ascii_case(value))
+    })
+}
+
+/// The digests a PUT's headers say its body has (#196): `Content-MD5`, the
+/// `x-amz-checksum-*` headers, and a hex `x-amz-content-sha256`. A digest
+/// that doesn't parse is refused, and so is a checksum algorithm the
+/// server doesn't compute, rather than ignored.
+fn expected_digests(headers: &HeaderMap) -> S3Result<Vec<checksum::Expected>> {
+    let value = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let mut digests = Vec::new();
+    if let Some(md5) = headers.get("content-md5") {
+        let expected = md5
+            .to_str()
+            .ok()
+            .and_then(|v| checksum::Expected::from_base64("content-md5", Algorithm::Md5, v))
+            .ok_or_else(|| {
+                S3Error::InvalidDigest("The Content-MD5 you specified was invalid.".into())
+            })?;
+        digests.push(expected);
+    }
+    for name in headers.keys() {
+        let Some(algorithm) = name.as_str().strip_prefix("x-amz-checksum-") else {
+            continue;
+        };
+        if algorithm == "type" {
+            if !header_is(headers, name.as_str(), "FULL_OBJECT") {
+                return Err(S3Error::NotImplemented(
+                    "only FULL_OBJECT checksums are implemented".into(),
+                ));
+            }
+            continue;
+        }
+        let Some(algorithm) = Algorithm::from_checksum_name(algorithm) else {
+            return Err(S3Error::NotImplemented(format!(
+                "the {name} checksum is not implemented"
+            )));
+        };
+        let expected = value(name.as_str())
+            .and_then(|v| checksum::Expected::from_base64(name.as_str(), algorithm, v))
+            .ok_or_else(|| {
+                S3Error::InvalidArgument(format!("Value for {name} header is invalid."))
+            })?;
+        digests.push(expected);
+    }
+    if let Some(algorithm) = value("x-amz-sdk-checksum-algorithm") {
+        if Algorithm::from_checksum_name(algorithm).is_none() {
+            return Err(S3Error::NotImplemented(format!(
+                "the {algorithm} checksum is not implemented"
+            )));
+        }
+    }
+    // SigV4's payload hash. UNSIGNED-PAYLOAD says there's none, and the
+    // streaming forms are refused with aws-chunked.
+    if let Some(sha) = value("x-amz-content-sha256") {
+        if !sha.eq_ignore_ascii_case("UNSIGNED-PAYLOAD") {
+            let expected =
+                checksum::Expected::from_hex("x-amz-content-sha256", Algorithm::Sha256, sha)
+                    .ok_or_else(|| {
+                        S3Error::InvalidArgument(
+                            "x-amz-content-sha256 must be UNSIGNED-PAYLOAD or the body's \
+                             SHA-256 in hex"
+                                .into(),
+                        )
+                    })?;
+            digests.push(expected);
+        }
+    }
+    Ok(digests)
 }
 
 /// The headers a PUT stores with the object (#163): [`STORED_HEADERS`] and
@@ -264,10 +374,13 @@ pub async fn put_object(
         return e.into_response();
     }
 
-    let options = match stored_metadata(&request_headers) {
-        Ok(metadata) => PutOptions {
+    let options = match stored_metadata(&request_headers)
+        .and_then(|metadata| Ok((metadata, expected_digests(&request_headers)?)))
+    {
+        Ok((metadata, digests)) => PutOptions {
             conditions: preconditions(&request_headers),
             metadata,
+            digests,
         },
         Err(e) => return e.into_response(),
     };

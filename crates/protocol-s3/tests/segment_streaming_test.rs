@@ -303,3 +303,44 @@ fn range_headers_parse_like_rfc_9110() {
         None
     );
 }
+
+/// A body that doesn't have the digest its PUT gave, here one that spans
+/// two segments, stores nothing: the staged write is aborted before its
+/// commit (#196).
+#[tokio::test]
+async fn a_body_without_its_digest_stores_nothing() {
+    use protocol_s3::checksum::{digest_of, Algorithm, Expected};
+    use protocol_s3::PutOptions;
+
+    let s = Scratch::new("bad_digest");
+    let data = noise(5 * MIB, 9);
+    let right = digest_of(Algorithm::Crc64Nvme, &data);
+    let mut wrong = right.clone();
+    wrong[0] ^= 1;
+    let options = |digest: Vec<u8>| PutOptions {
+        digests: vec![Expected {
+            header: "x-amz-checksum-crc64nvme".into(),
+            algorithm: Algorithm::Crc64Nvme,
+            digest,
+        }],
+        ..PutOptions::default()
+    };
+
+    let result = s
+        .view
+        .put_object_with("bkt", "k", body(data.clone()), &options(wrong))
+        .await;
+    assert!(matches!(result, Err(S3Error::BadDigest(_))), "{result:?}");
+    assert!(s.registry.capsules().is_empty());
+    assert!(s.registry.content_entries().is_empty(), "segments leaked");
+    assert!(s.log.list_segment_ids().is_empty(), "segments leaked");
+
+    s.view
+        .put_object_with("bkt", "k", body(data.clone()), &options(right))
+        .await
+        .unwrap();
+    assert_eq!(
+        collect(s.view.get_object("bkt", "k").await.unwrap()).await,
+        data
+    );
+}

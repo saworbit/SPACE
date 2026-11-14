@@ -525,6 +525,12 @@ pub mod modular_pipeline {
         /// between. Returns the capsules `with` dropped; release each with
         /// [`RegistryPipelineHandle::release`]. If the commit fails, the
         /// write's segments are released.
+        /// Abort the write and release its segments, waiting until they're
+        /// released. Dropping it does the same in the background.
+        pub async fn abort(self) {
+            self.open.abort().await
+        }
+
         pub async fn commit(
             mut self,
             handle: &mut RegistryPipelineHandle,
