@@ -95,7 +95,10 @@ impl ScrubResult {
     }
 
     /// Whether this result should advance the segment's scrub schedule
-    /// timestamp.
+    /// timestamp. A failure does, so a damaged segment isn't checked again
+    /// every cycle, but the damage is kept with the schedule
+    /// ([`ScrubSchedule::note`]) and reported until a scrub passes the
+    /// segment (#195).
     ///
     /// Returns `false` for transient outcomes — the segment remains due so
     /// it will be retried at the next cycle:
@@ -159,6 +162,10 @@ pub struct ScrubReport {
     #[serde(default)]
     pub segments_recorded: usize,
     pub errors: Vec<ScrubResult>,
+    /// Every finding not yet cleared at the end of the cycle, this cycle's
+    /// and earlier ones', by segment (#195).
+    #[serde(default)]
+    pub known_damage: Vec<ScrubResult>,
     pub duration: Duration,
     pub kind: ScrubKind,
     /// MAC verification failures (encrypted segments whose integrity tag did
@@ -205,12 +212,68 @@ pub enum ScrubKind {
     Deep,
 }
 
-/// When a segment was last scrubbed, as kept between runs by a
-/// [`ScheduleStore`].
+/// When a segment was last scrubbed, and any damage a scrub found in it,
+/// as kept between runs by a [`ScheduleStore`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScrubTimes {
     pub light: Option<SystemTime>,
     pub deep: Option<SystemTime>,
+    pub damage: Option<Damage>,
+}
+
+/// Damage a scrub found in a segment (#195). It's kept, and reported every
+/// cycle and after restarts, until a scrub at least as thorough as the one
+/// that found it passes the segment, or the segment is gone. A light scrub
+/// can't see a bad MAC, so its pass doesn't clear what a deep one found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Damage {
+    pub found_by: ScrubKind,
+    pub what: DamageKind,
+}
+
+/// What was wrong with a damaged segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageKind {
+    MetadataMismatch { expected_len: u32, actual_len: u32 },
+    ContentCorrupted,
+    MacMismatch,
+}
+
+impl Damage {
+    /// The damage a failed check found, or `None` for a result that isn't
+    /// a definitive failure.
+    pub fn of(found_by: ScrubKind, result: &ScrubResult) -> Option<Self> {
+        let what = match *result {
+            ScrubResult::MetadataMismatch {
+                expected_len,
+                actual_len,
+                ..
+            } => DamageKind::MetadataMismatch {
+                expected_len,
+                actual_len,
+            },
+            ScrubResult::ContentCorrupted { .. } => DamageKind::ContentCorrupted,
+            ScrubResult::MacMismatch { .. } => DamageKind::MacMismatch,
+            _ => return None,
+        };
+        Some(Self { found_by, what })
+    }
+
+    /// The finding as a scrub result for `segment`.
+    pub fn result(&self, segment: SegmentId) -> ScrubResult {
+        match self.what {
+            DamageKind::MetadataMismatch {
+                expected_len,
+                actual_len,
+            } => ScrubResult::MetadataMismatch {
+                segment,
+                expected_len,
+                actual_len,
+            },
+            DamageKind::ContentCorrupted => ScrubResult::ContentCorrupted { segment },
+            DamageKind::MacMismatch => ScrubResult::MacMismatch { segment },
+        }
+    }
 }
 
 /// Somewhere to keep the scrub schedule between runs, so a restart doesn't
@@ -232,6 +295,8 @@ pub struct ScrubSchedule {
     pub last_light: BTreeMap<SegmentId, SystemTime>,
     /// Last deep scrub time per segment.
     pub last_deep: BTreeMap<SegmentId, SystemTime>,
+    /// Damage found in segments and not yet cleared (#195).
+    pub damage: BTreeMap<SegmentId, Damage>,
     /// Segments whose times changed since [`ScrubSchedule::take_changes`].
     changed: BTreeSet<SegmentId>,
 }
@@ -259,8 +324,41 @@ impl ScrubSchedule {
             if let Some(deep) = t.deep {
                 schedule.last_deep.insert(segment, deep);
             }
+            if let Some(damage) = t.damage {
+                schedule.damage.insert(segment, damage);
+            }
         }
         schedule
+    }
+
+    /// Keep or clear damage after a definitive check of `segment` by a
+    /// `kind` scrub: a failure is kept, and a pass clears damage a scrub no
+    /// more thorough than `kind` found.
+    pub fn note(&mut self, segment: SegmentId, kind: ScrubKind, result: &ScrubResult) {
+        if let Some(damage) = Damage::of(kind, result) {
+            if self.damage.insert(segment, damage) != Some(damage) {
+                self.changed.insert(segment);
+            }
+        } else if result.is_ok() {
+            let clears =
+                |found_by: ScrubKind| kind == ScrubKind::Deep || found_by == ScrubKind::Light;
+            if self
+                .damage
+                .get(&segment)
+                .is_some_and(|d| clears(d.found_by))
+            {
+                self.damage.remove(&segment);
+                self.changed.insert(segment);
+            }
+        }
+    }
+
+    /// Every finding not yet cleared, by segment.
+    pub fn damage_results(&self) -> Vec<ScrubResult> {
+        self.damage
+            .iter()
+            .map(|(segment, damage)| damage.result(*segment))
+            .collect()
     }
 
     /// Return segment IDs that are due for a light scrub.
@@ -310,12 +408,14 @@ impl ScrubSchedule {
             .last_light
             .keys()
             .chain(self.last_deep.keys())
+            .chain(self.damage.keys())
             .filter(|id| !present.contains(id))
             .copied()
             .collect();
         for id in gone {
             self.last_light.remove(&id);
             self.last_deep.remove(&id);
+            self.damage.remove(&id);
             self.changed.insert(id);
         }
     }
@@ -345,8 +445,9 @@ impl ScrubSchedule {
                 let times = ScrubTimes {
                     light: self.last_light.get(&id).copied(),
                     deep: self.last_deep.get(&id).copied(),
+                    damage: self.damage.get(&id).copied(),
                 };
-                let kept = times.light.is_some() || times.deep.is_some();
+                let kept = times.light.is_some() || times.deep.is_some() || times.damage.is_some();
                 (id, kept.then_some(times))
             })
             .collect()
@@ -356,6 +457,64 @@ impl ScrubSchedule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damage_is_kept_until_a_scrub_as_thorough_passes_it() {
+        let seg = SegmentId(7);
+        let mac = ScrubResult::MacMismatch { segment: seg };
+        let mut schedule = ScrubSchedule::new();
+        schedule.note(seg, ScrubKind::Deep, &mac);
+        assert_eq!(schedule.damage_results().len(), 1);
+        // A light pass can't see a bad MAC.
+        schedule.note(seg, ScrubKind::Light, &ScrubResult::Ok);
+        assert!(matches!(
+            schedule.damage_results()[..],
+            [ScrubResult::MacMismatch { .. }]
+        ));
+        // A read error says nothing either way.
+        let read = ScrubResult::ReadError {
+            segment: seg,
+            error: "busy".into(),
+        };
+        schedule.note(seg, ScrubKind::Deep, &read);
+        assert_eq!(schedule.damage_results().len(), 1);
+
+        // It survives a restart, and a deep pass clears it.
+        let saved = schedule.take_changes();
+        assert!(matches!(saved[..], [(s, Some(ScrubTimes { damage: Some(_), .. }))] if s == seg));
+        let mut reloaded =
+            ScrubSchedule::from_times(saved.into_iter().map(|(s, t)| (s, t.unwrap())));
+        assert_eq!(reloaded.damage_results().len(), 1);
+        reloaded.note(seg, ScrubKind::Deep, &ScrubResult::Ok);
+        assert!(reloaded.damage_results().is_empty());
+        assert_eq!(reloaded.take_changes(), [(seg, None)]);
+
+        // What a light scrub found, a light pass clears; and a segment
+        // that's gone takes its damage with it.
+        let mut schedule = ScrubSchedule::new();
+        let short = ScrubResult::MetadataMismatch {
+            segment: seg,
+            expected_len: 9,
+            actual_len: 4,
+        };
+        schedule.note(seg, ScrubKind::Light, &short);
+        schedule.note(
+            SegmentId(8),
+            ScrubKind::Light,
+            &ScrubResult::ContentCorrupted {
+                segment: SegmentId(8),
+            },
+        );
+        schedule.note(seg, ScrubKind::Light, &ScrubResult::Ok);
+        assert!(matches!(
+            schedule.damage_results()[..],
+            [ScrubResult::ContentCorrupted {
+                segment: SegmentId(8)
+            }]
+        ));
+        schedule.retain(&[seg]);
+        assert!(schedule.damage_results().is_empty());
+    }
 
     #[test]
     fn new_segments_are_always_due() {
@@ -430,6 +589,7 @@ mod tests {
                 ScrubTimes {
                     light: Some(now - Duration::from_secs(60)),
                     deep: Some(now - Duration::from_secs(90_000)),
+                    damage: None,
                 },
             ),
             (
@@ -437,6 +597,7 @@ mod tests {
                 ScrubTimes {
                     light: Some(now - Duration::from_secs(7200)),
                     deep: None,
+                    damage: None,
                 },
             ),
         ]);
@@ -458,6 +619,7 @@ mod tests {
             ScrubTimes {
                 light: Some(SystemTime::now() + Duration::from_secs(3600)),
                 deep: None,
+                damage: None,
             },
         )]);
         let due = schedule.due_for_light(&[SegmentId(1)], &ScrubConfig::default());
@@ -477,6 +639,7 @@ mod tests {
                 ScrubTimes {
                     light: Some(now - Duration::from_secs(70)),
                     deep: None,
+                    damage: None,
                 },
             ),
             (
@@ -484,6 +647,7 @@ mod tests {
                 ScrubTimes {
                     light: Some(now - Duration::from_secs(20)),
                     deep: None,
+                    damage: None,
                 },
             ),
             // Already overdue: not counted.
@@ -492,6 +656,7 @@ mod tests {
                 ScrubTimes {
                     light: Some(now - Duration::from_secs(500)),
                     deep: None,
+                    damage: None,
                 },
             ),
         ]);

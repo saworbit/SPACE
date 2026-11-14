@@ -263,3 +263,53 @@ async fn after_a_restart_only_due_segments_are_scrubbed() {
     drop((registry, handle));
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Damage a scheduled scrub found is reported again after a restart, though
+/// the damaged segments aren't due to be checked again yet (#195).
+#[tokio::test]
+async fn damage_found_before_a_restart_is_reported_after_it() {
+    let dir = scratch("restart_damage");
+    damaged_store(&dir).await;
+    let config = ScrubConfig {
+        light_interval: Duration::from_secs(3600),
+        deep_interval: Duration::from_secs(3600),
+        inter_segment_delay: Duration::ZERO,
+        ..ScrubConfig::default()
+    };
+    let mut outcomes = Vec::new();
+    for _run in 0..2 {
+        let (registry, log, handle) = open(&dir, true);
+        let (task, mut state) = handle.spawn_scrub(config.clone());
+        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                state.changed().await.unwrap();
+                if let ScrubState::Completed { kind, errors } = *state.borrow() {
+                    return (kind, errors);
+                }
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        let _ = task.await;
+        outcomes.push(outcome);
+        drop((registry, log, handle));
+    }
+    assert_eq!(outcomes[0], (ScrubKind::Deep, 2));
+    assert_eq!(
+        outcomes[1],
+        (ScrubKind::Deep, 2),
+        "damage found before the restart is reported after it"
+    );
+
+    // The damage is kept with the schedule in space.db.
+    let (registry, _log, _handle) = open(&dir, true);
+    let damaged = registry
+        .scrub_schedule()
+        .load()
+        .unwrap()
+        .into_iter()
+        .filter(|(_, times)| times.damage.is_some())
+        .count();
+    assert_eq!(damaged, 2);
+}
