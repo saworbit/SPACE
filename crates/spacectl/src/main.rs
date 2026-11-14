@@ -305,6 +305,12 @@ enum Commands {
         /// clients that resolve localhost to ::1 first.
         #[arg(long)]
         bind: Option<IpAddr>,
+        /// A host name clients may reach the server by, besides localhost
+        /// and IP addresses. Repeat it for more names. A request whose Host
+        /// header names any other host is refused, so a web page can't reach
+        /// the server by pointing its own name at this machine.
+        #[arg(long = "allow-host", value_name = "NAME", value_parser = parse_host_name)]
+        allow_host: Vec<String>,
         /// Seconds between passes that reclaim space: compacting space.nvram
         /// once a quarter of it is reclaimable, or deleting unreferenced
         /// segments under SPACE_STORAGE_ROOT, then compacting space.journal
@@ -389,6 +395,19 @@ async fn bind_to(addr: SocketAddr) -> Result<TcpListener> {
         .with_context(|| format!("couldn't listen on {addr}; try another --port"))
 }
 
+/// A `--allow-host` name: a host name alone, with no port or scheme.
+fn parse_host_name(name: &str) -> Result<String, String> {
+    let ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    if ok {
+        Ok(name.to_ascii_lowercase())
+    } else {
+        Err("give a host name alone, such as space.lan, with no port or scheme".to_string())
+    }
+}
+
 /// serve-s3's listeners: one on `bind` when it's given, or one on each
 /// loopback address (#158). Listening on 127.0.0.1 alone made clients that
 /// resolve localhost to ::1 first wait for that attempt to fail on every
@@ -422,6 +441,7 @@ fn log_startup(
     store: &RegistryPipelineHandle,
     reclaim_interval: u64,
     scrub: ScrubArgs,
+    allow_host: &[String],
 ) {
     let absolute = |path: &Path| {
         std::path::absolute(path)
@@ -457,6 +477,7 @@ fn log_startup(
         ),
         None => "off".to_string(),
     };
+    let hosts = (!allow_host.is_empty()).then(|| allow_host.join(","));
     info!(
         addr = %addr,
         store = %absolute(dir),
@@ -465,13 +486,15 @@ fn log_startup(
         key = key.as_deref().map(tracing::field::display),
         reclaim = %reclaim,
         scrub = %scrub,
+        allow_host = hosts.as_deref().map(tracing::field::display),
         "listening"
     );
     for addr in addrs.iter().filter(|addr| !addr.ip().is_loopback()) {
         warn!(
             %addr,
             "listening beyond loopback with no authentication: anyone who can reach this \
-             address can read, change and delete every object"
+             address can read, change and delete every object. Clients must address it by IP \
+             address, or by a name given with --allow-host"
         );
     }
 }
@@ -690,10 +713,14 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::ServeS3 {
             port,
             bind,
+            allow_host,
             reclaim_interval,
             scrub,
         } => {
-            use protocol_s3::{server::S3Server, S3View};
+            use protocol_s3::{
+                server::{AllowedHosts, S3Server},
+                S3View,
+            };
 
             // Listen before opening the store, so a port that's in use
             // doesn't leave a new store behind (#166).
@@ -706,11 +733,12 @@ async fn run(cli: Cli) -> Result<()> {
                 .iter()
                 .map(TcpListener::local_addr)
                 .collect::<io::Result<Vec<_>>>()?;
-            log_startup(&addrs, dir, &store, reclaim_interval, scrub);
+            log_startup(&addrs, dir, &store, reclaim_interval, scrub, &allow_host);
             let s3_view = S3View::new_modular(store);
             let reclaim_every =
                 (reclaim_interval > 0).then(|| Duration::from_secs(reclaim_interval));
             let server = S3Server::new(s3_view, listeners)
+                .allow_hosts(AllowedHosts::with_names(allow_host))
                 .reclaim_every(reclaim_every)
                 .scrub(scrub.config());
             server.run().await?;
@@ -831,6 +859,20 @@ mod tests {
             panic!("expected serve-s3");
         };
         assert_eq!(bind, Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn allow_host_takes_host_names_alone() {
+        let args = ["spacectl", "serve-s3", "--allow-host", "Space.LAN"];
+        let cli = Cli::try_parse_from(args.into_iter().chain(["--allow-host", "nas-1"])).unwrap();
+        let Commands::ServeS3 { allow_host, .. } = cli.command else {
+            panic!("expected serve-s3");
+        };
+        assert_eq!(allow_host, ["space.lan", "nas-1"]);
+        for bad in ["space.lan:8080", "http://space.lan", "", "a b", "[::1]"] {
+            let parsed = Cli::try_parse_from(["spacectl", "serve-s3", "--allow-host", bad]);
+            assert!(parsed.is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]
