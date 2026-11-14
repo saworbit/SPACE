@@ -181,7 +181,10 @@ fn find_next_record(file: &mut File, from: u64, file_len: u64) -> std::io::Resul
     Ok(None)
 }
 
-fn not_format_one(path: &Path, what: &str, why: impl std::fmt::Display) -> anyhow::Error {
+/// The error for a file of `kind` that isn't in this build's on-disk
+/// format, saying why.
+pub fn not_format_one(path: &Path, kind: FileKind, why: impl std::fmt::Display) -> anyhow::Error {
+    let what = describe(kind);
     anyhow!(
         "'{}' isn't an on-disk format {FORMAT_VERSION} {what} ({why}). Stores written \
          before format {FORMAT_VERSION} can't be opened; see docs/on-disk-format.md §13.",
@@ -209,11 +212,26 @@ fn read_file_header(
         Probe::CutShort => return Ok(Err("record runs past the end of the file".into())),
         Probe::Invalid(reason) => return Ok(Err(reason)),
     };
+    let header = check_file_record(path, &frame, &header, kind)?;
+    Ok(Ok((header, frame.record_len())))
+}
+
+/// Check the `FILE` record that starts a file of `kind`, given its checked
+/// frame and header (on-disk format §5.1): the record kind, its layout
+/// version, the header, the file kind and the store format. Every format 1
+/// file is opened through this, the storage root's store file too, so they
+/// are all refused under the same rules and in the same words (#192).
+pub fn check_file_record(
+    path: &Path,
+    frame: &Frame,
+    header: &[u8],
+    kind: FileKind,
+) -> Result<FileHeader> {
     let what = describe(kind);
     if frame.kind != format::kind::FILE {
         return Err(not_format_one(
             path,
-            what,
+            kind,
             "it doesn't start with a FILE record",
         ));
     }
@@ -224,7 +242,7 @@ fn read_file_header(
             frame.version
         );
     }
-    let header = FileHeader::decode(&header).map_err(|err| not_format_one(path, what, err))?;
+    let header = FileHeader::decode(header).map_err(|err| not_format_one(path, kind, err))?;
     if header.file_kind != kind {
         bail!(
             "'{}' is a {}, not a {what}",
@@ -239,7 +257,7 @@ fn read_file_header(
             header.format
         );
     }
-    Ok(Ok((header, frame.record_len())))
+    Ok(header)
 }
 
 /// Write a fresh `FILE` record over the whole file, replacing whatever was
@@ -269,7 +287,6 @@ where
         .truncate(false)
         .open(path)?;
     let mut file_len = file.metadata()?.len();
-    let what = describe(kind);
 
     let new_record_len = (FRAME_LEN + FileHeader::LEN) as u64;
     let existing = if file_len == 0 {
@@ -291,7 +308,7 @@ where
                     || MAGIC.starts_with(&prefix[..prefix.len().min(MAGIC.len())])
             };
             if !torn_creation {
-                return Err(not_format_one(path, what, reason));
+                return Err(not_format_one(path, kind, reason));
             }
             if file_len > 0 {
                 warn!(

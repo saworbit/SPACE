@@ -243,3 +243,83 @@ async fn ref_counts_are_recounted_and_kept_in_memory() {
     drop(backend);
     let _ = fs::remove_dir_all(&root);
 }
+
+/// The store file's FILE record is checked as the data log's is, and a bad
+/// one is refused in the same words (#192).
+#[tokio::test]
+async fn the_store_file_is_checked_as_every_format_one_file_is() {
+    use common::format::{encode_head, kind, FileHeader, FileKind, FILE_VERSION};
+
+    let root_header = FileHeader::new(FileKind::StorageRoot, 0);
+    let log_header = FileHeader::new(FileKind::DataLog, 0);
+    let mut future_format = root_header.clone();
+    future_format.format += 1;
+    let mut log_future_format = log_header.clone();
+    log_future_format.format += 1;
+    let mut padded = root_header.encode_record();
+    padded.extend_from_slice(b"more");
+    let next = FILE_VERSION + 1;
+    // (store file, data log, what both errors say)
+    let cases: Vec<(Vec<u8>, Vec<u8>, String)> = vec![
+        (
+            encode_head(kind::FILE, next, 0, &root_header.encode(), &[]).unwrap(),
+            encode_head(kind::FILE, next, 0, &log_header.encode(), &[]).unwrap(),
+            format!("has a FILE record with layout version {next}, which this build can't read"),
+        ),
+        (
+            log_header.encode_record(),
+            FileHeader::new(FileKind::Journal, 0).encode_record(),
+            "is a ".to_string(),
+        ),
+        (
+            future_format.encode_record(),
+            log_future_format.encode_record(),
+            format!(
+                "is store format {}; this build reads format",
+                future_format.format
+            ),
+        ),
+        (
+            b"not a store file at all, just some bytes".to_vec(),
+            b"not a data log at all, just some bytes".to_vec(),
+            "isn't an on-disk format 1".to_string(),
+        ),
+    ];
+    for (store, log, says) in cases {
+        let root = scratch("store_file");
+        fs::write(root.join("store"), &store).unwrap();
+        let err = format!("{:#}", TokioFsBackend::open(&root).await.err().unwrap());
+        assert!(err.contains(&says), "{err}");
+
+        let log_path = root.join("space.nvram");
+        fs::write(&log_path, &log).unwrap();
+        let log_err = format!("{:#}", nvram_sim::NvramLog::open(&log_path).err().unwrap());
+        assert!(log_err.contains(&says), "{log_err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The wrong kind, in the same words.
+    let root = scratch("store_file_kind");
+    fs::write(root.join("store"), log_header.encode_record()).unwrap();
+    let err = format!("{:#}", TokioFsBackend::open(&root).await.err().unwrap());
+    assert!(
+        err.contains("is a data log, not a storage root store file"),
+        "{err}"
+    );
+    let log_path = root.join("space.nvram");
+    fs::write(&log_path, root_header.encode_record()).unwrap();
+    let log_err = format!("{:#}", nvram_sim::NvramLog::open(&log_path).err().unwrap());
+    assert!(
+        log_err.contains("is a storage root store file, not a data log"),
+        "{log_err}"
+    );
+
+    // A store file is its FILE record alone.
+    fs::write(root.join("store"), &padded).unwrap();
+    let err = format!("{:#}", TokioFsBackend::open(&root).await.err().unwrap());
+    assert!(
+        err.contains("isn't an on-disk format 1 storage root store file (it holds more than its FILE record)"),
+        "{err}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
