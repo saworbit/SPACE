@@ -288,7 +288,7 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
 
-sled also keeps the scrub schedule (`scrub_schedule`: segment id to when it was last light- and deep-scrubbed). It isn't journal state, and a rebuild keeps it, since segment ids are never reused.
+sled also keeps the scrub schedule (`scrub_schedule`: segment id to when it was last light- and deep-scrubbed, and any damage a scrub found that a later scrub hasn't cleared). It isn't journal state, and a rebuild keeps it, since segment ids are never reused.
 
 **Rebuild** is: clear the sled trees and replay the journal from the start. `spacectl doctor --rebuild-index` does exactly that, and losing `space.db` costs one replay.
 

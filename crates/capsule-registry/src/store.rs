@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Context, Result};
-use common::scrub::ScrubTimes;
+use anyhow::{anyhow, bail, Context, Result};
+use common::scrub::{Damage, DamageKind, ScrubKind, ScrubTimes};
 use common::{
     Capsule, CapsuleId, CompressionPolicy, ContentHash, CryptoProfile, EncryptionPolicy,
     FederationStrategy, LayoutPolicy, Policy, SegmentId,
@@ -323,6 +323,69 @@ fn scrub_time(millis: u64) -> Option<SystemTime> {
     (millis != 0).then(|| UNIX_EPOCH + Duration::from_millis(millis))
 }
 
+/// A segment's `scrub_schedule` record: its light and deep scrub times in
+/// milliseconds (bincode, 16 bytes), then, when a scrub found damage in it
+/// (#195), 10 more bytes: which kind of scrub found it (1 light, 2 deep),
+/// what it found (1 metadata mismatch, 2 content corrupted, 3 MAC
+/// mismatch), and for a metadata mismatch the expected and actual lengths,
+/// each a little-endian u32. A record without them is a segment with none.
+fn encode_scrub_times(t: &ScrubTimes) -> Result<Vec<u8>> {
+    let mut out = bincode::serialize(&(scrub_millis(t.light), scrub_millis(t.deep)))?;
+    if let Some(damage) = t.damage {
+        out.push(match damage.found_by {
+            ScrubKind::Light => 1,
+            ScrubKind::Deep => 2,
+        });
+        let (what, expected, actual) = match damage.what {
+            DamageKind::MetadataMismatch {
+                expected_len,
+                actual_len,
+            } => (1, expected_len, actual_len),
+            DamageKind::ContentCorrupted => (2, 0, 0),
+            DamageKind::MacMismatch => (3, 0, 0),
+        };
+        out.push(what);
+        out.extend_from_slice(&expected.to_le_bytes());
+        out.extend_from_slice(&actual.to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn decode_scrub_times(bytes: &[u8]) -> Result<ScrubTimes> {
+    let (times, rest) = match bytes.len() {
+        16 | 26 => bytes.split_at(16),
+        n => bail!("a scrub schedule record is {n} bytes, not 16 or 26"),
+    };
+    let (light, deep): (u64, u64) = bincode::deserialize(times)?;
+    let damage = match rest {
+        [] => None,
+        [found_by, what, lens @ ..] => {
+            let found_by = match found_by {
+                1 => ScrubKind::Light,
+                2 => ScrubKind::Deep,
+                n => bail!("unknown scrub kind {n} in the scrub schedule"),
+            };
+            let len = |at: usize| u32::from_le_bytes(lens[at..at + 4].try_into().unwrap());
+            let what = match what {
+                1 => DamageKind::MetadataMismatch {
+                    expected_len: len(0),
+                    actual_len: len(4),
+                },
+                2 => DamageKind::ContentCorrupted,
+                3 => DamageKind::MacMismatch,
+                n => bail!("unknown damage {n} in the scrub schedule"),
+            };
+            Some(Damage { found_by, what })
+        }
+        _ => unreachable!(),
+    };
+    Ok(ScrubTimes {
+        light: scrub_time(light),
+        deep: scrub_time(deep),
+        damage,
+    })
+}
+
 /// A name's index record: its capsule, then its metadata.
 fn decode_binding(bytes: &[u8]) -> Result<Binding> {
     let (capsule_id, metadata) = bincode::deserialize(bytes)?;
@@ -573,14 +636,7 @@ impl MetadataStore for SledStore {
         let mut out = Vec::new();
         for entry in self.scrub_schedule.iter() {
             let (key, value) = entry?;
-            let (light, deep): (u64, u64) = bincode::deserialize(&value)?;
-            out.push((
-                bincode::deserialize(&key)?,
-                ScrubTimes {
-                    light: scrub_time(light),
-                    deep: scrub_time(deep),
-                },
-            ));
+            out.push((bincode::deserialize(&key)?, decode_scrub_times(&value)?));
         }
         Ok(out)
     }
@@ -590,10 +646,7 @@ impl MetadataStore for SledStore {
         for (segment, times) in changes {
             let key = bincode::serialize(segment)?;
             match times {
-                Some(t) => batch.insert(
-                    key,
-                    bincode::serialize(&(scrub_millis(t.light), scrub_millis(t.deep)))?,
-                ),
+                Some(t) => batch.insert(key, encode_scrub_times(t)?),
                 None => batch.remove(key),
             }
         }
@@ -946,6 +999,7 @@ mod tests {
                         Some(ScrubTimes {
                             light: Some(light),
                             deep: Some(deep),
+                            damage: None,
                         }),
                     ),
                     (
@@ -953,6 +1007,7 @@ mod tests {
                         Some(ScrubTimes {
                             light: Some(light),
                             deep: None,
+                            damage: None,
                         }),
                     ),
                     (
@@ -960,6 +1015,7 @@ mod tests {
                         Some(ScrubTimes {
                             light: Some(light),
                             deep: None,
+                            damage: None,
                         }),
                     ),
                 ])
@@ -978,20 +1034,67 @@ mod tests {
                     SegmentId(7),
                     ScrubTimes {
                         light: Some(light),
-                        deep: Some(deep)
+                        deep: Some(deep),
+                        damage: None,
                     }
                 ),
                 (
                     SegmentId(8),
                     ScrubTimes {
                         light: Some(light),
-                        deep: None
+                        deep: None,
+                        damage: None,
                     }
                 ),
             ]
         );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scrub_schedule_records_keep_their_encoding() {
+        let at = |ms: u64| Some(UNIX_EPOCH + Duration::from_millis(ms));
+        let plain = ScrubTimes {
+            light: at(0x0102),
+            deep: None,
+            damage: None,
+        };
+        let bytes = encode_scrub_times(&plain).unwrap();
+        assert_eq!(to_hex(&bytes), "02010000000000000000000000000000");
+        assert_eq!(decode_scrub_times(&bytes).unwrap(), plain);
+
+        let damaged = ScrubTimes {
+            light: at(1),
+            deep: at(2),
+            damage: Some(Damage {
+                found_by: ScrubKind::Deep,
+                what: DamageKind::MetadataMismatch {
+                    expected_len: 9,
+                    actual_len: 4,
+                },
+            }),
+        };
+        let bytes = encode_scrub_times(&damaged).unwrap();
+        assert_eq!(
+            to_hex(&bytes),
+            "01000000000000000200000000000000020109000000040000 00".replace(' ', "")
+        );
+        assert_eq!(decode_scrub_times(&bytes).unwrap(), damaged);
+        for what in [DamageKind::ContentCorrupted, DamageKind::MacMismatch] {
+            let t = ScrubTimes {
+                damage: Some(Damage {
+                    found_by: ScrubKind::Light,
+                    what,
+                }),
+                ..damaged
+            };
+            assert_eq!(
+                decode_scrub_times(&encode_scrub_times(&t).unwrap()).unwrap(),
+                t
+            );
+        }
+        assert!(decode_scrub_times(&bytes[..20]).is_err());
     }
 
     fn to_hex(bytes: &[u8]) -> String {

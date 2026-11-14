@@ -178,8 +178,10 @@ impl<B: StorageBackend> ScrubExecutor<B> {
 
                 if result.should_record_schedule() {
                     // Definitive outcome  -  advance the timestamp so we don't
-                    // re-check before the interval elapses.
+                    // re-check before the interval elapses. Damage is kept
+                    // until a scrub passes the segment (#195).
                     self.schedule.record(seg_id, kind);
+                    self.schedule.note(seg_id, kind, &result);
                     report.segments_recorded += 1;
                 }
                 // ReadError is not recorded: I/O may be transient, so the
@@ -239,6 +241,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             }
         }
 
+        report.known_damage = self.schedule.damage_results();
         if let Some(store) = &self.store {
             let changes = self.schedule.take_changes();
             if !changes.is_empty() {
@@ -592,6 +595,19 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
     ) {
         let (state_tx, state_rx) = tokio::sync::watch::channel(ScrubState::Idle);
         let mut executor = self;
+        let known = executor.schedule.damage_results();
+        if !known.is_empty() {
+            let segments: Vec<u64> = known
+                .iter()
+                .filter_map(|r| r.segment())
+                .map(|s| s.0)
+                .collect();
+            warn!(
+                damaged = known.len(),
+                ?segments,
+                "scrub: segments found damaged before this run are still damaged"
+            );
+        }
 
         let handle = tokio::spawn(async move {
             let mut next_light = tokio::time::Instant::now();
@@ -617,14 +633,26 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                 let _ = state_tx.send(ScrubState::Running(kind));
                 let report = executor.scrub_cycle(&config, kind).await;
                 // Only definitive integrity failures (not transient ReadErrors)
-                // so the field is suitable for alerting thresholds.
+                // so the field is suitable for alerting thresholds. Damage
+                // found in earlier cycles, or before a restart, counts until
+                // a scrub passes the segment (#195).
                 let _ = state_tx.send(ScrubState::Completed {
                     kind,
-                    errors: report.mac_failures
-                        + report.content_failures
-                        + report.metadata_failures,
+                    errors: report.known_damage.len(),
                 });
 
+                let earlier = report
+                    .known_damage
+                    .iter()
+                    .filter(|d| !report.errors.iter().any(|e| e.segment() == d.segment()))
+                    .count();
+                if earlier > 0 {
+                    warn!(
+                        kind = ?kind,
+                        damaged = report.known_damage.len(),
+                        "scrub cycle: segments found damaged earlier are still damaged"
+                    );
+                }
                 if report.errors.is_empty() && report.segments_checked == 0 {
                     debug!(kind = ?kind, "scrub cycle: no segments due");
                 } else if report.errors.is_empty() {
@@ -1541,6 +1569,7 @@ mod tests {
             ScrubTimes {
                 light: Some(now),
                 deep: Some(last_deep),
+                damage: None,
             },
         );
 
