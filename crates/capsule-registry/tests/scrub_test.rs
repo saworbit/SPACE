@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use capsule_registry::modular_pipeline::{
-    registry_pipeline_from_log, registry_pipeline_from_log_with_key, RegistryPipelineHandle,
+    registry_pipeline_from_log, registry_pipeline_from_log_with_key, spawn_scrub,
+    RegistryPipelineHandle,
 };
 use capsule_registry::CapsuleRegistry;
 use common::scrub::{ScrubConfig, ScrubKind, ScrubResult, ScrubState, ScrubTimes};
@@ -144,6 +145,7 @@ async fn a_scheduled_scrub_reports_damage_on_a_live_store() {
     damaged_store(&dir).await;
 
     let (_registry, _log, handle) = open(&dir, true);
+    let pipeline = Arc::new(tokio::sync::Mutex::new(handle));
     // Long intervals: one deep cycle at startup, then nothing for an hour.
     let config = ScrubConfig {
         light_interval: Duration::from_secs(3600),
@@ -151,7 +153,7 @@ async fn a_scheduled_scrub_reports_damage_on_a_live_store() {
         inter_segment_delay: Duration::ZERO,
         ..ScrubConfig::default()
     };
-    let (task, mut state) = handle.spawn_scrub(config);
+    let (task, mut state) = spawn_scrub(&pipeline, config).await;
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             state.changed().await.unwrap();
@@ -231,7 +233,8 @@ async fn after_a_restart_only_due_segments_are_scrubbed() {
         inter_segment_delay: Duration::ZERO,
         ..ScrubConfig::default()
     };
-    let (task, mut state) = handle.spawn_scrub(config);
+    let pipeline = Arc::new(tokio::sync::Mutex::new(handle));
+    let (task, mut state) = spawn_scrub(&pipeline, config).await;
     tokio::time::timeout(Duration::from_secs(10), async {
         while !matches!(*state.borrow_and_update(), ScrubState::Completed { .. }) {
             state.changed().await.unwrap();
@@ -260,7 +263,8 @@ async fn after_a_restart_only_due_segments_are_scrubbed() {
         );
     }
 
-    drop((registry, handle));
+    let _ = task.await;
+    drop((registry, pipeline));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -279,7 +283,8 @@ async fn damage_found_before_a_restart_is_reported_after_it() {
     let mut outcomes = Vec::new();
     for _run in 0..2 {
         let (registry, log, handle) = open(&dir, true);
-        let (task, mut state) = handle.spawn_scrub(config.clone());
+        let pipeline = Arc::new(tokio::sync::Mutex::new(handle));
+        let (task, mut state) = spawn_scrub(&pipeline, config.clone()).await;
         let outcome = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 state.changed().await.unwrap();
@@ -293,7 +298,7 @@ async fn damage_found_before_a_restart_is_reported_after_it() {
         task.abort();
         let _ = task.await;
         outcomes.push(outcome);
-        drop((registry, log, handle));
+        drop((registry, log, pipeline));
     }
     assert_eq!(outcomes[0], (ScrubKind::Deep, 2));
     assert_eq!(
@@ -359,7 +364,7 @@ fn reversed(registry: &CapsuleRegistry, of: CapsuleId) -> CapsuleId {
 /// wrong order. A light scrub doesn't read capsules (#140).
 #[tokio::test]
 async fn a_deep_scrub_finds_a_capsule_whose_segments_are_out_of_order() {
-    use capsule_registry::modular_pipeline::{scrub_all, spawn_scrub};
+    use capsule_registry::modular_pipeline::scrub_all;
     let dir = scratch("capsule_order");
     let (registry, _log, mut handle) = open(&dir, true);
     let data = patterned((9 << 20) + 7, 4);

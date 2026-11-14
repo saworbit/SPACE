@@ -904,7 +904,7 @@ impl S3View {
     }
 
     /// Scrub the store in the background on `config`'s schedule
-    /// ([`RegistryPipelineHandle::spawn_scrub`]). The receiver reports each
+    /// ([`modular_pipeline::spawn_scrub`]). The receiver reports each
     /// cycle; abort the handle to stop.
     pub async fn spawn_scrub(
         &self,

@@ -303,39 +303,3 @@ pub struct Segment {
     #[serde(default)]
     pub pq_nonce: Option<[u8; 16]>,
 }
-
-/// Immutable audit log events emitted by the platform.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum Event {
-    CapsuleCreated {
-        capsule_id: CapsuleId,
-        size: u64,
-        segments: usize,
-        policy: Policy,
-    },
-    CapsuleRead {
-        capsule_id: CapsuleId,
-        size: u64,
-    },
-    CapsuleDeleted {
-        capsule_id: CapsuleId,
-        reclaimed_bytes: u64,
-    },
-    SegmentAppended {
-        segment_id: SegmentId,
-        len: u32,
-        content_hash: Option<ContentHash>,
-        encrypted: bool,
-    },
-    DedupHit {
-        segment_id: SegmentId,
-        capsule_id: CapsuleId,
-        content_hash: ContentHash,
-    },
-    AuditHeartbeat {
-        timestamp: u64,
-        capsules: usize,
-        segments: usize,
-    },
-}

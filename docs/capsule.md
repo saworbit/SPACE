@@ -244,10 +244,6 @@ On this branch only `compression`, `dedupe`, `encryption` and `layout` change wh
     strategy: !Fixed { segment_size: 1048576 }   # 1 byte to 16 MiB
   ```
 
-### 3.7 `Event`
-
-The `Event` enum defines audit events: `CapsuleCreated`, `CapsuleRead`, `CapsuleDeleted`, `SegmentAppended`, `DedupHit`, `AuditHeartbeat`. Nothing on this branch emits them, and there's no audit log.
-
 ---
 
 ## 4. Where Capsules live
