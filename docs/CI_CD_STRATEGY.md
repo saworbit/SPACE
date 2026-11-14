@@ -45,13 +45,15 @@ Pushing a tag `vX.Y.Z` (the version in the root `Cargo.toml`) runs `release.yml`
 1. The tag is checked against the workspace version.
 2. The whole of `ci.yml` runs on the tagged commit.
 3. `spacectl` is built with `--locked`, from a clean slate with no build cache, for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Each archive holds the binary, `LICENSE`, `NOTICE` and `README.md`.
-4. Once all of that passes, a GitHub release is created with the archives, a `SHA256SUMS` file, and generated notes that link to `CHANGELOG.md`. A tag with a suffix, such as `v0.2.0-rc.1`, makes a pre-release.
+4. Once all of that passes, a GitHub release is created with the archives, a `SHA256SUMS` file, the attestation bundle, and generated notes that link to `CHANGELOG.md`. A tag with a suffix, such as `v0.2.0-rc.1`, makes a pre-release.
 
 Each archive has a signed build provenance attestation. To check that a download was built by this workflow from this repository:
 
 ```bash
 gh attestation verify spacectl-v0.2.0-x86_64-unknown-linux-gnu.tar.gz --repo saworbit/SPACE
 ```
+
+The release also carries the attestations as `spacectl-vX.Y.Z.sigstore.json`; pass it with `--bundle` to verify without asking GitHub.
 
 The workspace crates are `publish = false`, so nothing goes to crates.io. No container image is published.
 
