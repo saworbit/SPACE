@@ -567,3 +567,97 @@ async fn a_store_missing_its_journal_is_refused() {
     assert!(err.to_string().contains("is new"), "{err}");
     assert_eq!(fs::read(&nvram).unwrap(), log_bytes);
 }
+
+/// A capsule's names are indexed under it, so deleting it unbinds them in
+/// the same batch (#138). A name rebound to another capsule moves with it,
+/// and the index rebuilt from the journal agrees.
+#[tokio::test]
+async fn deleting_a_capsule_unbinds_the_names_that_point_at_it() {
+    let store = Store::new("delete_names");
+    let ns = "s3:demo";
+    let (a, b) = {
+        let (registry, _log, mut handle) = store.open();
+        let policy = Policy::default();
+        let a = handle.write_capsule(b"alpha", &policy).await.unwrap();
+        let b = handle.write_capsule(b"bravo", &policy).await.unwrap();
+        registry
+            .commit(vec![
+                bind(ns, "one", a),
+                bind(ns, "two", a),
+                bind("s3:other", "one", a),
+                bind(ns, "moved", a),
+            ])
+            .unwrap();
+        // Rebinding "moved" takes it off `a`, and so does unbinding
+        // "back" before it's bound to `b`.
+        registry.commit(vec![bind(ns, "moved", b)]).unwrap();
+        registry.commit(vec![bind(ns, "back", a)]).unwrap();
+        registry
+            .commit(vec![JournalRecord::Unbind {
+                ns: ns.into(),
+                name: "back".into(),
+            }])
+            .unwrap();
+        registry.commit(vec![bind(ns, "back", b)]).unwrap();
+        let mut held = registry.names_of(a).unwrap();
+        held.sort();
+        assert_eq!(
+            held,
+            [
+                (ns.to_string(), "one".to_string()),
+                (ns.to_string(), "two".to_string()),
+                ("s3:other".to_string(), "one".to_string()),
+            ]
+        );
+
+        handle.delete_capsule(a).await.unwrap();
+        assert!(registry.names_of(a).unwrap().is_empty());
+        assert_eq!(
+            names(&registry, ns),
+            [("back".to_string(), b), ("moved".to_string(), b)]
+        );
+        assert!(names(&registry, "s3:other").is_empty());
+        (a, b)
+    };
+
+    fs::remove_dir_all(store.db_path()).unwrap();
+    let (registry, _log, _handle) = store.open();
+    assert!(registry.names_of(a).unwrap().is_empty());
+    assert_eq!(
+        registry.names_of(b).unwrap(),
+        [
+            (ns.to_string(), "back".to_string()),
+            (ns.to_string(), "moved".to_string())
+        ]
+    );
+    assert_eq!(
+        names(&registry, ns),
+        [("back".to_string(), b), ("moved".to_string(), b)]
+    );
+}
+
+/// An index rebuilt in place, here because an older copy of the journal was
+/// restored, keeps no name under a capsule it no longer points at. So
+/// deleting that capsule can't unbind a name another capsule holds (#138).
+#[tokio::test]
+async fn a_rebuilt_index_keeps_no_stale_name_under_a_capsule() {
+    let store = Store::new("stale_names");
+    let ns = "s3:demo";
+    let backup = store.dir.join("journal.bak");
+    let (a, b) = {
+        let (registry, _log, mut handle) = store.open();
+        let policy = Policy::default();
+        let a = handle.write_capsule(b"alpha", &policy).await.unwrap();
+        let b = handle.write_capsule(b"bravo", &policy).await.unwrap();
+        registry.commit(vec![bind(ns, "x", a)]).unwrap();
+        fs::copy(store.journal_path(), &backup).unwrap();
+        registry.commit(vec![bind(ns, "x", b)]).unwrap();
+        (a, b)
+    };
+    // The index is ahead of the restored journal, so it's rebuilt.
+    fs::copy(&backup, store.journal_path()).unwrap();
+    let (registry, _log, mut handle) = store.open();
+    assert_eq!(names(&registry, ns), [("x".to_string(), a)]);
+    handle.delete_capsule(b).await.unwrap();
+    assert_eq!(names(&registry, ns), [("x".to_string(), a)]);
+}

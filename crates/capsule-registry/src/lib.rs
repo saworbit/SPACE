@@ -807,6 +807,10 @@ impl common::traits::CapsuleCatalog for CapsuleRegistry {
         self.commit(records)
     }
 
+    fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
+        CapsuleRegistry::delete_capsule(self, id)
+    }
+
     fn lookup_content(&self, hash: &ContentHash) -> Option<SegmentId> {
         self.lookup_content(hash)
     }
@@ -1255,10 +1259,25 @@ impl CapsuleRegistry {
     /// Commit a delete, and return the capsule it removed. Segment bytes
     /// stay until compaction. Names that point at the capsule are left as
     /// they are; readers treat them as missing.
+    /// Delete a capsule, and unbind every name that points at it, in one
+    /// batch (#138). A name left behind would read as missing, but would
+    /// still be in the journal and in delimiter listings.
     pub fn delete_capsule(&self, id: CapsuleId) -> Result<Capsule> {
-        self.commit(vec![JournalRecord::Drop(id)])?
+        let mut records: Vec<JournalRecord> = self
+            .store
+            .names_of(id)?
+            .into_iter()
+            .map(|(ns, name)| JournalRecord::Unbind { ns, name })
+            .collect();
+        records.push(JournalRecord::Drop(id));
+        self.commit(records)?
             .pop()
             .ok_or_else(|| anyhow!("Capsule not found"))
+    }
+
+    /// Every name that points at capsule `id`, as (namespace, name).
+    pub fn names_of(&self, id: CapsuleId) -> Result<Vec<(String, String)>> {
+        self.store.names_of(id)
     }
 
     /// Create namespace `ns` if it doesn't exist.

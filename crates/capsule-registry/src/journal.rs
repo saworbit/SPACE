@@ -28,7 +28,8 @@ use uuid::Uuid;
 ///
 /// 2: names (`NAMESPACE`, `BIND`, `UNBIND`) are indexed.
 /// 3: a name's metadata (`BIND` layout version 2) is indexed with it.
-pub const INDEX_VERSION: u32 = 3;
+/// 4: names are also indexed under the capsule they point at (#138).
+pub const INDEX_VERSION: u32 = 4;
 
 /// How far into which journal the index has applied records. Stored in
 /// sled next to the index, and updated in the same transaction as each
@@ -1082,6 +1083,8 @@ mod compaction_tests {
         content: Vec<(String, u64)>,
         namespaces: Vec<Option<u64>>,
         names: Vec<Vec<(String, crate::Binding)>>,
+        /// Each live capsule and the names under it.
+        capsule_names: Vec<(String, Vec<(String, String)>)>,
     }
 
     fn index(registry: &CapsuleRegistry) -> Index {
@@ -1104,6 +1107,16 @@ mod compaction_tests {
             .map(|(hash, segment)| (hash.0, segment.0))
             .collect();
         content.sort();
+        let mut capsule_names: Vec<(String, Vec<(String, String)>)> = registry
+            .capsules()
+            .iter()
+            .map(|c| {
+                let mut held = registry.names_of(c.id).unwrap();
+                held.sort();
+                (c.id.as_uuid().to_string(), held)
+            })
+            .collect();
+        capsule_names.sort();
         Index {
             capsules,
             refs,
@@ -1116,6 +1129,7 @@ mod compaction_tests {
                 .iter()
                 .map(|ns| registry.list_names(ns, "", None, usize::MAX).unwrap())
                 .collect(),
+            capsule_names,
         }
     }
 
