@@ -15,6 +15,7 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio_util::io::StreamReader;
 use tracing::warn;
 
+pub mod aws_chunked;
 pub mod checksum;
 pub mod handlers;
 pub mod server;
@@ -79,6 +80,10 @@ pub enum S3Error {
     InvalidBucketName(String),
     #[error("{0}")]
     InvalidArgument(String),
+    /// A request that's malformed in a way no other error names, such as
+    /// an `aws-chunked` body whose framing is wrong (#178).
+    #[error("{0}")]
+    InvalidRequest(String),
     /// A `Content-MD5` that isn't an MD5 digest in base64.
     #[error("{0}")]
     InvalidDigest(String),
@@ -228,6 +233,57 @@ pub struct PutOptions {
     /// Digests the body must have (#196). They're computed as it streams
     /// in, and a body without them stores nothing.
     pub digests: Vec<checksum::Expected>,
+    /// Set when the body is in `aws-chunked` encoding (#178).
+    pub chunked: Option<ChunkedBody>,
+}
+
+/// A body in `aws-chunked` encoding (#178). It's decoded as it streams in,
+/// and the object is the decoded bytes.
+#[derive(Debug, Clone, Default)]
+pub struct ChunkedBody {
+    /// `x-amz-decoded-content-length`: the decoded body must be this long.
+    pub decoded_length: Option<u64>,
+    /// The checksums `x-amz-trailer` says the body's trailer carries. The
+    /// body must have them.
+    pub trailer: Vec<checksum::Algorithm>,
+}
+
+/// The digests an `aws-chunked` body's trailer gives. Each checksum in it
+/// must be one `x-amz-trailer` named, and each one named must be in it.
+fn trailer_digests(
+    named: &[checksum::Algorithm],
+    trailers: &[(String, String)],
+) -> S3Result<Vec<checksum::Expected>> {
+    let mut digests = Vec::new();
+    for (name, value) in trailers {
+        let Some(algorithm) = name.strip_prefix("x-amz-checksum-") else {
+            // Such as x-amz-trailer-signature, which isn't checked.
+            continue;
+        };
+        let algorithm = checksum::Algorithm::from_checksum_name(algorithm).ok_or_else(|| {
+            S3Error::NotImplemented(format!("the {name} checksum is not implemented"))
+        })?;
+        if !named.contains(&algorithm) {
+            return Err(S3Error::InvalidRequest(format!(
+                "the body's trailer has {name}, which x-amz-trailer doesn't name"
+            )));
+        }
+        digests.push(
+            checksum::Expected::from_base64(name, algorithm, value).ok_or_else(|| {
+                S3Error::InvalidArgument(format!("Value for {name} trailer is invalid."))
+            })?,
+        );
+    }
+    if let Some(missing) = named
+        .iter()
+        .find(|a| !digests.iter().any(|d| d.algorithm == **a))
+    {
+        return Err(S3Error::InvalidRequest(format!(
+            "x-amz-trailer names a {} checksum, but the body's trailer doesn't have one",
+            missing.name()
+        )));
+    }
+    Ok(digests)
 }
 
 fn bad_digest_message(expected: &checksum::Expected) -> String {
@@ -552,25 +608,65 @@ impl S3View {
         // Fail early when the conditions already fail, rather than store the
         // body first. They're checked again at the commit.
         conditions.check_write(self.live_capsule_created(&ns, key)?)?;
-        let running = Arc::new(Mutex::new(checksum::Running::new(&options.digests)));
-        let digests = Arc::clone(&running);
-        let reader = StreamReader::new(
-            data_stream
-                .map_err(|err| std::io::Error::other(err.into()))
-                .inspect_ok(move |chunk| {
-                    digests
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .update(chunk)
-                }),
+        let algorithms = options.digests.iter().map(|d| d.algorithm).chain(
+            options
+                .chunked
+                .iter()
+                .flat_map(|c| c.trailer.iter().copied()),
         );
+        let running = Arc::new(Mutex::new(checksum::Running::new(algorithms)));
+        let digests = Arc::clone(&running);
+        let body = data_stream.map_err(|err| std::io::Error::other(err.into()));
+        // An aws-chunked body is decoded as it arrives (#178); the object,
+        // and every digest, is the decoded bytes.
+        let outcome = Arc::new(Mutex::new(aws_chunked::Outcome::default()));
+        let decoded = match &options.chunked {
+            Some(chunked) => futures::future::Either::Left(aws_chunked::decode(
+                Box::pin(StreamReader::new(body)),
+                chunked.decoded_length,
+                Arc::clone(&outcome),
+            )),
+            None => futures::future::Either::Right(body),
+        };
+        let reader = StreamReader::new(decoded.inspect_ok(move |chunk| {
+            digests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .update(chunk)
+        }));
         // The body is stored one segment at a time as it arrives (#99).
         let policy = self.pipeline.lock().await.default_policy();
-        let staged = stage_from_reader(&self.pipeline, reader, &policy).await?;
+        let staged = match stage_from_reader(&self.pipeline, reader, &policy).await {
+            Ok(staged) => staged,
+            Err(err) => {
+                let bad = outcome
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .error
+                    .take();
+                return Err(bad.map_or_else(|| err.into(), S3Error::InvalidRequest));
+            }
+        };
         let capsule_id = staged.capsule_id();
-        // A body that doesn't have the digests its headers give stores
-        // nothing: its segments are released before the error is returned.
-        let mismatch = running.lock().unwrap_or_else(|e| e.into_inner()).mismatch();
+        // A body that doesn't have the digests its headers or its trailer
+        // give stores nothing: its segments are released before the error
+        // is returned.
+        let mut expected = options.digests.clone();
+        if let Some(chunked) = &options.chunked {
+            let trailers =
+                std::mem::take(&mut outcome.lock().unwrap_or_else(|e| e.into_inner()).trailers);
+            match trailer_digests(&chunked.trailer, &trailers) {
+                Ok(found) => expected.extend(found),
+                Err(err) => {
+                    staged.abort().await;
+                    return Err(err);
+                }
+            }
+        }
+        let mismatch = running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .check(&expected);
         if let Some(expected) = mismatch {
             staged.abort().await;
             return Err(S3Error::BadDigest(expected));

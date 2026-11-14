@@ -344,3 +344,54 @@ async fn a_body_without_its_digest_stores_nothing() {
         data
     );
 }
+
+/// An aws-chunked body cut short after a whole segment has been stored
+/// fails the PUT, and the stored segment is released (#178).
+#[tokio::test]
+async fn an_aws_chunked_body_cut_short_stores_nothing() {
+    use protocol_s3::{ChunkedBody, PutOptions};
+
+    let s = Scratch::new("chunked_cut");
+    let data = noise(5 * MIB, 3);
+    let mut framed = format!("{:x}\r\n", data.len()).into_bytes();
+    framed.extend_from_slice(&data[..data.len() - 1]);
+    let options = PutOptions {
+        chunked: Some(ChunkedBody {
+            decoded_length: Some(data.len() as u64),
+            trailer: Vec::new(),
+        }),
+        ..PutOptions::default()
+    };
+    let result = s
+        .view
+        .put_object_with("bkt", "k", body(framed), &options)
+        .await;
+    assert!(
+        matches!(result, Err(S3Error::InvalidRequest(_))),
+        "{result:?}"
+    );
+    assert!(s.registry.capsules().is_empty());
+    assert!(s.log.list_segment_ids().is_empty(), "segments leaked");
+
+    // Whole, but without the trailing checksum x-amz-trailer named.
+    let mut framed = format!("{:x}\r\n", data.len()).into_bytes();
+    framed.extend_from_slice(&data);
+    framed.extend_from_slice(b"\r\n0\r\n\r\n");
+    let options = PutOptions {
+        chunked: Some(ChunkedBody {
+            decoded_length: Some(data.len() as u64),
+            trailer: vec![protocol_s3::checksum::Algorithm::Crc32],
+        }),
+        ..PutOptions::default()
+    };
+    let result = s
+        .view
+        .put_object_with("bkt", "k", body(framed), &options)
+        .await;
+    assert!(
+        matches!(result, Err(S3Error::InvalidRequest(_))),
+        "{result:?}"
+    );
+    assert!(s.registry.capsules().is_empty());
+    assert!(s.log.list_segment_ids().is_empty(), "segments leaked");
+}

@@ -150,33 +150,42 @@ pub fn digest_of(algorithm: Algorithm, bytes: &[u8]) -> Vec<u8> {
     hasher.finish()
 }
 
-/// The digests of a body as it streams in, one for each expected digest.
+/// The digests of a body as it streams in, with each of a set of
+/// algorithms. A trailer's digest arrives after the body, so what to check
+/// against is given at the end.
 pub struct Running {
-    checks: Vec<(Expected, Hasher)>,
+    hashers: Vec<(Algorithm, Hasher)>,
 }
 
 impl Running {
-    pub fn new(expected: &[Expected]) -> Self {
-        Self {
-            checks: expected
-                .iter()
-                .map(|e| (e.clone(), Hasher::new(e.algorithm)))
-                .collect(),
+    pub fn new(algorithms: impl IntoIterator<Item = Algorithm>) -> Self {
+        let mut hashers: Vec<(Algorithm, Hasher)> = Vec::new();
+        for algorithm in algorithms {
+            if !hashers.iter().any(|(a, _)| *a == algorithm) {
+                hashers.push((algorithm, Hasher::new(algorithm)));
+            }
         }
+        Self { hashers }
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
-        for (_, hasher) in &mut self.checks {
+        for (_, hasher) in &mut self.hashers {
             hasher.update(bytes);
         }
     }
 
-    /// The first expected digest the body read so far doesn't have.
-    pub fn mismatch(&self) -> Option<Expected> {
-        self.checks
+    /// The first of `expected` the body read so far doesn't have. One with
+    /// an algorithm this doesn't compute doesn't match.
+    pub fn check(&self, expected: &[Expected]) -> Option<Expected> {
+        expected
             .iter()
-            .find(|(expected, hasher)| hasher.clone().finish() != expected.digest)
-            .map(|(expected, _)| expected.clone())
+            .find(|e| {
+                self.hashers
+                    .iter()
+                    .find(|(a, _)| *a == e.algorithm)
+                    .is_none_or(|(_, hasher)| hasher.clone().finish() != e.digest)
+            })
+            .cloned()
     }
 }
 
@@ -273,19 +282,28 @@ mod tests {
         ] {
             let expected = Expected::from_base64(header, algorithm, value).unwrap();
             assert_eq!(expected.header, header.to_ascii_lowercase());
-            let mut running = Running::new(std::slice::from_ref(&expected));
+            let mut running = Running::new([algorithm, algorithm]);
             // In pieces, as a body streams in.
             running.update(b"he");
             running.update(b"llo");
-            assert_eq!(running.mismatch(), None, "{header}");
+            let expected = std::slice::from_ref(&expected);
+            assert_eq!(running.check(expected), None, "{header}");
             running.update(b"!");
-            assert_eq!(running.mismatch(), Some(expected), "{header}");
+            assert_eq!(
+                running.check(expected),
+                Some(expected[0].clone()),
+                "{header}"
+            );
         }
         let sha = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
         let expected = Expected::from_hex("x-amz-content-sha256", Algorithm::Sha256, sha).unwrap();
-        let mut running = Running::new(&[expected]);
+        let mut running = Running::new([Algorithm::Sha256]);
         running.update(b"hello");
-        assert_eq!(running.mismatch(), None);
+        assert_eq!(running.check(std::slice::from_ref(&expected)), None);
+        // A digest with an algorithm it doesn't compute doesn't match.
+        let crc =
+            Expected::from_base64("x-amz-checksum-crc32", Algorithm::Crc32, "NhCmhg==").unwrap();
+        assert_eq!(running.check(&[expected, crc.clone()]), Some(crc));
     }
 
     #[test]
