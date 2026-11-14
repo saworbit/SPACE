@@ -59,7 +59,7 @@ S3 GET decodes the first segment before it answers. A read that fails from the s
 ## Paginated listings
 
 - `CapsuleRegistry::list_capsules(limit, cursor) -> Result<Vec<CapsuleId>>` returns up to `limit` IDs after `cursor`, in ID order. Pass `None` for the first page, then the last ID of each page.
-- `spacectl list` pages through the registry 256 IDs at a time.
+- `spacectl list` pages through the registry 256 IDs at a time, then sorts every capsule's record by creation time before printing, so it holds the records, not their data, in memory.
 
 ## Tests
 

@@ -206,6 +206,75 @@ async fn open_store(dir: &Path, registry: CapsuleRegistry) -> Result<RegistryPip
     }
 }
 
+/// What `create` stores: the file `path` names, or stdin for `-`, or for no
+/// path when stdin isn't a terminal (#169).
+async fn create_input(
+    path: Option<String>,
+) -> Result<Box<dyn tokio::io::AsyncRead + Send + Unpin>> {
+    match path.as_deref() {
+        Some("-") => Ok(Box::new(tokio::io::stdin())),
+        Some(file) => Ok(Box::new(
+            tokio::fs::File::open(file)
+                .await
+                .with_context(|| format!("can't open {file}"))?,
+        )),
+        None if io::stdin().is_terminal() => {
+            bail!("give a FILE to store, or `-` or a pipe for stdin")
+        }
+        None => Ok(Box::new(tokio::io::stdin())),
+    }
+}
+
+/// Whether `chunk`, the start of a capsule, looks binary: it holds a NUL
+/// byte or isn't UTF-8. A character cut at the end of the chunk doesn't
+/// count.
+fn looks_binary(chunk: &[u8]) -> bool {
+    chunk.contains(&0) || std::str::from_utf8(chunk).is_err_and(|e| e.error_len().is_some())
+}
+
+/// Write a capsule to stdout. A capsule that looks binary isn't written to
+/// a terminal unless `force` is set (#169).
+async fn read_to_stdout(mut stream: common::traits::DataStream, force: bool) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    let mut first = true;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if first && !force && looks_binary(&chunk) && io::stdout().is_terminal() {
+            bail!(
+                "the capsule looks binary, so it isn't written to the terminal. Use -o FILE, \
+                 a pipe, or --force"
+            );
+        }
+        first = false;
+        stdout.write_all(&chunk)?;
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
+/// Write a capsule to `path`. If the read fails part way, such as on a
+/// digest mismatch at the end, the file is removed rather than left short.
+async fn read_to_file(mut stream: common::traits::DataStream, path: &Path) -> Result<()> {
+    let mut file = io::BufWriter::new(
+        fs::File::create(path).with_context(|| format!("can't create {}", path.display()))?,
+    );
+    let written: Result<()> = async {
+        while let Some(chunk) = stream.next().await {
+            file.write_all(&chunk?)?;
+        }
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        Ok(())
+    }
+    .await;
+    if let Err(err) = written {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(err.context(format!("removed {}, which was cut short", path.display())));
+    }
+    Ok(())
+}
+
 /// The capsule an argument names: its full id, or a prefix of one as `list`
 /// prints them that only one capsule has (#168).
 fn resolve_capsule(registry: &CapsuleRegistry, arg: &str) -> Result<CapsuleId> {
@@ -255,9 +324,16 @@ fn plural(n: impl Into<u64>, one: &str, many: &str) -> String {
 enum Commands {
     /// Create a new capsule from data
     Create {
-        /// Input file path
+        /// File to store. `-`, or no file when stdin isn't a terminal, reads
+        /// stdin.
+        #[arg(value_name = "FILE", conflicts_with = "file")]
+        path: Option<String>,
+        /// File to store, as FILE does
+        #[arg(short, long, value_name = "FILE")]
+        file: Option<String>,
+        /// Print only the capsule's ID
         #[arg(short, long)]
-        file: String,
+        quiet: bool,
         /// YAML policy file setting any of compression, dedupe, encryption
         /// and layout (docs/capsule.md). Unknown keys are errors. Settings
         /// it leaves out keep the default: the capsule is encrypted when
@@ -270,9 +346,29 @@ enum Commands {
     Read {
         /// Capsule ID, or a prefix of one that only one capsule has
         capsule_id: String,
+        /// Write the capsule to FILE instead of stdout. A read that fails
+        /// part way removes FILE.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Write a capsule that looks binary to stdout even when it's a
+        /// terminal
+        #[arg(long)]
+        force: bool,
     },
-    /// List all capsules
-    List,
+    /// List all capsules, oldest first
+    List {
+        /// Print one JSON object per capsule per line: id, size, segments,
+        /// created_at (seconds since the Unix epoch), encrypted, and the
+        /// names (S3 keys) bound to it
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a shell completion script, such as
+    /// `spacectl completions bash > /etc/bash_completion.d/spacectl`
+    Completions {
+        /// The shell to complete for
+        shell: clap_complete::Shell,
+    },
     /// Delete a capsule. Segments no other capsule shares are freed. An S3
     /// key that pointed at it then reads as missing.
     Delete {
@@ -538,11 +634,14 @@ fn broken_pipe(err: &anyhow::Error) -> bool {
 async fn run(cli: Cli) -> Result<()> {
     let dir = cli.store.as_path();
     match cli.command {
-        Commands::Create { file, policy_file } => {
+        Commands::Create {
+            path,
+            file,
+            quiet,
+            policy_file,
+        } => {
             // Read one segment at a time rather than the whole file (#99).
-            let input = tokio::fs::File::open(&file)
-                .await
-                .with_context(|| format!("can't open {file}"))?;
+            let input = create_input(path.or(file)).await?;
             let store = open_store(dir, open_registry(dir, Open::OrCreate)?).await?;
             let policy = match policy_file {
                 Some(path) => load_policy_file(&path, store.default_policy())
@@ -551,19 +650,26 @@ async fn run(cli: Cli) -> Result<()> {
             };
             let store = Arc::new(TokioMutex::new(store));
             let (id, size) = modular_pipeline::write_from_reader(&store, input, &policy).await?;
-            say!("Capsule created: {}", id.as_uuid());
-            say!("Size: {size} bytes");
+            if quiet {
+                say!("{}", id.as_uuid());
+            } else {
+                say!("Capsule created: {}", id.as_uuid());
+                say!("Size: {size} bytes");
+            }
         }
-        Commands::Read { capsule_id } => {
+        Commands::Read {
+            capsule_id,
+            output,
+            force,
+        } => {
             let registry = open_registry(dir, Open::Existing)?;
             let id = resolve_capsule(&registry, &capsule_id)?;
             let store = open_store(dir, registry).await?;
-            let mut stream = store.read_capsule_stream(id).await?;
-            let mut stdout = io::stdout().lock();
-            while let Some(chunk) = stream.next().await {
-                stdout.write_all(&chunk?)?;
+            let stream = store.read_capsule_stream(id).await?;
+            match output {
+                Some(path) => read_to_file(stream, &path).await?,
+                None => read_to_stdout(stream, force).await?,
             }
-            stdout.flush()?;
         }
         Commands::Delete { capsule_id } => {
             let registry = open_registry(dir, Open::Existing)?;
@@ -622,44 +728,65 @@ async fn run(cli: Cli) -> Result<()> {
                 ),
             }
         }
-        Commands::List => {
+        Commands::List { json } => {
             let registry = open_registry(dir, Open::Existing)?;
+            let mut capsules = Vec::new();
             let mut cursor = None;
-            let mut printed = false;
-
             loop {
-                let capsule_ids = registry.list_capsules(LIST_PAGE_SIZE, cursor)?;
-                if capsule_ids.is_empty() {
+                let page = registry.list_capsules(LIST_PAGE_SIZE, cursor)?;
+                let Some(last) = page.last().copied() else {
                     break;
-                }
-
-                if !printed {
-                    say!("Capsule ID\tSize (bytes)\tSegments");
-                    printed = true;
-                }
-
-                cursor = capsule_ids.last().copied();
-
-                for id in capsule_ids {
-                    match registry.lookup(id) {
-                        Ok(capsule) => {
-                            say!(
-                                "{}\t{:>12}\t{:>3}",
-                                capsule.id.as_uuid(),
-                                capsule.size,
-                                capsule.segments.len()
-                            );
-                        }
-                        Err(err) => {
-                            say!("{} \t<error: {}>", id.as_uuid(), err);
-                        }
-                    }
+                };
+                cursor = Some(last);
+                for id in page {
+                    capsules.push(registry.lookup(id)?);
                 }
             }
-
-            if !printed {
+            // Oldest first. The index lists capsules by ID, which is random.
+            capsules.sort_by_key(|c| (c.created_at, *c.id.as_uuid()));
+            if json {
+                for capsule in &capsules {
+                    let names: Vec<serde_json::Value> = registry
+                        .names_of(capsule.id)?
+                        .into_iter()
+                        .map(|(namespace, name)| {
+                            serde_json::json!({ "namespace": namespace, "name": name })
+                        })
+                        .collect();
+                    let line = serde_json::json!({
+                        "id": capsule.id.as_uuid().to_string(),
+                        "size": capsule.size,
+                        "segments": capsule.segments.len(),
+                        "created_at": capsule.created_at,
+                        "encrypted": capsule.policy.encryption.is_enabled(),
+                        "names": names,
+                    });
+                    say!("{line}");
+                }
+            } else if capsules.is_empty() {
                 say!("(no capsules)");
+            } else {
+                say!(
+                    "{:<36}  {:<24}  {:>12}  {:>8}",
+                    "Capsule ID",
+                    "Created",
+                    "Size (bytes)",
+                    "Segments"
+                );
+                for capsule in &capsules {
+                    say!(
+                        "{:<36}  {:<24}  {:>12}  {:>8}",
+                        capsule.id.as_uuid(),
+                        protocol_s3::handlers::iso8601(capsule.created_at),
+                        capsule.size,
+                        capsule.segments.len()
+                    );
+                }
             }
+        }
+        Commands::Completions { shell } => {
+            let mut command = <Cli as clap::CommandFactory>::command();
+            clap_complete::generate(shell, &mut command, "spacectl", &mut io::stdout());
         }
         Commands::Scrub { deep } => {
             let registry = open_registry(dir, Open::Existing)?;
@@ -782,6 +909,17 @@ async fn run(cli: Cli) -> Result<()> {
 mod tests {
     use super::*;
     use common::format::CapsuleManifest;
+
+    #[test]
+    fn binary_capsules_are_told_from_text() {
+        assert!(!looks_binary(b"Hello SPACE!\n"));
+        assert!(!looks_binary("caf\u{e9}".as_bytes()));
+        // A character cut at the end of the first chunk is still text.
+        assert!(!looks_binary(&"caf\u{e9}".as_bytes()[..4]));
+        assert!(looks_binary(b"text\0more"));
+        assert!(looks_binary(&[0xff, 0xfe, b'a']));
+        assert!(!looks_binary(b""));
+    }
 
     #[test]
     fn capsules_resolve_by_full_id_or_unique_prefix() {
