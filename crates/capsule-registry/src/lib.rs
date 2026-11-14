@@ -302,24 +302,19 @@ pub mod modular_pipeline {
         }
 
         /// Scrub the store in the background on `config`'s schedule
-        /// ([`ScrubExecutor::spawn`]). The executor gets the pipeline's key,
-        /// so deep scrubs check encrypted segments' MACs, and keeps its
-        /// schedule in `space.db`, so a restart scrubs only segments that are
-        /// due (#134). It reads segments straight from the backend, without
-        /// the pipeline lock.
-        /// It has no capsule pass; [`spawn_scrub`] adds one.
-        pub fn spawn_scrub(
-            &self,
-            config: ScrubConfig,
-        ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
-            self.spawn_scrub_with(config, None)
-        }
-
+        /// ([`ScrubExecutor::spawn`]), running `pass` after each deep cycle.
+        /// The executor gets the pipeline's key, so deep scrubs check
+        /// encrypted segments' MACs, and keeps its schedule in `space.db`, so
+        /// a restart scrubs only segments that are due (#134). It reads
+        /// segments straight from the backend, without the pipeline lock.
+        /// [`spawn_scrub`] is the public way in, so every background scrub
+        /// has the capsule pass (#218).
         fn spawn_scrub_with(
             &self,
             config: ScrubConfig,
-            pass: Option<CapsulePass>,
+            pass: CapsulePass,
         ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
+            let pass = Some(pass);
             let key = self.key_manager();
             let schedule = self.registry().scrub_schedule();
             match self {
@@ -378,9 +373,9 @@ pub mod modular_pipeline {
         }
     }
 
-    /// Scrub the store in the background on `config`'s schedule, as
-    /// [`RegistryPipelineHandle::spawn_scrub`] does, with a capsule pass
-    /// after each deep cycle (#140). The pass checks the capsules that hold
+    /// Scrub the store in the background on `config`'s schedule, with a
+    /// capsule pass after each deep cycle (#140). It's the only way to start
+    /// a background scrub of a pipeline (#218). The pass checks the capsules that hold
     /// a segment the cycle scrubbed, so over a deep interval every capsule
     /// is checked, and a restart doesn't read the whole store again.
     pub async fn spawn_scrub(
@@ -394,7 +389,7 @@ pub mod modular_pipeline {
                 async move { scrub_capsules(&pipeline, Some(&scrubbed), &damaged, rate).await },
             )
         });
-        pipeline.lock().await.spawn_scrub_with(config, Some(pass))
+        pipeline.lock().await.spawn_scrub_with(config, pass)
     }
 
     /// Scrub every segment once, as [`RegistryPipelineHandle::scrub_all`]

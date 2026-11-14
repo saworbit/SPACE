@@ -10,6 +10,7 @@
 *.metadata
 **/space.db/
 **/space.journal
+**/space.audit.log
 *.compact
 **/space.storage/
 
