@@ -260,10 +260,6 @@ impl Keyring for NullKeyring {
     fn derive_key(&self, _capsule: CapsuleId, _segment: SegmentId) -> Result<[u8; 32]> {
         Ok([0u8; 32])
     }
-
-    fn rotate_key(&mut self, _capsule: CapsuleId) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Keyring backed by the encryption key manager.
@@ -301,15 +297,6 @@ impl Keyring for KeyManagerKeyring {
             .get_key(version)
             .context("failed to load key for derivation")?;
         Ok(*key_pair.key1())
-    }
-
-    fn rotate_key(&mut self, _capsule: CapsuleId) -> Result<()> {
-        let mut manager = self
-            .manager
-            .lock()
-            .map_err(|_| anyhow!("key manager mutex poisoned"))?;
-        manager.rotate().context("key rotation failed")?;
-        Ok(())
     }
 }
 
@@ -2003,14 +1990,6 @@ mod tests {
         assert_eq!(key, [0u8; 32]);
     }
 
-    #[test]
-    fn null_keyring_rotate_succeeds() {
-        let mut keyring = NullKeyring;
-        keyring
-            .rotate_key(CapsuleId(uuid::Uuid::nil()))
-            .expect("rotate should succeed");
-    }
-
     // ── KeyManagerKeyring ─────────────────────────────────────────────
 
     #[test]
@@ -2021,14 +2000,6 @@ mod tests {
             .unwrap();
         // Should return a non-zero key (from key manager)
         assert_eq!(key.len(), 32);
-    }
-
-    #[test]
-    fn key_manager_keyring_rotate() {
-        let mut keyring = KeyManagerKeyring::default();
-        keyring
-            .rotate_key(CapsuleId(uuid::Uuid::new_v4()))
-            .expect("rotate should succeed");
     }
 
     // ── PipelineBuilder ───────────────────────────────────────────────
