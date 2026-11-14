@@ -1,7 +1,6 @@
 //! Key Management System
 //!
-//! Handles encryption key lifecycle: generation, storage, versioning, and rotation.
-//! Keys are derived from a master key and versioned for rotation without data re-encryption.
+//! Derives the XTS keys a store encrypts with from its master key.
 //!
 //! ## Security Model
 //!
@@ -10,11 +9,14 @@
 //! - XTS requires 512-bit keys (two AES-256 keys)
 //! - Keys are zeroized on drop
 //!
-//! ## Key Versioning
+//! ## Key versions
 //!
-//! Version 1 → Keys derived from master_key || version
-//! Version 2 → New derivation when rotated
-//! Old versions kept for reading legacy segments
+//! Keys are derived from the master key and a version. New writes use
+//! version 1, and segments record the version they were written with, so a
+//! segment's key can always be derived again. There's no rotation (#98):
+//! every version derives from the same master key, so a new version
+//! wouldn't limit what a leaked master key exposes. Replacing the master
+//! key means re-encrypting every segment, which isn't implemented.
 
 use crate::error::{EncryptionError, Result};
 use crate::key_provider::KeyProvider;
@@ -103,8 +105,8 @@ impl std::fmt::Debug for XtsKeyPair {
 
 /// Key Manager
 ///
-/// Manages versioned encryption keys with support for rotation.
-/// Keys are derived from a master key using BLAKE3 as a KDF.
+/// Derives versioned encryption keys from a master key, using BLAKE3 as
+/// a KDF. New writes use [`KeyManager::current_version`], which is 1.
 pub struct KeyManager {
     /// Master key (zeroized on drop)
     master_key: [u8; MASTER_KEY_SIZE],
@@ -118,9 +120,6 @@ pub struct KeyManager {
 
     /// Current active key version
     current_version: u32,
-
-    /// Flag indicating if rotation is in progress
-    rotating: bool,
 }
 
 impl KeyManager {
@@ -142,7 +141,6 @@ impl KeyManager {
             hkdf_salt,
             key_cache: HashMap::new(),
             current_version: 1,
-            rotating: false,
         };
 
         // Pre-derive version 1 key
@@ -316,40 +314,6 @@ impl KeyManager {
         fingerprint
     }
 
-    /// Check if rotation is in progress
-    pub fn is_rotating(&self) -> bool {
-        self.rotating
-    }
-
-    /// Begin key rotation to a new version
-    ///
-    /// Creates new key version and marks rotation in progress.
-    /// Old keys remain available for reading legacy segments.
-    pub fn rotate(&mut self) -> Result<u32> {
-        if self.rotating {
-            return Err(EncryptionError::KeyRotationInProgress);
-        }
-
-        self.rotating = true;
-        self.current_version += 1;
-
-        // Pre-derive new key
-        let new_key = self.derive_key(self.current_version)?;
-        self.key_cache.insert(self.current_version, new_key);
-
-        Ok(self.current_version)
-    }
-
-    /// Complete key rotation
-    ///
-    /// Marks rotation as complete. In production, this would:
-    /// - Verify all critical segments re-encrypted
-    /// - Update metadata
-    /// - Optionally purge old keys
-    pub fn complete_rotation(&mut self) {
-        self.rotating = false;
-    }
-
     /// Get list of available key versions (for admin/debugging)
     pub fn available_versions(&self) -> Vec<u32> {
         let mut versions: Vec<u32> = self.key_cache.keys().copied().collect();
@@ -381,7 +345,6 @@ impl std::fmt::Debug for KeyManager {
             .field("master_key", &"[REDACTED]")
             .field("current_version", &self.current_version)
             .field("cached_versions", &self.key_cache.len())
-            .field("rotating", &self.rotating)
             .finish()
     }
 }
@@ -439,7 +402,6 @@ mod tests {
         let manager = KeyManager::new(master_key);
 
         assert_eq!(manager.current_version(), 1);
-        assert!(!manager.is_rotating());
     }
 
     #[test]
@@ -487,30 +449,21 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_key_rotation() {
+    fn any_key_version_derives_but_writes_stay_on_version_1() {
         let master_key = [99u8; MASTER_KEY_SIZE];
         let mut manager = KeyManager::new(master_key);
 
+        // A segment records the version it was written with, and its key can
+        // be derived again whatever the version, from the master key alone.
+        let one = manager.get_key(1).unwrap().clone();
+        let two = manager.get_key(2).unwrap().clone();
+        assert_ne!(one.key1(), two.key1());
+        assert_eq!(
+            KeyManager::new(master_key).get_key(2).unwrap().key1(),
+            two.key1()
+        );
+        // Nothing moves new writes off version 1 (#98).
         assert_eq!(manager.current_version(), 1);
-        assert!(!manager.is_rotating());
-
-        // Begin rotation
-        let new_version = manager.rotate().unwrap();
-        assert_eq!(new_version, 2);
-        assert_eq!(manager.current_version(), 2);
-        assert!(manager.is_rotating());
-
-        // Can't rotate while in progress
-        let err = manager.rotate();
-        assert!(matches!(err, Err(EncryptionError::KeyRotationInProgress)));
-
-        // Complete rotation
-        manager.complete_rotation();
-        assert!(!manager.is_rotating());
-
-        // Old key still accessible
-        assert!(manager.get_key(1).is_ok());
-        assert!(manager.get_key(2).is_ok());
     }
 
     #[test]

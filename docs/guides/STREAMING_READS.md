@@ -54,7 +54,7 @@ S3 GET decodes the first segment before it answers. A read that fails from the s
 
 ## Streaming writes
 
-`begin_write`, then `write_chunk` once per segment, then `finish_write` (or `abort_write`) stores a capsule one segment at a time. Every chunk but the last is exactly one segment long, so the capsule gets the same segments, and the same dedup, as `write_capsule` would give it. `modular_pipeline::write_from_reader` drives this from any `AsyncRead`. It locks the pipeline only while a segment is stored, and aborts the write if its future is dropped. S3 PUT and `spacectl create` use it.
+`begin_write`, then `write_chunk` once per segment, then `finish_write` (or `abort_write`) stores a capsule one segment at a time. Every chunk but the last is exactly one segment long, so the capsule gets the same segments, and the same dedup, as `write_capsule` would give it. `modular_pipeline::write_from_reader` drives this from any `AsyncRead`. It compresses, hashes and encrypts each chunk on a blocking thread with the pipeline unlocked (`ChunkPreparer::prepare`), then locks the pipeline only to look the hash up and store the segment (`place_chunk`), so concurrent writes share the lock for that alone ([#198](https://github.com/saworbit/SPACE/issues/198)). It aborts the write if its future is dropped. S3 PUT, UploadPart and `spacectl create` use it.
 
 ## Paginated listings
 

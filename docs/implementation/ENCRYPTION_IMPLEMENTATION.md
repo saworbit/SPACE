@@ -56,11 +56,11 @@ key2   = okm[32..]   (tweak key)
 
 `get_key(version)` derives a version on first use and caches it. Every version can be re-derived from the master key, so anyone holding the master key can read every version.
 
-### Rotation
+### Key versions, and no rotation
 
-`rotate()` increments the current version and errors while a previous rotation hasn't been marked done with `complete_rotation()`. Segments record the `key_version` they were written with and stay readable after a rotation.
+New writes use key version 1, and the store's `KEY` record holds it. Segments record the `key_version` they were written with, and `get_key` derives any version, so every segment stays readable.
 
-Rotation is in memory only: every constructor starts at version 1, so a restart undoes it, and nothing exposes it through `spacectl` ([#98](https://github.com/saworbit/SPACE/issues/98)).
+There's no key rotation ([#98](https://github.com/saworbit/SPACE/issues/98)). The key manager used to have an in-memory `rotate()`, which a restart undid and nothing in `spacectl` or `serve-s3` called. It's gone, because a new version wouldn't protect anything: every version derives from the same master key, so whoever has the master key has every version, and dedup kept new writes on segments under the old version anyway. Rotating the key that matters means replacing the master key and re-encrypting every segment, which isn't implemented.
 
 ### Zeroization
 
@@ -180,4 +180,4 @@ cargo bench -p capsule-registry --bench pipeline -- encrypt_xts_segment
 
 - **Post-quantum key wrapping:** `CryptoProfile::HybridKyber` exists, but there's no ML-KEM code, so `Policy::validate` rejects it and nothing is written under it ([#162](https://github.com/saworbit/SPACE/issues/162)). The `pq_ciphertext` / `pq_nonce` fields stay `None`.
 - **KMS and Vault providers:** stubs that return errors.
-- **Re-encryption** of existing segments after a key rotation.
+- **Master key replacement**, which would re-encrypt every segment ([#98](https://github.com/saworbit/SPACE/issues/98)).

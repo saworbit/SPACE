@@ -46,7 +46,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 - A store remembers the first key it was opened with, by fingerprint. Another key is a startup error. Without a key, its writes are refused and `serve-s3` won't start, unless `SPACE_ALLOW_PLAINTEXT=1` is set ([#157](https://github.com/saworbit/SPACE/issues/157)). `serve-s3` logs the key's fingerprint at startup.
 - A malformed `SPACE_MASTER_KEY` is a startup error. With no key set, writes whose policy asks for encryption fail, and so do reads of encrypted capsules: `spacectl read` exits non-zero and S3 GET returns `InternalError`, rather than serving the ciphertext ([#155](https://github.com/saworbit/SPACE/issues/155)).
 - Encryption is deterministic so that dedup keeps working. Identical segments produce identical ciphertext, which reveals that they're equal.
-- Key rotation isn't persisted across restarts ([#98](https://github.com/saworbit/SPACE/issues/98)).
+- There's no key rotation. Every key version derives from the master key, so a new version wouldn't limit what a leaked master key exposes, and replacing the master key, which would re-encrypt every segment, isn't implemented ([#98](https://github.com/saworbit/SPACE/issues/98)).
 
 ### Integrity
 
