@@ -250,7 +250,7 @@ A checkpoint file is a `FILE` record (`file_kind` 3, the data log's `store_id` a
 
 The first time a store is opened with a master key, the journal gets a `KEY` record for it ([#157](https://github.com/saworbit/SPACE/issues/157)). The last `KEY` record is the store's. Opening a store with a key whose fingerprint differs from it fails. Opening it without a key works, but writes are refused before any segment is stored, and `serve-s3` won't start, unless `SPACE_ALLOW_PLAINTEXT=1` is set. A `KEY` record is never in a `BATCH`.
 
-The fingerprint names the key without revealing it, or any key derived from it: the derivation context is used for nothing else. Nothing changes `key_version` yet; it's there for key rotation ([#98](https://github.com/saworbit/SPACE/issues/98)).
+The fingerprint names the key without revealing it, or any key derived from it: the derivation context is used for nothing else. `key_version` is 1, and nothing changes it: there's no rotation, since every version derives from the same master key ([#98](https://github.com/saworbit/SPACE/issues/98)). The field stays so that replacing the master key, which would re-encrypt segments, can record a new one.
 
 ## 6. What each operation writes
 

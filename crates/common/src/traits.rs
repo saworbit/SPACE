@@ -299,8 +299,6 @@ pub trait PolicyEvaluator: Send + Sync {
 /// Abstract key management used by the encryptor.
 pub trait Keyring: Send + Sync {
     fn derive_key(&self, capsule: CapsuleId, segment: SegmentId) -> Result<[u8; 32]>;
-
-    fn rotate_key(&mut self, capsule: CapsuleId) -> Result<()>;
 }
 
 /// Protocol view abstraction for front-end handlers.

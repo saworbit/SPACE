@@ -140,7 +140,7 @@ mod modular_pipeline_gc {
     use storage::NvramBackend;
 
     #[tokio::test]
-    async fn modular_pipeline_handles_key_rotation() {
+    async fn modular_pipeline_segments_record_their_key_version() {
         let log_path = "modular_gc.log";
         let segments_path = format!("{}.segments", log_path);
         let _ = fs::remove_file(log_path);
@@ -169,11 +169,6 @@ mod modular_pipeline_gc {
             .await
             .unwrap();
 
-        {
-            let mut km = key_manager.lock().unwrap();
-            km.rotate().unwrap();
-        }
-
         pipeline
             .write_capsule(b"modular gc data payload second", &policy)
             .await
@@ -183,8 +178,10 @@ mod modular_pipeline_gc {
         let first = log.get_segment_metadata(SegmentId(0)).unwrap();
         let second = log.get_segment_metadata(SegmentId(1)).unwrap();
 
+        // Nothing changes the version new writes use (#98).
         assert!(first.encrypted && second.encrypted);
-        assert_ne!(first.key_version, second.key_version);
+        assert_eq!(first.key_version, Some(1));
+        assert_eq!(second.key_version, Some(1));
 
         let _ = fs::remove_file(log_path);
         let _ = fs::remove_file(segments_path.as_str());

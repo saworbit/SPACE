@@ -16,9 +16,6 @@ pub enum EncryptionError {
     #[error("Key derivation failed: {0}")]
     KeyDerivationFailed(String),
 
-    #[error("Key rotation in progress")]
-    KeyRotationInProgress,
-
     /// Encryption/Decryption errors
     #[error("Encryption failed: {0}")]
     EncryptionFailed(String),

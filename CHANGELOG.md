@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Corrected SECURITY.md's hardening summary, CONTRIBUTING.md, README.md, ARCHITECTURE.md and docs/guides/BUILD.md.
   - Issues: #103, #104, #105, #110.
 - Dependabot labels its PRs `dependencies`, a label the repo now has, and no longer labels every cargo bump `security` (#203). That label is now added by hand to PRs that fix an advisory.
+- `KeyManager` no longer has `rotate()`, `complete_rotation()` or `is_rotating()`, and `Keyring` no longer has `rotate_key()` (#98). The rotation only changed the key version in memory, so a restart sent new writes back to version 1, and nothing in `spacectl` or `serve-s3` called it. A new version also protected nothing: every version derives from the same master key, and dedup kept new writes on segments under the old version. New writes use version 1, and segments of any version stay readable. The encryption docs and SECURITY.md say so.
 
 ### Fixed
 
