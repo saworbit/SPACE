@@ -370,8 +370,14 @@ async fn unimplemented_operations_are_refused_not_misrun() {
         // A form upload, and ListBuckets options it doesn't read.
         ("POST", "/demo", "x"),
         ("GET", "/?bucket-region=us-east-1", ""),
-        // Operations with no route.
-        ("POST", "/demo/big.bin?uploads", ""),
+        // ListMultipartUploads, a POST to an object that isn't a multipart
+        // upload step, and operations with no route.
+        ("GET", "/demo?uploads", ""),
+        (
+            "POST",
+            "/demo/a.txt?select&select-type=2",
+            "<SelectObjectContentRequest/>",
+        ),
         ("PUT", "/", ""),
     ] {
         refused(method, uri, &[], body).await;

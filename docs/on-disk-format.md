@@ -204,6 +204,8 @@ The pairs are the name's metadata, in the order written. The S3 view keeps the `
 
 `UNBIND` (layout version 1) is the version 1 `BIND` without `capsule_id`.
 
+A `BIND` whose `capsule_id` is all zero points at no capsule, and holds only its metadata. The S3 view keeps an open multipart upload that way ([#201](https://github.com/saworbit/SPACE/issues/201)): in namespace `mpu:<upload id>`, name `""` holds the bucket (`:bucket`), the key (`:key`) and the headers the object gets, and each part is a capsule bound as `part:NNNNN`. Completing commits a capsule whose entries are the parts' segments, in order, so a capsule's segments needn't all be one size. Its digest is computed by reading the parts once.
+
 Namespaces and names are opaque strings to the core. A namespace can't be empty or contain NUL, because the index separates a namespace from its names with NUL; a reader refuses a record that breaks this. A name can be any string. The S3 view uses `ns = "s3:" + bucket` and `name = key`. Binding a name replaces any earlier binding and its metadata; unbinding an unbound name does nothing. Neither drops a capsule on its own; that takes a `DROP` in the same `BATCH`.
 
 ### 5.7 `BATCH`
@@ -264,7 +266,10 @@ The fingerprint names the key without revealing it, or any key derived from it: 
 | S3 DELETE | Nothing | `BATCH[UNBIND, DROP]` | The `BATCH` |
 | S3 DeleteObjects | Nothing | `BATCH[UNBIND, DROP, …]` for every key that's there | The `BATCH` |
 | S3 DeleteBucket | Nothing | `NAMESPACE` delete, in a `BATCH` after an `UNBIND` for each key whose capsule is gone | The record or `BATCH` |
-| Multipart complete (future) | Nothing | `BATCH[CAPSULE composed, BIND, DROP part…]` | The `BATCH` |
+| S3 CreateMultipartUpload | Nothing | `BATCH[NAMESPACE mpu:<id>, BIND "" to no capsule]` | The `BATCH` |
+| S3 UploadPart | New segments | `BATCH[CAPSULE, BIND part:NNNNN, DROP part replaced]` | The `BATCH` |
+| S3 CompleteMultipartUpload | Nothing | `BATCH[CAPSULE composed, BIND, DROP old, UNBIND and DROP each part…, UNBIND "", NAMESPACE delete]` | The `BATCH` |
+| S3 AbortMultipartUpload | Nothing | `BATCH[UNBIND and DROP each part…, UNBIND "", NAMESPACE delete]` | The `BATCH` |
 | GC | Nothing: a segment with no references is simply not live | — | — |
 | Compaction | New data log generation (§9) | — | Rename |
 

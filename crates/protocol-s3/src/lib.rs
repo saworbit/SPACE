@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use capsule_registry::modular_pipeline::{
     self, registry_pipeline_from_log, stage_from_reader, ReclaimReport, RegistryPipelineHandle,
-    StoreSecurity,
+    StagedWrite, StoreSecurity,
 };
 use capsule_registry::CapsuleRegistry;
 use common::format::JournalRecord;
@@ -14,11 +14,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::io::StreamReader;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub mod aws_chunked;
 pub mod checksum;
 pub mod handlers;
+mod multipart;
+pub use multipart::{Part, ABANDONED_UPLOAD_AGE, MAX_PART_NUMBER, MIN_PART_SIZE, UPLOAD_PREFIX};
 pub mod server;
 
 /// Raw keys read from the store per batch while building a listing.
@@ -73,6 +75,21 @@ pub enum S3Error {
     MetadataTooLarge,
     #[error("The specified key does not exist")]
     NoSuchKey(String),
+    /// A multipart upload id that names no open upload of the key (#201).
+    #[error(
+        "The specified multipart upload does not exist. The upload ID may be invalid, or the \
+         upload may have been aborted or completed."
+    )]
+    NoSuchUpload(String),
+    /// A CompleteMultipartUpload part that isn't in the upload with the
+    /// ETag given.
+    #[error("One or more of the specified parts could not be found: {0}")]
+    InvalidPart(String),
+    #[error("The list of parts was not in ascending order. Parts must be ordered by part number.")]
+    InvalidPartOrder,
+    /// A part other than the last is under [`MIN_PART_SIZE`].
+    #[error("Your proposed upload is smaller than the minimum allowed size: part {0} is under 5 MiB and isn't the last")]
+    EntityTooSmall(u32),
     #[error(
         "The specified bucket is not valid. A bucket name is 3 to 63 lowercase letters, \
          digits, dots and hyphens. It starts and ends with a letter or digit, has no two \
@@ -613,6 +630,41 @@ impl S3View {
         // Fail early when the conditions already fail, rather than store the
         // body first. They're checked again at the commit.
         conditions.check_write(self.live_capsule_created(&ns, key)?)?;
+        let staged = self.stage_body(data_stream, options).await?;
+        let capsule_id = staged.capsule_id();
+
+        // Dropping `staged` on an error below aborts the write.
+        let mut handle = self.pipeline.lock().await;
+        // DeleteBucket holds this lock, so a bucket that's here now is here
+        // when the batch commits.
+        self.head_bucket(bucket)?;
+        let mut with = Vec::with_capacity(2);
+        let current = self.live_capsule_created(&ns, key)?;
+        conditions.check_write(current)?;
+        let previous = current.map(|(id, _)| id);
+        with.push(JournalRecord::Bind {
+            ns,
+            name: key.to_string(),
+            capsule_id,
+            metadata: options.metadata.clone(),
+        });
+        with.extend(previous.map(JournalRecord::Drop));
+        for capsule in staged.commit(&mut handle, with).await? {
+            self.release(&mut handle, capsule).await;
+        }
+        Ok(capsule_id)
+    }
+
+    /// Store a PUT body as an open write, one segment at a time as it
+    /// arrives (#99), decoding `aws-chunked` framing (#178) and checking the
+    /// digests `options` gives (#196). A body that fails them stores
+    /// nothing: its segments are released before the error is returned.
+    /// The caller commits the write, or drops it to abort.
+    async fn stage_body<S, E>(&self, data_stream: S, options: &PutOptions) -> S3Result<StagedWrite>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send,
+        E: Into<anyhow::Error>,
+    {
         let algorithms = options.digests.iter().map(|d| d.algorithm).chain(
             options
                 .chunked
@@ -652,7 +704,6 @@ impl S3View {
                 return Err(bad.map_or_else(|| err.into(), S3Error::InvalidRequest));
             }
         };
-        let capsule_id = staged.capsule_id();
         // A body that doesn't have the digests its headers or its trailer
         // give stores nothing: its segments are released before the error
         // is returned.
@@ -676,27 +727,7 @@ impl S3View {
             staged.abort().await;
             return Err(S3Error::BadDigest(expected));
         }
-
-        // Dropping `staged` on an error below aborts the write.
-        let mut handle = self.pipeline.lock().await;
-        // DeleteBucket holds this lock, so a bucket that's here now is here
-        // when the batch commits.
-        self.head_bucket(bucket)?;
-        let mut with = Vec::with_capacity(2);
-        let current = self.live_capsule_created(&ns, key)?;
-        conditions.check_write(current)?;
-        let previous = current.map(|(id, _)| id);
-        with.push(JournalRecord::Bind {
-            ns,
-            name: key.to_string(),
-            capsule_id,
-            metadata: options.metadata.clone(),
-        });
-        with.extend(previous.map(JournalRecord::Drop));
-        for capsule in staged.commit(&mut handle, with).await? {
-            self.release(&mut handle, capsule).await;
-        }
-        Ok(capsule_id)
+        Ok(staged)
     }
 
     /// GET object - read capsule data
@@ -904,7 +935,15 @@ impl S3View {
     /// of it is reclaimable, or garbage-collect a file backend
     /// ([`modular_pipeline::reclaim`]). Segments a GET is still reading are
     /// kept.
+    ///
+    /// It first aborts multipart uploads started more than
+    /// [`ABANDONED_UPLOAD_AGE`] ago (#201), so their parts are reclaimed.
     pub async fn reclaim(&self) -> S3Result<ReclaimReport> {
+        match self.abort_uploads_older_than(ABANDONED_UPLOAD_AGE).await {
+            Ok(0) => {}
+            Ok(aborted) => info!(aborted, "aborted abandoned multipart uploads"),
+            Err(err) => warn!("failed to abort abandoned multipart uploads: {err}"),
+        }
         Ok(modular_pipeline::reclaim(&self.pipeline).await?)
     }
 
