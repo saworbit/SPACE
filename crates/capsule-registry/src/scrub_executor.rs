@@ -40,6 +40,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use common::scrub::CapsuleScrub;
 use common::scrub::{
     ScheduleStore, ScrubConfig, ScrubKind, ScrubReport, ScrubResult, ScrubSchedule, ScrubState,
 };
@@ -47,6 +48,7 @@ use common::traits::StorageBackend;
 use common::SegmentId;
 use encryption::policy::EncryptionMetadata;
 use encryption::{verify_mac, KeyManager};
+use futures::future::BoxFuture;
 use tracing::{debug, info, warn};
 
 #[cfg(test)]
@@ -64,7 +66,19 @@ pub struct ScrubExecutor<B: StorageBackend> {
     schedule: ScrubSchedule,
     /// Where the schedule is kept between runs, if anywhere.
     store: Option<Arc<dyn ScheduleStore>>,
+    /// Run after each deep cycle in the background ([`CapsulePass`]).
+    capsule_pass: Option<CapsulePass>,
 }
+
+/// A deep scrub's capsule pass (#140), given the segments the cycle
+/// scrubbed, the segments known to be damaged, and the byte rate to keep
+/// to. It reads the capsules that hold scrubbed segments, skipping those
+/// that hold damaged ones, whose damage is already reported.
+pub type CapsulePass = Arc<
+    dyn Fn(Vec<SegmentId>, Vec<SegmentId>, Option<u64>) -> BoxFuture<'static, CapsuleScrub>
+        + Send
+        + Sync,
+>;
 
 impl<B: StorageBackend> ScrubExecutor<B> {
     /// Create an executor without encryption key access.
@@ -77,6 +91,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             key_manager: None,
             schedule: ScrubSchedule::new(),
             store: None,
+            capsule_pass: None,
         }
     }
 
@@ -88,7 +103,15 @@ impl<B: StorageBackend> ScrubExecutor<B> {
             key_manager: Some(key_manager),
             schedule: ScrubSchedule::new(),
             store: None,
+            capsule_pass: None,
         }
+    }
+
+    /// Run `pass` after each deep cycle of the background task
+    /// ([`ScrubExecutor::spawn`]).
+    pub fn with_capsule_pass(mut self, pass: Option<CapsulePass>) -> Self {
+        self.capsule_pass = pass;
+        self
     }
 
     /// Keep the schedule in `store`: load it now, and save each cycle's
@@ -183,6 +206,7 @@ impl<B: StorageBackend> ScrubExecutor<B> {
                     self.schedule.record(seg_id, kind);
                     self.schedule.note(seg_id, kind, &result);
                     report.segments_recorded += 1;
+                    report.segments_scrubbed.push(seg_id);
                 }
                 // ReadError is not recorded: I/O may be transient, so the
                 // segment remains due and will be retried next cycle.
@@ -631,14 +655,28 @@ impl<B: StorageBackend + Clone + Send + 'static> ScrubExecutor<B> {
                 };
 
                 let _ = state_tx.send(ScrubState::Running(kind));
-                let report = executor.scrub_cycle(&config, kind).await;
+                let mut report = executor.scrub_cycle(&config, kind).await;
+                if let (ScrubKind::Deep, Some(pass)) = (kind, &executor.capsule_pass) {
+                    let damaged = report
+                        .known_damage
+                        .iter()
+                        .filter_map(ScrubResult::segment)
+                        .collect();
+                    let found = pass(
+                        report.segments_scrubbed.clone(),
+                        damaged,
+                        config.max_bytes_per_sec,
+                    )
+                    .await;
+                    report.add_capsules(found);
+                }
                 // Only definitive integrity failures (not transient ReadErrors)
                 // so the field is suitable for alerting thresholds. Damage
                 // found in earlier cycles, or before a restart, counts until
                 // a scrub passes the segment (#195).
                 let _ = state_tx.send(ScrubState::Completed {
                     kind,
-                    errors: report.known_damage.len(),
+                    errors: report.known_damage.len() + report.capsule_failures,
                 });
 
                 let earlier = report

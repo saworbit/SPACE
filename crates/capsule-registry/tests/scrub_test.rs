@@ -313,3 +313,129 @@ async fn damage_found_before_a_restart_is_reported_after_it() {
         .count();
     assert_eq!(damaged, 2);
 }
+
+/// A second capsule over `of`'s segments, listed in reverse, with `of`'s
+/// digest: each segment is sound, but they don't make up its bytes.
+fn reversed(registry: &CapsuleRegistry, of: CapsuleId) -> CapsuleId {
+    use common::format::{CapsuleManifest, JournalRecord, ManifestEntry};
+    const SEGMENT: u64 = 4 << 20;
+    let capsule = registry.lookup(of).unwrap();
+    assert!(capsule.segments.len() > 1);
+    let mut left = capsule.size;
+    let mut entries: Vec<ManifestEntry> = capsule
+        .segments
+        .iter()
+        .map(|segment| {
+            let len = left.min(SEGMENT);
+            left -= len;
+            ManifestEntry {
+                segment_id: *segment,
+                plain_len: len as u32,
+                content_hash: [0; 32],
+            }
+        })
+        .collect();
+    entries.reverse();
+    let id = CapsuleId::new();
+    let manifest = CapsuleManifest {
+        capsule_id: id,
+        created_at: 0,
+        size: capsule.size,
+        digest: capsule.digest.unwrap(),
+        dedupe: false,
+        requires_encryption: capsule.policy.encryption.is_enabled(),
+        deduped_bytes: 0,
+        policy: capsule.policy.clone(),
+        entries,
+    };
+    registry
+        .commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+        .unwrap();
+    id
+}
+
+/// A deep scrub reads each capsule whole and checks it against its digest,
+/// so it finds a capsule whose segments are each sound but listed in the
+/// wrong order. A light scrub doesn't read capsules (#140).
+#[tokio::test]
+async fn a_deep_scrub_finds_a_capsule_whose_segments_are_out_of_order() {
+    use capsule_registry::modular_pipeline::{scrub_all, spawn_scrub};
+    let dir = scratch("capsule_order");
+    let (registry, _log, mut handle) = open(&dir, true);
+    let data = patterned((9 << 20) + 7, 4);
+    let good = handle
+        .write_capsule(&data, &handle.default_policy())
+        .await
+        .unwrap();
+    let bad = reversed(&registry, good);
+    let pipeline = Arc::new(tokio::sync::Mutex::new(handle));
+
+    // In the background, after the first deep cycle, with the capsules
+    // holding the segments it scrubbed: on a new schedule, all of them.
+    let config = ScrubConfig {
+        light_interval: Duration::from_secs(3600),
+        deep_interval: Duration::from_secs(3600),
+        inter_segment_delay: Duration::ZERO,
+        ..ScrubConfig::default()
+    };
+    let (task, mut state) = spawn_scrub(&pipeline, config).await;
+    let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            state.changed().await.unwrap();
+            if let ScrubState::Completed { kind, errors } = *state.borrow() {
+                return (kind, errors);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    let _ = task.await;
+    assert_eq!(outcome, (ScrubKind::Deep, 1));
+
+    let report = scrub_all(&pipeline, ScrubKind::Deep).await;
+    assert_eq!(report.mac_failures + report.content_failures, 0);
+    assert_eq!(report.capsules_checked, 2);
+    assert_eq!(report.capsule_failures, 1);
+    assert!(
+        matches!(&report.errors[..], [ScrubResult::CapsuleCorrupted { capsule, reason }]
+            if *capsule == bad && reason.contains("digest")),
+        "{:?}",
+        report.errors
+    );
+    let light = scrub_all(&pipeline, ScrubKind::Light).await;
+    assert_eq!((light.capsules_checked, light.capsule_failures), (0, 0));
+
+    // Every segment is now recorded, so a restarted background scrub's
+    // first deep cycle has none due, and reads no capsule again.
+    let config = ScrubConfig {
+        light_interval: Duration::from_secs(3600),
+        deep_interval: Duration::from_secs(3600),
+        inter_segment_delay: Duration::ZERO,
+        ..ScrubConfig::default()
+    };
+    let (task, mut state) = spawn_scrub(&pipeline, config).await;
+    let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            state.changed().await.unwrap();
+            if let ScrubState::Completed { kind, errors } = *state.borrow() {
+                return (kind, errors);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    let _ = task.await;
+    assert_eq!(outcome, (ScrubKind::Deep, 0));
+    drop((registry, pipeline));
+
+    // Without the key, the encrypted capsules are skipped and counted.
+    let (_registry, _log, handle) = open(&dir, false);
+    let pipeline = Arc::new(tokio::sync::Mutex::new(handle));
+    let report = scrub_all(&pipeline, ScrubKind::Deep).await;
+    assert_eq!(
+        (report.capsules_checked, report.capsules_without_key),
+        (0, 2)
+    );
+}

@@ -527,7 +527,11 @@ Capsules are durable only if their bytes still match their hashes and MACs. Scru
 
 Light scrub needs no key. In the data log and under `SPACE_STORAGE_ROOT` it catches media damage in any segment, encrypted or not ([#135](https://github.com/saworbit/SPACE/issues/135)). A segment file whose header is damaged has no readable metadata, and both scrubs report it as corrupted rather than unreadable. Deep scrub also catches tampering, which the unkeyed record checksums can't, but it needs `SPACE_MASTER_KEY` for encrypted segments and skips them without it.
 
-The executor tracks when each segment was last checked, and a cycle scrubs only segments that are due. `serve-s3` and `spacectl scrub` keep those times in `space.db`, in the `scrub_schedule` tree, so a restart picks up where the last run left off; losing them costs one full scrub. Damage a scrub finds is kept there too, and every cycle's report, and its `Completed { errors }`, counts it until a scrub at least as thorough passes the segment: a light pass doesn't clear what a deep scrub found ([#195](https://github.com/saworbit/SPACE/issues/195)). It forgets segments that have been deleted, and their damage. A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
+The executor tracks when each segment was last checked, and a cycle scrubs only segments that are due. `serve-s3` and `spacectl scrub` keep those times in `space.db`, in the `scrub_schedule` tree, so a restart picks up where the last run left off; losing them costs one full scrub. Damage a scrub finds is kept there too, and every cycle's report, and its `Completed { errors }`, counts it until a scrub at least as thorough passes the segment: a light pass doesn't clear what a deep scrub found ([#195](https://github.com/saworbit/SPACE/issues/195)). It forgets segments that have been deleted, and their damage.
+
+After its segments, a deep scrub checks capsules ([#140](https://github.com/saworbit/SPACE/issues/140)). It reads each capsule whole through the same walk as every read, and checks the bytes against its digest. That catches a capsule whose segments are each sound but don't make up its bytes, such as a manifest that lists them in the wrong order. A failure is `ScrubResult::CapsuleCorrupted`, naming the capsule. In the background, a deep cycle checks the capsules that hold a segment it just scrubbed, so over a deep interval every capsule is checked, and a restart doesn't read the whole store again. `spacectl scrub --deep` checks every capsule. Skipped and counted: capsules without a digest, and encrypted ones without `SPACE_MASTER_KEY`. A capsule holding a segment already found damaged is skipped too, since that damage is reported with the capsule that holds it. The pipeline lock is held only to open each capsule's read, and the reads keep to `--scrub-rate`.
+
+A cycle takes at most `max_segments_per_cycle` segments (1024 by default), and the rest follow a second later rather than an interval later. A segment deleted while a cycle runs isn't reported.
 
 ### Running it
 
@@ -876,7 +880,7 @@ never on capsule.policy
 | **Integrity tag** | First 16 bytes of `BLAKE3_keyed(mac_key, ciphertext ‖ metadata)`. The MAC. |
 | **Tweak** | 16-byte XTS tweak: the first 16 bytes of a BLAKE3 hash of the segment's compressed bytes. |
 | **Light scrub** | Background verification without a key: each record's checksum in the data log, stored byte counts elsewhere. |
-| **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted). |
+| **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted), then of each capsule's digest. |
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |
 | **Registry** | The capsule journal and its sled index: capsules, names, content-hash index, reference counts, segment ID counter. |

@@ -374,6 +374,9 @@ fn describe_scrub_error(
         }
         ScrubResult::MacMismatch { .. } => "MAC check failed".to_string(),
         ScrubResult::ReadError { error, .. } => format!("couldn't be read: {error}"),
+        ScrubResult::CapsuleCorrupted { capsule, reason } => {
+            format!("capsule {}: {reason}", capsule.as_uuid())
+        }
         other => format!("{other:?}"),
     };
     let Some(segment) = result.segment() else {
@@ -666,13 +669,33 @@ async fn run(cli: Cli) -> Result<()> {
             } else {
                 (ScrubKind::Light, "Light")
             };
-            let report = store.scrub_all(kind).await;
+            let store = std::sync::Arc::new(tokio::sync::Mutex::new(store));
+            let report = capsule_registry::modular_pipeline::scrub_all(&store, kind).await;
             say!(
                 "{name} scrub: checked {} ({}) in {:.1?}",
                 plural(report.segments_checked as u64, "segment", "segments"),
                 plural(report.bytes_checked, "byte", "bytes"),
                 report.duration
             );
+            if deep {
+                say!(
+                    "Checked {} ({}) against their digests",
+                    plural(report.capsules_checked as u64, "capsule", "capsules"),
+                    plural(report.capsule_bytes_checked, "byte", "bytes")
+                );
+            }
+            if report.capsules_without_key > 0 {
+                say!(
+                    "Skipped {}: set SPACE_MASTER_KEY to read encrypted capsules",
+                    plural(report.capsules_without_key as u64, "capsule", "capsules")
+                );
+            }
+            if report.capsules_without_digest > 0 {
+                say!(
+                    "Skipped {} that record no digest",
+                    plural(report.capsules_without_digest as u64, "capsule", "capsules")
+                );
+            }
             if report.segments_skipped > 0 {
                 say!(
                     "Skipped {}: set SPACE_MASTER_KEY to check encrypted segments' MACs",
@@ -698,11 +721,18 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 let damaged =
                     report.mac_failures + report.content_failures + report.metadata_failures;
-                if damaged > 0 {
-                    bail!(
-                        "{} failed integrity checks",
-                        plural(damaged as u64, "segment", "segments")
-                    );
+                let failed = match (damaged, report.capsule_failures) {
+                    (0, 0) => None,
+                    (s, 0) => Some(plural(s as u64, "segment", "segments")),
+                    (0, c) => Some(plural(c as u64, "capsule", "capsules")),
+                    (s, c) => Some(format!(
+                        "{} and {}",
+                        plural(s as u64, "segment", "segments"),
+                        plural(c as u64, "capsule", "capsules")
+                    )),
+                };
+                if let Some(failed) = failed {
+                    bail!("{failed} failed integrity checks");
                 }
                 bail!(
                     "{} couldn't be read",

@@ -928,3 +928,75 @@ fn read_fails_when_a_capsule_misses_its_digest() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `spacectl scrub --deep` checks every capsule against its digest and
+/// names one whose segments, each sound, are listed in the wrong order.
+/// A light scrub doesn't read capsules (#140).
+#[test]
+fn deep_scrub_names_a_capsule_whose_segments_are_out_of_order() {
+    use capsule_registry::CapsuleRegistry;
+    use common::format::{CapsuleManifest, JournalRecord, ManifestEntry};
+    use common::CapsuleId;
+
+    let dir = scratch_dir("scrub_order");
+    let data = noise((9 << 20) + 11, 6);
+    std::fs::write(dir.join("big.bin"), &data).unwrap();
+    let good = created_id(&spacectl(&dir, &["create", "-f", "big.bin"]));
+    let bad = {
+        let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
+        let capsule = registry
+            .lookup(CapsuleId::from_uuid(good.parse().unwrap()))
+            .unwrap();
+        let mut left = capsule.size;
+        let mut entries: Vec<ManifestEntry> = capsule
+            .segments
+            .iter()
+            .map(|segment| {
+                let len = left.min(4 << 20);
+                left -= len;
+                ManifestEntry {
+                    segment_id: *segment,
+                    plain_len: len as u32,
+                    content_hash: [0; 32],
+                }
+            })
+            .collect();
+        entries.reverse();
+        let id = CapsuleId::new();
+        let manifest = CapsuleManifest {
+            capsule_id: id,
+            created_at: 0,
+            size: capsule.size,
+            digest: capsule.digest.unwrap(),
+            dedupe: false,
+            requires_encryption: false,
+            deduped_bytes: 0,
+            policy: capsule.policy.clone(),
+            entries,
+        };
+        registry
+            .commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+            .unwrap();
+        id.as_uuid().to_string()
+    };
+
+    let out = spacectl(&dir, &["scrub", "--deep"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("Checked 2 capsules ("), "{stdout}");
+    assert!(stdout.contains(&format!("capsule {bad}:")), "{stdout}");
+    assert!(
+        stderr.contains("1 capsule failed integrity checks"),
+        "{stderr}"
+    );
+
+    let out = spacectl(&dir, &["scrub"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

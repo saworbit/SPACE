@@ -33,7 +33,9 @@ pub mod modular_pipeline {
 
     use anyhow::Result;
     use common::format::{JournalRecord, StoreKey};
-    use common::scrub::{ScrubConfig, ScrubKind, ScrubReport, ScrubState};
+    use common::scrub::{
+        CapsuleScrub, ScrubConfig, ScrubKind, ScrubReport, ScrubResult, ScrubState,
+    };
     use common::traits::StorageBackend;
     use common::{traits::DataStream, Capsule, CapsuleId, EncryptionPolicy, Policy, SegmentId};
     use encryption::KeyManager;
@@ -49,7 +51,7 @@ pub mod modular_pipeline {
     use tokio::task::JoinHandle;
     use tracing::{info, warn};
 
-    use crate::scrub_executor::ScrubExecutor;
+    use crate::scrub_executor::{CapsulePass, ScrubExecutor};
 
     pub fn nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
         path: P,
@@ -305,17 +307,34 @@ pub mod modular_pipeline {
         /// schedule in `space.db`, so a restart scrubs only segments that are
         /// due (#134). It reads segments straight from the backend, without
         /// the pipeline lock.
+        /// It has no capsule pass; [`spawn_scrub`] adds one.
         pub fn spawn_scrub(
             &self,
             config: ScrubConfig,
         ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
+            self.spawn_scrub_with(config, None)
+        }
+
+        fn spawn_scrub_with(
+            &self,
+            config: ScrubConfig,
+            pass: Option<CapsulePass>,
+        ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
             let key = self.key_manager();
             let schedule = self.registry().scrub_schedule();
             match self {
-                Self::Encrypted(p) => executor(p.storage().clone(), key, schedule).spawn(config),
-                Self::Plain(p) => executor(p.storage().clone(), key, schedule).spawn(config),
-                Self::FsEncrypted(p) => executor(p.storage().clone(), key, schedule).spawn(config),
-                Self::FsPlain(p) => executor(p.storage().clone(), key, schedule).spawn(config),
+                Self::Encrypted(p) => executor(p.storage().clone(), key, schedule)
+                    .with_capsule_pass(pass)
+                    .spawn(config),
+                Self::Plain(p) => executor(p.storage().clone(), key, schedule)
+                    .with_capsule_pass(pass)
+                    .spawn(config),
+                Self::FsEncrypted(p) => executor(p.storage().clone(), key, schedule)
+                    .with_capsule_pass(pass)
+                    .spawn(config),
+                Self::FsPlain(p) => executor(p.storage().clone(), key, schedule)
+                    .with_capsule_pass(pass)
+                    .spawn(config),
             }
         }
 
@@ -357,6 +376,134 @@ pub mod modular_pipeline {
                 }
             }
         }
+    }
+
+    /// Scrub the store in the background on `config`'s schedule, as
+    /// [`RegistryPipelineHandle::spawn_scrub`] does, with a capsule pass
+    /// after each deep cycle (#140). The pass checks the capsules that hold
+    /// a segment the cycle scrubbed, so over a deep interval every capsule
+    /// is checked, and a restart doesn't read the whole store again.
+    pub async fn spawn_scrub(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+        config: ScrubConfig,
+    ) -> (JoinHandle<()>, watch::Receiver<ScrubState>) {
+        let shared = Arc::clone(pipeline);
+        let pass: CapsulePass = Arc::new(move |scrubbed, damaged, rate| {
+            let pipeline = Arc::clone(&shared);
+            Box::pin(
+                async move { scrub_capsules(&pipeline, Some(&scrubbed), &damaged, rate).await },
+            )
+        });
+        pipeline.lock().await.spawn_scrub_with(config, Some(pass))
+    }
+
+    /// Scrub every segment once, as [`RegistryPipelineHandle::scrub_all`]
+    /// does, and for a deep scrub every capsule too (#140), as
+    /// `spacectl scrub --deep` does.
+    pub async fn scrub_all(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+        kind: ScrubKind,
+    ) -> ScrubReport {
+        let mut report = pipeline.lock().await.scrub_all(kind).await;
+        if kind == ScrubKind::Deep {
+            let damaged: Vec<SegmentId> = report
+                .known_damage
+                .iter()
+                .filter_map(ScrubResult::segment)
+                .collect();
+            report.add_capsules(scrub_capsules(pipeline, None, &damaged, None).await);
+        }
+        report
+    }
+
+    /// Read capsules whole and check each against its digest (#140): the
+    /// ones holding a segment in `scrubbed`, or every one for `None`. Each
+    /// segment can be sound while the capsule isn't, such as a manifest
+    /// that lists its segments in the wrong order. Skipped and counted:
+    /// capsules without a digest, and encrypted ones without the key.
+    /// Capsules holding a `damaged` segment are skipped too, since the
+    /// segment's damage is already reported.
+    ///
+    /// The pipeline lock is held only to open each capsule's stream, so
+    /// writes and reads go on meanwhile. A capsule deleted while it's read
+    /// isn't damaged.
+    pub async fn scrub_capsules(
+        pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
+        scrubbed: Option<&[SegmentId]>,
+        damaged: &[SegmentId],
+        max_bytes_per_sec: Option<u64>,
+    ) -> CapsuleScrub {
+        use futures::StreamExt;
+        use std::collections::HashSet;
+
+        let mut found = CapsuleScrub::default();
+        let (capsules, has_key) = {
+            let handle = pipeline.lock().await;
+            (handle.registry().capsules(), handle.key_manager().is_some())
+        };
+        let scrubbed: Option<HashSet<SegmentId>> = scrubbed.map(|s| s.iter().copied().collect());
+        let damaged: HashSet<SegmentId> = damaged.iter().copied().collect();
+        let started = std::time::Instant::now();
+        for capsule in capsules {
+            if scrubbed
+                .as_ref()
+                .is_some_and(|s| !capsule.segments.iter().any(|seg| s.contains(seg)))
+                || capsule.segments.iter().any(|seg| damaged.contains(seg))
+            {
+                continue;
+            }
+            if capsule.digest.is_none() {
+                found.without_digest += 1;
+                continue;
+            }
+            if capsule.policy.encryption.is_enabled() && !has_key {
+                found.without_key += 1;
+                continue;
+            }
+            let opened = pipeline.lock().await.read_capsule_stream(capsule.id).await;
+            let failed = match opened {
+                Ok(mut stream) => {
+                    let mut failed = None;
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(bytes) => found.bytes += bytes.len() as u64,
+                            Err(err) => {
+                                failed = Some(err);
+                                break;
+                            }
+                        }
+                    }
+                    failed
+                }
+                Err(err) => Some(err),
+            };
+            if let Some(err) = failed {
+                let gone = matches!(
+                    pipeline.lock().await.registry().get_capsule(capsule.id),
+                    Ok(None)
+                );
+                if gone {
+                    continue;
+                }
+                warn!(
+                    capsule = %capsule.id.as_uuid(),
+                    "scrub: a capsule doesn't read back as its digest: {err:#}"
+                );
+                found.errors.push(ScrubResult::CapsuleCorrupted {
+                    capsule: capsule.id,
+                    reason: format!("{err:#}"),
+                });
+            }
+            found.checked += 1;
+            if let Some(rate) = max_bytes_per_sec.filter(|r| *r > 0) {
+                let target = Duration::from_secs_f64(found.bytes as f64 / rate as f64);
+                let elapsed = started.elapsed();
+                if target > elapsed {
+                    tokio::time::sleep(target - elapsed).await;
+                }
+            }
+        }
+        found
     }
 
     fn executor<B: StorageBackend>(
