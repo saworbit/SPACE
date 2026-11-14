@@ -1042,3 +1042,116 @@ fn deep_scrub_names_a_capsule_whose_segments_are_out_of_order() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn spacectl_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_spacectl"))
+        .args(args)
+        .current_dir(dir)
+        .env_remove("SPACE_MASTER_KEY")
+        .env_remove("SPACE_ALLOW_PLAINTEXT")
+        .env_remove("SPACE_STORAGE_ROOT")
+        .env_remove("SPACE_STORE_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// spacectl in scripts (#169): `create` reads a positional FILE, or stdin
+/// for `-` or a pipe, `-q` prints only the ID, `read -o` writes a file,
+/// `list --json` prints one object per capsule, the table is oldest first
+/// with a Created column, and `completions` prints a script.
+#[test]
+fn spacectl_works_in_scripts() {
+    let dir = scratch_dir("scripts");
+    std::fs::write(dir.join("a.txt"), b"from a file").unwrap();
+
+    let quiet = |out: Output| {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let id = stdout.trim_end().to_string();
+        assert_eq!(stdout, format!("{id}\n"), "-q printed more than the ID");
+        uuid::Uuid::parse_str(&id).unwrap();
+        id
+    };
+    let file = quiet(spacectl(&dir, &["create", "-q", "a.txt"]));
+    let dash = quiet(spacectl_stdin(&dir, &["create", "-q", "-"], b"from a dash"));
+    let piped = quiet(spacectl_stdin(&dir, &["create", "--quiet"], b"from a pipe"));
+    for (id, expected) in [
+        (&file, &b"from a file"[..]),
+        (&dash, b"from a dash"),
+        (&piped, b"from a pipe"),
+    ] {
+        assert_eq!(spacectl(&dir, &["read", id]).stdout, expected);
+    }
+    // A FILE and -f together are a usage error.
+    assert!(!spacectl(&dir, &["create", "a.txt", "-f", "a.txt"])
+        .status
+        .success());
+
+    // read -o writes the file and nothing to stdout.
+    let out = spacectl(&dir, &["read", &dash, "-o", "out.bin"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
+    assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"from a dash");
+
+    // list --json: one object per line, oldest first.
+    let out = spacectl(&dir, &["list", "--json"]);
+    assert!(out.status.success());
+    let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3);
+    let mut ids: Vec<&str> = lines.iter().map(|l| l["id"].as_str().unwrap()).collect();
+    ids.sort();
+    let mut expected = vec![file.as_str(), dash.as_str(), piped.as_str()];
+    expected.sort();
+    assert_eq!(ids, expected);
+    for line in &lines {
+        assert_eq!(line["segments"], 1, "{line}");
+        assert_eq!(line["encrypted"], false, "{line}");
+        assert_eq!(line["names"], serde_json::json!([]), "{line}");
+        assert!(line["size"].as_u64().unwrap() > 0, "{line}");
+        assert!(
+            line["created_at"].as_u64().unwrap() > 1_700_000_000,
+            "{line}"
+        );
+    }
+    let created: Vec<u64> = lines
+        .iter()
+        .map(|l| l["created_at"].as_u64().unwrap())
+        .collect();
+    assert!(created.windows(2).all(|w| w[0] <= w[1]), "{created:?}");
+
+    // The table has a Created column, and the same order.
+    let out = spacectl(&dir, &["list"]);
+    let table = String::from_utf8(out.stdout).unwrap();
+    let mut rows = table.lines();
+    let header = rows.next().unwrap();
+    for column in ["Capsule ID", "Created", "Size (bytes)", "Segments"] {
+        assert!(header.contains(column), "{table}");
+    }
+    let listed: Vec<&str> = rows.map(|row| &row[..36]).collect();
+    let in_order: Vec<&str> = lines.iter().map(|l| l["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, in_order, "{table}");
+
+    let out = spacectl(&dir, &["completions", "bash"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("spacectl"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

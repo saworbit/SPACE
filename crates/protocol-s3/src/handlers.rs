@@ -1204,8 +1204,8 @@ fn decode_token(token: &str) -> Option<String> {
 }
 
 /// Seconds since the Unix epoch as an ISO 8601 UTC time, the format S3
-/// listings use for `LastModified`.
-fn iso8601(secs: u64) -> String {
+/// listings use for `LastModified`. `spacectl list` uses it too.
+pub fn iso8601(secs: u64) -> String {
     // Civil date from days since the epoch (Howard Hinnant's algorithm).
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
