@@ -215,34 +215,15 @@ impl KeyManager {
         Self::from_env().map(Some)
     }
 
-    /// Create from environment variable
-    ///
-    /// Reads master key from SPACE_MASTER_KEY env var (hex-encoded)
+    /// Create from the `SPACE_MASTER_KEY` environment variable, parsed as
+    /// [`EnvKeyProvider`](crate::EnvKeyProvider) parses it
+    /// ([`crate::parse_master_key`]).
     ///
     /// # Errors
-    /// Returns error if env var missing or invalid
+    /// Returns error if the variable is missing or invalid
     pub fn from_env() -> Result<Self> {
-        let hex_key = std::env::var("SPACE_MASTER_KEY").map_err(|_| {
-            EncryptionError::InvalidConfiguration(
-                "SPACE_MASTER_KEY environment variable not set".to_string(),
-            )
-        })?;
-
-        let bytes = hex::decode(&hex_key).map_err(|e| {
-            EncryptionError::InvalidConfiguration(format!("Invalid hex in SPACE_MASTER_KEY: {}", e))
-        })?;
-
-        if bytes.len() != MASTER_KEY_SIZE {
-            return Err(EncryptionError::InvalidKeyLength {
-                expected: MASTER_KEY_SIZE,
-                actual: bytes.len(),
-            });
-        }
-
-        let mut master_key = [0u8; MASTER_KEY_SIZE];
-        master_key.copy_from_slice(&bytes);
-
-        Ok(Self::new(master_key))
+        let key = crate::key_provider::master_key_from_env("SPACE_MASTER_KEY")?;
+        Ok(Self::new(*key))
     }
 
     /// Create a key manager from an external key provider (KMS/HSM/Vault).
@@ -677,10 +658,12 @@ mod tests {
             std::env::remove_var("SPACE_MASTER_KEY");
         }
 
-        assert!(matches!(
-            result.unwrap_err(),
-            EncryptionError::InvalidKeyLength { .. }
-        ));
+        match result.unwrap_err() {
+            EncryptionError::InvalidConfiguration(why) => {
+                assert!(why.contains("it has 32 of them"), "{why}")
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
     }
 
     #[derive(Clone, Copy)]

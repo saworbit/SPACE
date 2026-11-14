@@ -36,7 +36,7 @@ pub enum EncryptionPolicy {
 
 The master key is 32 bytes. Ways to load it:
 
-- `KeyManager::from_env()` reads `SPACE_MASTER_KEY`, which must be exactly 64 hex characters.
+- `KeyManager::from_env()` reads `SPACE_MASTER_KEY`, which must be 64 hex characters, as `openssl rand -hex 32` prints. A leading `0x` and whitespace around them, such as a trailing newline, are allowed. `EnvKeyProvider` reads a variable the same way, through `parse_master_key`. A key file for `FileKeyProvider` may also hold the 32 raw bytes.
 - `KeyManager::new([u8; 32])`.
 - `KeyManager::from_provider(&dyn KeyProvider).await`.
 - `KeyManager::from_tpm(&impl TpmProvider)`.
