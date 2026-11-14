@@ -41,9 +41,10 @@ pub mod modular_pipeline {
     use encryption::KeyManager;
     use nvram_sim::NvramLog;
     pub use pipeline::{
-        pipeline_with_nvram, pipeline_with_nvram_xts, CapsuleWrite, DefaultPipeline,
+        pipeline_with_nvram, pipeline_with_nvram_xts, CapsuleWrite, ChunkPreparer, DefaultPipeline,
         DefaultPolicyEvaluator, InMemoryPipeline, KeyManagerKeyring, NoopEncryptor, NullKeyring,
-        NvramPipeline, NvramPipelineWithEncryption, Pipeline, PipelineBuilder, XtsEncryptor,
+        NvramPipeline, NvramPipelineWithEncryption, Pipeline, PipelineBuilder, PreparedChunk,
+        XtsEncryptor,
     };
     pub use storage::{AutoFsBackend, InMemoryBackend, NvramBackend};
     use tokio::io::{AsyncRead, AsyncReadExt};
@@ -99,6 +100,33 @@ pub mod modular_pipeline {
         NullKeyring,
         crate::CapsuleRegistry,
     >;
+
+    /// The per-chunk work of a registry pipeline's writes: compression, the
+    /// dedup hash and encryption. It needs no lock, so [`stage_from_reader`]
+    /// runs it on a blocking thread and locks the pipeline only to place
+    /// each chunk (#198).
+    #[derive(Clone)]
+    pub enum Preparer {
+        Encrypted(
+            ChunkPreparer<compression::Lz4ZstdCompressor, XtsEncryptor, DefaultPolicyEvaluator>,
+        ),
+        Plain(ChunkPreparer<compression::Lz4ZstdCompressor, NoopEncryptor, DefaultPolicyEvaluator>),
+    }
+
+    impl Preparer {
+        /// [`ChunkPreparer::prepare`].
+        pub fn prepare(
+            &self,
+            write: &mut CapsuleWrite,
+            chunk: &[u8],
+            segment: Option<SegmentId>,
+        ) -> Result<Option<PreparedChunk>> {
+            match self {
+                Self::Encrypted(p) => p.prepare(write, chunk, segment),
+                Self::Plain(p) => p.prepare(write, chunk, segment),
+            }
+        }
+    }
 
     pub enum RegistryPipelineHandle {
         Encrypted(RegistryEncryptedPipeline),
@@ -162,6 +190,30 @@ pub mod modular_pipeline {
                 Self::Plain(p) => p.begin_composed_write(policy, segments, digest).await,
                 Self::FsEncrypted(p) => p.begin_composed_write(policy, segments, digest).await,
                 Self::FsPlain(p) => p.begin_composed_write(policy, segments, digest).await,
+            }
+        }
+
+        /// The per-chunk work of this pipeline's writes ([`Preparer`]).
+        pub fn preparer(&self) -> Preparer {
+            match self {
+                Self::Encrypted(p) => Preparer::Encrypted(p.preparer()),
+                Self::FsEncrypted(p) => Preparer::Encrypted(p.preparer()),
+                Self::Plain(p) => Preparer::Plain(p.preparer()),
+                Self::FsPlain(p) => Preparer::Plain(p.preparer()),
+            }
+        }
+
+        /// Store a chunk a [`Preparer`] prepared ([`Pipeline::place_chunk`]).
+        pub async fn place_chunk(
+            &mut self,
+            write: &mut CapsuleWrite,
+            prepared: PreparedChunk,
+        ) -> Result<()> {
+            match self {
+                Self::Encrypted(p) => p.place_chunk(write, prepared).await,
+                Self::Plain(p) => p.place_chunk(write, prepared).await,
+                Self::FsEncrypted(p) => p.place_chunk(write, prepared).await,
+                Self::FsPlain(p) => p.place_chunk(write, prepared).await,
             }
         }
 
@@ -587,7 +639,9 @@ pub mod modular_pipeline {
 
     /// Write a capsule from `reader` one segment at a time, so memory stays
     /// near one segment however long the input is (#99). The pipeline is
-    /// locked only while a segment is stored, never while the reader waits.
+    /// locked only while a segment's hash is looked up and the segment
+    /// stored, never while the reader waits or a chunk is compressed or
+    /// encrypted ([`stage_from_reader`], #198).
     /// If this future is dropped part way, the write is aborted in the
     /// background. Returns the capsule and its size.
     pub async fn write_from_reader<Rd>(
@@ -608,6 +662,11 @@ pub mod modular_pipeline {
     /// Store everything `reader` yields as an open write, as
     /// [`write_from_reader`] does, but leave committing it to the caller:
     /// see [`StagedWrite::commit`].
+    ///
+    /// Each chunk is compressed, hashed and encrypted on a blocking thread,
+    /// for a segment id reserved for it, with the pipeline unlocked. The
+    /// lock is taken only to look the hash up and store the segment, so
+    /// concurrent writes don't queue behind each other's CPU work (#198).
     pub async fn stage_from_reader<Rd>(
         pipeline: &Arc<TokioMutex<RegistryPipelineHandle>>,
         reader: Rd,
@@ -616,7 +675,11 @@ pub mod modular_pipeline {
     where
         Rd: AsyncRead + Send,
     {
-        let write = pipeline.lock().await.begin_write(policy)?;
+        let (write, preparer, registry) = {
+            let mut handle = pipeline.lock().await;
+            let write = handle.begin_write(policy)?;
+            (write, handle.preparer(), handle.registry().clone())
+        };
         let chunk_size = write.chunk_size();
         let mut open = OpenWrite {
             pipeline: Arc::clone(pipeline),
@@ -640,11 +703,39 @@ pub mod modular_pipeline {
                 break;
             }
             size += chunk.len() as u64;
-            let stored = pipeline
-                .lock()
-                .await
-                .write_chunk(open.write_mut(), &chunk)
-                .await;
+            // Reserved without the pipeline lock. It goes unused if the
+            // chunk is a dedup hit.
+            let segment = match common::traits::CapsuleCatalog::allocate_segment(&registry) {
+                Ok(segment) => segment,
+                Err(err) => {
+                    open.abort().await;
+                    return Err(err);
+                }
+            };
+            let mut write = open.take();
+            let job = preparer.clone();
+            let joined = tokio::task::spawn_blocking(move || {
+                let prepared = job.prepare(&mut write, &chunk, Some(segment));
+                (write, chunk, prepared)
+            })
+            .await;
+            // A panic preparing the chunk loses the write; its segments go
+            // when the next restart recounts references.
+            let (write, returned, prepared) = joined
+                .map_err(|err| anyhow::anyhow!("preparing a chunk of the write failed: {err}"))?;
+            open.write = Some(write);
+            chunk = returned;
+            let stored = match prepared {
+                Ok(Some(prepared)) => {
+                    pipeline
+                        .lock()
+                        .await
+                        .place_chunk(open.write_mut(), prepared)
+                        .await
+                }
+                Ok(None) => Ok(()),
+                Err(err) => Err(err),
+            };
             if let Err(err) = stored {
                 open.abort().await;
                 return Err(err);

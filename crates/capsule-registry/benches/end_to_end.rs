@@ -2,6 +2,9 @@
 //! an `NvramBackend` in a temporary directory. The payload is pseudo-random,
 //! so compression is skipped and every segment is unique.
 //!
+//! `write_concurrent_*` writes the same 64 MiB as four 16 MiB capsules at
+//! once through one pipeline, as concurrent S3 PUTs do (#198).
+//!
 //! ```bash
 //! cargo bench -p capsule-registry --bench end_to_end
 //! ```
@@ -93,6 +96,23 @@ fn bench_end_to_end(c: &mut Criterion) {
                 |store| {
                     rt.block_on(store.pipeline().write_capsule_with_policy(&data, &policy))
                         .unwrap();
+                    store
+                },
+                BatchSize::PerIteration,
+            )
+        });
+
+        // Four writers at once, each a quarter of the payload.
+        group.bench_function(format!("write_concurrent_{name}"), |b| {
+            b.iter_batched(
+                || Store::open(encrypted),
+                |store| {
+                    let writes = data
+                        .chunks(PAYLOAD_SIZE / 4)
+                        .map(|quarter| store.pipeline().write_reader(quarter, &policy));
+                    for written in rt.block_on(futures::future::join_all(writes)) {
+                        written.unwrap();
+                    }
                     store
                 },
                 BatchSize::PerIteration,
