@@ -123,7 +123,7 @@ The S3 view and `spacectl` share one capsule store. Stop the server first: sled 
 ./target/release/spacectl read f1eec31a-8966-4ca1-9538-187d6529383b
 ```
 
-Buckets and keys are recorded in `space.journal` too, so objects are still there after the server restarts. A PUT commits the object, its key and the removal of any object it replaces together, so a crash leaves either the old object or the new one under the key. `spacectl delete <id>` removes a capsule. An S3 key that pointed at it then returns `NoSuchKey`.
+Buckets and keys are recorded in `space.journal` too, so objects are still there after the server restarts. A PUT commits the object, its key and the removal of any object it replaces together, so a crash leaves either the old object or the new one under the key. `spacectl delete <id>` removes a capsule, and any S3 key that points at it.
 
 ## Using an S3 SDK
 

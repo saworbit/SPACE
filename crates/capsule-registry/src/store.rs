@@ -84,6 +84,8 @@ pub trait MetadataStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<(String, u64)>>;
     fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>>;
+    /// Every name that points at `capsule`, as (namespace, name) (#138).
+    fn names_of(&self, capsule: CapsuleId) -> Result<Vec<(String, String)>>;
     /// Names in `ns` that start with `prefix` and sort after `start_after`,
     /// in byte order.
     fn list_names(
@@ -282,6 +284,9 @@ pub struct SledStore {
     namespaces: sled::Tree,
     /// Namespace and name ([`name_key`]) to the capsule the name points at.
     names: sled::Tree,
+    /// Each name under the capsule it points at ([`capsule_name_key`]), so
+    /// deleting a capsule can unbind its names (#138).
+    capsule_names: sled::Tree,
     /// Segment id to when it was last light- and deep-scrubbed.
     scrub_schedule: sled::Tree,
 }
@@ -296,6 +301,15 @@ fn name_key(ns: &str, name: &str) -> Vec<u8> {
     out.extend_from_slice(ns.as_bytes());
     out.push(0);
     out.extend_from_slice(name.as_bytes());
+    out
+}
+
+/// Index key for a name under the capsule it points at: the capsule id's 16
+/// bytes, then the name's [`name_key`].
+fn capsule_name_key(capsule: CapsuleId, name_key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + name_key.len());
+    out.extend_from_slice(capsule.as_uuid().as_bytes());
+    out.extend_from_slice(name_key);
     out
 }
 
@@ -328,6 +342,7 @@ impl SledStore {
         let counters = db.open_tree("counters")?;
         let namespaces = db.open_tree("namespaces")?;
         let names = db.open_tree("names")?;
+        let capsule_names = db.open_tree("capsule_names")?;
         let scrub_schedule = db.open_tree("scrub_schedule")?;
 
         // Initialize the segment counter if it doesn't exist yet.
@@ -346,6 +361,7 @@ impl SledStore {
             counters,
             namespaces,
             names,
+            capsule_names,
             scrub_schedule,
         })
     }
@@ -477,9 +493,10 @@ impl MetadataStore for SledStore {
             &self.counters,
             &self.namespaces,
             &self.names,
+            &self.capsule_names,
         )
             .transaction(
-                |(capsules, content, refs, indexed, counters, namespaces, names)| {
+                |(capsules, content, refs, indexed, counters, namespaces, names, capsule_names)| {
                     let trees = IndexTrees {
                         capsules,
                         content,
@@ -487,6 +504,7 @@ impl MetadataStore for SledStore {
                         indexed,
                         namespaces,
                         names,
+                        capsule_names,
                     };
                     apply_record(record, &trees)?;
                     counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
@@ -521,6 +539,7 @@ impl MetadataStore for SledStore {
         self.indexed.clear()?;
         self.namespaces.clear()?;
         self.names.clear()?;
+        self.capsule_names.clear()?;
         self.counters.remove(JOURNAL_POSITION_KEY)?;
         // Names written before the journal held them aren't in it, so a
         // rebuild can't keep them.
@@ -664,6 +683,19 @@ impl MetadataStore for SledStore {
         Ok(out)
     }
 
+    fn names_of(&self, capsule: CapsuleId) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for entry in self.capsule_names.scan_prefix(capsule.as_uuid().as_bytes()) {
+            let (key, _) = entry?;
+            let key = std::str::from_utf8(&key[16..]).context("name is not UTF-8")?;
+            let (ns, name) = key
+                .split_once('\0')
+                .ok_or_else(|| anyhow!("a name index key has no namespace"))?;
+            out.push((ns.to_string(), name.to_string()));
+        }
+        Ok(out)
+    }
+
     fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>> {
         self.names
             .get(name_key(ns, name))?
@@ -775,6 +807,20 @@ struct IndexTrees<'a> {
     indexed: &'a TransactionalTree,
     namespaces: &'a TransactionalTree,
     names: &'a TransactionalTree,
+    capsule_names: &'a TransactionalTree,
+}
+
+/// Remove a name from under the capsule it points at, if it's bound.
+fn unindex_name(
+    t: &IndexTrees<'_>,
+    key: &[u8],
+) -> ConflictableTransactionResult<(), anyhow::Error> {
+    if let Some(old) = t.names.get(key)? {
+        let old = decode_binding(&old).map_err(abort)?;
+        t.capsule_names
+            .remove(capsule_name_key(old.capsule_id, key))?;
+    }
+    Ok(())
 }
 
 fn abort<E: std::fmt::Display>(err: E) -> ConflictableTransactionError<anyhow::Error> {
@@ -859,11 +905,16 @@ fn apply_record(
             capsule_id,
             metadata,
         } => {
-            t.names
-                .insert(name_key(ns, name), ser(&(capsule_id, metadata))?)?;
+            let key = name_key(ns, name);
+            unindex_name(t, &key)?;
+            t.names.insert(key.clone(), ser(&(capsule_id, metadata))?)?;
+            t.capsule_names
+                .insert(capsule_name_key(*capsule_id, &key), &[])?;
         }
         JournalRecord::Unbind { ns, name } => {
-            t.names.remove(name_key(ns, name))?;
+            let key = name_key(ns, name);
+            unindex_name(t, &key)?;
+            t.names.remove(key)?;
         }
         // The journal keeps the store's key itself.
         JournalRecord::Key(_) => {}
@@ -1000,6 +1051,13 @@ mod tests {
     fn name_keys_keep_their_on_disk_encoding() {
         assert_eq!(name_key("s3:demo", "dir/a.txt"), b"s3:demo\0dir/a.txt");
         assert_eq!(name_key("s3:demo", ""), b"s3:demo\0");
+        let id = CapsuleId::from_uuid(uuid::Uuid::from_u128(0x0102));
+        let mut expected = id.as_uuid().as_bytes().to_vec();
+        expected.extend_from_slice(b"s3:demo\0dir/a.txt");
+        assert_eq!(
+            capsule_name_key(id, &name_key("s3:demo", "dir/a.txt")),
+            expected
+        );
 
         let id = sample_capsule().id;
         let metadata = vec![("a".to_string(), "bc".to_string())];

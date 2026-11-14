@@ -485,14 +485,14 @@ Segment lifecycle:
 
 `Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`. It:
 
-1. Commits the delete: appends a `DROP` record to the journal and fsyncs it. Applying it removes the capsule record, decrements each segment's reference count in the index, and removes a segment's hash from the content index when its count reaches zero.
+1. Commits the delete: appends a `DROP` record to the journal, in a `BATCH` with an `UNBIND` for each name that points at the capsule ([#138](https://github.com/saworbit/SPACE/issues/138)), and fsyncs it. Applying it removes the capsule record, decrements each segment's reference count in the index, and removes a segment's hash from the content index when its count reaches zero.
 2. Releases the capsule's segments: for each `SegmentId` in `capsule.segments`, if the in-memory `ref_count` is above 1, decrements it; otherwise drops the segment from the log's map.
 
 The delete commits first, so a crash part way through step 2 leaves only in-memory counts, which the next open sets again from the index.
 
 S3 DELETE and overwrites commit the `DROP` in the same `BATCH` as the key change (`Pipeline::finish_write_with` or `Pipeline::commit`), then release the dropped capsule with `Pipeline::release`. If a GET is still reading it, the S3 view holds the release until the GET ends: the in-memory references pin the segments, so they stay readable.
 
-Segments still referenced by other Capsules remain. `spacectl delete` leaves any S3 key that points at the capsule in place; the key then reads as missing ([#138](https://github.com/saworbit/SPACE/issues/138)).
+Segments still referenced by other Capsules remain. `spacectl delete` removes any S3 key that points at the capsule, in the same batch ([#138](https://github.com/saworbit/SPACE/issues/138)). A key an older build left pointing at a deleted capsule reads as missing, and no listing shows it.
 
 ### Garbage collection
 

@@ -671,13 +671,15 @@ impl S3View {
                 if group.is_some() && group == last {
                     continue;
                 }
+                // A key whose capsule an older `spacectl delete` removed
+                // reads as missing, so it lists neither itself nor its
+                // common prefix (#138).
+                let Some(capsule) = self.registry.get_capsule(binding.capsule_id)? else {
+                    continue;
+                };
                 let object = match group {
                     Some(_) => None,
-                    None => match self.registry.get_capsule(binding.capsule_id)? {
-                        Some(capsule) => Some(ObjectMapping::new(&key, &capsule, binding.metadata)),
-                        // Removed with `spacectl delete`.
-                        None => continue,
-                    },
+                    None => Some(ObjectMapping::new(&key, &capsule, binding.metadata)),
                 };
                 if page.objects.len() + page.common_prefixes.len() == query.max_keys {
                     page.next_start_after = last;

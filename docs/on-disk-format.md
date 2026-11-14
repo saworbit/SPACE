@@ -256,7 +256,7 @@ The fingerprint names the key without revealing it, or any key derived from it: 
 |---|---|---|---|
 | Write a capsule | One `SEGMENT` per new segment | `CAPSULE` | The `CAPSULE` record is durable |
 | Dedup hit | Nothing | Nothing (it's an entry in the eventual `CAPSULE`) | — |
-| Delete (`spacectl delete`) | Nothing | `DROP` | The `DROP` record is durable |
+| Delete (`spacectl delete`) | Nothing | `DROP`, in a `BATCH` after an `UNBIND` for each name that points at the capsule | The record or `BATCH` |
 | First open with a master key | Nothing | `KEY` | The `KEY` record is durable |
 | S3 CreateBucket | Nothing | `NAMESPACE` | The `NAMESPACE` record is durable |
 | S3 PUT, new key | New segments | `BATCH[CAPSULE, BIND]` | The `BATCH` |
@@ -283,7 +283,7 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 | `CAPSULE` | Insert the capsule. For each entry `refs[seg] += 1`. If `DEDUPE` is set and the hash isn't in the content index, register `hash → seg`. |
 | `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`; at 0, deregister the hash if it points at `seg`. |
 | `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists, or delete it. |
-| `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name, holding the capsule id and the metadata). |
+| `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name, holding the capsule id and the metadata), and file it under the capsule it points at or take it off (`capsule_names`, keyed by capsule id, then the name's key). |
 | `KEY` | Nothing. The journal keeps the last one in memory, found when it's opened. |
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
@@ -460,5 +460,5 @@ Suggested PRs:
 3. **ETag.** Should it be the digest in hex, or an MD5 computed alongside it? Some S3 tools compare a single-part ETag with the body's MD5; today's UUID ETag already fails that check.
 4. **Checkpoint.** Should the first implementation include the checkpoint, or always scan?
 5. **Names.** Generic namespaces (as drafted), or S3-specific record kinds? *Generic, as implemented in PR 3.*
-6. **Deleting a named capsule.** `spacectl delete` of a capsule an S3 key points at: keep today's behaviour (the key reads as missing), or make `DROP` also remove bindings? *Today's behaviour, for now. Removing bindings would need an index from capsules to the names that point at them ([#138](https://github.com/saworbit/SPACE/issues/138)).*
+6. **Deleting a named capsule.** `spacectl delete` of a capsule an S3 key points at: keep today's behaviour (the key reads as missing), or make `DROP` also remove bindings? *Remove them, in the batch that holds the `DROP` ([#138](https://github.com/saworbit/SPACE/issues/138)). The index files each name under the capsule it points at, so a delete finds them. `DROP` itself still leaves names alone, so a key an older build left behind reads as missing, and listings skip it.*
 7. **Frame sums.** BLAKE3 (no new dependency) or CRC32C (cheaper per segment)?

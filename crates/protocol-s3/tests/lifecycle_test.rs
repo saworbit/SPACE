@@ -3,6 +3,7 @@
 
 use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
+use common::format::JournalRecord;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{ListQuery, Preconditions, PutOptions, S3Error, S3View};
@@ -127,8 +128,8 @@ async fn a_key_whose_capsule_is_gone_reads_as_missing() {
     view.create_bucket("bkt").unwrap();
 
     let id = view.put_object("bkt", "k", body(b"data")).await.unwrap();
-    // What `spacectl delete` leaves behind for the S3 view.
-    registry.delete_capsule(id).unwrap();
+    // What `spacectl delete` left behind before #138: a DROP, and no UNBIND.
+    registry.commit(vec![JournalRecord::Drop(id)]).unwrap();
 
     assert!(matches!(
         view.head_object("bkt", "k"),
@@ -325,7 +326,8 @@ async fn a_deleted_bucket_stays_deleted() {
     let (registry, view) = open(&dir);
     view.create_bucket("gone").unwrap();
     let id = view.put_object("gone", "k", body(b"data")).await.unwrap();
-    registry.delete_capsule(id).unwrap();
+    // A key an older `spacectl delete` left behind.
+    registry.commit(vec![JournalRecord::Drop(id)]).unwrap();
     view.delete_bucket("gone").await.unwrap();
     view.create_bucket("kept").unwrap();
     view.put_object("kept", "a", body(b"a")).await.unwrap();
@@ -386,5 +388,83 @@ async fn a_put_into_a_bucket_deleted_meanwhile_stores_nothing() {
     assert!(registry.capsules().is_empty());
     assert!(registry.name("s3:bkt", "k").unwrap().is_none());
     drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Keys an older `spacectl delete` left pointing at a removed capsule read
+/// as missing, so they don't make a common prefix appear in a delimiter
+/// listing either (#138).
+#[tokio::test]
+async fn a_dead_key_makes_no_common_prefix() {
+    let dir = scratch("dead_prefix");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let dead = view
+        .put_object("bkt", "photos/a.jpg", body(b"a"))
+        .await
+        .unwrap();
+    view.put_object("bkt", "docs/b.txt", body(b"b"))
+        .await
+        .unwrap();
+    let late = view.put_object("bkt", "mixed/1", body(b"1")).await.unwrap();
+    view.put_object("bkt", "mixed/2", body(b"2")).await.unwrap();
+    for id in [dead, late] {
+        registry.commit(vec![JournalRecord::Drop(id)]).unwrap();
+    }
+
+    let query = ListQuery {
+        delimiter: Some("/".to_string()),
+        ..ListQuery::default()
+    };
+    let page = view.list_objects("bkt", &query).unwrap();
+    assert_eq!(page.common_prefixes, ["docs/", "mixed/"]);
+    assert!(page.objects.is_empty());
+
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `spacectl delete` of a capsule an S3 key points at removes the key too,
+/// in the batch that drops the capsule (#138). It's in no listing, and an
+/// index rebuilt from the journal doesn't bring it back.
+#[tokio::test]
+async fn deleting_a_named_capsule_removes_its_key() {
+    let dir = scratch("delete_named");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let id = view
+        .put_object("bkt", "photos/a.jpg", body(b"a"))
+        .await
+        .unwrap();
+    view.put_object("bkt", "photos/b.jpg", body(b"b"))
+        .await
+        .unwrap();
+    let solo = view
+        .put_object("bkt", "solo/c.jpg", body(b"c"))
+        .await
+        .unwrap();
+    for id in [id, solo] {
+        registry.delete_capsule(id).unwrap();
+    }
+    drop((registry, view));
+
+    for lose_index in [false, true] {
+        if lose_index {
+            std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+        }
+        let (registry, view) = open(&dir);
+        assert!(registry.name("s3:bkt", "photos/a.jpg").unwrap().is_none());
+        assert!(registry.names_of(id).unwrap().is_empty());
+        assert_eq!(keys(&view, "bkt"), ["photos/b.jpg"]);
+        let query = ListQuery {
+            delimiter: Some("/".to_string()),
+            ..ListQuery::default()
+        };
+        assert_eq!(
+            view.list_objects("bkt", &query).unwrap().common_prefixes,
+            ["photos/"]
+        );
+        drop((registry, view));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
