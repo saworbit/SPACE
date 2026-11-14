@@ -252,9 +252,9 @@ async fn the_store_file_is_checked_as_every_format_one_file_is() {
 
     let root_header = FileHeader::new(FileKind::StorageRoot, 0);
     let log_header = FileHeader::new(FileKind::DataLog, 0);
-    let mut future_format = root_header.clone();
+    let mut future_format = root_header;
     future_format.format += 1;
-    let mut log_future_format = log_header.clone();
+    let mut log_future_format = log_header;
     log_future_format.format += 1;
     let mut padded = root_header.encode_record();
     padded.extend_from_slice(b"more");
