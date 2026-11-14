@@ -1,6 +1,6 @@
 # Building SPACE
 
-Requires Rust 1.89 or newer (the committed `Cargo.lock` needs it).
+Building needs Rust 1.89 or newer (the committed `Cargo.lock` needs it). The tests need a more recent stable Rust, for the dev-dependencies.
 
 ```bash
 cargo test --workspace

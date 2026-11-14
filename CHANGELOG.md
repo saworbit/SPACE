@@ -880,8 +880,8 @@ The remaining entries in this section describe the pre-reset tree (foundry, fede
     - Isolated network (172.20.0.0/16)
     - Per-node S3 API, Web UI, and replication endpoints
   - **Comprehensive Documentation**
-    - [Multi-Node Deployment Guide](docs/multi-node-deployment.md) - 400+ line operations manual
-    - [Implementation Summary](docs/MULTI_NODE_IMPLEMENTATION.md) - Complete technical deep-dive
+    - [Multi-Node Deployment Guide](https://github.com/saworbit/SPACE/blob/archive/pre-reset-2026-10/docs/multi-node-deployment.md) - 400+ line operations manual
+    - [Implementation Summary](https://github.com/saworbit/SPACE/blob/archive/pre-reset-2026-10/docs/MULTI_NODE_IMPLEMENTATION.md) - Complete technical deep-dive
     - Architecture diagrams, configuration examples, troubleshooting guide
     - Performance expectations and security considerations
   - **Integration Test Framework** - Ready for ContentStore implementation
@@ -929,7 +929,7 @@ The remaining entries in this section describe the pre-reset tree (foundry, fede
   - **Outbound sender methods** - `mirror_segment()` (frame-based), `send_replication_frame()`
   - **Agent execution layer** - `execute_metro_sync_replication()` with segment loading
   - **Queue statistics** - Track batch depth, unique capsules, total bytes
-  - **Comprehensive documentation** - [docs/replication-actions.md](docs/replication-actions.md) with Mermaid flow diagrams
+  - **Comprehensive documentation** - [docs/replication-actions.md](https://github.com/saworbit/SPACE/blob/archive/pre-reset-2026-10/docs/replication-actions.md) with Mermaid flow diagrams
   - Added `hex` dependency for hash encoding in logs
 
 - **Inbound Replication System** - Complete implementation fixing data discard issue
@@ -942,7 +942,7 @@ The remaining entries in this section describe the pre-reset tree (foundry, fede
   - Generic `ContentStore` trait to avoid circular dependencies
   - Comprehensive error handling and structured logging
   - DoS protection with frame size limits (16MB max)
-  - Documentation: [docs/replication.md](docs/replication.md) with Mermaid diagrams
+  - Documentation: [docs/replication.md](https://github.com/saworbit/SPACE/blob/archive/pre-reset-2026-10/docs/replication.md) with Mermaid diagrams
 
 - **Scaling Crate Enhancements**
   - Made `MeshNode` generic over `ContentStore` trait
@@ -1061,5 +1061,5 @@ The remaining entries in this section describe the pre-reset tree (foundry, fede
 **Note:** This is the first changelog entry. Previous development history can be found in git commit logs.
 
 For detailed implementation notes, see:
-- [IMPLEMENTATION_COMPLETE.md](docs/implementation/IMPLEMENTATION_COMPLETE.md) - Inbound replication details
-- [INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md](docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) - Progress tracking
+- [IMPLEMENTATION_COMPLETE.md](https://github.com/saworbit/SPACE/blob/archive/pre-reset-2026-10/docs/implementation/IMPLEMENTATION_COMPLETE.md) - Inbound replication details
+- [INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md](https://github.com/saworbit/SPACE/blob/archive/pre-reset-2026-10/docs/status/INBOUND_REPLICATION_IMPLEMENTATION_STATUS.md) - Progress tracking

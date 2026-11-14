@@ -25,7 +25,7 @@ SPACE is licensed under the [Business Source License 1.1](LICENSE). It's source-
 By submitting a pull request, you agree that your contribution is licensed under the same terms, and you grant the licensor, Shane Wall, a perpetual, irrevocable right to license your contribution under other terms, including commercial licenses.
 
 ## Getting Started
-- Install the latest stable Rust toolchain (`rustup default stable`). The committed `Cargo.lock` needs Rust 1.89 or newer.
+- Install the latest stable Rust toolchain (`rustup default stable`). Building needs Rust 1.89 or newer; the test suite's dev-dependencies need a more recent stable.
 - Run `cargo test --workspace` before opening a pull request. That is what CI runs.
 - Property tests live in `crates/capsule-registry/tests/proptest_pipeline.rs`. Run them with the workspace tests.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [RESET.md](RESET.md) describe this branch. The pre-reset design docs are on `archive/pre-reset-2026-10`.
@@ -39,7 +39,7 @@ CI runs the checks below on every pull request (see `.github/workflows/ci.yml` a
 | Formatting | `cargo fmt --all --check` |
 | Clippy | `cargo clippy --workspace --all-targets --locked -- -D warnings` (and again with `-p storage --features uring`) |
 | Tests on Linux, Windows and macOS | `cargo test --workspace --locked` |
-| Build on rust-version | `cargo +1.89 check --workspace --all-targets --locked` |
+| Build on rust-version | `cargo +1.89 check --workspace --locked` (libraries and binaries; the tests need a newer stable) |
 | Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked` |
 | Dependency audit | `cargo audit --deny warnings` and `cargo deny check` |
 | Dependency review | new dependencies with known advisories, on pull requests |

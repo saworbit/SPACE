@@ -3,7 +3,8 @@ name: Labeler
 # Labels a pull request by the paths it changes (see .github/labeler.yml).
 # This uses pull_request, not pull_request_target, so it never runs with a
 # write token on a fork's code; pull requests from forks are left to label by
-# hand.
+# hand. Dependabot's pull requests get a read-only token and already carry
+# the labels dependabot.yml gives them, so they're skipped too.
 
 on:
   pull_request:
@@ -18,7 +19,9 @@ concurrency:
 jobs:
   label:
     name: Label
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

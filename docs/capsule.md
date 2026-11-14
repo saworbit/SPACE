@@ -901,7 +901,7 @@ never on capsule.policy
 - Scrub types: [crates/common/src/scrub.rs](../crates/common/src/scrub.rs)
 - Write/read pipeline: [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs) (wrapped by [crates/capsule-registry/src/pipeline/](../crates/capsule-registry/src/pipeline/))
 - Scrub executor: [crates/capsule-registry/src/scrub_executor.rs](../crates/capsule-registry/src/scrub_executor.rs)
-- GC: [crates/capsule-registry/src/gc.rs](../crates/capsule-registry/src/gc.rs)
+- GC: `Pipeline::garbage_collect` in [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs)
 - NVRAM log: [crates/nvram-sim/src/lib.rs](../crates/nvram-sim/src/lib.rs)
 - Dedup: [crates/dedup/src/lib.rs](../crates/dedup/src/lib.rs)
 - Encryption: [crates/encryption/src/](../crates/encryption/src/)

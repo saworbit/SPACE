@@ -121,8 +121,11 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Libraries and binaries only: rust-version is what building spacectl
+      # needs. Dev-dependencies (serial_test) need a newer Rust, so the tests
+      # run on stable.
       - name: cargo check
-        run: cargo check --workspace --all-targets --locked
+        run: cargo check --workspace --locked
 
   docs:
     name: Docs

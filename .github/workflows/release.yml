@@ -16,9 +16,11 @@ on:
 
 permissions: {}
 
+# A dry run on a pull request gives way to a newer push; a tag's run never
+# gets cancelled.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -84,14 +86,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # No build cache: a release is built from a clean slate.
+      # Every runner image above ships rustup. No build cache: a release is
+      # built from a clean slate.
       - name: Install Rust
         run: |
-          if ! command -v rustup > /dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
           rustup toolchain install stable --profile minimal --target "$TARGET" --no-self-update
           rustup default stable
 

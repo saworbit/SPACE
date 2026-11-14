@@ -43,7 +43,7 @@ Known gaps are tracked in [GitHub issues](https://github.com/saworbit/SPACE/issu
 
 ## Quick start
 
-Requires Rust 1.89 or newer.
+Building needs Rust 1.89 or newer; running the tests needs a recent stable Rust.
 
 ```bash
 git clone https://github.com/saworbit/SPACE.git
