@@ -1,42 +1,39 @@
-# CODEOWNERS — Auto-assign reviewers based on file paths
+# CODEOWNERS: who is asked to review a pull request, by path.
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 #
-# Map each subsystem to its maintainer(s) so PRs are automatically
-# routed for review.
-#
-# As the team grows, replace individual handles with @org/team slugs.
+# The last matching pattern wins. As reviewers join (see GOVERNANCE.md), add
+# them to the areas they know.
 
-# ── Global fallback ──────────────────────────────────────────────
+# Global fallback
 *                                       @saworbit
 
-# ── Core storage pipeline ────────────────────────────────────────
-crates/common/                          @saworbit
-crates/capsule-registry/                @saworbit
-crates/pipeline/                        @saworbit
-crates/storage/                         @saworbit
-crates/nvram-sim/                       @saworbit
+# Core storage pipeline
+/crates/common/                         @saworbit
+/crates/capsule-registry/               @saworbit
+/crates/pipeline/                       @saworbit
+/crates/storage/                        @saworbit
+/crates/nvram-sim/                      @saworbit
+/crates/compression/                    @saworbit
+/crates/dedup/                          @saworbit
 
-# ── Data services (encryption, compression, dedup) ───────────────
-crates/encryption/                      @saworbit
-crates/compression/                     @saworbit
-crates/dedup/                           @saworbit
+# Protocol views and CLI
+/crates/protocol-s3/                    @saworbit
+/crates/spacectl/                       @saworbit
 
-# ── Protocol views ───────────────────────────────────────────────
-crates/protocol-s3/                     @saworbit
+# Security-sensitive: cryptography, the security policy, dependency policy,
+# and the workflows that build releases
+/crates/encryption/                     @saworbit
+/SECURITY.md                            @saworbit
+/deny.toml                              @saworbit
+/.cargo/audit.toml                      @saworbit
+/.github/                               @saworbit
 
-# ── CLI ──────────────────────────────────────────────────────────
-crates/spacectl/                        @saworbit
+# Build and licensing
+/Cargo.toml                             @saworbit
+/Cargo.lock                             @saworbit
+/Dockerfile                             @saworbit
+/LICENSE                                @saworbit
+/NOTICE                                 @saworbit
 
-# ── Build, CI, and tooling ───────────────────────────────────────
-.github/                                @saworbit
-Cargo.toml                              @saworbit
-Cargo.lock                              @saworbit
-deny.toml                               @saworbit
-LICENSE                                 @saworbit
-
-# ── Security-sensitive files (require explicit review) ───────────
-SECURITY.md                             @saworbit
-crates/encryption/                      @saworbit
-
-# ── Documentation ────────────────────────────────────────────────
-docs/                                   @saworbit
+# Documentation
+/docs/                                  @saworbit

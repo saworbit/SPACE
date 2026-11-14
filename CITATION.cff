@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: If you use SPACE in your research, please cite it as below.
+type: software
+title: "SPACE: Storage Platform for Adaptive Computational Ecosystems"
+abstract: >-
+  A single-node capsule store in Rust with an S3-compatible view. Writes
+  are compressed, deduplicated by BLAKE3 content hash, and encrypted with
+  deterministic XTS-AES-256, so that encryption preserves deduplication.
+authors:
+  - family-names: Wall
+    given-names: Shane
+repository-code: https://github.com/saworbit/SPACE
+license: BUSL-1.1
+keywords:
+  - storage
+  - deduplication
+  - encryption
+  - s3
+  - rust

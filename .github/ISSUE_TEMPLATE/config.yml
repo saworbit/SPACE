@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a vulnerability (private)
-    url: https://github.com/saworbit/space/security/advisories/new
-    about: For exploitable vulnerabilities, use GitHub's private vulnerability reporting.
+    url: https://github.com/saworbit/SPACE/security/advisories/new
+    about: For exploitable vulnerabilities, use GitHub's private vulnerability reporting, not a public issue.
+  - name: Getting help
+    url: https://github.com/saworbit/SPACE/blob/main/SUPPORT.md
+    about: Where to ask questions, and what to expect from a single-maintainer project.
+  - name: Commercial license
+    url: https://github.com/saworbit/SPACE/blob/main/LICENSE
+    about: Commercial production use needs a commercial license; the LICENSE file says how to ask.

@@ -1,0 +1,12 @@
+# The image is built from Cargo.toml, Cargo.lock and crates/ only. Keep
+# everything else, above all build output and local stores, out of the build
+# context.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+crates/**/target/
+crates/**/space.db/
+crates/**/space.journal
+crates/**/*.nvram
+crates/**/*.nvram.segments

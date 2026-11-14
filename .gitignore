@@ -1,10 +1,18 @@
-# Rust
+# Build output
 /target/
 /fuzz/target/
 /fuzz/corpus/
+/fuzz/artifacts/
 # Cargo.lock is committed for reproducible builds (this is an application, not a library)
 
-# SPACE runtime files
+# Coverage, profiling and mutation testing
+*.profraw
+*.profdata
+lcov.info
+/coverage/
+/mutants.out*/
+
+# SPACE runtime files (spacectl keeps a store in its working directory)
 *.nvram
 *.nvram.segments
 *.metadata
@@ -13,6 +21,13 @@
 **/space.audit.log
 *.compact
 **/space.storage/
+
+# Key material. A master key belongs in SPACE_MASTER_KEY or a key file
+# outside the repository, never in a commit.
+*.key
+*.pem
+.env
+.env.*
 
 # Test files
 test.txt
@@ -26,20 +41,23 @@ retrieved_s3.txt
 downloaded.bin
 test_demo.txt
 
-# NEW: Dedup test artifacts
+# Dedup test artifacts
 demo_repeated.txt
 demo_unique*.txt
 test_dedup*.nvram*
 test_dedup*.metadata
 
-# IDE
+# Editors and IDEs
 .vscode/
 .idea/
+*.iml
+*.swp
+*.swo
+*~
 
-# JS tooling
-node_modules/
-dist/
-.vite/
+# Leftovers from patches and merges
+*.orig
+*.rej
 
 # Claude Code
 /.claude/
@@ -48,3 +66,4 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini

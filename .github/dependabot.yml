@@ -1,65 +1,93 @@
 version: 2
+
+# Version updates wait out a cooldown, so a release that turns out to be
+# compromised or broken is usually yanked before it gets here. Security
+# updates skip the cooldown.
+
 updates:
-  # Cargo dependencies
-  - package-ecosystem: "cargo"
-    directory: "/"
+  - package-ecosystem: cargo
+    directory: /
     schedule:
-      interval: "weekly"  # Changed from monthly for better security
-      day: "monday"
-      time: "03:00"
+      interval: weekly
+      day: monday
+      time: '03:00'
+    cooldown:
+      default-days: 7
     # Not "security": most bumps are routine. Add it by hand to a PR that
     # fixes an advisory, so the label stays a filter for real security work.
-    labels:
-      - "dependencies"
+    labels: [dependencies]
     commit-message:
-      prefix: "deps"
-      include: "scope"
-    open-pull-requests-limit: 10  # Increased from 5 for weekly updates
+      prefix: deps
+    open-pull-requests-limit: 10
     groups:
-      # Critical security dependencies
       crypto-stack:
         patterns:
-          - "aes*"
-          - "cipher"
-          - "xts-mode"
-          - "poly1305"
-          - "subtle"
-          - "zeroize"
-          - "blake3"
-          - "sha2"
-          - "hmac"
-      # Infrastructure dependencies
+          - 'aes*'
+          - 'cipher'
+          - 'xts-mode'
+          - 'poly1305'
+          - 'subtle'
+          - 'zeroize'
+          - 'blake3'
+          - 'sha1'
+          - 'sha2'
+          - 'md-5'
+          - 'hmac'
+          - 'cpufeatures'
       infra:
         patterns:
-          - "tokio"
-          - "tracing*"
-          - "axum"
-          - "tower*"
-          - "futures"
-      # Serialization dependencies
+          - 'tokio'
+          - 'tracing*'
+          - 'axum'
+          - 'tower*'
+          - 'futures'
       serde-stack:
         patterns:
-          - "serde*"
-      # Compression dependencies
+          - 'serde*'
       compression:
         patterns:
-          - "lz4*"
-          - "zstd"
+          - 'lz4*'
+          - 'zstd'
     ignore:
-      - dependency-name: "windows-sys"
+      - dependency-name: windows-sys
         update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
+          - version-update:semver-patch
+          - version-update:semver-minor
 
-  # GitHub Actions
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "04:00"
-    labels:
-      - "ci"
-      - "dependencies"
+      interval: weekly
+      day: monday
+      time: '04:00'
+    cooldown:
+      default-days: 7
+    labels: [ci, dependencies]
     commit-message:
-      prefix: "ci"
+      prefix: ci
+    # One pull request for every action bump; the actions are pinned by commit.
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '04:30'
+    cooldown:
+      default-days: 7
+    labels: [build, dependencies]
+    commit-message:
+      prefix: docker
+    groups:
+      base-images:
+        patterns: ['*']
+    ignore:
+      # The builder tracks the workspace rust-version, which moves by hand
+      # (CI checks the two match). Digest updates still come through.
+      - dependency-name: rust
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

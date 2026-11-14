@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to the SPACE project will be documented in this file.
 
@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Corrected SECURITY.md's hardening summary, CONTRIBUTING.md, README.md, ARCHITECTURE.md and docs/guides/BUILD.md.
   - Issues: #103, #104, #105, #110.
 - Dependabot labels its PRs `dependencies`, a label the repo now has, and no longer labels every cargo bump `security` (#203). That label is now added by hand to PRs that fix an advisory.
+- CI runs the tests on Windows and macOS as well as Linux, and adds rustdoc with warnings denied, spell checking (`typos`), workflow linting (`actionlint`, `zizmor`), dependency review on pull requests, `--locked` on every cargo command, and a weekly run for new advisories and lints. The required `Build and test` check now passes only when every CI job passes, and runs on Markdown-only pull requests too, which could never be merged before. New workflows run CodeQL, OpenSSF Scorecard, a Docker image build with a smoke test, a link check and a path labeler. Every action is pinned to a commit and jobs get a read-only token unless they need more. Releases build `spacectl` for Linux (x86_64, aarch64), Windows and macOS after the whole CI suite passes, with `SHA256SUMS` and build provenance attestations. Dependabot also updates the Docker base images, waits seven days before proposing a new version, and groups action bumps into one PR. The Docker image runs as a non-root user that can write its `/data` store, from base images pinned by digest. The repo has `.gitattributes` (LF line endings everywhere), `.editorconfig`, `.dockerignore`, `SUPPORT.md` and `CITATION.cff`, and no longer tracks `crates/protocol-s3/space.kyber.key`, a key pair left by a pre-reset build. See docs/CI_CD_STRATEGY.md.
 
 ### Fixed
 

@@ -1,32 +1,165 @@
 name: Release
 
+# Pushing a tag vX.Y.Z (the workspace version in Cargo.toml) runs the whole CI
+# suite on the tagged commit, builds spacectl for each platform below, and
+# publishes a GitHub release with the archives, a SHA256SUMS file, and a build
+# provenance attestation for each archive.
+#
+# A pull request that changes this file runs the builds without publishing, so
+# a broken release is found before a tag needs it.
+
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  pull_request:
+    paths: ['.github/workflows/release.yml']
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  publish:
+  check-tag:
+    name: Check the tag
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the tag names the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          [ "$TAG" = "v$version" ] \
+            || { echo "::error file=Cargo.toml::tag $TAG doesn't match the workspace version $version"; exit 1; }
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+  ci:
+    name: CI
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    # Not the newer $/ form: actionlint 1.7.12 rejects it.
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
 
-      - name: Test workspace
-        run: cargo test --workspace -- --test-threads=2
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No build cache: a release is built from a clean slate.
+      - name: Install Rust
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --target "$TARGET" --no-self-update
+          rustup default stable
 
       - name: Build spacectl
-        run: cargo build --release -p spacectl
+        run: cargo build --release --locked -p spacectl --target "$TARGET"
 
-      - name: GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Package
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = push ]; then version="$REF_NAME"; else version=dry-run; fi
+          name="spacectl-${version}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp LICENSE NOTICE README.md "dist/$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "target/$TARGET/release/spacectl.exe" "dist/$name/"
+            (cd dist && 7z a -tzip "$name.zip" "$name" > /dev/null)
+          else
+            cp "target/$TARGET/release/spacectl" "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+          rm -rf "dist/$name"
+          ls -l dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          generate_release_notes: true
-          files: target/release/spacectl
+          name: spacectl-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the release
+    if: github.event_name == 'push'
+    needs: [check-tag, ci, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the attestations
+      attestations: write # store the attestations
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: spacectl-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * | tee SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/spacectl-*
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md) for what changed. Verify a download with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`." \
+            "${prerelease[@]}"

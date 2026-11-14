@@ -32,16 +32,24 @@ By submitting a pull request, you agree that your contribution is licensed under
 
 ## Automated checks
 
-CI on pull requests runs the checks below (see `.github/workflows/ci.yml`).
+CI runs the checks below on every pull request (see `.github/workflows/ci.yml` and [docs/CI_CD_STRATEGY.md](docs/CI_CD_STRATEGY.md)). Branch protection requires the `Build and test` check, which passes only when all of them pass.
 
 | Check | Command |
 |-------|---------|
-| Formatting | `cargo fmt --all -- --check` |
-| Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Workspace tests | `cargo test --workspace` |
-| Build on rust-version | `cargo +1.89 check --workspace --locked` |
-| License field | `license = "BUSL-1.1"` in the root `Cargo.toml` |
+| Formatting | `cargo fmt --all --check` |
+| Clippy | `cargo clippy --workspace --all-targets --locked -- -D warnings` (and again with `-p storage --features uring`) |
+| Tests on Linux, Windows and macOS | `cargo test --workspace --locked` |
+| Build on rust-version | `cargo +1.89 check --workspace --all-targets --locked` |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked` |
 | Dependency audit | `cargo audit --deny warnings` and `cargo deny check` |
+| Dependency review | new dependencies with known advisories, on pull requests |
+| Spelling | `typos` (intended words go in `_typos.toml`) |
+| Workflow lint | `actionlint` and `zizmor .` |
+| License field and Docker toolchain | `license = "BUSL-1.1"`, and the Dockerfile's `rust:` image matches `rust-version` |
+
+CodeQL, OpenSSF Scorecard, the Docker image build and the link check run in their own workflows and aren't required to merge.
+
+Line endings are LF everywhere (`.gitattributes`), and `.editorconfig` sets indentation for editors that read it.
 
 ## Dependency Changes
 Any modification to `Cargo.toml`, `Cargo.lock`, or enabled features must satisfy the workflow in `docs/dependency-security.md`.
@@ -84,6 +92,6 @@ When triaging Dependabot PRs (see also [`docs/dependency-security.md`](docs/depe
 
 ## Security Escalations
 - Critical advisories require a release freeze, mitigation plan, and post-mortem within 72 hours.
-- File emergency findings under `docs/security/meetings/<YYYY-MM>.md` and link to the GitHub issue or advisory.
+- Record the post-mortem in the GitHub security advisory for the issue. See [SECURITY.md](SECURITY.md) for reporting.
 
-For questions, open a GitHub Discussion tagged **Security & Dependencies** or ping the #space-security channel on Slack.
+For questions, open an issue (see [SUPPORT.md](SUPPORT.md)).

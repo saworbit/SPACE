@@ -1,40 +1,38 @@
-## Description
+## What and why
 
-Summary of change and relevant motivation.
+<!-- What this changes, and the problem it solves. -->
 
-Fixes # (issue)
+Fixes #
 
 ## Type
 
 - [ ] Bug fix
 - [ ] New feature
-- [ ] Breaking change
-- [ ] Refactor / cleanup
-- [ ] Docs / comments only
+- [ ] Breaking change (on-disk format, CLI, S3 behaviour or public API)
+- [ ] Refactor or cleanup
+- [ ] Docs only
+- [ ] Build, CI or dependencies
 
 ## Checklist
 
-### Quality gates
+CI runs all of these; running them first saves a round trip.
 
-- [ ] `cargo fmt --all`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] Tests pass (`cargo test --workspace`)
-- [ ] Docs compile: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
-
-### Documentation
-
-- [ ] I updated relevant docs (or no user-facing changes)
-- [ ] CHANGELOG.md updated (for features, fixes, breaking changes)
+- [ ] `cargo fmt --all --check`
+- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- [ ] `cargo test --workspace --locked`
+- [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
+- [ ] `typos`
+- [ ] CHANGELOG.md has an entry, unless nothing user-facing changed
+- [ ] Docs match the change
 
 ### Security
 
-- [ ] No hardcoded secrets, tokens, or keys introduced
-- [ ] External inputs are validated (if applicable)
-- [ ] No new `unsafe` blocks (or they are justified and documented)
+- [ ] No secrets, tokens or keys added
+- [ ] External input (S3 requests, files, journal records) is validated
+- [ ] No new `unsafe`, or it is justified in a comment
 
 ### Dependency changes (skip if none)
 
-- [ ] Tier identified (0 = crypto, 1 = infra, 2 = dev)
-- [ ] `cargo audit --deny warnings` clean
-- [ ] `cargo deny check bans licenses sources` clean
-- [ ] `cargo tree --edges normal,build,dev` diff attached (before/after)
+- [ ] Why the dependency is needed; crypto and serialization crates pinned with `=`
+- [ ] `cargo audit --deny warnings` and `cargo deny check` pass
+- [ ] `cargo tree --edges normal,build,dev` diff attached (before and after)

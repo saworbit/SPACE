@@ -1,78 +1,164 @@
 name: CI
 
+# Branch protection on main requires the "Build and test" check. That is the
+# `ci-ok` job at the bottom, which passes only when every other job passed, so
+# a new job here is required as soon as it is added to its `needs`.
+#
+# There are no paths filters: a required check that never runs leaves a pull
+# request unmergeable, and Markdown can reach the build through doc tests.
+
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE*'
-      - '.gitignore'
   pull_request:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'LICENSE*'
-      - '.gitignore'
+  merge_group:
+  workflow_dispatch:
+  # release.yml runs the whole suite on the tagged commit before it builds.
+  workflow_call:
+  # New advisories and new stable lints arrive without a commit.
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  test:
-    name: Build and test
+  lint:
+    name: Format and clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          persist-credentials: false
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Verify Cargo.toml license
+      - name: Install Rust
         run: |
-          grep -q 'license = "BUSL-1.1"' Cargo.toml || { echo "Incorrect license field"; exit 1; }
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
+          rustup default stable
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check the license field
+        run: |
+          grep -qx 'license = "BUSL-1.1"' Cargo.toml \
+            || { echo "::error file=Cargo.toml::the workspace license must be BUSL-1.1"; exit 1; }
 
-      - name: Clippy on the io_uring backend
-        run: cargo clippy -p storage --features uring --all-targets -- -D warnings
+      - name: Check the Dockerfile builds on rust-version
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          grep -q "^FROM rust:${msrv}-" Dockerfile \
+            || { echo "::error file=Dockerfile::the builder image must be rust:${msrv}, the workspace rust-version"; exit 1; }
 
-      - name: Test workspace
-        run: cargo test --workspace -- --test-threads=2
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo clippy on the io_uring backend
+        run: cargo clippy -p storage --features uring --all-targets --locked -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo test
+        run: cargo test --workspace --locked -- --test-threads=2
 
   msrv:
     name: Build on rust-version
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      # Keep in step with rust-version in Cargo.toml and the Dockerfile image.
-      - uses: dtolnay/rust-toolchain@1.89
+      - name: Install the workspace rust-version
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          test -n "$msrv" || { echo "::error file=Cargo.toml::no rust-version in [workspace.package]"; exit 1; }
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
+          rustup default "$msrv"
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check workspace
-        run: cargo check --workspace --locked
+      - name: cargo check
+        run: cargo check --workspace --all-targets --locked
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps --locked
 
   audit:
     name: Audit dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: taiki-e/install-action@v2
+      # Not pinned, unlike the linters below: an old cargo-audit can fail to
+      # read a newer advisory database.
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-audit,cargo-deny
 
@@ -81,4 +167,75 @@ jobs:
         run: cargo audit --deny warnings
 
       - name: cargo deny
-        run: cargo deny check
+        run: cargo deny --locked check
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Covers the GitHub Actions a pull request adds, as well as crates.
+      # Licenses are cargo deny's job.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
+  typos:
+    name: Spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned: a new release's dictionary would fail CI with no commit here.
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: typos@1.52.2
+
+      # Words that are meant, such as test data, are listed in _typos.toml.
+      - name: typos
+        run: typos --format brief
+
+  workflows:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          # Pinned, like typos: new audits shouldn't arrive unannounced.
+          tool: shellcheck@0.11.0,zizmor@1.32.0
+
+      # actionlint runs shellcheck over every run: block.
+      - name: actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format=github .
+
+  ci-ok:
+    name: Build and test
+    if: always()
+    needs: [lint, test, msrv, docs, audit, dependency-review, typos, workflows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A skipped job is fine (dependency review only runs on pull requests);
+      # a failed or cancelled one is not.
+      - name: Check every job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

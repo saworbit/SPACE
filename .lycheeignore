@@ -1,8 +1,10 @@
-# Ignore local development endpoints
-http://localhost:*
+# URLs lychee skips (one regular expression per line). See workflows/links.yml.
 
-# Known occasionally flaky external links
-https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/README.md
-https://www.contributor-covenant.org/translations
-https://www.conventionalcommits.org/
-https://unsplash.com/license
+# Local endpoints in examples.
+^https?://(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)([:/]|$)
+
+# Pages that need a signed-in GitHub session.
+^https://github\.com/saworbit/SPACE/security/advisories/new$
+
+# Rate-limits automated clients.
+^https://www\.contributor-covenant\.org/translations
