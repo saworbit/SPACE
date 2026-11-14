@@ -22,6 +22,7 @@ use common::format::{
 };
 use common::*;
 pub use record_file::Damage;
+use record_file::{Swap, SwapFaults};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -109,12 +110,6 @@ fn compacting_marker(path: &Path) -> PathBuf {
     sibling(path, ".compacting")
 }
 
-/// Where compaction writes the next generation before renaming it into
-/// place.
-fn compaction_file(path: &Path) -> PathBuf {
-    sibling(path, ".compact")
-}
-
 /// Points in a compaction where a test can stop it, as a crash there would.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -166,14 +161,7 @@ impl NvramLog {
 
         // A compaction that didn't get as far as its rename leaves the next
         // generation behind. The log it would have replaced is intact.
-        let unfinished = compaction_file(&path);
-        if unfinished.exists() {
-            warn!(
-                path = %unfinished.display(),
-                "removing the file of a compaction that didn't finish; the data log is intact"
-            );
-            std::fs::remove_file(&unfinished)?;
-        }
+        record_file::remove_unfinished_compaction(&path, FileKind::DataLog)?;
 
         let mut entries: HashMap<SegmentId, Entry> = HashMap::new();
         let mut id_floor = 0u64;
@@ -638,7 +626,7 @@ impl NvramLog {
         }
 
         // 2. Copy them to the next generation.
-        let next_path = compaction_file(&self.path);
+        let next_path = record_file::compaction_path(&self.path);
         let mut next = FileHeader {
             generation: header.generation + 1,
             segment_id_floor: self.segment_id_floor(),
@@ -734,35 +722,24 @@ impl NvramLog {
             bail!("compaction stopped at {:?}", Step::Synced);
         }
 
-        // Windows won't rename over a file that's open, so close the old log
-        // first. The new file can be renamed while open.
-        let old = std::mem::replace(&mut *file, out);
-        drop(old);
-        if let Err(err) = self.rename_into_place(&next_path) {
-            let restored = self.reopen_after_failed_rename();
-            let _ = std::fs::remove_file(&next_path);
-            return match restored {
-                Ok(old) => {
-                    *file = old;
-                    Err(anyhow!(
-                        "couldn't move the compacted log into place: {err}; the log is unchanged"
-                    ))
-                }
-                Err(reopen) => {
-                    // The handle left is to the file just removed, and the
-                    // map still holds the old generation's offsets. An
-                    // append would be lost and a read would look in the
-                    // wrong file.
-                    self.shared.lost.store(true, Ordering::SeqCst);
-                    Err(anyhow!(
-                        "couldn't move the compacted log into place ({err}) or reopen the old \
-                         one ({reopen}); reads and appends are refused until the store is \
-                         opened again"
-                    ))
-                }
-            };
+        let faults = self.swap_faults();
+        match record_file::swap_in_next_generation(&self.path, &mut file, out, &next_path, faults) {
+            Swap::Swapped => {}
+            Swap::Unchanged(err) => {
+                bail!("couldn't move the compacted log into place: {err}; the log is unchanged")
+            }
+            Swap::Lost { rename, reopen } => {
+                // The handle left is to the file just removed, and the map
+                // still holds the old generation's offsets. An append would
+                // be lost and a read would look in the wrong file.
+                self.shared.lost.store(true, Ordering::SeqCst);
+                bail!(
+                    "couldn't move the compacted log into place ({rename}) or reopen the old \
+                     one ({reopen}); reads and appends are refused until the store is opened \
+                     again"
+                );
+            }
         }
-        record_file::sync_parent_dir(&self.path);
         if stop_at(Step::Renamed) {
             bail!("compaction stopped at {:?}", Step::Renamed);
         }
@@ -796,22 +773,18 @@ impl NvramLog {
         Ok(reclaimed)
     }
 
-    /// Rename compaction's new generation over the log.
-    fn rename_into_place(&self, next_path: &Path) -> std::io::Result<()> {
-        #[cfg(test)]
-        if self.shared.fail_rename.load(Ordering::SeqCst) {
-            return Err(std::io::Error::other("injected rename failure"));
+    /// The swap failures a test asked for.
+    #[cfg(test)]
+    fn swap_faults(&self) -> SwapFaults {
+        SwapFaults {
+            rename: self.shared.fail_rename.load(Ordering::SeqCst),
+            reopen: self.shared.fail_reopen.load(Ordering::SeqCst),
         }
-        std::fs::rename(next_path, &self.path)
     }
 
-    /// Open the old log again after the rename failed.
-    fn reopen_after_failed_rename(&self) -> std::io::Result<File> {
-        #[cfg(test)]
-        if self.shared.fail_reopen.load(Ordering::SeqCst) {
-            return Err(std::io::Error::other("injected reopen failure"));
-        }
-        OpenOptions::new().read(true).write(true).open(&self.path)
+    #[cfg(not(test))]
+    fn swap_faults(&self) -> SwapFaults {
+        SwapFaults::default()
     }
 
     pub fn begin_transaction(&self) -> Result<NvramTransaction> {
@@ -1028,7 +1001,7 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.path);
             let _ = std::fs::remove_file(compacting_marker(&self.path));
-            let _ = std::fs::remove_file(compaction_file(&self.path));
+            let _ = std::fs::remove_file(record_file::compaction_path(&self.path));
         }
     }
 
@@ -1364,7 +1337,7 @@ mod tests {
         drop(log);
 
         let log = tmp.open();
-        assert!(!compaction_file(&tmp.path).exists());
+        assert!(!record_file::compaction_path(&tmp.path).exists());
         assert_eq!(log.store_id(), store_id);
         assert_eq!(log.file_header().generation, 1);
         assert_eq!(sorted_ids(&log), [SegmentId(1), SegmentId(2), SegmentId(5)]);
@@ -1416,7 +1389,10 @@ mod tests {
 
             let log = tmp.open();
             assert!(log.damage().is_empty(), "{step:?}");
-            assert!(!compaction_file(&tmp.path).exists(), "{step:?}");
+            assert!(
+                !record_file::compaction_path(&tmp.path).exists(),
+                "{step:?}"
+            );
             let (generation, ids) = if step == Step::Renamed {
                 (1, vec![SegmentId(1), SegmentId(2)])
             } else {
@@ -1444,7 +1420,7 @@ mod tests {
         log.shared.fail_rename.store(true, Ordering::SeqCst);
         let err = log.compact().unwrap_err();
         assert!(err.to_string().contains("the log is unchanged"), "{err:#}");
-        assert!(!compaction_file(&tmp.path).exists());
+        assert!(!record_file::compaction_path(&tmp.path).exists());
         assert_eq!(log.file_header().generation, 0);
         assert_eq!(log.read(SegmentId(2)).unwrap(), payload(2));
         commit_described(&log, 5, b"after a failed rename");

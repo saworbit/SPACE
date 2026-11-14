@@ -17,9 +17,9 @@ use std::sync::{Mutex, MutexGuard, TryLockError};
 use anyhow::{anyhow, bail, Context, Result};
 use common::format::{FileHeader, FileKind, JournalRecord, StoreKey};
 use common::CapsuleId;
-use nvram_sim::record_file;
+use nvram_sim::record_file::{self, Swap, SwapFaults};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 /// Version of the index sled keeps. Bump it whenever the encoding of an index
@@ -107,11 +107,25 @@ struct Inner {
     /// The average length of a live `CAPSULE` record when compaction last
     /// measured the journal: what each `DROP` is estimated to free.
     capsule_record_len: u64,
-    /// A compaction failed part way and the journal file couldn't be
-    /// reopened. Appends are refused until the store is opened again.
+    /// A compaction couldn't rename its next generation into place or
+    /// reopen the journal. The handle is then to a removed file, holding
+    /// other offsets, so appends, replays and compactions are refused until
+    /// the store is opened again (#191).
     lost: bool,
     /// The last `KEY` record's key: the store's.
     key: Option<StoreKey>,
+    /// Failures a test asks the compaction swap to make up.
+    #[cfg(test)]
+    swap_faults: SwapFaults,
+}
+
+impl Inner {
+    fn ensure_not_lost(&self) -> Result<()> {
+        if self.lost {
+            bail!("the capsule journal was lost by a failed compaction; open the store again");
+        }
+        Ok(())
+    }
 }
 
 pub struct Journal {
@@ -119,14 +133,6 @@ pub struct Journal {
     path: PathBuf,
     /// Held while a compaction runs, so only one runs at a time.
     compacting: Mutex<()>,
-}
-
-/// Where compaction writes the next generation before renaming it into
-/// place.
-fn compaction_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(".compact");
-    PathBuf::from(name)
 }
 
 /// The records a record applies: those in a `BATCH`, or the record itself.
@@ -296,15 +302,7 @@ impl Journal {
     pub fn open(path: &Path) -> Result<Self> {
         // A compaction that didn't get as far as its rename leaves the next
         // generation behind. The journal it would have replaced is intact.
-        let unfinished = compaction_path(path);
-        if unfinished.exists() {
-            warn!(
-                path = %unfinished.display(),
-                "removing the file of a journal compaction that didn't finish; the journal is \
-                 intact"
-            );
-            std::fs::remove_file(&unfinished)?;
-        }
+        record_file::remove_unfinished_compaction(path, FileKind::Journal)?;
         let mut key = None;
         let opened = record_file::open(path, FileKind::Journal, |pos, frame, header| {
             let record = JournalRecord::decode(frame, header)
@@ -333,6 +331,8 @@ impl Journal {
                 capsule_record_len: 0,
                 lost: false,
                 key,
+                #[cfg(test)]
+                swap_faults: SwapFaults::default(),
             }),
             path: path.to_path_buf(),
             compacting: Mutex::new(()),
@@ -400,6 +400,7 @@ impl Journal {
         F: FnMut(&JournalRecord, JournalPosition) -> Result<()>,
     {
         let mut inner = self.inner.lock().unwrap();
+        inner.ensure_not_lost()?;
         let (store_id, generation, end) =
             (inner.header.store_id, inner.header.generation, inner.end);
         record_file::read_records(&mut inner.file, from.offset, end, |pos, frame, header| {
@@ -499,6 +500,7 @@ impl Journal {
         // after this point.
         let (header, data_start, snapshot_end) = {
             let inner = self.inner.lock().unwrap();
+            inner.ensure_not_lost()?;
             (inner.header, inner.data_start, inner.end)
         };
 
@@ -527,7 +529,7 @@ impl Journal {
             return Ok(None);
         }
 
-        let next_path = compaction_path(&self.path);
+        let next_path = record_file::compaction_path(&self.path);
         let next = FileHeader {
             generation: header.generation + 1,
             ..header
@@ -583,34 +585,31 @@ impl Journal {
             bail!("compaction stopped at {:?}", Step::Synced);
         }
 
-        // Windows won't rename over a file that's open, so close the old
-        // journal first. The new file can be renamed while open.
-        let old = std::mem::replace(&mut inner.file, out);
-        drop(old);
-        if let Err(err) = std::fs::rename(&next_path, &self.path) {
-            let restored = OpenOptions::new().read(true).write(true).open(&self.path);
-            let _ = std::fs::remove_file(&next_path);
-            return match restored {
-                Ok(old) => {
-                    inner.file = old;
-                    Err(anyhow!(
-                        "couldn't move the compacted journal into place: {err}; the journal is \
-                         unchanged"
-                    ))
-                }
-                Err(reopen) => {
-                    // The handle left is to the file just removed, so
-                    // anything appended to it would be lost.
-                    inner.lost = true;
-                    Err(anyhow!(
-                        "couldn't move the compacted journal into place ({err}) or reopen the \
-                         old one ({reopen}); commits are refused until the store is opened \
-                         again"
-                    ))
-                }
-            };
+        #[cfg(test)]
+        let faults = inner.swap_faults;
+        #[cfg(not(test))]
+        let faults = SwapFaults::default();
+        match record_file::swap_in_next_generation(
+            &self.path,
+            &mut inner.file,
+            out,
+            &next_path,
+            faults,
+        ) {
+            Swap::Swapped => {}
+            Swap::Unchanged(err) => bail!(
+                "couldn't move the compacted journal into place: {err}; the journal is unchanged"
+            ),
+            Swap::Lost { rename, reopen } => {
+                // The handle left is to the file just removed, so anything
+                // appended to it would be lost.
+                inner.lost = true;
+                bail!(
+                    "couldn't move the compacted journal into place ({rename}) or reopen the \
+                     old one ({reopen}); commits are refused until the store is opened again"
+                );
+            }
         }
-        record_file::sync_parent_dir(&self.path);
         if stop_at(Step::Renamed) {
             bail!("compaction stopped at {:?}", Step::Renamed);
         }
@@ -664,12 +663,7 @@ impl JournalWriter<'_> {
             .encode_record()
             .map_err(|err| anyhow!("can't encode journal record: {err}"))?;
         let inner = &mut *self.inner;
-        if inner.lost {
-            bail!(
-                "the capsule journal was lost by a failed compaction; open the store again to \
-                 commit"
-            );
-        }
+        inner.ensure_not_lost()?;
         let base = inner.end;
         let written: Result<()> = (|| {
             inner.file.seek(SeekFrom::Start(base))?;
@@ -1206,7 +1200,7 @@ mod compaction_tests {
         for step in [Step::Written, Step::Synced, Step::Renamed] {
             let dir = scratch("crash");
             let db = dir.join("space.db");
-            let unfinished = compaction_path(&Journal::path_for(&db));
+            let unfinished = record_file::compaction_path(&Journal::path_for(&db));
             let registry = CapsuleRegistry::open(&db).unwrap();
             churn(&registry, &mut Rng(7), 300);
             let before = index(&registry);
@@ -1243,7 +1237,7 @@ mod compaction_tests {
     fn a_torn_compaction_file_is_removed_on_open() {
         let dir = scratch("torn");
         let db = dir.join("space.db");
-        let unfinished = compaction_path(&Journal::path_for(&db));
+        let unfinished = record_file::compaction_path(&Journal::path_for(&db));
         let registry = CapsuleRegistry::open(&db).unwrap();
         churn(&registry, &mut Rng(9), 50);
         let before = index(&registry);
@@ -1254,6 +1248,89 @@ mod compaction_tests {
         assert!(!unfinished.exists());
         assert_eq!(index(&registry), before);
 
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A swap whose rename fails leaves the journal as it was, and usable
+    /// (#191).
+    #[test]
+    fn a_failed_rename_leaves_the_journal_usable() {
+        let dir = scratch("rename_fails");
+        let db = dir.join("space.db");
+        let path = Journal::path_for(&db);
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        churn(&registry, &mut Rng(13), 200);
+        let before = index(&registry);
+        let size = fs::metadata(&path).unwrap().len();
+        registry.journal.inner.lock().unwrap().swap_faults.rename = true;
+
+        let err = registry.compact_journal().unwrap_err();
+        assert!(
+            err.to_string().contains("the journal is unchanged"),
+            "{err:#}"
+        );
+        assert!(!record_file::compaction_path(&path).exists());
+        assert_eq!(fs::metadata(&path).unwrap().len(), size);
+        assert_eq!(registry.journal.start().generation, 0);
+        assert_eq!(index(&registry), before);
+
+        // Commits carry on, and it compacts once the rename works.
+        churn(&registry, &mut Rng(14), 20);
+        registry.journal.inner.lock().unwrap().swap_faults.rename = false;
+        assert!(registry.compact_journal().unwrap().is_some());
+        let after = index(&registry);
+        drop(registry);
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(registry.journal.start().generation, 1);
+        assert_eq!(index(&registry), after);
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A swap that can't rename or reopen loses the journal's handle.
+    /// Commits, replays and further compactions are refused until the store
+    /// is opened again, which finds the old journal intact (#191).
+    #[test]
+    fn a_swap_that_cant_recover_refuses_commits_and_compactions() {
+        let dir = scratch("swap_lost");
+        let db = dir.join("space.db");
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        churn(&registry, &mut Rng(15), 200);
+        let before = index(&registry);
+        registry.journal.inner.lock().unwrap().swap_faults = SwapFaults {
+            rename: true,
+            reopen: true,
+        };
+
+        let err = registry.compact_journal().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("commits are refused until the store is opened again"),
+            "{err:#}"
+        );
+        let lost = |err: anyhow::Error| err.to_string().contains("lost by a failed compaction");
+        let created = registry.create_capsule(manifest(&mut Rng(16)));
+        assert!(lost(created.unwrap_err()));
+        let namespace = JournalRecord::Namespace {
+            ns: NAMESPACES[0].to_string(),
+            created_at: 1,
+        };
+        assert!(lost(registry.commit(vec![namespace]).unwrap_err()));
+        let replayed = registry
+            .journal
+            .replay(&registry.journal.start(), |_, _| Ok(()));
+        assert!(lost(replayed.unwrap_err()));
+        assert!(lost(registry.compact_journal().unwrap_err()));
+        assert_eq!(index(&registry), before);
+        drop(registry);
+
+        // The old journal is intact, and opening the store again recovers.
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(registry.journal.start().generation, 0);
+        assert_eq!(index(&registry), before);
+        churn(&registry, &mut Rng(17), 20);
+        assert!(registry.compact_journal().unwrap().is_some());
         drop(registry);
         let _ = fs::remove_dir_all(&dir);
     }

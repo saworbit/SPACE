@@ -23,7 +23,7 @@ use common::format::{
 };
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
@@ -270,6 +270,95 @@ pub fn write_new_file(file: &mut File, path: &Path, header: &FileHeader) -> Resu
     file.sync_all()?;
     sync_parent_dir(path);
     Ok(record.len() as u64)
+}
+
+/// Where compaction writes the next generation of the file at `path`
+/// before renaming it into place.
+pub fn compaction_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".compact");
+    PathBuf::from(name)
+}
+
+/// Remove the next generation a compaction of the `kind` file at `path`
+/// left behind without renaming it into place. The file it would have
+/// replaced is intact.
+pub fn remove_unfinished_compaction(path: &Path, kind: FileKind) -> std::io::Result<()> {
+    let unfinished = compaction_path(path);
+    if unfinished.exists() {
+        warn!(
+            path = %unfinished.display(),
+            "removing the file of a compaction that didn't finish; the {} is intact",
+            describe(kind)
+        );
+        std::fs::remove_file(&unfinished)?;
+    }
+    Ok(())
+}
+
+/// Failures [`swap_in_next_generation`] makes up, so tests can check what
+/// its callers do with them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SwapFaults {
+    /// The rename fails.
+    pub rename: bool,
+    /// Opening the old file again after the failed rename fails.
+    pub reopen: bool,
+}
+
+/// What [`swap_in_next_generation`] did.
+#[derive(Debug)]
+pub enum Swap {
+    /// The next generation is in place, and the handle is to it.
+    Swapped,
+    /// The rename failed. The handle is to the old file again, which is
+    /// unchanged.
+    Unchanged(std::io::Error),
+    /// The rename failed and the old file couldn't be opened again. The
+    /// handle left is to the next generation, which has been removed, so
+    /// the caller must refuse its file until the store is opened again
+    /// (#150).
+    Lost {
+        rename: std::io::Error,
+        reopen: std::io::Error,
+    },
+}
+
+/// Rename a compaction's complete and fsynced next generation, `next` at
+/// `next_path`, over the file at `path`, whose handle is `current`. Every
+/// compaction swaps through this (#191). `faults` is for tests.
+pub fn swap_in_next_generation(
+    path: &Path,
+    current: &mut File,
+    next: File,
+    next_path: &Path,
+    faults: SwapFaults,
+) -> Swap {
+    // Windows won't rename over a file that's open, so close the old file
+    // first. The new one can be renamed while open.
+    drop(std::mem::replace(current, next));
+    let renamed = if faults.rename {
+        Err(std::io::Error::other("injected rename failure"))
+    } else {
+        std::fs::rename(next_path, path)
+    };
+    let Err(rename) = renamed else {
+        sync_parent_dir(path);
+        return Swap::Swapped;
+    };
+    let reopened = if faults.reopen {
+        Err(std::io::Error::other("injected reopen failure"))
+    } else {
+        OpenOptions::new().read(true).write(true).open(path)
+    };
+    let _ = std::fs::remove_file(next_path);
+    match reopened {
+        Ok(old) => {
+            *current = old;
+            Swap::Unchanged(rename)
+        }
+        Err(reopen) => Swap::Lost { rename, reopen },
+    }
 }
 
 /// Open the record file at `path`, creating it if needed, and call `visit`
