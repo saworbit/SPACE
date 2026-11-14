@@ -112,13 +112,16 @@ async fn a_lost_index_never_reuses_a_segment_id() {
             .write_capsule(&patterned(10_000, 5), &Policy::default())
             .await
             .unwrap();
-        registry.get_capsule(id).unwrap().unwrap().segments[0]
+        let segment = registry.get_capsule(id).unwrap().unwrap().segments[0];
+        // Its file stays until garbage collection, but the journal no
+        // longer knows the segment.
+        registry.delete_capsule(id).unwrap();
+        segment
     };
     let before = fs::read(segment_file(&root, first)).unwrap();
 
-    // Lose space.db and the journal: a new store is started over the root.
+    // Lose space.db: the index, and the segment counter with it.
     fs::remove_dir_all(dir.join("space.db")).unwrap();
-    let _ = fs::remove_file(dir.join("space.journal"));
     let (registry, mut handle) = open(&dir.join("space.db"), &root).await.unwrap();
     let id = handle
         .write_capsule(&patterned(10_000, 6), &Policy::default())
@@ -130,5 +133,31 @@ async fn a_lost_index_never_reuses_a_segment_id() {
     assert_eq!(fs::read(segment_file(&root, first)).unwrap(), before);
 
     drop((registry, handle));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A new journal can't take over a storage root that holds segments: the
+/// journal that recorded them is missing, and garbage collection would
+/// delete them all (#194).
+#[tokio::test]
+async fn a_root_whose_journal_is_missing_is_refused() {
+    let dir = scratch("missing_journal");
+    let root = dir.join("storage");
+    let segment = {
+        let (registry, mut handle) = open(&dir.join("space.db"), &root).await.unwrap();
+        let id = handle
+            .write_capsule(&patterned(10_000, 7), &Policy::default())
+            .await
+            .unwrap();
+        registry.get_capsule(id).unwrap().unwrap().segments[0]
+    };
+    let before = fs::read(segment_file(&root, segment)).unwrap();
+
+    fs::remove_dir_all(dir.join("space.db")).unwrap();
+    fs::remove_file(dir.join("space.journal")).unwrap();
+    let err = open(&dir.join("space.db"), &root).await.err().unwrap();
+    assert!(err.to_string().contains("is new"), "{err:#}");
+    assert_eq!(fs::read(segment_file(&root, segment)).unwrap(), before);
+
     let _ = fs::remove_dir_all(&dir);
 }

@@ -49,7 +49,7 @@ The observation the design rests on: **ref counts are the only segment metadata 
 
 The cost is one extra fsync per write: the data log before the commit, the journal for it (§6).
 
-The journal, the data log and a storage root's `store` file each start with a `FILE` record carrying a `store_id`. Opening a journal with a data log or storage root of another store fails. `spacectl` finds the journal and data log in one directory (`--store`, the current directory by default), so mixing files from two stores is an easy mistake to make. Before it opens a storage root or `space.nvram` that holds no store yet, it checks that the journal holds no records, so a wrong `SPACE_STORAGE_ROOT` fails without starting a new store there.
+The journal, the data log and a storage root's `store` file each start with a `FILE` record carrying a `store_id`. Opening a journal with a data log or storage root of another store fails. A missing journal isn't replaced: the registry won't open a `space.db` that has been used without its journal, and a new journal with no records won't pair with a data log or storage root that already holds segments, since every segment would then look unreferenced ([#194](https://github.com/saworbit/SPACE/issues/194)). `spacectl` finds the journal and data log in one directory (`--store`, the current directory by default), so mixing files from two stores is an easy mistake to make. Before it opens a storage root or `space.nvram` that holds no store yet, it checks that the journal holds no records, so a wrong `SPACE_STORAGE_ROOT` fails without starting a new store there.
 
 ## 4. Record frame
 

@@ -338,6 +338,10 @@ impl Journal {
         })
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn store_id(&self) -> Uuid {
         self.inner.lock().unwrap().header.store_id
     }
@@ -1211,7 +1215,7 @@ mod compaction_tests {
             .unwrap()
             .expect("nothing reclaimed");
         assert_eq!(done.after, registry.journal.start().offset);
-        let err = registry.bind_store(Uuid::new_v4()).unwrap_err();
+        let err = registry.bind_store(Uuid::new_v4(), false).unwrap_err();
         assert!(err.to_string().contains("different stores"), "{err:#}");
 
         drop(registry);

@@ -854,6 +854,7 @@ never on capsule.policy
 | **Lost or corrupt `space.db`** | `space.db` missing, or sled fails to open it | Delete it and reopen: the index, S3 buckets and keys included, is rebuilt from `space.journal`. |
 | **Journal record cut short** | `open()` finds a last journal record that fails its checks | Truncated away; it was a commit that never completed, so its write or delete didn't happen. |
 | **Damage inside the journal** | Invalid bytes with valid journal records after them | The registry refuses to open: the capsules recorded in the damaged range can't be recovered from it. |
+| **Lost `space.journal`** | `space.journal` missing while `space.db` shows the store has been used, or a new journal meeting a data log or storage root that holds segments | The store won't open, and nothing in it changes ([#194](https://github.com/saworbit/SPACE/issues/194)). Restore the journal from the same copy as the rest of the store: without it, nothing says which segments make up which capsule. |
 | **Wrong key on read** | MAC verify fails | Read fails with auth error. No plaintext is exposed. |
 | **Key version no longer wanted** | n/a: every version is re-derived from the master key on demand | Old versions can't be retired while the master key is kept, and losing the master key loses every version. |
 | **Dedup-hit-then-GC race** | Cannot occur: write, delete and GC run under the pipeline handle's lock | n/a |
