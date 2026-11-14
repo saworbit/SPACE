@@ -16,8 +16,8 @@ use tracing::{error, info};
 
 use crate::checksum::{self, Algorithm};
 use crate::{
-    ByteRange, ListPage, ListQuery, ObjectMapping, Preconditions, PutOptions, S3Error, S3Result,
-    S3View, STORED_HEADERS, USER_METADATA_PREFIX,
+    ByteRange, ChunkedBody, ListPage, ListQuery, ObjectMapping, Preconditions, PutOptions, S3Error,
+    S3Result, S3View, STORED_HEADERS, USER_METADATA_PREFIX,
 };
 
 pub type AppState = Arc<S3View>;
@@ -42,6 +42,7 @@ impl IntoResponse for S3Error {
             }
             S3Error::BadDigest(_) => (StatusCode::BAD_REQUEST, "BadDigest", ""),
             S3Error::InvalidDigest(_) => (StatusCode::BAD_REQUEST, "InvalidDigest", ""),
+            S3Error::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "InvalidRequest", ""),
             S3Error::InvalidBucketName(bucket) => (
                 StatusCode::BAD_REQUEST,
                 "InvalidBucketName",
@@ -202,26 +203,11 @@ fn check_query(params: &[(String, String)], allowed: &[&str], operations: &[&str
 
 /// Refuse a PUT whose headers make it something other than a plain
 /// PutObject (#156): CopyObject, which would otherwise store the empty body
-/// as the copy, and an `aws-chunked` body, which would be stored with its
-/// chunk framing.
+/// as the copy.
 fn check_put_headers(headers: &HeaderMap) -> S3Result<()> {
     if headers.contains_key("x-amz-copy-source") {
         return Err(S3Error::NotImplemented(
             "CopyObject is not implemented".to_string(),
-        ));
-    }
-    let header_has = |name: &str, needle: &str| {
-        headers
-            .get_all(name)
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .any(|v| v.to_ascii_lowercase().contains(needle))
-    };
-    if header_has("x-amz-content-sha256", "streaming-")
-        || header_has(header::CONTENT_ENCODING.as_str(), "aws-chunked")
-    {
-        return Err(S3Error::NotImplemented(
-            "aws-chunked uploads are not implemented; send the body unencoded".to_string(),
         ));
     }
     // Headers that ask S3 to protect, encrypt or place the object (#196).
@@ -254,6 +240,60 @@ fn check_put_headers(headers: &HeaderMap) -> S3Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether a `Content-Encoding` token is `aws-chunked`, the framing of a
+/// streamed upload rather than an encoding of the object.
+fn is_aws_chunked(token: &str) -> bool {
+    token.trim().eq_ignore_ascii_case("aws-chunked")
+}
+
+/// Whether `x-amz-content-sha256` says the body is streamed in
+/// `aws-chunked` framing: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`,
+/// `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and the like.
+fn is_streaming(sha256: &str) -> bool {
+    sha256
+        .get(..10)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("STREAMING-"))
+}
+
+/// How a PUT body in `aws-chunked` framing is to be decoded (#178), or
+/// `None` for a plain body. The framing is signalled by `Content-Encoding:
+/// aws-chunked` or a `STREAMING-*` `x-amz-content-sha256`.
+fn chunked_body(headers: &HeaderMap) -> S3Result<Option<ChunkedBody>> {
+    let value = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let encoded = headers
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.split(',').any(is_aws_chunked));
+    if !encoded && !value("x-amz-content-sha256").is_some_and(is_streaming) {
+        return Ok(None);
+    }
+    let decoded_length = match value("x-amz-decoded-content-length") {
+        None => None,
+        Some(n) => Some(n.trim().parse::<u64>().map_err(|_| {
+            S3Error::InvalidArgument("x-amz-decoded-content-length must be a number".into())
+        })?),
+    };
+    let mut trailer = Vec::new();
+    for name in value("x-amz-trailer")
+        .into_iter()
+        .flat_map(|v| v.split(','))
+    {
+        let name = name.trim().to_ascii_lowercase();
+        let algorithm = name
+            .strip_prefix("x-amz-checksum-")
+            .and_then(Algorithm::from_checksum_name)
+            .ok_or_else(|| {
+                S3Error::NotImplemented(format!("the {name} trailer is not implemented"))
+            })?;
+        trailer.push(algorithm);
+    }
+    Ok(Some(ChunkedBody {
+        decoded_length,
+        trailer,
+    }))
 }
 
 /// Whether every `name` header is `value`, ignoring case.
@@ -312,10 +352,10 @@ fn expected_digests(headers: &HeaderMap) -> S3Result<Vec<checksum::Expected>> {
             )));
         }
     }
-    // SigV4's payload hash. UNSIGNED-PAYLOAD says there's none, and the
-    // streaming forms are refused with aws-chunked.
+    // SigV4's payload hash. UNSIGNED-PAYLOAD says there's none, and in the
+    // streaming forms each chunk is signed instead (#178).
     if let Some(sha) = value("x-amz-content-sha256") {
-        if !sha.eq_ignore_ascii_case("UNSIGNED-PAYLOAD") {
+        if !sha.eq_ignore_ascii_case("UNSIGNED-PAYLOAD") && !is_streaming(sha) {
             let expected =
                 checksum::Expected::from_hex("x-amz-content-sha256", Algorithm::Sha256, sha)
                     .ok_or_else(|| {
@@ -341,13 +381,27 @@ fn stored_metadata(headers: &HeaderMap) -> S3Result<Vec<(String, String)>> {
         if !STORED_HEADERS.contains(&name) && !name.starts_with(USER_METADATA_PREFIX) {
             continue;
         }
-        let values = headers
+        let mut values = headers
             .get_all(name)
             .iter()
             .map(|v| v.to_str())
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| S3Error::InvalidArgument(format!("the {name} header must be ASCII")))?;
-        metadata.push((name.to_string(), values.join(",")));
+            .map_err(|_| S3Error::InvalidArgument(format!("the {name} header must be ASCII")))?
+            .join(",");
+        // aws-chunked is how the upload was framed, not how the object is
+        // encoded, so it isn't kept (#178).
+        if name == header::CONTENT_ENCODING.as_str() {
+            values = values
+                .split(',')
+                .filter(|token| !is_aws_chunked(token))
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join(",");
+            if values.is_empty() {
+                continue;
+            }
+        }
+        metadata.push((name.to_string(), values));
     }
     metadata.sort();
     Ok(metadata)
@@ -374,13 +428,16 @@ pub async fn put_object(
         return e.into_response();
     }
 
-    let options = match stored_metadata(&request_headers)
-        .and_then(|metadata| Ok((metadata, expected_digests(&request_headers)?)))
-    {
-        Ok((metadata, digests)) => PutOptions {
+    let parsed = stored_metadata(&request_headers).and_then(|metadata| {
+        let digests = expected_digests(&request_headers)?;
+        Ok((metadata, digests, chunked_body(&request_headers)?))
+    });
+    let options = match parsed {
+        Ok((metadata, digests, chunked)) => PutOptions {
             conditions: preconditions(&request_headers),
             metadata,
             digests,
+            chunked,
         },
         Err(e) => return e.into_response(),
     };

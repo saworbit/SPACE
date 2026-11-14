@@ -41,6 +41,22 @@ impl App {
         self.send_with(method, uri, &[], body).await
     }
 
+    /// A request whose response body comes back as bytes.
+    async fn send_raw(&self, method: &str, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, headers, bytes.to_vec())
+    }
+
     async fn send_with(
         &self,
         method: &str,
@@ -359,7 +375,8 @@ async fn unimplemented_operations_are_refused_not_misrun() {
     ] {
         refused(method, uri, &[], body).await;
     }
-    // CopyObject, and a body in aws-chunked framing.
+    // CopyObject, and an aws-chunked body whose trailer is a checksum the
+    // server doesn't compute.
     refused(
         "PUT",
         "/demo/dst.txt",
@@ -373,8 +390,9 @@ async fn unimplemented_operations_are_refused_not_misrun() {
         &[
             ("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER"),
             ("content-encoding", "aws-chunked"),
+            ("x-amz-trailer", "x-amz-checksum-xxhash64"),
         ],
-        "5\r\nhello\r\n0\r\n\r\n",
+        "5\r\nhello\r\n0\r\nx-amz-checksum-xxhash64:AAAAAAAAAAA=\r\n\r\n",
     )
     .await;
 
@@ -1349,4 +1367,187 @@ async fn put_headers_asking_for_protection_are_refused() {
     ];
     let (status, _, xml) = app.send_with("PUT", "/demo/t.txt", &defaults, b"hi").await;
     assert_eq!(status, StatusCode::OK, "{xml}");
+}
+
+/// `data` in aws-chunked framing: chunks of `chunk` bytes, each with a
+/// signature when `signed`, then `trailers`.
+fn aws_chunked(data: &[u8], chunk: usize, signed: bool, trailers: &[(&str, &str)]) -> Vec<u8> {
+    let sig = |out: &mut Vec<u8>| {
+        if signed {
+            out.extend_from_slice(b";chunk-signature=");
+            out.extend_from_slice(&[b'a'; 64]);
+        }
+    };
+    let mut out = Vec::new();
+    for piece in data.chunks(chunk) {
+        out.extend_from_slice(format!("{:x}", piece.len()).as_bytes());
+        sig(&mut out);
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(piece);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"0");
+    sig(&mut out);
+    out.extend_from_slice(b"\r\n");
+    for (name, value) in trailers {
+        out.extend_from_slice(format!("{name}:{value}\r\n").as_bytes());
+    }
+    if signed && !trailers.is_empty() {
+        out.extend_from_slice(b"x-amz-trailer-signature:abc\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
+/// A PUT body in aws-chunked framing, in each of the STREAMING modes the
+/// SDKs use, stores exactly the decoded bytes, across segment boundaries,
+/// and its trailing checksum is checked (#178).
+#[tokio::test]
+async fn aws_chunked_bodies_store_the_decoded_bytes() {
+    use protocol_s3::checksum::{digest_of, Algorithm};
+    let app = App::new("aws_chunked");
+    // Two and a bit segments, in 64 KiB chunks as the SDKs send them.
+    let data: Vec<u8> = (0..(9 << 20) + 5)
+        .map(|i| (i % 251) as u8 ^ (i >> 16) as u8)
+        .collect();
+    let crc = base64_of(&digest_of(Algorithm::Crc32, &data));
+    let length = data.len().to_string();
+    for (mode, signed, trailer) in [
+        ("STREAMING-AWS4-HMAC-SHA256-PAYLOAD", true, false),
+        ("STREAMING-UNSIGNED-PAYLOAD-TRAILER", false, true),
+        ("STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER", true, true),
+    ] {
+        let trailers: Vec<(&str, &str)> = if trailer {
+            vec![("x-amz-checksum-crc32", crc.as_str())]
+        } else {
+            Vec::new()
+        };
+        let body = aws_chunked(&data, 64 << 10, signed, &trailers);
+        let mut headers = vec![
+            ("x-amz-content-sha256", mode),
+            ("content-encoding", "aws-chunked"),
+            ("x-amz-decoded-content-length", length.as_str()),
+        ];
+        if trailer {
+            headers.push(("x-amz-trailer", "x-amz-checksum-crc32"));
+        }
+        let uri = format!("/demo/{mode}");
+        let (status, _, xml) = app.send_with("PUT", &uri, &headers, &body).await;
+        assert_eq!(status, StatusCode::OK, "{mode}: {xml}");
+        let (_, headers, got) = app.send_raw("GET", &uri).await;
+        assert!(got == data, "{mode}: {} bytes back", got.len());
+        assert_eq!(header(&headers, "content-length"), Some(length.as_str()));
+        assert_eq!(header(&headers, "content-encoding"), None, "{mode}");
+    }
+
+    // Either signal alone means aws-chunked.
+    let framed = aws_chunked(b"either", 3, true, &[]);
+    for headers in [
+        [("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")],
+        [("content-encoding", "aws-chunked")],
+    ] {
+        let (status, _, xml) = app
+            .send_with("PUT", "/demo/either", &headers, &framed)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{headers:?}: {xml}");
+        assert_eq!(
+            app.send("GET", "/demo/either", b"").await.2,
+            "either",
+            "{headers:?}"
+        );
+    }
+
+    // aws-chunked framed a gzip object: only gzip is kept.
+    let headers = [
+        ("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER"),
+        ("content-encoding", "aws-chunked,gzip"),
+    ];
+    let body = aws_chunked(b"gz", 2, false, &[]);
+    assert_eq!(
+        app.send_with("PUT", "/demo/gz", &headers, &body).await.0,
+        StatusCode::OK
+    );
+    let (_, headers, body) = app.send("GET", "/demo/gz", b"").await;
+    assert_eq!(body, "gz");
+    assert_eq!(header(&headers, "content-encoding"), Some("gzip"));
+}
+
+/// A malformed or cut short aws-chunked body, one whose decoded length is
+/// wrong, or one whose trailing checksum doesn't match, fails the PUT and
+/// stores nothing (#178).
+#[tokio::test]
+async fn bad_aws_chunked_bodies_store_nothing() {
+    let app = App::new("bad_aws_chunked");
+    let good = aws_chunked(b"hello", 5, false, &[("x-amz-checksum-crc32", "NhCmhg==")]);
+    let headers = |length: &'static str| {
+        vec![
+            ("x-amz-content-sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER"),
+            ("content-encoding", "aws-chunked"),
+            ("x-amz-trailer", "x-amz-checksum-crc32"),
+            ("x-amz-decoded-content-length", length),
+        ]
+    };
+    let mut cut = good.clone();
+    cut.truncate(8);
+    let wrong_crc = aws_chunked(b"hello", 5, false, &[("x-amz-checksum-crc32", "AAAAAA==")]);
+    let no_trailer = aws_chunked(b"hello", 5, false, &[]);
+    let undeclared = aws_chunked(
+        b"hello",
+        5,
+        false,
+        &[
+            ("x-amz-checksum-crc32", "NhCmhg=="),
+            (
+                "x-amz-checksum-sha256",
+                "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=",
+            ),
+        ],
+    );
+    for (what, body, length, code) in [
+        ("cut short", cut, "5", "InvalidRequest"),
+        (
+            "bad framing",
+            b"zz\r\nhello\r\n0\r\n\r\n".to_vec(),
+            "5",
+            "InvalidRequest",
+        ),
+        ("wrong length", good.clone(), "6", "InvalidRequest"),
+        ("wrong checksum", wrong_crc, "5", "BadDigest"),
+        ("missing trailer", no_trailer, "5", "InvalidRequest"),
+        ("undeclared trailer", undeclared, "5", "InvalidRequest"),
+    ] {
+        let (status, _, xml) = app
+            .send_with("PUT", "/demo/bad", &headers(length), &body)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {xml}");
+        assert_eq!(tags(&xml, "Code"), [code], "{what}: {xml}");
+        assert_eq!(
+            app.send("HEAD", "/demo/bad", b"").await.0,
+            StatusCode::NOT_FOUND,
+            "{what}"
+        );
+    }
+    let (status, _, xml) = app
+        .send_with("PUT", "/demo/bad", &headers("5"), &good)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(app.send("GET", "/demo/bad", b"").await.2, "hello");
+}
+
+fn base64_of(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
