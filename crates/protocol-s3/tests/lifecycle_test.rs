@@ -5,7 +5,7 @@ use bytes::Bytes;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
-use protocol_s3::{ListQuery, Preconditions, S3Error, S3View};
+use protocol_s3::{ListQuery, Preconditions, PutOptions, S3Error, S3View};
 use std::path::{Path, PathBuf};
 
 fn scratch(name: &str) -> PathBuf {
@@ -227,13 +227,16 @@ async fn only_one_racing_create_only_put_wins() {
             Ok::<_, std::io::Error>(Bytes::from_static(data))
         })
     };
-    let create_only = Preconditions {
-        if_none_match: Some("*".to_string()),
-        ..Preconditions::default()
+    let create_only = PutOptions {
+        conditions: Preconditions {
+            if_none_match: Some("*".to_string()),
+            ..Preconditions::default()
+        },
+        ..PutOptions::default()
     };
     let (first, second) = tokio::join!(
-        view.put_object_if("bkt", "k", gated(b"first"), &create_only),
-        view.put_object_if("bkt", "k", gated(b"second"), &create_only),
+        view.put_object_with("bkt", "k", gated(b"first"), &create_only),
+        view.put_object_with("bkt", "k", gated(b"second"), &create_only),
     );
     let lost = [&first, &second]
         .iter()
@@ -245,5 +248,70 @@ async fn only_one_racing_create_only_put_wins() {
     assert_eq!(keys(&view, "bkt"), ["k"]);
 
     drop(view);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The metadata a PUT stores is in the journal with the key (#163), so it
+/// survives a restart and a lost index.
+#[tokio::test]
+async fn metadata_survives_a_restart_and_a_lost_index() {
+    let dir = scratch("metadata");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let options = PutOptions {
+        metadata: vec![
+            ("content-type".to_string(), "image/jpeg".to_string()),
+            ("x-amz-meta-owner".to_string(), "qa".to_string()),
+        ],
+        ..PutOptions::default()
+    };
+    view.put_object_with("bkt", "img", body(b"jpeg"), &options)
+        .await
+        .unwrap();
+    drop((registry, view));
+
+    for lose_index in [false, true] {
+        if lose_index {
+            std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+        }
+        let (registry, view) = open(&dir);
+        let meta = view.head_object("bkt", "img").unwrap();
+        assert_eq!(meta.content_type(), "image/jpeg");
+        assert_eq!(
+            meta.metadata(),
+            [("x-amz-meta-owner".to_string(), "qa".to_string())]
+        );
+        let listed = view.list_objects("bkt", &ListQuery::default()).unwrap();
+        assert_eq!(listed.objects[0].content_type(), "image/jpeg");
+        drop((registry, view));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Only the headers S3 stores can be stored, with ASCII values.
+#[tokio::test]
+async fn metadata_s3_doesnt_store_is_refused() {
+    let dir = scratch("bad_metadata");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    for (name, value) in [
+        ("x-unrelated", "v"),
+        ("x-amz-meta-", "v"),
+        ("x-amz-meta-Upper", "v"),
+        ("x-amz-meta-name", "caf\u{e9}"),
+        ("x-amz-meta-name", "line\nbreak"),
+    ] {
+        let options = PutOptions {
+            metadata: vec![(name.to_string(), value.to_string())],
+            ..PutOptions::default()
+        };
+        let result = view.put_object_with("bkt", "k", body(b"x"), &options).await;
+        assert!(
+            matches!(result, Err(S3Error::InvalidArgument(_))),
+            "{name}: {result:?}"
+        );
+    }
+    assert!(registry.capsules().is_empty());
+    drop((registry, view));
     let _ = std::fs::remove_dir_all(&dir);
 }

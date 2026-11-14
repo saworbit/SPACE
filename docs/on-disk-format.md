@@ -188,17 +188,21 @@ Notes:
 
 ### 5.6 `BIND` and `UNBIND`
 
-`BIND`:
+`BIND` (layout version 2):
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 16 | `capsule_id` |
 | 16 | 2 + n | `ns` (`str`) |
 | … | 2 + m | `name` (`str`) |
+| … | 2 | `count` |
+| … | … | `count` pairs: `key` (`str`), then `value` (`str`) |
 
-`UNBIND` is the same without `capsule_id`.
+The pairs are the name's metadata, in the order written. The S3 view keeps the `Content-Type`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Cache-Control`, `Expires` and `x-amz-meta-*` headers of a PUT there, with lowercase names ([#163](https://github.com/saworbit/SPACE/issues/163)). A version 1 `BIND` stops after `name`, and reads as a name with no metadata. A build from before version 2 refuses a journal that holds a version 2 `BIND`.
 
-Namespaces and names are opaque strings to the core. A namespace can't be empty or contain NUL, because the index separates a namespace from its names with NUL; a reader refuses a record that breaks this. A name can be any string. The S3 view uses `ns = "s3:" + bucket` and `name = key`. Binding a name replaces any earlier binding; unbinding an unbound name does nothing. Neither drops a capsule on its own; that takes a `DROP` in the same `BATCH`.
+`UNBIND` (layout version 1) is the version 1 `BIND` without `capsule_id`.
+
+Namespaces and names are opaque strings to the core. A namespace can't be empty or contain NUL, because the index separates a namespace from its names with NUL; a reader refuses a record that breaks this. A name can be any string. The S3 view uses `ns = "s3:" + bucket` and `name = key`. Binding a name replaces any earlier binding and its metadata; unbinding an unbound name does nothing. Neither drops a capsule on its own; that takes a `DROP` in the same `BATCH`.
 
 ### 5.7 `BATCH`
 
@@ -275,7 +279,7 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 | `CAPSULE` | Insert the capsule. For each entry `refs[seg] += 1`. If `DEDUPE` is set and the hash isn't in the content index, register `hash → seg`. |
 | `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`; at 0, deregister the hash if it points at `seg`. |
 | `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists. |
-| `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name). |
+| `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name, holding the capsule id and the metadata). |
 | `KEY` | Nothing. The journal keeps the last one in memory, found when it's opened. |
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.

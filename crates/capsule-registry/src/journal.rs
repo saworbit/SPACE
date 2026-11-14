@@ -27,7 +27,8 @@ use uuid::Uuid;
 /// journal: an index of another version is rebuilt from the journal.
 ///
 /// 2: names (`NAMESPACE`, `BIND`, `UNBIND`) are indexed.
-pub const INDEX_VERSION: u32 = 2;
+/// 3: a name's metadata (`BIND` layout version 2) is indexed with it.
+pub const INDEX_VERSION: u32 = 3;
 
 /// How far into which journal the index has applied records. Stored in
 /// sled next to the index, and updated in the same transaction as each
@@ -135,6 +136,9 @@ fn members(record: &JournalRecord) -> &[JournalRecord] {
     }
 }
 
+/// A name's metadata (`docs/on-disk-format.md` §5.6).
+type Metadata = Vec<(String, String)>;
+
 /// The live state of a journal, as compaction keeps it. A capsule is held
 /// as the offset of the record that holds its `CAPSULE`, which is read again
 /// when the new generation is written, so no manifest stays in memory.
@@ -146,8 +150,8 @@ struct Live {
     capsules: HashMap<CapsuleId, (u64, u64)>,
     /// Namespace → (first creation time, record length).
     namespaces: BTreeMap<String, (u64, u64)>,
-    /// (namespace, name) → (capsule, record length).
-    names: BTreeMap<(String, String), (CapsuleId, u64)>,
+    /// (namespace, name) → (capsule, metadata, record length).
+    names: BTreeMap<(String, String), (CapsuleId, Metadata, u64)>,
     /// The last `KEY` record's key, and its record length.
     key: Option<(StoreKey, u64)>,
 }
@@ -181,9 +185,12 @@ impl Live {
                     ns,
                     name,
                     capsule_id,
+                    metadata,
                 } => {
-                    self.names
-                        .insert((ns.clone(), name.clone()), (*capsule_id, len()?));
+                    self.names.insert(
+                        (ns.clone(), name.clone()),
+                        (*capsule_id, metadata.clone(), len()?),
+                    );
                 }
                 JournalRecord::Unbind { ns, name } => {
                     self.names.remove(&(ns.clone(), name.clone()));
@@ -206,7 +213,7 @@ impl Live {
         self.capsule_bytes()
             + self.key.map_or(0, |(_, len)| len)
             + self.namespaces.values().map(|(_, len)| len).sum::<u64>()
-            + self.names.values().map(|(_, len)| len).sum::<u64>()
+            + self.names.values().map(|(_, _, len)| len).sum::<u64>()
     }
 }
 
@@ -260,11 +267,12 @@ fn write_live(
         }
         Ok(())
     })?;
-    for ((ns, name), (capsule_id, _)) in &live.names {
+    for ((ns, name), (capsule_id, metadata, _)) in &live.names {
         let record = JournalRecord::Bind {
             ns: ns.clone(),
             name: name.clone(),
             capsule_id: *capsule_id,
+            metadata: metadata.clone(),
         };
         put(&mut w, &mut written, &record)?;
     }
@@ -735,6 +743,7 @@ mod tests {
                         ns: "s3:b".into(),
                         name: "k".into(),
                         capsule_id: new.capsule_id,
+                        metadata: Vec::new(),
                     },
                     JournalRecord::Drop(old.capsule_id),
                 ]))
@@ -867,12 +876,15 @@ mod compaction_tests {
                     // capsule the key held.
                     let m = manifest(rng);
                     let id = m.capsule_id;
+                    // Metadata that differs between overwrites of a key.
+                    let metadata = vec![("content-type".to_string(), format!("type/{id:?}"))];
                     let mut records = vec![
                         JournalRecord::Capsule(Box::new(m)),
                         JournalRecord::Bind {
                             ns,
                             name,
                             capsule_id: id,
+                            metadata,
                         },
                     ];
                     if let Some(old) = held.filter(|old| take(&mut live, *old)) {
@@ -900,6 +912,7 @@ mod compaction_tests {
                                 ns,
                                 name,
                                 capsule_id,
+                                metadata: Vec::new(),
                             }])
                             .unwrap();
                     }
@@ -920,7 +933,7 @@ mod compaction_tests {
         refs: Vec<(u64, u32)>,
         content: Vec<(String, u64)>,
         namespaces: Vec<Option<u64>>,
-        names: Vec<Vec<(String, CapsuleId)>>,
+        names: Vec<Vec<(String, crate::Binding)>>,
     }
 
     fn index(registry: &CapsuleRegistry) -> Index {
@@ -1132,6 +1145,7 @@ mod compaction_tests {
                 ns: "s3:b".into(),
                 name: "kept".into(),
                 capsule_id: CapsuleId::new(),
+                metadata: Vec::new(),
             }])
             .unwrap();
         assert!(registry.compact_journal_if_worthwhile().unwrap().is_none());

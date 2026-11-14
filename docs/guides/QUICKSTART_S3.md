@@ -54,6 +54,7 @@ Create a bucket, then PUT an object into it:
 ```bash
 curl -X PUT http://localhost:8080/demo-bucket
 curl -i -X PUT http://localhost:8080/demo-bucket/hello.txt \
+  -H "Content-Type: text/plain" \
   -d "Hello from SPACE! This is stored as a capsule."
 ```
 
@@ -86,7 +87,7 @@ etag: "f1eec31a-8966-4ca1-9538-187d6529383b"
 last-modified: Wed, 28 Oct 2026 19:17:00 GMT
 ```
 
-The content type is guessed from the key's extension.
+GET and HEAD return the `Content-Type`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Cache-Control`, `Expires` and `x-amz-meta-*` headers the PUT sent. Without a `Content-Type`, the type is guessed from the key's extension. `curl -d` sends `application/x-www-form-urlencoded` unless told otherwise, so step 2 sets it. As in S3, the `x-amz-meta-*` names and values can add up to at most 2 KB.
 
 ## 4. List a bucket
 

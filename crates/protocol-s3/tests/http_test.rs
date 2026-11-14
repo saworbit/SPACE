@@ -748,3 +748,131 @@ async fn the_health_check_hides_no_bucket() {
         assert_eq!(tags(&xml, "Key"), ["a.txt"], "{uri}: {xml}");
     }
 }
+
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).map(|v| v.to_str().unwrap())
+}
+
+/// A PUT stores Content-Type, the other representation headers and
+/// `x-amz-meta-*`, and GET and HEAD return them (#163).
+#[tokio::test]
+async fn put_stores_the_headers_get_and_head_return() {
+    let app = App::new("metadata");
+    let sent = [
+        ("content-type", "image/x-test"),
+        ("cache-control", "max-age=60"),
+        ("content-disposition", "attachment; filename=\"img.JPG\""),
+        ("content-language", "en"),
+        ("x-amz-meta-owner", "qa"),
+        ("X-Amz-Meta-Mixed-Case", "kept"),
+        ("x-amz-meta-tag", "a"),
+        ("x-amz-meta-tag", "b"),
+        ("x-unrelated", "dropped"),
+    ];
+    let (status, _, _) = app
+        .send_with("PUT", "/demo/img.JPG", &sent, b"\xff\xd8")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let expected = [
+        ("content-type", "image/x-test"),
+        ("cache-control", "max-age=60"),
+        ("content-disposition", "attachment; filename=\"img.JPG\""),
+        ("content-language", "en"),
+        ("x-amz-meta-owner", "qa"),
+        ("x-amz-meta-mixed-case", "kept"),
+        ("x-amz-meta-tag", "a,b"),
+    ];
+    for (method, range) in [("HEAD", None), ("GET", None), ("GET", Some("bytes=0-0"))] {
+        let extra: Vec<(&str, &str)> = range.map(|r| ("range", r)).into_iter().collect();
+        let (_, headers, _) = app.send_with(method, "/demo/img.JPG", &extra, b"").await;
+        for (name, value) in expected {
+            assert_eq!(
+                header(&headers, name),
+                Some(value),
+                "{method} {range:?} {name}"
+            );
+        }
+        assert_eq!(header(&headers, "x-unrelated"), None);
+    }
+
+    // A response-* parameter still sets the header it names.
+    let (_, headers, _) = app
+        .send("GET", "/demo/img.JPG?response-content-type=text/plain", b"")
+        .await;
+    assert_eq!(header(&headers, "content-type"), Some("text/plain"));
+    assert_eq!(header(&headers, "x-amz-meta-owner"), Some("qa"));
+
+    // An overwrite replaces the metadata. With no type sent, it's guessed
+    // from the extension, whatever its case.
+    app.send("PUT", "/demo/img.JPG", b"\xff\xd8").await;
+    let (_, headers, _) = app.send("HEAD", "/demo/img.JPG", b"").await;
+    assert_eq!(header(&headers, "content-type"), Some("image/jpeg"));
+    assert_eq!(header(&headers, "x-amz-meta-owner"), None);
+    assert_eq!(header(&headers, "cache-control"), None);
+}
+
+/// Without a Content-Type, the type comes from the key's extension.
+#[tokio::test]
+async fn an_untyped_object_gets_a_type_from_its_extension() {
+    let app = App::new("guessed");
+    for (key, expected) in [
+        ("a.SVG", "image/svg+xml"),
+        ("table.csv", "text/csv"),
+        ("app.wasm", "application/wasm"),
+        ("logs.gz", "application/gzip"),
+        ("clip.Mp4", "video/mp4"),
+        ("page.HTML", "text/html"),
+        ("noext", "application/octet-stream"),
+        ("dir.v2/file", "application/octet-stream"),
+    ] {
+        app.send("PUT", &format!("/demo/{key}"), b"x").await;
+        let (_, headers, _) = app.send("HEAD", &format!("/demo/{key}"), b"").await;
+        assert_eq!(header(&headers, "content-type"), Some(expected), "{key}");
+    }
+}
+
+/// As in S3, user metadata is limited to 2 KB: the names, without the
+/// prefix, and the values. A PUT over it stores nothing.
+#[tokio::test]
+async fn user_metadata_over_2_kb_is_refused() {
+    let app = App::new("metadata_size");
+    let fits = "v".repeat(2048 - "big".len());
+    let (status, _, xml) = app
+        .send_with("PUT", "/demo/fits", &[("x-amz-meta-big", &fits)], b"x")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{xml}");
+
+    let log = app.dir.join("space.nvram");
+    let before = std::fs::metadata(&log).unwrap().len();
+    let over = format!("{fits}v");
+    let (status, _, xml) = app
+        .send_with("PUT", "/demo/over", &[("x-amz-meta-big", &over)], b"x")
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tags(&xml, "Code"), ["MetadataTooLarge"]);
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), before);
+    assert_eq!(
+        app.send("HEAD", "/demo/over", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// A stored header value must be ASCII, as S3 requires.
+#[tokio::test]
+async fn a_header_value_that_isnt_ascii_is_refused() {
+    let app = App::new("metadata_ascii");
+    let request = Request::put("/demo/a.txt")
+        .header(
+            "x-amz-meta-name",
+            axum::http::HeaderValue::from_bytes(b"caf\xc3\xa9").unwrap(),
+        )
+        .body(Body::from("x"))
+        .unwrap();
+    let response = app.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        app.send("HEAD", "/demo/a.txt", b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+}

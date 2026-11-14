@@ -14,6 +14,7 @@ mod journal;
 mod store;
 
 pub use journal::JournalCompaction;
+pub use store::Binding;
 
 const DEFAULT_PAGE_SIZE: usize = 1024;
 
@@ -1253,6 +1254,11 @@ impl CapsuleRegistry {
 
     /// The capsule `name` in `ns` points at.
     pub fn name(&self, ns: &str, name: &str) -> Result<Option<CapsuleId>> {
+        Ok(self.store.get_name(ns, name)?.map(|b| b.capsule_id))
+    }
+
+    /// The capsule `name` in `ns` points at, and the metadata kept with it.
+    pub fn binding(&self, ns: &str, name: &str) -> Result<Option<Binding>> {
         self.store.get_name(ns, name)
     }
 
@@ -1264,7 +1270,7 @@ impl CapsuleRegistry {
         prefix: &str,
         start_after: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(String, CapsuleId)>> {
+    ) -> Result<Vec<(String, Binding)>> {
         self.store.list_names(ns, prefix, start_after, limit)
     }
 

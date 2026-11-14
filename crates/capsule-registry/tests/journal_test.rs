@@ -116,7 +116,12 @@ fn patterned(len: usize, seed: u8) -> Vec<u8> {
 
 /// Every name in `ns` and the capsule it points at.
 fn names(registry: &CapsuleRegistry, ns: &str) -> Vec<(String, CapsuleId)> {
-    registry.list_names(ns, "", None, usize::MAX).unwrap()
+    registry
+        .list_names(ns, "", None, usize::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|(name, binding)| (name, binding.capsule_id))
+        .collect()
 }
 
 fn bind(ns: &str, name: &str, capsule_id: CapsuleId) -> JournalRecord {
@@ -124,6 +129,7 @@ fn bind(ns: &str, name: &str, capsule_id: CapsuleId) -> JournalRecord {
         ns: ns.into(),
         name: name.into(),
         capsule_id,
+        metadata: Vec::new(),
     }
 }
 
