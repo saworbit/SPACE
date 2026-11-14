@@ -1,10 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use common::scrub::{Damage, DamageKind, ScrubKind, ScrubTimes};
-use common::{
-    Capsule, CapsuleId, CompressionPolicy, ContentHash, CryptoProfile, EncryptionPolicy,
-    FederationStrategy, LayoutPolicy, Policy, SegmentId,
-};
-use serde::{Deserialize, Serialize};
+use common::{Capsule, CapsuleId, ContentHash, SegmentId};
 use sled::transaction::{
     ConflictableTransactionError, ConflictableTransactionResult, TransactionError,
     TransactionalTree,
@@ -16,7 +12,6 @@ use tracing::warn;
 
 use crate::journal::JournalPosition;
 use common::format::JournalRecord;
-use std::io::{BufWriter, Cursor, Write};
 
 const NEXT_SEGMENT_KEY: &[u8] = b"next_segment_id";
 /// Key in the counters tree for the journal position the index has reached.
@@ -35,7 +30,6 @@ pub struct Binding {
 
 pub trait MetadataStore: Send + Sync {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
-    fn put_capsule(&self, capsule: &Capsule) -> Result<()>;
     fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>>;
     #[allow(dead_code)]
     fn add_deduped_bytes(&self, id: &CapsuleId, bytes: u64) -> Result<()>;
@@ -68,7 +62,6 @@ pub trait MetadataStore: Send + Sync {
     fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool>;
 
     fn get_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>>;
-    fn put_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<()>;
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>>;
 
     /// Names (`docs/on-disk-format.md` §5.5–§5.6). Each namespace maps to its
@@ -95,179 +88,6 @@ pub trait MetadataStore: Send + Sync {
         start_after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, Binding)>>;
-
-    /// Covers capsules, content and the segment counter, not names.
-    #[allow(dead_code)]
-    fn create_snapshot(&self) -> Result<Vec<u8>>;
-    #[allow(dead_code)]
-    fn restore_snapshot(&self, data: &[u8]) -> Result<()>;
-}
-
-/// Snapshot payload for metadata store checkpoints.
-#[derive(Serialize, Deserialize)]
-#[allow(dead_code)]
-struct SnapshotHeader {
-    next_segment_id: u64,
-    capsule_entries: u64,
-    content_entries: u64,
-}
-
-// ---------------------------------------------------------------------------
-// Backwards-compatible decode helpers (bincode + evolving structs)
-// ---------------------------------------------------------------------------
-//
-// `bincode` serializes structs as a fixed-order sequence, which means adding
-// fields to `Policy` breaks decoding of previously persisted capsules.
-// We keep a minimal "legacy" representation here so older registries can still
-// be opened without manual migration.
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CapsuleLegacy {
-    id: CapsuleId,
-    size: u64,
-    segments: Vec<SegmentId>,
-    created_at: u64,
-    policy: PolicyLegacy,
-    deduped_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CapsuleLegacyV2 {
-    id: CapsuleId,
-    size: u64,
-    segments: Vec<SegmentId>,
-    created_at: u64,
-    policy: PolicyLegacyV2,
-    deduped_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PolicyLegacyV2 {
-    pub compression: CompressionPolicy,
-    pub dedupe: bool,
-    pub compact_interval_secs: Option<u64>,
-    pub erasure_profile: Option<String>,
-    #[serde(default)]
-    pub encryption: EncryptionPolicy,
-    #[serde(default)]
-    pub crypto_profile: CryptoProfile,
-    #[serde(default)]
-    pub layout: LayoutPolicy,
-    #[serde(default)]
-    pub federation: Option<FederationPolicyLegacy>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FederationPolicyLegacy {
-    pub strategy: FederationStrategy,
-    pub target_zones: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PolicyLegacy {
-    pub compression: CompressionPolicy,
-    pub dedupe: bool,
-    pub compact_interval_secs: Option<u64>,
-    pub erasure_profile: Option<String>,
-    #[serde(default)]
-    pub encryption: EncryptionPolicy,
-    #[serde(default)]
-    pub crypto_profile: CryptoProfile,
-    #[serde(default)]
-    pub layout: LayoutPolicy,
-}
-
-impl From<PolicyLegacy> for Policy {
-    fn from(value: PolicyLegacy) -> Self {
-        Policy {
-            compression: value.compression,
-            dedupe: value.dedupe,
-            compact_interval_secs: value.compact_interval_secs,
-            erasure_profile: value.erasure_profile,
-            encryption: value.encryption,
-            crypto_profile: value.crypto_profile,
-            layout: value.layout,
-            ..Policy::default()
-        }
-    }
-}
-
-impl From<PolicyLegacyV2> for Policy {
-    fn from(value: PolicyLegacyV2) -> Self {
-        let mut policy = Policy {
-            compression: value.compression,
-            dedupe: value.dedupe,
-            compact_interval_secs: value.compact_interval_secs,
-            erasure_profile: value.erasure_profile,
-            encryption: value.encryption,
-            crypto_profile: value.crypto_profile,
-            layout: value.layout,
-            ..Policy::default()
-        };
-
-        if let Some(fed) = value.federation {
-            policy.federation.targets = fed.target_zones;
-            policy.federation.strategy = Some(fed.strategy);
-        }
-
-        policy
-    }
-}
-
-impl From<CapsuleLegacy> for Capsule {
-    fn from(value: CapsuleLegacy) -> Self {
-        Self {
-            id: value.id,
-            size: value.size,
-            segments: value.segments,
-            created_at: value.created_at,
-            policy: value.policy.into(),
-            deduped_bytes: value.deduped_bytes,
-            digest: None,
-        }
-    }
-}
-
-impl From<CapsuleLegacyV2> for Capsule {
-    fn from(value: CapsuleLegacyV2) -> Self {
-        Self {
-            id: value.id,
-            size: value.size,
-            segments: value.segments,
-            created_at: value.created_at,
-            policy: value.policy.into(),
-            deduped_bytes: value.deduped_bytes,
-            digest: None,
-        }
-    }
-}
-
-fn is_unexpected_eof(err: &bincode::Error) -> bool {
-    matches!(
-        &**err,
-        bincode::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof
-    )
-}
-
-fn decode_capsule_bytes(bytes: &[u8]) -> std::result::Result<Capsule, bincode::Error> {
-    match bincode::deserialize::<Capsule>(bytes) {
-        Ok(capsule) => Ok(capsule),
-        Err(err) => {
-            if let Ok(capsule) = bincode::deserialize::<CapsuleLegacyV2>(bytes).map(Into::into) {
-                return Ok(capsule);
-            }
-            if is_unexpected_eof(&err) {
-                return bincode::deserialize::<CapsuleLegacy>(bytes)
-                    .map(Into::into)
-                    .or(Err(err));
-            }
-            Err(err)
-        }
-    }
-}
-
-fn decode_capsule(bytes: &[u8]) -> Result<Capsule> {
-    decode_capsule_bytes(bytes).map_err(|err| anyhow!(err))
 }
 
 /// Sled-backed metadata store: crash-safe, concurrent, embeddable.
@@ -321,6 +141,144 @@ fn capsule_name_key(capsule: CapsuleId, name_key: &[u8]) -> Vec<u8> {
     out
 }
 
+// The index's record encodings (#152). Numbers are little-endian. A capsule
+// record, and a name's metadata, are JSON, as the journal keeps a policy.
+// bincode, which encoded them before, is unmaintained (RUSTSEC-2025-0141).
+// Segment ids, reference counts, the segment counter and scrub times read
+// the same either way, so the scrub schedule survives the change. The rest
+// of the index is rebuilt from the journal (`journal::INDEX_VERSION` 6).
+
+fn segment_key(id: SegmentId) -> [u8; 8] {
+    id.0.to_le_bytes()
+}
+
+fn capsule_key(id: CapsuleId) -> [u8; 16] {
+    *id.as_uuid().as_bytes()
+}
+
+/// A content hash's key: its text, which is hex.
+fn hash_key(hash: &ContentHash) -> Vec<u8> {
+    hash.0.as_bytes().to_vec()
+}
+
+fn decode_hash(bytes: &[u8]) -> Result<ContentHash> {
+    Ok(ContentHash(
+        String::from_utf8(bytes.to_vec()).context("a content hash isn't text")?,
+    ))
+}
+
+fn fixed<const N: usize>(bytes: &[u8], what: &str) -> Result<[u8; N]> {
+    bytes
+        .try_into()
+        .map_err(|_| anyhow!("{what} is {} bytes, not {N}", bytes.len()))
+}
+
+fn decode_u64(bytes: &[u8], what: &str) -> Result<u64> {
+    Ok(u64::from_le_bytes(fixed(bytes, what)?))
+}
+
+fn decode_u32(bytes: &[u8], what: &str) -> Result<u32> {
+    Ok(u32::from_le_bytes(fixed(bytes, what)?))
+}
+
+fn decode_segment(bytes: &[u8]) -> Result<SegmentId> {
+    decode_u64(bytes, "a segment id").map(SegmentId)
+}
+
+fn encode_capsule(capsule: &Capsule) -> Result<Vec<u8>> {
+    serde_json::to_vec(capsule).context("can't encode a capsule record")
+}
+
+fn decode_capsule(bytes: &[u8]) -> Result<Capsule> {
+    serde_json::from_slice(bytes).context("can't decode a capsule record")
+}
+
+/// A name's index record: its capsule's 16 bytes, then its metadata as
+/// JSON.
+fn encode_binding(capsule_id: CapsuleId, metadata: &[(String, String)]) -> Result<Vec<u8>> {
+    let mut out = capsule_key(capsule_id).to_vec();
+    serde_json::to_writer(&mut out, metadata).context("can't encode a name's metadata")?;
+    Ok(out)
+}
+
+fn decode_binding(bytes: &[u8]) -> Result<Binding> {
+    if bytes.len() < 16 {
+        bail!("a name record is {} bytes, under 16", bytes.len());
+    }
+    let (id, metadata) = bytes.split_at(16);
+    Ok(Binding {
+        capsule_id: CapsuleId::from_uuid(uuid::Uuid::from_bytes(fixed(id, "a capsule id")?)),
+        metadata: serde_json::from_slice(metadata).context("can't decode a name's metadata")?,
+    })
+}
+
+/// A segment's `indexed` record: its dedupe references, then its hash.
+fn encode_dedupe_refs(hash: &ContentHash, count: u32) -> Vec<u8> {
+    let mut out = count.to_le_bytes().to_vec();
+    out.extend_from_slice(hash.0.as_bytes());
+    out
+}
+
+fn decode_dedupe_refs(bytes: &[u8]) -> Result<(ContentHash, u32)> {
+    if bytes.len() < 4 {
+        bail!(
+            "a dedupe reference record is {} bytes, under 4",
+            bytes.len()
+        );
+    }
+    let (count, hash) = bytes.split_at(4);
+    Ok((
+        decode_hash(hash)?,
+        decode_u32(count, "a dedupe reference count")?,
+    ))
+}
+
+/// A hash's `candidates` record: each segment's id.
+fn encode_segments(segments: &[SegmentId]) -> Vec<u8> {
+    segments.iter().flat_map(|s| segment_key(*s)).collect()
+}
+
+fn decode_segments(bytes: &[u8]) -> Result<Vec<SegmentId>> {
+    if !bytes.len().is_multiple_of(8) {
+        bail!(
+            "a candidates record is {} bytes, not a multiple of 8",
+            bytes.len()
+        );
+    }
+    bytes.chunks_exact(8).map(decode_segment).collect()
+}
+
+/// The journal position, 36 bytes: the index version, the store id, the
+/// generation and the offset.
+fn encode_position(position: &JournalPosition) -> Vec<u8> {
+    let mut out = Vec::with_capacity(36);
+    out.extend_from_slice(&position.index_version.to_le_bytes());
+    out.extend_from_slice(position.store_id.as_bytes());
+    out.extend_from_slice(&position.generation.to_le_bytes());
+    out.extend_from_slice(&position.offset.to_le_bytes());
+    out
+}
+
+/// A position in another encoding, such as bincode's before #152, reads as
+/// index version 0, which no index has, so the index is rebuilt.
+fn decode_position(bytes: &[u8]) -> JournalPosition {
+    let field = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    match bytes.len() {
+        36 => JournalPosition {
+            index_version: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            store_id: uuid::Uuid::from_bytes(bytes[4..20].try_into().unwrap()),
+            generation: field(20),
+            offset: field(28),
+        },
+        _ => JournalPosition {
+            index_version: 0,
+            store_id: uuid::Uuid::nil(),
+            generation: 0,
+            offset: 0,
+        },
+    }
+}
+
 /// A scrub time as milliseconds since the Unix epoch, 0 meaning none.
 fn scrub_millis(time: Option<SystemTime>) -> u64 {
     time.and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -332,13 +290,14 @@ fn scrub_time(millis: u64) -> Option<SystemTime> {
 }
 
 /// A segment's `scrub_schedule` record: its light and deep scrub times in
-/// milliseconds (bincode, 16 bytes), then, when a scrub found damage in it
+/// milliseconds (each a little-endian u64), then, when a scrub found damage in it
 /// (#195), 10 more bytes: which kind of scrub found it (1 light, 2 deep),
 /// what it found (1 metadata mismatch, 2 content corrupted, 3 MAC
 /// mismatch), and for a metadata mismatch the expected and actual lengths,
 /// each a little-endian u32. A record without them is a segment with none.
 fn encode_scrub_times(t: &ScrubTimes) -> Result<Vec<u8>> {
-    let mut out = bincode::serialize(&(scrub_millis(t.light), scrub_millis(t.deep)))?;
+    let mut out = scrub_millis(t.light).to_le_bytes().to_vec();
+    out.extend_from_slice(&scrub_millis(t.deep).to_le_bytes());
     if let Some(damage) = t.damage {
         out.push(match damage.found_by {
             ScrubKind::Light => 1,
@@ -364,7 +323,8 @@ fn decode_scrub_times(bytes: &[u8]) -> Result<ScrubTimes> {
         16 | 26 => bytes.split_at(16),
         n => bail!("a scrub schedule record is {n} bytes, not 16 or 26"),
     };
-    let (light, deep): (u64, u64) = bincode::deserialize(times)?;
+    let light = decode_u64(&times[..8], "a scrub time")?;
+    let deep = decode_u64(&times[8..], "a scrub time")?;
     let damage = match rest {
         [] => None,
         [found_by, what, lens @ ..] => {
@@ -394,15 +354,6 @@ fn decode_scrub_times(bytes: &[u8]) -> Result<ScrubTimes> {
     })
 }
 
-/// A name's index record: its capsule, then its metadata.
-fn decode_binding(bytes: &[u8]) -> Result<Binding> {
-    let (capsule_id, metadata) = bincode::deserialize(bytes)?;
-    Ok(Binding {
-        capsule_id,
-        metadata,
-    })
-}
-
 impl SledStore {
     pub fn open(path: &str) -> Result<Self> {
         let db = sled::open(path)?;
@@ -422,7 +373,7 @@ impl SledStore {
         let _ = counters.compare_and_swap(
             NEXT_SEGMENT_KEY,
             None as Option<&[u8]>,
-            Some(bincode::serialize(&0_u64)?),
+            Some(&0_u64.to_le_bytes()[..]),
         )?;
 
         Ok(Self {
@@ -458,32 +409,14 @@ impl SledStore {
         }
         Ok(entries)
     }
-
-    #[allow(dead_code)]
-    fn current_segment_counter(&self) -> Result<u64> {
-        self.counters
-            .get(NEXT_SEGMENT_KEY)?
-            .map(|ivec| bincode::deserialize::<u64>(&ivec))
-            .transpose()?
-            .ok_or_else(|| anyhow!("segment counter missing"))
-    }
 }
 
 impl MetadataStore for SledStore {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>> {
-        let key = bincode::serialize(id)?;
-        match self.capsules.get(key)? {
+        match self.capsules.get(capsule_key(*id))? {
             Some(bytes) => Ok(Some(decode_capsule(&bytes)?)),
             None => Ok(None),
         }
-    }
-
-    fn put_capsule(&self, capsule: &Capsule) -> Result<()> {
-        let key = bincode::serialize(&capsule.id)?;
-        let val = bincode::serialize(capsule)?;
-        self.capsules.insert(key, val)?;
-        self.flush()?;
-        Ok(())
     }
 
     fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>> {
@@ -491,7 +424,7 @@ impl MetadataStore for SledStore {
 
         let start_key = match start_after {
             Some(id) => {
-                let mut key = bincode::serialize(&id)?;
+                let mut key = capsule_key(id).to_vec();
                 key.push(0);
                 key
             }
@@ -509,15 +442,14 @@ impl MetadataStore for SledStore {
     }
 
     fn add_deduped_bytes(&self, id: &CapsuleId, bytes: u64) -> Result<()> {
-        let key = bincode::serialize(id)?;
-        let updated = self
-            .capsules
-            .fetch_and_update(key, |existing| -> Option<Vec<u8>> {
-                let data = existing?;
-                let mut capsule: Capsule = decode_capsule_bytes(data).ok()?;
-                capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
-                bincode::serialize(&capsule).ok()
-            })?;
+        let updated =
+            self.capsules
+                .fetch_and_update(capsule_key(*id), |existing| -> Option<Vec<u8>> {
+                    let data = existing?;
+                    let mut capsule: Capsule = decode_capsule(data).ok()?;
+                    capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
+                    encode_capsule(&capsule).ok()
+                })?;
 
         if updated.is_none() {
             // No-op when capsule is missing (e.g., dedup update races deletion in tests).
@@ -532,14 +464,12 @@ impl MetadataStore for SledStore {
         let next = self
             .counters
             .fetch_and_update(NEXT_SEGMENT_KEY, |existing| -> Option<Vec<u8>> {
-                let current: u64 = existing
-                    .as_ref()
-                    .and_then(|ivec| bincode::deserialize(ivec).ok())
+                let current = existing
+                    .and_then(|ivec| decode_u64(ivec, "the segment counter").ok())
                     .unwrap_or(0);
-                let new_value = current + 1;
-                bincode::serialize(&new_value).ok()
+                Some((current + 1).to_le_bytes().to_vec())
             })?
-            .map(|ivec| bincode::deserialize::<u64>(&ivec))
+            .map(|ivec| decode_u64(&ivec, "the segment counter"))
             .transpose()?
             .unwrap_or(0);
 
@@ -550,16 +480,16 @@ impl MetadataStore for SledStore {
     fn ensure_segment_floor(&self, floor: u64) -> Result<()> {
         self.counters
             .fetch_and_update(NEXT_SEGMENT_KEY, |existing| -> Option<Vec<u8>> {
-                let current: u64 = existing
-                    .and_then(|ivec| bincode::deserialize(ivec).ok())
+                let current = existing
+                    .and_then(|ivec| decode_u64(ivec, "the segment counter").ok())
                     .unwrap_or(0);
-                bincode::serialize(&current.max(floor)).ok()
+                Some(current.max(floor).to_le_bytes().to_vec())
             })?;
         Ok(())
     }
 
     fn apply_journal(&self, record: &JournalRecord, position: &JournalPosition) -> Result<()> {
-        let position = bincode::serialize(position)?;
+        let position = encode_position(position);
         // More trees than sled's tuples take, so a slice.
         let trees: [&sled::Tree; 10] = [
             &self.capsules,
@@ -603,7 +533,7 @@ impl MetadataStore for SledStore {
 
     fn set_journal_position(&self, position: &JournalPosition) -> Result<()> {
         self.counters
-            .insert(JOURNAL_POSITION_KEY, bincode::serialize(position)?)?;
+            .insert(JOURNAL_POSITION_KEY, encode_position(position))?;
         Ok(())
     }
 
@@ -611,8 +541,7 @@ impl MetadataStore for SledStore {
         Ok(self
             .counters
             .get(JOURNAL_POSITION_KEY)?
-            .map(|v| bincode::deserialize(&v))
-            .transpose()?)
+            .map(|v| decode_position(&v)))
     }
 
     fn clear_index(&self) -> Result<()> {
@@ -649,7 +578,10 @@ impl MetadataStore for SledStore {
         let mut out = HashMap::new();
         for entry in self.refs.iter() {
             let (key, value) = entry?;
-            out.insert(bincode::deserialize(&key)?, bincode::deserialize(&value)?);
+            out.insert(
+                decode_segment(&key)?,
+                decode_u32(&value, "a reference count")?,
+            );
         }
         Ok(out)
     }
@@ -658,7 +590,7 @@ impl MetadataStore for SledStore {
         let mut out = Vec::new();
         for entry in self.scrub_schedule.iter() {
             let (key, value) = entry?;
-            out.push((bincode::deserialize(&key)?, decode_scrub_times(&value)?));
+            out.push((decode_segment(&key)?, decode_scrub_times(&value)?));
         }
         Ok(out)
     }
@@ -666,7 +598,7 @@ impl MetadataStore for SledStore {
     fn put_scrub_times(&self, changes: &[(SegmentId, Option<ScrubTimes>)]) -> Result<()> {
         let mut batch = sled::Batch::default();
         for (segment, times) in changes {
-            let key = bincode::serialize(segment)?;
+            let key = segment_key(*segment).to_vec();
             match times {
                 Some(t) => batch.insert(key, encode_scrub_times(t)?),
                 None => batch.remove(key),
@@ -677,15 +609,15 @@ impl MetadataStore for SledStore {
     }
 
     fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
-        let seg_key = bincode::serialize(&segment)?;
-        if self.refs.contains_key(&seg_key)? {
+        let seg_key = segment_key(segment);
+        if self.refs.contains_key(seg_key)? {
             return Ok(false);
         }
-        let hash_key = bincode::serialize(hash)?;
+        let hash_key = hash_key(hash);
         let result = (&self.content, &self.indexed, &self.candidates).transaction(
             |(content, indexed, candidates)| {
-                let named = content.get(&hash_key)?.as_deref() == Some(seg_key.as_slice());
-                indexed.remove(seg_key.as_slice())?;
+                let named = content.get(&hash_key)?.as_deref() == Some(&seg_key[..]);
+                indexed.remove(&seg_key[..])?;
                 withdraw_candidate(content, candidates, &hash_key, segment)?;
                 Ok(named)
             },
@@ -698,38 +630,26 @@ impl MetadataStore for SledStore {
     }
 
     fn get_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>> {
-        let key = bincode::serialize(hash)?;
-        match self.content.get(key)? {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
-            None => Ok(None),
-        }
-    }
-
-    fn put_content(&self, hash: &ContentHash, segment: SegmentId) -> Result<()> {
-        let key = bincode::serialize(hash)?;
-        let val = bincode::serialize(&segment)?;
-        self.content.insert(key, val)?;
-        self.flush()?;
-        Ok(())
+        self.content
+            .get(hash_key(hash))?
+            .map(|bytes| decode_segment(&bytes))
+            .transpose()
     }
 
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>> {
         let mut entries = Vec::new();
         for entry in self.content.iter() {
             let (key, value) = entry?;
-            let hash: ContentHash = bincode::deserialize(&key)?;
-            let segment: SegmentId = bincode::deserialize(&value)?;
-            entries.push((hash, segment));
+            entries.push((decode_hash(&key)?, decode_segment(&value)?));
         }
         Ok(entries)
     }
 
     fn get_namespace(&self, ns: &str) -> Result<Option<u64>> {
-        Ok(self
-            .namespaces
+        self.namespaces
             .get(ns.as_bytes())?
-            .map(|v| bincode::deserialize(&v))
-            .transpose()?)
+            .map(|v| decode_u64(&v, "a namespace's creation time"))
+            .transpose()
     }
 
     fn list_namespaces(
@@ -758,7 +678,7 @@ impl MetadataStore for SledStore {
                 break;
             }
             let ns = String::from_utf8(k.to_vec()).context("namespace is not UTF-8")?;
-            out.push((ns, bincode::deserialize(&v)?));
+            out.push((ns, decode_u64(&v, "a namespace's creation time")?));
         }
         Ok(out)
     }
@@ -817,66 +737,6 @@ impl MetadataStore for SledStore {
         }
         Ok(out)
     }
-
-    fn create_snapshot(&self) -> Result<Vec<u8>> {
-        let header = SnapshotHeader {
-            next_segment_id: self.current_segment_counter()?,
-            capsule_entries: self.capsules.len() as u64,
-            content_entries: self.content.len() as u64,
-        };
-
-        let mut out = Vec::new();
-        {
-            let mut writer = BufWriter::new(&mut out);
-            bincode::serialize_into(&mut writer, &header)?;
-
-            for entry in self.capsules.iter() {
-                let (_, value) = entry?;
-                let capsule: Capsule = decode_capsule(&value)?;
-                bincode::serialize_into(&mut writer, &capsule)?;
-            }
-
-            for entry in self.content.iter() {
-                let (key, value) = entry?;
-                let hash: ContentHash = bincode::deserialize(&key)?;
-                let segment: SegmentId = bincode::deserialize(&value)?;
-                bincode::serialize_into(&mut writer, &(hash, segment))?;
-            }
-
-            writer.flush()?;
-        }
-
-        Ok(out)
-    }
-
-    fn restore_snapshot(&self, data: &[u8]) -> Result<()> {
-        let mut reader = Cursor::new(data);
-        let header: SnapshotHeader =
-            bincode::deserialize_from(&mut reader).context("failed to read snapshot header")?;
-
-        self.capsules.clear()?;
-        self.content.clear()?;
-
-        for _ in 0..header.capsule_entries {
-            let capsule: Capsule =
-                bincode::deserialize_from(&mut reader).context("failed to read capsule entry")?;
-            self.put_capsule(&capsule)?;
-        }
-
-        for _ in 0..header.content_entries {
-            let (hash, segment): (ContentHash, SegmentId) =
-                bincode::deserialize_from(&mut reader).context("failed to read content entry")?;
-            self.put_content(&hash, segment)?;
-        }
-
-        self.counters.insert(
-            NEXT_SEGMENT_KEY,
-            bincode::serialize(&header.next_segment_id)?,
-        )?;
-
-        self.flush()?;
-        Ok(())
-    }
 }
 
 /// The trees a journal record changes, inside one transaction.
@@ -905,7 +765,7 @@ fn read_candidates(
     hash_key: &[u8],
 ) -> ConflictableTransactionResult<Vec<SegmentId>, anyhow::Error> {
     match candidates.get(hash_key)? {
-        Some(v) => bincode::deserialize(&v).map_err(abort),
+        Some(v) => decode_segments(&v).map_err(abort),
         None => Ok(Vec::new()),
     }
 }
@@ -919,8 +779,8 @@ fn write_candidates(
 ) -> ConflictableTransactionResult<(), anyhow::Error> {
     match segments.first() {
         Some(lowest) => {
-            content.insert(hash_key, ser(lowest)?)?;
-            candidates.insert(hash_key, ser(&segments)?)?;
+            content.insert(hash_key, &segment_key(*lowest)[..])?;
+            candidates.insert(hash_key, encode_segments(segments))?;
         }
         None => {
             content.remove(hash_key)?;
@@ -955,13 +815,13 @@ fn add_dedupe_ref(
     hash: ContentHash,
 ) -> ConflictableTransactionResult<(), anyhow::Error> {
     let (hash, count): (ContentHash, u32) = match t.indexed.get(seg_key)? {
-        Some(v) => bincode::deserialize(&v).map_err(abort)?,
+        Some(v) => decode_dedupe_refs(&v).map_err(abort)?,
         None => (hash, 0),
     };
     t.indexed
-        .insert(seg_key, ser(&(&hash, count.saturating_add(1)))?)?;
+        .insert(seg_key, encode_dedupe_refs(&hash, count.saturating_add(1)))?;
     if count == 0 {
-        let hash_key = ser(&hash)?;
+        let hash_key = hash_key(&hash);
         let mut segments = read_candidates(t.candidates, &hash_key)?;
         if let Err(at) = segments.binary_search(&segment) {
             segments.insert(at, segment);
@@ -982,13 +842,14 @@ fn remove_dedupe_ref(
     let Some(v) = t.indexed.get(seg_key)? else {
         return Ok(());
     };
-    let (hash, count): (ContentHash, u32) = bincode::deserialize(&v).map_err(abort)?;
+    let (hash, count) = decode_dedupe_refs(&v).map_err(abort)?;
     if count > 1 {
-        t.indexed.insert(seg_key, ser(&(&hash, count - 1))?)?;
+        t.indexed
+            .insert(seg_key, encode_dedupe_refs(&hash, count - 1))?;
         return Ok(());
     }
     t.indexed.remove(seg_key)?;
-    withdraw_candidate(t.content, t.candidates, &ser(&hash)?, segment)
+    withdraw_candidate(t.content, t.candidates, &hash_key(&hash), segment)
 }
 
 /// Remove a name from under the capsule it points at, if it's bound.
@@ -1008,16 +869,12 @@ fn abort<E: std::fmt::Display>(err: E) -> ConflictableTransactionError<anyhow::E
     ConflictableTransactionError::Abort(anyhow!("{err}"))
 }
 
-fn ser<T: Serialize>(value: &T) -> ConflictableTransactionResult<Vec<u8>, anyhow::Error> {
-    bincode::serialize(value).map_err(abort)
-}
-
 fn read_count(
     refs: &TransactionalTree,
     key: &[u8],
 ) -> ConflictableTransactionResult<u32, anyhow::Error> {
     match refs.get(key)? {
-        Some(v) => bincode::deserialize(&v).map_err(abort),
+        Some(v) => decode_u32(&v, "a reference count").map_err(abort),
         None => Ok(0),
     }
 }
@@ -1032,20 +889,22 @@ fn apply_record(
 ) -> ConflictableTransactionResult<(), anyhow::Error> {
     match record {
         JournalRecord::Capsule(manifest) => {
-            let key = ser(&manifest.capsule_id)?;
-            if t.capsules.get(&key)?.is_some() {
+            let key = capsule_key(manifest.capsule_id);
+            if t.capsules.get(key)?.is_some() {
                 return Ok(());
             }
-            t.capsules
-                .insert(key.clone(), ser(&manifest.to_capsule())?)?;
+            t.capsules.insert(
+                &key[..],
+                encode_capsule(&manifest.to_capsule()).map_err(abort)?,
+            )?;
             if manifest.dedupe {
-                t.deduped.insert(key, &[])?;
+                t.deduped.insert(&key[..], &[])?;
             }
             for entry in &manifest.entries {
-                let seg_key = ser(&entry.segment_id)?;
+                let seg_key = segment_key(entry.segment_id);
                 let count = read_count(t.refs, &seg_key)?;
                 t.refs
-                    .insert(seg_key.clone(), ser(&count.saturating_add(1))?)?;
+                    .insert(&seg_key[..], &count.saturating_add(1).to_le_bytes()[..])?;
                 // An all-zero hash means none (on-disk format §4). Only a
                 // dedup hit on a segment stored without one carries it, and
                 // such a segment is never offered, so it's never counted.
@@ -1056,29 +915,31 @@ fn apply_record(
             }
         }
         JournalRecord::Drop(id) => {
-            let key = ser(id)?;
-            let Some(bytes) = t.capsules.remove(key.clone())? else {
+            let key = capsule_key(*id);
+            let Some(bytes) = t.capsules.remove(&key[..])? else {
                 return Ok(());
             };
-            let dedupe = t.deduped.remove(key)?.is_some();
-            let capsule = decode_capsule_bytes(&bytes).map_err(abort)?;
+            let dedupe = t.deduped.remove(&key[..])?.is_some();
+            let capsule = decode_capsule(&bytes).map_err(abort)?;
             for segment in &capsule.segments {
-                let seg_key = ser(segment)?;
+                let seg_key = segment_key(*segment);
                 if dedupe {
                     remove_dedupe_ref(t, *segment, &seg_key)?;
                 }
                 let count = read_count(t.refs, &seg_key)?;
                 if count > 1 {
-                    t.refs.insert(seg_key, ser(&(count - 1))?)?;
+                    t.refs
+                        .insert(&seg_key[..], &(count - 1).to_le_bytes()[..])?;
                 } else {
-                    t.refs.remove(seg_key)?;
+                    t.refs.remove(&seg_key[..])?;
                 }
             }
         }
         JournalRecord::Namespace { ns, created_at } => {
             // A namespace keeps the time it was first created.
             if t.namespaces.get(ns.as_bytes())?.is_none() {
-                t.namespaces.insert(ns.as_bytes(), ser(created_at)?)?;
+                t.namespaces
+                    .insert(ns.as_bytes(), &created_at.to_le_bytes()[..])?;
             }
         }
         JournalRecord::DropNamespace { ns, .. } => {
@@ -1092,7 +953,10 @@ fn apply_record(
         } => {
             let key = name_key(ns, name);
             unindex_name(t, &key)?;
-            t.names.insert(key.clone(), ser(&(capsule_id, metadata))?)?;
+            t.names.insert(
+                key.clone(),
+                encode_binding(*capsule_id, metadata).map_err(abort)?,
+            )?;
             t.capsule_names
                 .insert(capsule_name_key(*capsule_id, &key), &[])?;
         }
@@ -1115,6 +979,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::Policy;
 
     #[test]
     fn scrub_times_round_trip_and_survive_a_reopen() {
@@ -1250,36 +1115,28 @@ mod tests {
     // Byte-for-byte encodings of the index records. space.db is an index of
     // the capsule journal, so a change here only needs a rebuild: bump
     // `journal::INDEX_VERSION` with it, and stores rebuild their index on open
-    // (#113).
-    const CAPSULE_ID_HEX: &str = "100000000000000000112233445566778899aabbccddeeff";
-    const CAPSULE_HEX: &str = concat!(
-        "100000000000000000112233445566778899aabbccddeeff0010000000000000",
-        "02000000000000000100000000000000020000000000000000f1536500000000",
-        "01000000010000000101100e0000000000000000000000000000000000000000",
-        "00400000000000060000000000000002000000000000003333333f0000000000",
-        "000000000000000000000000000000000700000000000000",
-        "01abababababababababababababababababababababababababababababababab",
-    );
+    // (#113, #152).
+    const CAPSULE_ID_HEX: &str = "00112233445566778899aabbccddeeff";
     const SEGMENT_ID_HEX: &str = "2a00000000000000";
 
     #[test]
     fn capsule_records_keep_their_on_disk_encoding() {
         let capsule = sample_capsule();
-        assert_eq!(
-            to_hex(&bincode::serialize(&capsule.id).unwrap()),
-            CAPSULE_ID_HEX
-        );
-        assert_eq!(to_hex(&bincode::serialize(&capsule).unwrap()), CAPSULE_HEX);
-
-        let bytes: Vec<u8> = (0..CAPSULE_HEX.len() / 2)
-            .map(|i| u8::from_str_radix(&CAPSULE_HEX[2 * i..2 * i + 2], 16).unwrap())
-            .collect();
-        let decoded = decode_capsule_bytes(&bytes).unwrap();
+        assert_eq!(to_hex(&capsule_key(capsule.id)), CAPSULE_ID_HEX);
+        let bytes = encode_capsule(&capsule).unwrap();
+        assert_eq!(bytes, serde_json::to_vec(&capsule).unwrap());
+        assert!(bytes.starts_with(b"{\"id\":\"00112233-4455-6677-8899-aabbccddeeff\","));
+        let decoded = decode_capsule(&bytes).unwrap();
         assert_eq!(decoded.id, capsule.id);
         assert_eq!(decoded.size, capsule.size);
         assert_eq!(decoded.segments, capsule.segments);
         assert_eq!(decoded.created_at, capsule.created_at);
         assert_eq!(decoded.deduped_bytes, capsule.deduped_bytes);
+        assert_eq!(decoded.digest, capsule.digest);
+        assert_eq!(
+            format!("{:?}", decoded.policy),
+            format!("{:?}", capsule.policy)
+        );
     }
 
     #[test]
@@ -1296,30 +1153,77 @@ mod tests {
 
         let id = sample_capsule().id;
         let metadata = vec![("a".to_string(), "bc".to_string())];
-        let value = bincode::serialize(&(id, &metadata)).unwrap();
+        let value = encode_binding(id, &metadata).unwrap();
         assert_eq!(
             to_hex(&value),
-            format!(
-                "{CAPSULE_ID_HEX}{}{}{}{}{}",
-                "0100000000000000", "0100000000000000", "61", "0200000000000000", "6263"
-            )
+            format!("{CAPSULE_ID_HEX}{}", to_hex(br#"[["a","bc"]]"#))
         );
         let binding = decode_binding(&value).unwrap();
         assert_eq!((binding.capsule_id, binding.metadata), (id, metadata));
+        assert!(decode_binding(&value[..15]).is_err());
     }
 
     #[test]
     fn content_and_counter_records_keep_their_on_disk_encoding() {
         let hash = ContentHash("ab".repeat(32));
-        let expected_hash = format!("4000000000000000{}", "6162".repeat(32));
-        assert_eq!(to_hex(&bincode::serialize(&hash).unwrap()), expected_hash);
+        assert_eq!(hash_key(&hash), "ab".repeat(32).into_bytes());
+        assert_eq!(decode_hash(&hash_key(&hash)).unwrap(), hash);
+        assert_eq!(to_hex(&segment_key(SegmentId(42))), SEGMENT_ID_HEX);
         assert_eq!(
-            to_hex(&bincode::serialize(&SegmentId(42)).unwrap()),
-            SEGMENT_ID_HEX
+            decode_segment(&segment_key(SegmentId(42))).unwrap(),
+            SegmentId(42)
+        );
+        assert!(decode_segment(&[0x2a]).is_err());
+
+        let refs = encode_dedupe_refs(&hash, 3);
+        assert_eq!(to_hex(&refs[..4]), "03000000");
+        assert_eq!(decode_dedupe_refs(&refs).unwrap(), (hash, 3));
+        let segments = [SegmentId(42), SegmentId(1)];
+        assert_eq!(
+            to_hex(&encode_segments(&segments)),
+            format!("{SEGMENT_ID_HEX}0100000000000000")
         );
         assert_eq!(
-            to_hex(&bincode::serialize(&42_u64).unwrap()),
-            SEGMENT_ID_HEX
+            decode_segments(&encode_segments(&segments)).unwrap(),
+            segments
         );
+        assert!(decode_segments(&[0; 9]).is_err());
+    }
+
+    /// The segment counter, reference counts and scrub times read the same as
+    /// bincode wrote them, so the scrub schedule survives the move off it
+    /// (#152).
+    #[test]
+    fn records_that_outlive_a_rebuild_read_as_bincode_wrote_them() {
+        // What bincode 1.3 wrote for 42u64, 3u32 and (light, deep) millis.
+        assert_eq!(decode_u64(&[42, 0, 0, 0, 0, 0, 0, 0], "").unwrap(), 42);
+        assert_eq!(decode_u32(&[3, 0, 0, 0], "").unwrap(), 3);
+        let mut times = 5_u64.to_le_bytes().to_vec();
+        times.extend_from_slice(&6_u64.to_le_bytes());
+        let t = decode_scrub_times(&times).unwrap();
+        assert_eq!(scrub_millis(t.light), 5);
+        assert_eq!(scrub_millis(t.deep), 6);
+        assert_eq!(encode_scrub_times(&t).unwrap(), times);
+    }
+
+    #[test]
+    fn journal_positions_round_trip_and_old_ones_force_a_rebuild() {
+        let position = JournalPosition {
+            index_version: crate::journal::INDEX_VERSION,
+            store_id: uuid::Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+            generation: 2,
+            offset: 4096,
+        };
+        let bytes = encode_position(&position);
+        assert_eq!(bytes.len(), 36);
+        assert_eq!(decode_position(&bytes), position);
+        // bincode's encoding, 44 bytes: the version, the store id with an
+        // 8-byte length, the generation and the offset.
+        let mut old = 5_u32.to_le_bytes().to_vec();
+        old.extend_from_slice(&16_u64.to_le_bytes());
+        old.extend_from_slice(position.store_id.as_bytes());
+        old.extend_from_slice(&2_u64.to_le_bytes());
+        old.extend_from_slice(&4096_u64.to_le_bytes());
+        assert_eq!(decode_position(&old).index_version, 0);
     }
 }

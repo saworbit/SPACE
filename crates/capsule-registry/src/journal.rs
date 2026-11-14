@@ -30,7 +30,8 @@ use uuid::Uuid;
 /// 3: a name's metadata (`BIND` layout version 2) is indexed with it.
 /// 4: names are also indexed under the capsule they point at (#138).
 /// 5: the content index follows from the live capsules alone (#188).
-pub const INDEX_VERSION: u32 = 5;
+/// 6: the index's records are no longer bincode (#152).
+pub const INDEX_VERSION: u32 = 6;
 
 /// How far into which journal the index has applied records. Stored in
 /// sled next to the index, and updated in the same transaction as each
@@ -1375,6 +1376,64 @@ mod compaction_tests {
         fs::remove_dir_all(db).unwrap();
         let registry = CapsuleRegistry::open(db).unwrap();
         assert_eq!(index(&registry), expected, "{what}: after a rebuild");
+    }
+
+    /// A store whose space.db still has bincode's journal position, as every
+    /// store did before #152, rebuilds the same index on open, and keeps its
+    /// scrub schedule and segment counter, which read the same either way.
+    #[test]
+    fn a_store_indexed_with_bincode_rebuilds_on_open() {
+        use common::scrub::ScrubTimes;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let dir = scratch("bincode");
+        let db = dir.join("space.db");
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        churn(&registry, &mut Rng(7), 80);
+        let times = ScrubTimes {
+            light: Some(UNIX_EPOCH + Duration::from_millis(1_700_000_000_000)),
+            deep: None,
+            damage: None,
+        };
+        registry
+            .scrub_schedule()
+            .save(&[(SegmentId(3), Some(times))])
+            .unwrap();
+        let expected = index(&registry);
+        let next = registry.store.allocate_segment_id().unwrap();
+        let position = registry.store.journal_position().unwrap().unwrap();
+        drop(registry);
+
+        // bincode's 44 bytes: version, store id with its length, generation,
+        // offset.
+        let mut old = 5_u32.to_le_bytes().to_vec();
+        old.extend_from_slice(&16_u64.to_le_bytes());
+        old.extend_from_slice(position.store_id.as_bytes());
+        old.extend_from_slice(&position.generation.to_le_bytes());
+        old.extend_from_slice(&position.offset.to_le_bytes());
+        {
+            let sled = sled::open(&db).unwrap();
+            let counters = sled.open_tree("counters").unwrap();
+            counters.insert("journal_position", old).unwrap();
+            sled.flush().unwrap();
+        }
+
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        assert_eq!(index(&registry), expected);
+        assert_eq!(
+            registry
+                .store
+                .journal_position()
+                .unwrap()
+                .unwrap()
+                .index_version,
+            INDEX_VERSION
+        );
+        let kept = registry.scrub_schedule().load().unwrap();
+        assert_eq!(kept, vec![(SegmentId(3), times)]);
+        assert!(registry.store.allocate_segment_id().unwrap().0 > next.0);
+        drop(registry);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The content index follows from the live capsules alone, so an index

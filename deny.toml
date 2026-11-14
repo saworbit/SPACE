@@ -71,7 +71,6 @@ feature-depth = 1
 # output a note when they are encountered.
 ignore = [
     # Keep in step with .cargo/audit.toml: only advisories the current tree triggers.
-    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 encodes space.db records; moving off it is a format migration" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained, via sled 0.34; sled keys are UUIDs and BLAKE3 hashes" },
     { id = "RUSTSEC-2024-0384", reason = "instant unmaintained, via parking_lot 0.11 in sled 0.34" },
 ]
