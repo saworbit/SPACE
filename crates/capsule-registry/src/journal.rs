@@ -181,6 +181,9 @@ impl Live {
                         self.namespaces.insert(ns.clone(), (*created_at, len()?));
                     }
                 }
+                JournalRecord::DropNamespace { ns, .. } => {
+                    self.namespaces.remove(ns);
+                }
                 JournalRecord::Bind {
                     ns,
                     name,
@@ -866,10 +869,17 @@ mod compaction_tests {
                     dropped.push(id);
                 }
                 3 => {
+                    // Mostly creates, sometimes a delete. Its names stay.
                     let created_at = rng.below(100) as u64;
-                    registry
-                        .commit(vec![JournalRecord::Namespace { ns, created_at }])
-                        .unwrap();
+                    let record = if created_at < 20 {
+                        JournalRecord::DropNamespace {
+                            ns,
+                            dropped_at: created_at,
+                        }
+                    } else {
+                        JournalRecord::Namespace { ns, created_at }
+                    };
+                    registry.commit(vec![record]).unwrap();
                 }
                 4 => {
                     // An S3 PUT: a new key, or an overwrite that drops the

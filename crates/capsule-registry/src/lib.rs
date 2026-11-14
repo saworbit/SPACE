@@ -1113,6 +1113,7 @@ impl CapsuleRegistry {
                     bail!("the store's key is recorded by check_store_key")
                 }
                 JournalRecord::Namespace { .. }
+                | JournalRecord::DropNamespace { .. }
                 | JournalRecord::Bind { .. }
                 | JournalRecord::Unbind { .. } => {}
             }
@@ -1250,6 +1251,17 @@ impl CapsuleRegistry {
     /// When namespace `ns` was created, or `None` if it doesn't exist.
     pub fn namespace_created_at(&self, ns: &str) -> Result<Option<u64>> {
         self.store.get_namespace(ns)
+    }
+
+    /// Namespaces that start with `prefix` and sort after `start_after`,
+    /// in byte order, at most `limit` of them, with their creation times.
+    pub fn list_namespaces(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>> {
+        self.store.list_namespaces(prefix, start_after, limit)
     }
 
     /// The capsule `name` in `ns` points at.

@@ -8,7 +8,7 @@ use common::scrub::{ScrubConfig, ScrubState};
 use common::{Capsule, CapsuleId};
 use futures::{Stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
@@ -55,6 +55,8 @@ fn namespace(bucket: &str) -> String {
 pub enum S3Error {
     #[error("The specified bucket does not exist")]
     NoSuchBucket(String),
+    #[error("The bucket you tried to delete is not empty")]
+    BucketNotEmpty(String),
     #[error(
         "Your metadata headers exceed the maximum allowed metadata size: the names and \
          values of the x-amz-meta-* headers can add up to at most 2048 bytes"
@@ -70,6 +72,9 @@ pub enum S3Error {
     InvalidBucketName(String),
     #[error("{0}")]
     InvalidArgument(String),
+    /// A request body that isn't the XML document the operation takes.
+    #[error("The XML you provided was not well-formed or did not validate: {0}")]
+    MalformedXML(String),
     /// Carries the object size for the `Content-Range` header.
     #[error("The requested range is not satisfiable")]
     InvalidRange(u64),
@@ -414,6 +419,63 @@ impl S3View {
         }
     }
 
+    /// Buckets whose names start with `prefix` and sort after
+    /// `start_after`, in byte order, at most `limit` of them, with when
+    /// each was created (#159).
+    pub fn list_buckets(
+        &self,
+        prefix: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> S3Result<Vec<(String, u64)>> {
+        let after = start_after.map(namespace);
+        Ok(self
+            .registry
+            .list_namespaces(&namespace(prefix), after.as_deref(), limit)?
+            .into_iter()
+            .map(|(ns, created_at)| (ns[NAMESPACE_PREFIX.len()..].to_string(), created_at))
+            .collect())
+    }
+
+    /// DELETE a bucket (#159). As in S3, it must hold no objects, or it's
+    /// `BucketNotEmpty`. Keys whose capsule `spacectl delete` removed read
+    /// as missing, so they don't count: they're unbound in the batch that
+    /// deletes the bucket. This runs under the pipeline lock, which a PUT
+    /// holds to commit, so no key can be bound between the check and the
+    /// delete.
+    pub async fn delete_bucket(&self, bucket: &str) -> S3Result<()> {
+        let mut handle = self.pipeline.lock().await;
+        self.head_bucket(bucket)?;
+        let ns = namespace(bucket);
+        let mut records = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let batch = self
+                .registry
+                .list_names(&ns, "", after.as_deref(), LIST_BATCH)?;
+            let full = batch.len() == LIST_BATCH;
+            after = batch.last().map(|(name, _)| name.clone());
+            for (name, binding) in batch {
+                if self.registry.get_capsule(binding.capsule_id)?.is_some() {
+                    return Err(S3Error::BucketNotEmpty(bucket.to_string()));
+                }
+                records.push(JournalRecord::Unbind {
+                    ns: ns.clone(),
+                    name,
+                });
+            }
+            if !full {
+                break;
+            }
+        }
+        records.push(JournalRecord::DropNamespace {
+            ns,
+            dropped_at: now_secs(),
+        });
+        handle.commit(records)?;
+        Ok(())
+    }
+
     /// PUT object. As in S3, the bucket must exist (#164), so a typo in its
     /// name is `NoSuchBucket` rather than a new bucket. Overwriting a key
     /// deletes the capsule it pointed at before (#86). The capsule, its key
@@ -453,8 +515,7 @@ impl S3View {
         E: Into<anyhow::Error>,
     {
         let ns = namespace(bucket);
-        // Check the bucket before storing the body. There's no DeleteBucket
-        // (#159), so it's still there at the commit.
+        // Check the bucket before storing the body, and again at the commit.
         self.head_bucket(bucket)?;
         check_key(key)?;
         check_metadata(&options.metadata)?;
@@ -471,6 +532,9 @@ impl S3View {
 
         // Dropping `staged` on an error below aborts the write.
         let mut handle = self.pipeline.lock().await;
+        // DeleteBucket holds this lock, so a bucket that's here now is here
+        // when the batch commits.
+        self.head_bucket(bucket)?;
         let mut with = Vec::with_capacity(2);
         let current = self.live_capsule_created(&ns, key)?;
         conditions.check_write(current)?;
@@ -657,6 +721,36 @@ impl S3View {
         Ok(())
     }
 
+    /// DeleteObjects: delete each of `keys` as [`S3View::delete_object`]
+    /// does, in one batch, so a crash deletes all of them or none (#159).
+    /// As with DELETE, a key that isn't there counts as deleted.
+    pub async fn delete_objects(&self, bucket: &str, keys: &[String]) -> S3Result<()> {
+        let mut handle = self.pipeline.lock().await;
+        self.head_bucket(bucket)?;
+        let ns = namespace(bucket);
+        let mut records = Vec::new();
+        // A key named twice is unbound twice, which changes nothing more,
+        // and its capsule dropped once.
+        let mut dropped = HashSet::new();
+        for key in keys {
+            let Some(id) = self.registry.name(&ns, key)? else {
+                continue;
+            };
+            records.push(JournalRecord::Unbind {
+                ns: ns.clone(),
+                name: key.clone(),
+            });
+            // A capsule `spacectl delete` removed has nothing left to drop.
+            if self.registry.get_capsule(id)?.is_some() && dropped.insert(id) {
+                records.push(JournalRecord::Drop(id));
+            }
+        }
+        for capsule in handle.commit(records)? {
+            self.release(&mut handle, capsule).await;
+        }
+        Ok(())
+    }
+
     /// Run one reclaim pass over the store: compact the data log once enough
     /// of it is reclaimable, or garbage-collect a file backend
     /// ([`modular_pipeline::reclaim`]). Segments a GET is still reading are
@@ -728,6 +822,13 @@ async fn release_segments(handle: &mut RegistryPipelineHandle, capsule: &Capsule
     if let Err(err) = handle.release(capsule).await {
         warn!(capsule = %capsule.id.as_uuid(), "failed to release a dropped capsule's segments: {err:#}");
     }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// A new bucket's name follows S3's rules (#164): 3 to 63 lowercase

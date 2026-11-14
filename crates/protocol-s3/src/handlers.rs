@@ -32,12 +32,16 @@ impl IntoResponse for S3Error {
                 (StatusCode::NOT_FOUND, "NoSuchBucket", bucket.as_str())
             }
             S3Error::NoSuchKey(key) => (StatusCode::NOT_FOUND, "NoSuchKey", key.as_str()),
+            S3Error::BucketNotEmpty(bucket) => {
+                (StatusCode::CONFLICT, "BucketNotEmpty", bucket.as_str())
+            }
             S3Error::InvalidBucketName(bucket) => (
                 StatusCode::BAD_REQUEST,
                 "InvalidBucketName",
                 bucket.as_str(),
             ),
             S3Error::InvalidArgument(_) => (StatusCode::BAD_REQUEST, "InvalidArgument", ""),
+            S3Error::MalformedXML(_) => (StatusCode::BAD_REQUEST, "MalformedXML", ""),
             S3Error::MetadataTooLarge => (StatusCode::BAD_REQUEST, "MetadataTooLarge", ""),
             S3Error::InvalidRange(_) => (StatusCode::RANGE_NOT_SATISFIABLE, "InvalidRange", ""),
             S3Error::NotImplemented(_) => (StatusCode::NOT_IMPLEMENTED, "NotImplemented", ""),
@@ -238,9 +242,8 @@ fn stored_metadata(headers: &HeaderMap) -> S3Result<Vec<(String, String)>> {
     Ok(metadata)
 }
 
-/// Requests no route serves, such as ListBuckets (`GET /`), DeleteBucket,
-/// DeleteObjects and multipart uploads, get an S3 error a client can read
-/// instead of an empty 404 or 405 (#156).
+/// Requests no route serves, such as multipart uploads, get an S3 error a
+/// client can read instead of an empty 404 or 405 (#156).
 pub async fn not_implemented(method: Method, uri: Uri) -> Response {
     S3Error::NotImplemented(format!("{method} {} is not implemented", uri.path())).into_response()
 }
@@ -407,6 +410,361 @@ pub async fn head_bucket(
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+/// The ListBuckets query parameters `list_buckets` reads.
+const LIST_BUCKETS_PARAMS: &[&str] = &["prefix", "max-buckets", "continuation-token"];
+
+/// S3 caps a ListBuckets page at 10000 buckets.
+const MAX_BUCKETS: usize = 10_000;
+
+/// GET /: ListBuckets, as `ListAllMyBucketsResult` XML (#159). Buckets come
+/// back in byte order, at most `max-buckets` of them a page.
+pub async fn list_buckets(State(s3): State<AppState>, Query(query): RawQuery) -> Response {
+    if let Err(e) = check_query(&query, LIST_BUCKETS_PARAMS, &["ListBuckets"]) {
+        return e.into_response();
+    }
+    let param = |name: &str| {
+        query
+            .iter()
+            .rev()
+            .find(|(p, _)| p == name)
+            .map(|(_, v)| v.as_str())
+    };
+    let prefix = param("prefix").unwrap_or("");
+    let max = match param("max-buckets").map(str::parse::<usize>) {
+        None => MAX_BUCKETS,
+        Some(Ok(n)) if (1..=MAX_BUCKETS).contains(&n) => n,
+        Some(_) => {
+            return S3Error::InvalidArgument(format!(
+                "max-buckets must be between 1 and {MAX_BUCKETS}"
+            ))
+            .into_response()
+        }
+    };
+    let after = match param("continuation-token") {
+        None => None,
+        Some(token) => match decode_token(token) {
+            Some(name) => Some(name),
+            None => {
+                return S3Error::InvalidArgument("The continuation token is not valid".into())
+                    .into_response()
+            }
+        },
+    };
+    let mut buckets = match s3.list_buckets(prefix, after.as_deref(), max + 1) {
+        Ok(buckets) => buckets,
+        Err(e) => return e.into_response(),
+    };
+    let next = (buckets.len() > max).then(|| {
+        buckets.truncate(max);
+        encode_token(&buckets[max - 1].0)
+    });
+
+    let mut x = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Buckets>"#,
+    );
+    for (name, created_at) in &buckets {
+        x.push_str("<Bucket>");
+        element(&mut x, "Name", name);
+        element(&mut x, "CreationDate", &iso8601(*created_at));
+        x.push_str("</Bucket>");
+    }
+    x.push_str("</Buckets>");
+    if let Some(token) = next {
+        element(&mut x, "ContinuationToken", &token);
+    }
+    if !prefix.is_empty() {
+        element(&mut x, "Prefix", prefix);
+    }
+    x.push_str("</ListAllMyBucketsResult>");
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/xml")],
+        x,
+    )
+        .into_response()
+}
+
+/// DELETE /{bucket}: DeleteBucket (#159). As in S3, the bucket must hold no
+/// objects.
+pub async fn delete_bucket(
+    State(s3): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(query): RawQuery,
+) -> Response {
+    info!("DELETE BUCKET /{}", bucket);
+    // `DELETE /{bucket}?policy` and the like delete a bucket's
+    // configuration; they mustn't delete the bucket.
+    if let Err(e) = check_query(&query, &[], &["DeleteBucket"]) {
+        return e.into_response();
+    }
+    match s3.delete_bucket(&bucket).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// The largest DeleteObjects request body read.
+const MAX_DELETE_BODY: usize = 8 * 1024 * 1024;
+
+/// POST /{bucket}?delete: DeleteObjects (#159). The keys are deleted in one
+/// journal batch. As with DELETE, a key that isn't there counts as deleted.
+pub async fn delete_objects(
+    State(s3): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(query): RawQuery,
+    body: Body,
+) -> Response {
+    info!("DELETE OBJECTS /{}", bucket);
+    // A POST to a bucket without `?delete` is a browser form upload.
+    if !query.iter().any(|(name, _)| name == "delete") {
+        return S3Error::NotImplemented(format!(
+            "POST /{bucket} is implemented only as DeleteObjects (?delete)"
+        ))
+        .into_response();
+    }
+    if let Err(e) = check_query(&query, &["delete"], &["DeleteObjects"]) {
+        return e.into_response();
+    }
+    let request = match axum::body::to_bytes(body, MAX_DELETE_BODY).await {
+        Ok(bytes) => parse_delete(&bytes),
+        Err(_) => Err(S3Error::MalformedXML(format!(
+            "the Delete document can be at most {MAX_DELETE_BODY} bytes"
+        ))),
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(e) => return e.into_response(),
+    };
+    // Without versioning, `null` is the only version there is.
+    let versioned = |version: &Option<String>| version.as_deref().is_some_and(|v| v != "null");
+    let keys: Vec<String> = request
+        .objects
+        .iter()
+        .filter(|(_, version)| !versioned(version))
+        .map(|(key, _)| key.clone())
+        .collect();
+    if let Err(e) = s3.delete_objects(&bucket, &keys).await {
+        return e.into_response();
+    }
+
+    let mut x = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    for (key, version) in &request.objects {
+        if versioned(version) {
+            x.push_str("<Error>");
+            element(&mut x, "Key", key);
+            element(&mut x, "VersionId", version.as_deref().unwrap_or_default());
+            element(&mut x, "Code", "NotImplemented");
+            element(&mut x, "Message", "Object versions are not implemented");
+            x.push_str("</Error>");
+        } else if !request.quiet {
+            x.push_str("<Deleted>");
+            element(&mut x, "Key", key);
+            x.push_str("</Deleted>");
+        }
+    }
+    x.push_str("</DeleteResult>");
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/xml")],
+        x,
+    )
+        .into_response()
+}
+
+/// S3 takes at most 1000 keys in one DeleteObjects request.
+const MAX_DELETE_KEYS: usize = 1000;
+
+/// A DeleteObjects request: each key, with its version id if it has one,
+/// and whether only errors are reported.
+#[derive(Debug, PartialEq)]
+struct DeleteRequest {
+    objects: Vec<(String, Option<String>)>,
+    quiet: bool,
+}
+
+/// One piece of an XML document, as [`xml_events`] reads it.
+#[derive(Debug)]
+enum XmlEvent<'a> {
+    Open(&'a str),
+    Close(&'a str),
+    Text(String),
+}
+
+/// Read a `Delete` document. Only its elements are read: `Object` holding
+/// `Key` and an optional `VersionId` (and `ETag`, `LastModifiedTime` and
+/// `Size`, which are ignored), and `Quiet`. Anything else is `MalformedXML`.
+fn parse_delete(body: &[u8]) -> S3Result<DeleteRequest> {
+    let bad = |why: &str| S3Error::MalformedXML(why.to_string());
+    let doc = std::str::from_utf8(body).map_err(|_| bad("the document isn't UTF-8"))?;
+    let leaf = |name: &str| {
+        matches!(
+            name,
+            "Key" | "VersionId" | "ETag" | "LastModifiedTime" | "Size" | "Quiet"
+        )
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    let mut text = String::new();
+    let (mut key, mut version) = (None, None);
+    let mut request = DeleteRequest {
+        objects: Vec::new(),
+        quiet: false,
+    };
+    let mut seen_root = false;
+    for event in xml_events(doc.trim_start_matches('\u{feff}'))? {
+        match event {
+            XmlEvent::Open(name) => {
+                let allowed = match stack.as_slice() {
+                    [] => name == "Delete" && !seen_root,
+                    ["Delete"] => matches!(name, "Object" | "Quiet"),
+                    ["Delete", "Object"] => leaf(name) && name != "Quiet",
+                    _ => false,
+                };
+                if !allowed {
+                    return Err(bad(&format!("unexpected element <{name}>")));
+                }
+                seen_root = true;
+                if name == "Object" {
+                    (key, version) = (None, None);
+                }
+                stack.push(name);
+                text.clear();
+            }
+            XmlEvent::Text(t) => {
+                if stack.last().is_some_and(|name| leaf(name)) {
+                    text.push_str(&t);
+                } else if !t.trim().is_empty() {
+                    return Err(bad("text outside an element that holds text"));
+                }
+            }
+            XmlEvent::Close(name) => {
+                if stack.pop() != Some(name) {
+                    return Err(bad(&format!("unmatched </{name}>")));
+                }
+                match name {
+                    "Key" => key = Some(std::mem::take(&mut text)),
+                    "VersionId" => version = Some(std::mem::take(&mut text)),
+                    "Quiet" => {
+                        request.quiet = match text.trim() {
+                            "true" => true,
+                            "false" => false,
+                            _ => return Err(bad("Quiet must be true or false")),
+                        }
+                    }
+                    "Object" => {
+                        let key = key.take().ok_or_else(|| bad("an Object without a Key"))?;
+                        request.objects.push((key, version.take()));
+                    }
+                    _ => {}
+                }
+                text.clear();
+            }
+        }
+    }
+    if !seen_root || !stack.is_empty() {
+        return Err(bad("the document isn't one whole <Delete> element"));
+    }
+    if request.objects.is_empty() || request.objects.len() > MAX_DELETE_KEYS {
+        return Err(bad(&format!(
+            "a Delete holds 1 to {MAX_DELETE_KEYS} Objects"
+        )));
+    }
+    Ok(request)
+}
+
+/// Split an XML document into elements and text, decoding entities and
+/// character references. An XML declaration at the start is skipped.
+/// Comments, CDATA, DOCTYPE and processing instructions are refused, so
+/// nothing is read in a way an XML parser wouldn't.
+fn xml_events(doc: &str) -> S3Result<Vec<XmlEvent<'_>>> {
+    let bad = |why: &str| S3Error::MalformedXML(why.to_string());
+    let mut rest = doc;
+    if rest.starts_with("<?xml") {
+        let end = rest
+            .find("?>")
+            .ok_or_else(|| bad("an unclosed XML declaration"))?;
+        rest = &rest[end + 2..];
+    }
+    let mut events = Vec::new();
+    while !rest.is_empty() {
+        let Some(tag) = rest.strip_prefix('<') else {
+            let end = rest.find('<').unwrap_or(rest.len());
+            events.push(XmlEvent::Text(xml_unescape(&rest[..end])?));
+            rest = &rest[end..];
+            continue;
+        };
+        let end = tag.find('>').ok_or_else(|| bad("an unclosed tag"))?;
+        let (inner, after) = (&tag[..end], &tag[end + 1..]);
+        rest = after;
+        if inner.starts_with(['!', '?']) {
+            return Err(bad(
+                "comments, CDATA, DOCTYPE and processing instructions aren't accepted",
+            ));
+        }
+        if let Some(name) = inner.strip_prefix('/') {
+            events.push(XmlEvent::Close(name.trim_end()));
+            continue;
+        }
+        let (inner, empty) = match inner.strip_suffix('/') {
+            Some(inner) => (inner, true),
+            None => (inner, false),
+        };
+        let name = inner
+            .split(|c: char| c.is_ascii_whitespace())
+            .next()
+            .unwrap_or("");
+        if name.is_empty() {
+            return Err(bad("a tag without a name"));
+        }
+        events.push(XmlEvent::Open(name));
+        if empty {
+            events.push(XmlEvent::Close(name));
+        }
+    }
+    Ok(events)
+}
+
+/// Decode XML text: line ends become `\n`, as XML says, and the five
+/// entities and character references become the characters they name.
+fn xml_unescape(raw: &str) -> S3Result<String> {
+    let bad = |why: &str| S3Error::MalformedXML(why.to_string());
+    let raw = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw.as_str();
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let end = rest[i..]
+            .find(';')
+            .map(|j| i + j)
+            .ok_or_else(|| bad("an unterminated entity"))?;
+        let entity = &rest[i + 1..end];
+        let c = match entity {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            _ => {
+                let code = match entity.strip_prefix("#x") {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => entity.strip_prefix('#').and_then(|d| d.parse().ok()),
+                };
+                code.and_then(char::from_u32)
+                    .ok_or_else(|| bad(&format!("an unknown entity &{entity};")))?
+            }
+        };
+        out.push(c);
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    let xml_illegal = |c: char| matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}');
+    if out.chars().any(xml_illegal) {
+        return Err(bad("a character XML can't carry"));
+    }
+    Ok(out)
 }
 
 /// ListObjects query parameters. `list-type=2` selects ListObjectsV2.
@@ -700,6 +1058,81 @@ fn iso8601(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_documents_parse_as_s3_clients_send_them() {
+        let doc = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n",
+            "  <Object><Key>a&amp;b&lt;c&gt;&quot;&apos;</Key></Object>\n",
+            "  <Object><Key>cr&#13;lf&#x41;</Key><VersionId>null</VersionId></Object>\n",
+            "  <Object><Key>  </Key><ETag>\"x\"</ETag></Object>\n",
+            "  <Object><Key>line\r\nend</Key><VersionId>v1</VersionId></Object>\n",
+            "  <Quiet>true</Quiet>\n",
+            "</Delete>\n",
+        );
+        assert_eq!(
+            parse_delete(doc.as_bytes()).unwrap(),
+            DeleteRequest {
+                objects: vec![
+                    ("a&b<c>\"'".to_string(), None),
+                    ("cr\rlfA".to_string(), Some("null".to_string())),
+                    ("  ".to_string(), None),
+                    ("line\nend".to_string(), Some("v1".to_string())),
+                ],
+                quiet: true,
+            }
+        );
+        let plain = "<Delete><Object><Key>k</Key></Object></Delete>";
+        assert!(!parse_delete(plain.as_bytes()).unwrap().quiet);
+    }
+
+    #[test]
+    fn delete_documents_a_parser_could_read_differently_are_refused() {
+        let object = "<Object><Key>k</Key></Object>";
+        let too_many = format!("<Delete>{}</Delete>", object.repeat(MAX_DELETE_KEYS + 1));
+        let bad = [
+            "",
+            "<Delete/>",
+            "<Delete></Delete>",
+            "<Delete><!-- k --><Object><Key>k</Key></Object></Delete>",
+            "<Delete><Object><Key><![CDATA[k]]></Key></Object></Delete>",
+            "<!DOCTYPE d><Delete><Object><Key>k</Key></Object></Delete>",
+            "<Delete><Object><Key>k</Object></Key></Delete>",
+            "<Delete><Object><Key>k</Key></Object>",
+            "<Delete><Object><Name>k</Name></Object></Delete>",
+            "<Delete><Object><Key>k</Key></Object></Delete><Delete/>",
+            "<Delete>loose<Object><Key>k</Key></Object></Delete>",
+            "<Delete><Object></Object></Delete>",
+            "<Delete><Object><Key>k&nbsp;</Key></Object></Delete>",
+            "<Delete><Object><Key>k&#1;</Key></Object></Delete>",
+            "<Delete><Object><Key>k\u{1}</Key></Object></Delete>",
+            "<Delete><Object><Key>k&amp</Key></Object></Delete>",
+            "<Delete><Quiet>yes</Quiet><Object><Key>k</Key></Object></Delete>",
+            "<s3:Delete><Object><Key>k</Key></Object></s3:Delete>",
+            &too_many,
+        ];
+        for doc in bad {
+            assert!(
+                matches!(parse_delete(doc.as_bytes()), Err(S3Error::MalformedXML(_))),
+                "{doc}"
+            );
+        }
+        assert!(parse_delete(b"<Delete><Object><Key>\xff</Key></Object></Delete>").is_err());
+        // Comments and the like are refused as such, not as odd elements.
+        for doc in [
+            "<Delete><!-- k --><Object><Key>k</Key></Object></Delete>",
+            "<Delete><Object><Key><![CDATA[k]]></Key></Object></Delete>",
+            "<!DOCTYPE d><Delete><Object><Key>k</Key></Object></Delete>",
+            "<Delete><?pi x?><Object><Key>k</Key></Object></Delete>",
+        ] {
+            let refused = parse_delete(doc.as_bytes());
+            assert!(
+                matches!(&refused, Err(S3Error::MalformedXML(m)) if m.contains("comments, CDATA")),
+                "{doc}: {refused:?}"
+            );
+        }
+    }
 
     #[test]
     fn iso8601_formats_utc_times() {
