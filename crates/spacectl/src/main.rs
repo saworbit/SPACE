@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle};
+use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle, StoreSecurity};
 use capsule_registry::CapsuleRegistry;
 
 use clap::{Parser, Subcommand};
@@ -156,6 +156,22 @@ fn storage_root() -> Result<Option<PathBuf>> {
     }
 }
 
+/// `SPACE_MASTER_KEY` and `SPACE_ALLOW_PLAINTEXT`, read here and passed to
+/// the store, which never reads them itself (#199). A set but invalid key is
+/// an error, not a quiet fallback to an unencrypted store (#84).
+fn store_security() -> Result<StoreSecurity> {
+    let allow_plaintext = match std::env::var_os("SPACE_ALLOW_PLAINTEXT") {
+        None => false,
+        Some(value) if value == "1" => true,
+        Some(value) => bail!("SPACE_ALLOW_PLAINTEXT must be 1 or unset, not {value:?}"),
+    };
+    let key = encryption::KeyManager::from_env_if_set()?;
+    Ok(StoreSecurity {
+        key: key.map(|key| Arc::new(std::sync::Mutex::new(key))),
+        allow_plaintext,
+    })
+}
+
 /// The store's pipeline, as `serve-s3` opens it: segments under
 /// `SPACE_STORAGE_ROOT` when that's set, in `space.nvram` otherwise. Every
 /// command that touches segments opens it this way, so they all use the
@@ -167,6 +183,7 @@ fn storage_root() -> Result<Option<PathBuf>> {
 async fn open_store(dir: &Path, registry: CapsuleRegistry) -> Result<RegistryPipelineHandle> {
     let nvram = dir.join(NVRAM_PATH);
     let established = !registry.journal_is_empty();
+    let security = store_security()?;
     match storage_root()? {
         Some(root) => {
             if established && !root.join("store").exists() {
@@ -183,14 +200,13 @@ async fn open_store(dir: &Path, registry: CapsuleRegistry) -> Result<RegistryPip
                 );
             }
             let storage = storage::AutoFsBackend::open(&root).await?;
-            modular_pipeline::registry_pipeline_from_fs_backend(storage, registry).with_context(
-                || {
+            modular_pipeline::registry_pipeline_from_fs_backend(storage, registry, &security)
+                .with_context(|| {
                     format!(
                         "couldn't open the segments under SPACE_STORAGE_ROOT '{}'",
                         root.display()
                     )
-                },
-            )
+                })
         }
         None => {
             if established && !nvram.exists() {
@@ -200,7 +216,9 @@ async fn open_store(dir: &Path, registry: CapsuleRegistry) -> Result<RegistryPip
                     dir.display()
                 );
             }
-            modular_pipeline::registry_pipeline_from_env(&nvram, registry)
+            let log = nvram_sim::NvramLog::open(&nvram)
+                .with_context(|| format!("couldn't open {}", nvram.display()))?;
+            modular_pipeline::registry_pipeline_from_log(log, registry, &security)
                 .with_context(|| format!("couldn't open {}", nvram.display()))
         }
     }

@@ -7,6 +7,7 @@
 //! Naming convention: `scenario_<given>_<when>_<then>`
 
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
@@ -40,7 +41,7 @@ impl TestHarness {
 
         let registry = CapsuleRegistry::open(&meta_path).unwrap();
         let nvram = NvramLog::open(&log_path).unwrap();
-        let s3 = S3View::new(registry, nvram).expect("open S3 view");
+        let s3 = S3View::new(registry, nvram, &StoreSecurity::none()).expect("open S3 view");
 
         Self {
             s3,

@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
@@ -15,7 +16,7 @@ async fn test_s3_put_and_get() {
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let s3 = S3View::new(registry, nvram).expect("open S3 view");
+    let s3 = S3View::new(registry, nvram, &StoreSecurity::none()).expect("open S3 view");
 
     // Test data
     let test_data = b"Hello from S3 view! This is capsule storage.".to_vec();
@@ -79,7 +80,7 @@ async fn test_s3_multiple_objects() {
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let s3 = S3View::new(registry, nvram).expect("open S3 view");
+    let s3 = S3View::new(registry, nvram, &StoreSecurity::none()).expect("open S3 view");
 
     // Create multiple objects
     s3.create_bucket("bucket1").unwrap();
@@ -142,7 +143,7 @@ async fn test_s3_large_object() {
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
-    let s3 = S3View::new(registry, nvram).expect("open S3 view");
+    let s3 = S3View::new(registry, nvram, &StoreSecurity::none()).expect("open S3 view");
 
     // Create 10MB object (will span multiple 4MB segments)
     let large_data = generate_large_payload(10_000_000);

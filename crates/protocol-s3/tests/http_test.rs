@@ -3,6 +3,7 @@
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use nvram_sim::NvramLog;
 use protocol_s3::{server, server::AllowedHosts, S3View};
@@ -27,7 +28,7 @@ impl App {
         std::fs::create_dir_all(&dir).unwrap();
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-        let view = S3View::new(registry.clone(), log).unwrap();
+        let view = S3View::new(registry.clone(), log, &StoreSecurity::none()).unwrap();
         setup(&registry);
         // Most tests use the bucket `demo`.
         view.create_bucket("demo").unwrap();
@@ -1182,6 +1183,7 @@ async fn names_given_to_the_server_are_answered() {
     let view = S3View::new(
         CapsuleRegistry::open(dir.join("space.db")).unwrap(),
         NvramLog::open(dir.join("space.nvram")).unwrap(),
+        &StoreSecurity::none(),
     )
     .unwrap();
     let hosts = AllowedHosts::with_names(["Space.LAN".to_string()]);

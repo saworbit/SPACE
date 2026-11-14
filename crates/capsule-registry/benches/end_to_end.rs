@@ -54,7 +54,7 @@ impl Store {
             let key_manager = KeyManager::new([0x42; MASTER_KEY_SIZE]);
             WritePipeline::with_key_manager(registry, nvram, key_manager)
         } else {
-            WritePipeline::open(registry, nvram).unwrap()
+            WritePipeline::new(registry, nvram)
         };
         Self {
             dir,

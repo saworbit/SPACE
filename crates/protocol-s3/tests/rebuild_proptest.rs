@@ -6,6 +6,7 @@
 //! The invariant is `rebuild(journal, data log) == index` (docs/capsule.md).
 
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use futures::stream;
 use nvram_sim::NvramLog;
@@ -87,7 +88,7 @@ struct Store {
 fn open(dir: &Path) -> Store {
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-    let view = S3View::new(registry.clone(), log.clone()).unwrap();
+    let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
     Store {
         registry,
         log,

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use capsule_registry::modular_pipeline::{
     registry_pipeline_from_log, registry_pipeline_from_log_with_key, spawn_scrub,
-    RegistryPipelineHandle,
+    RegistryPipelineHandle, StoreSecurity,
 };
 use capsule_registry::CapsuleRegistry;
 use common::scrub::{ScrubConfig, ScrubKind, ScrubResult, ScrubState, ScrubTimes};
@@ -39,7 +39,7 @@ fn open(dir: &Path, with_key: bool) -> (CapsuleRegistry, NvramLog, RegistryPipel
     let handle = if with_key {
         registry_pipeline_from_log_with_key(log.clone(), registry.clone(), key()).unwrap()
     } else {
-        registry_pipeline_from_log(log.clone(), registry.clone()).unwrap()
+        registry_pipeline_from_log(log.clone(), registry.clone(), &StoreSecurity::none()).unwrap()
     };
     (registry, log, handle)
 }

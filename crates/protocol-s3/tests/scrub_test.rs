@@ -2,6 +2,7 @@
 //! segment shows up in the scrub state while the server keeps running.
 
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use common::scrub::{ScrubConfig, ScrubKind, ScrubState};
 use common::CapsuleId;
@@ -21,7 +22,7 @@ async fn a_scheduled_scrub_finds_a_damaged_object() {
     std::fs::create_dir_all(&dir).unwrap();
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-    let view = S3View::new(registry.clone(), log.clone()).unwrap();
+    let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
     view.create_bucket("bkt").unwrap();
 
     let damaged = view
@@ -120,7 +121,7 @@ async fn a_scheduled_scrub_finds_an_object_whose_segments_are_out_of_order() {
     std::fs::create_dir_all(&dir).unwrap();
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-    let view = S3View::new(registry.clone(), log.clone()).unwrap();
+    let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
     view.create_bucket("bkt").unwrap();
     let data: Vec<u8> = (0..(9 << 20) + 3)
         .map(|i| (i % 253) as u8 ^ (i >> 20) as u8)

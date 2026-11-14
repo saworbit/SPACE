@@ -1,23 +1,27 @@
 //! An encrypted object on a server without `SPACE_MASTER_KEY` is an error
 //! response, not its ciphertext with a 200 (#155), and a PUT there is refused
 //! rather than stored unencrypted (#157).
-//!
-//! This binary holds a single test because it changes a process-wide
-//! environment variable.
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
-use capsule_registry::modular_pipeline::registry_pipeline_from_env;
+use capsule_registry::modular_pipeline::{registry_pipeline_from_log, StoreSecurity};
 use capsule_registry::CapsuleRegistry;
+use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
+use nvram_sim::NvramLog;
 use protocol_s3::{server, S3View};
 use std::path::Path;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-fn router(nvram: &Path, registry: &CapsuleRegistry) -> Router {
-    let handle = registry_pipeline_from_env(nvram, registry.clone()).unwrap();
+fn router(nvram: &Path, registry: &CapsuleRegistry, security: &StoreSecurity) -> Router {
+    let log = NvramLog::open(nvram).unwrap();
+    let handle = registry_pipeline_from_log(log, registry.clone(), security).unwrap();
     server::router(Arc::new(S3View::new_modular(handle)))
+}
+
+fn key() -> StoreSecurity {
+    StoreSecurity::with_key(KeyManager::new([7; MASTER_KEY_SIZE]))
 }
 
 async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Vec<u8>) {
@@ -37,9 +41,7 @@ async fn encrypted_get_without_a_key_is_an_error() {
     let nvram = dir.join("space.nvram");
     let secret = b"TOP SECRET PAYLOAD".to_vec();
 
-    std::env::set_var("SPACE_MASTER_KEY", "07".repeat(32));
-    let keyed = router(&nvram, &registry);
-    std::env::remove_var("SPACE_MASTER_KEY");
+    let keyed = router(&nvram, &registry, &key());
     let create = Request::put("/sec").body(Body::empty()).unwrap();
     assert_eq!(send(&keyed, create).await.0, StatusCode::OK);
     let put = Request::put("/sec/secret.txt")
@@ -50,7 +52,7 @@ async fn encrypted_get_without_a_key_is_an_error() {
 
     // The same store, served without the key. It refuses writes, rather
     // than storing them unencrypted (#157).
-    let keyless = router(&nvram, &registry);
+    let keyless = router(&nvram, &registry, &StoreSecurity::none());
     let put = Request::put("/sec/plain.txt")
         .body(Body::from("not secret"))
         .unwrap();
@@ -75,10 +77,8 @@ async fn encrypted_get_without_a_key_is_an_error() {
     }
 
     // The key still reads it.
-    std::env::set_var("SPACE_MASTER_KEY", "07".repeat(32));
     drop(keyless);
-    let keyed = router(&nvram, &registry);
-    std::env::remove_var("SPACE_MASTER_KEY");
+    let keyed = router(&nvram, &registry, &key());
     let get = Request::get("/sec/secret.txt").body(Body::empty()).unwrap();
     assert_eq!(send(&keyed, get).await, (StatusCode::OK, secret));
 

@@ -17,6 +17,7 @@ default = []
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }
+encryption = { path = "../encryption" }
 storage = { path = "../storage" }
 nvram-sim = { path = "../nvram-sim" }
 protocol-s3 = { path = "../protocol-s3" }

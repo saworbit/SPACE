@@ -725,20 +725,74 @@ pub mod modular_pipeline {
         }
     }
 
-    pub fn registry_pipeline_from_env<P: AsRef<std::path::Path>>(
-        path: P,
-        registry: crate::CapsuleRegistry,
-    ) -> Result<RegistryPipelineHandle> {
-        let backend = NvramBackend::open(path)?;
-        registry_pipeline_from_nvram_backend(backend, registry)
+    /// How a pipeline treats encryption, chosen by whoever opens it (#199):
+    /// the key it encrypts with, if any, and whether a store that's
+    /// encrypted may store new objects unencrypted when opened without its
+    /// key (#157). Nothing in this crate reads the environment for it;
+    /// `spacectl` resolves `SPACE_MASTER_KEY` and `SPACE_ALLOW_PLAINTEXT`
+    /// into one of these.
+    #[derive(Clone, Default)]
+    pub struct StoreSecurity {
+        /// The key to encrypt and decrypt with. `None` opens the store
+        /// without one: a new store stays unencrypted, and an encrypted one
+        /// refuses writes unless `allow_plaintext` is set.
+        pub key: Option<Arc<Mutex<KeyManager>>>,
+        /// Let an encrypted store opened without its key store new objects
+        /// unencrypted.
+        pub allow_plaintext: bool,
+    }
+
+    impl StoreSecurity {
+        /// No key, and no unencrypted writes to an encrypted store.
+        pub fn none() -> Self {
+            Self::default()
+        }
+
+        /// Encrypt with `key`.
+        pub fn with_key(key: KeyManager) -> Self {
+            Self::with_shared_key(Arc::new(Mutex::new(key)))
+        }
+
+        /// Encrypt with `key`, shared with whoever else holds it.
+        pub fn with_shared_key(key: Arc<Mutex<KeyManager>>) -> Self {
+            Self {
+                key: Some(key),
+                allow_plaintext: false,
+            }
+        }
+
+        /// No key, and new objects in an encrypted store are stored
+        /// unencrypted.
+        pub fn plaintext() -> Self {
+            Self {
+                key: None,
+                allow_plaintext: true,
+            }
+        }
+    }
+
+    impl std::fmt::Debug for StoreSecurity {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("StoreSecurity")
+                .field(
+                    "key",
+                    &self
+                        .key
+                        .as_ref()
+                        .map(|key| store_key_of(key).fingerprint_hex()),
+                )
+                .field("allow_plaintext", &self.allow_plaintext)
+                .finish()
+        }
     }
 
     pub fn registry_pipeline_from_log(
         log: NvramLog,
         registry: crate::CapsuleRegistry,
+        security: &StoreSecurity,
     ) -> Result<RegistryPipelineHandle> {
         let backend = NvramBackend::from_log(log);
-        registry_pipeline_from_nvram_backend(backend, registry)
+        registry_pipeline_from_nvram_backend(backend, registry, security)
     }
 
     pub fn registry_pipeline_from_log_with_key(
@@ -746,9 +800,7 @@ pub mod modular_pipeline {
         registry: crate::CapsuleRegistry,
         key_manager: Arc<Mutex<KeyManager>>,
     ) -> Result<RegistryPipelineHandle> {
-        let backend = NvramBackend::from_log(log);
-        let pipeline = build_nvram_encrypted_pipeline(backend, registry, key_manager)?;
-        Ok(RegistryPipelineHandle::Encrypted(pipeline))
+        registry_pipeline_from_log(log, registry, &StoreSecurity::with_shared_key(key_manager))
     }
 
     pub fn registry_nvram_pipeline_with_encryption<P: AsRef<std::path::Path>>(
@@ -763,23 +815,22 @@ pub mod modular_pipeline {
     pub async fn registry_pipeline_from_storage_root<P: AsRef<std::path::Path>>(
         root: P,
         registry: crate::CapsuleRegistry,
+        security: &StoreSecurity,
     ) -> Result<RegistryPipelineHandle> {
         let storage = AutoFsBackend::open(root).await?;
-        registry_pipeline_from_fs_backend(storage, registry)
+        registry_pipeline_from_fs_backend(storage, registry, security)
     }
 
     fn registry_pipeline_from_nvram_backend(
         storage: NvramBackend,
         mut registry: crate::CapsuleRegistry,
+        security: &StoreSecurity,
     ) -> Result<RegistryPipelineHandle> {
-        // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
-        // fallback to the plain pipeline (#84).
-        if let Some(manager) = KeyManager::from_env_if_set()? {
-            let km = Arc::new(Mutex::new(manager));
-            let pipeline = build_nvram_encrypted_pipeline(storage, registry, km)?;
+        if let Some(km) = &security.key {
+            let pipeline = build_nvram_encrypted_pipeline(storage, registry, Arc::clone(km))?;
             Ok(RegistryPipelineHandle::Encrypted(pipeline))
         } else {
-            recount_references(&storage, &mut registry, None, plaintext_allowed()?)?;
+            recount_references(&storage, &mut registry, None, security.allow_plaintext)?;
             Ok(RegistryPipelineHandle::Plain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -795,15 +846,13 @@ pub mod modular_pipeline {
     pub fn registry_pipeline_from_fs_backend(
         storage: AutoFsBackend,
         mut registry: crate::CapsuleRegistry,
+        security: &StoreSecurity,
     ) -> Result<RegistryPipelineHandle> {
-        // A set but invalid SPACE_MASTER_KEY is an error, not a quiet
-        // fallback to the plain pipeline (#84).
-        if let Some(manager) = KeyManager::from_env_if_set()? {
-            let km = Arc::new(Mutex::new(manager));
-            let pipeline = build_fs_encrypted_pipeline(storage, registry, km)?;
+        if let Some(km) = &security.key {
+            let pipeline = build_fs_encrypted_pipeline(storage, registry, Arc::clone(km))?;
             Ok(RegistryPipelineHandle::FsEncrypted(pipeline))
         } else {
-            recount_fs_references(&storage, &mut registry, None, plaintext_allowed()?)?;
+            recount_fs_references(&storage, &mut registry, None, security.allow_plaintext)?;
             Ok(RegistryPipelineHandle::FsPlain(Pipeline::new(
                 compression::Lz4ZstdCompressor,
                 dedup::Blake3Deduper::default(),
@@ -822,16 +871,6 @@ pub mod modular_pipeline {
         StoreKey {
             key_version: manager.current_version(),
             fingerprint: manager.fingerprint(),
-        }
-    }
-
-    /// Whether `SPACE_ALLOW_PLAINTEXT=1` lets an encrypted store open
-    /// without its key, storing new objects unencrypted (#157).
-    fn plaintext_allowed() -> Result<bool> {
-        match std::env::var_os("SPACE_ALLOW_PLAINTEXT") {
-            None => Ok(false),
-            Some(value) if value == "1" => Ok(true),
-            Some(value) => anyhow::bail!("SPACE_ALLOW_PLAINTEXT must be 1 or unset, not {value:?}"),
         }
     }
 

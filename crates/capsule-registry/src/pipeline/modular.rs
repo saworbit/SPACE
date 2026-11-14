@@ -10,7 +10,7 @@ use nvram_sim::NvramLog;
 use tokio::io::AsyncRead;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::modular_pipeline::RegistryPipelineHandle;
+use crate::modular_pipeline::{RegistryPipelineHandle, StoreSecurity};
 use crate::pipeline::strategy::PipelineStrategy;
 use crate::CapsuleRegistry;
 
@@ -19,8 +19,13 @@ pub struct ModularPipeline {
 }
 
 impl ModularPipeline {
-    pub fn open(nvram: NvramLog, registry: CapsuleRegistry) -> Result<Self> {
-        let handle = crate::modular_pipeline::registry_pipeline_from_log(nvram, registry)?;
+    pub fn open(
+        nvram: NvramLog,
+        registry: CapsuleRegistry,
+        security: &StoreSecurity,
+    ) -> Result<Self> {
+        let handle =
+            crate::modular_pipeline::registry_pipeline_from_log(nvram, registry, security)?;
         Ok(Self {
             handle: Arc::new(TokioMutex::new(handle)),
         })
