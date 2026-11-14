@@ -280,8 +280,8 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 
 | Record | Effect on the index |
 |---|---|
-| `CAPSULE` | Insert the capsule. For each entry `refs[seg] += 1`. If `DEDUPE` is set and the hash isn't in the content index, register `hash → seg`. |
-| `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`; at 0, deregister the hash if it points at `seg`. |
+| `CAPSULE` | Insert the capsule. For each entry `refs[seg] += 1`. If `DEDUPE` is set, the entry also counts toward `seg`'s dedupe references, and `seg` becomes a candidate for its hash. The content index maps each hash to its lowest numbered candidate. |
+| `DROP` | Remove the capsule. For each entry `refs[seg] -= 1`, and if the capsule had `DEDUPE`, its dedupe references too. A segment with no dedupe references left stops being a candidate, and its hash moves to the next candidate, or leaves the index. |
 | `NAMESPACE` | Create the namespace (`namespaces`), keeping the first creation time if it exists, or delete it. |
 | `BIND` / `UNBIND` | Set or clear the name (`names`, keyed by namespace, NUL, name, holding the capsule id and the metadata), and file it under the capsule it points at or take it off (`capsule_names`, keyed by capsule id, then the name's key). |
 | `KEY` | Nothing. The journal keeps the last one in memory, found when it's opened. |
@@ -406,7 +406,7 @@ Suggested PRs:
    - Losing `space.db` still loses the capsule records. The data survives in the log, but nothing can say which segments make up which capsule until the journal lands.
 2. Journal (`FILE`, `CAPSULE`, `DROP`, `BATCH`), derived refs, pins, digest. Fixes the ref-count half of #97; orphans become `refs == 0`. **Done**, with these differences from the draft:
    - The sled `refs` tree is maintained by journal apply, as drafted. The data log's in-memory counts, which also count open writes, are set from it when a pipeline opens; there is no separate pin structure.
-   - sled also keeps an `indexed` tree, segment to content-index key, so a `DROP` that takes a segment to zero references can remove its hash.
+   - sled also keeps an `indexed` tree, segment to its hash and dedupe references, a `candidates` tree, hash to the segments that hold it, and a `deduped` tree of live dedupe capsules. The content index then follows from the live capsules alone, whatever order they came in, so an index rebuilt from a compacted journal is the same index ([#188](https://github.com/saworbit/SPACE/issues/188)).
    - The segment allocator is still the sled counter. A pipeline open raises it above the highest id in the data log, rather than deriving it in memory (§8.3).
    - A journal with damage inside it is refused rather than opened read-only.
    - Every full read of a capsule checks the digest, streamed or not ([#190](https://github.com/saworbit/SPACE/issues/190)). A range read can't. A deep scrub reads capsules whole to check it ([#140](https://github.com/saworbit/SPACE/issues/140)). The S3 ETag doesn't use it yet.
@@ -449,7 +449,7 @@ Suggested PRs:
 
 - Truncate the last record of each file at every byte offset. Open must succeed, and the state must equal the last commit before it.
 - Flip a byte in the middle of the data log. Open must go read-only, and `doctor` must name the affected capsules.
-- Proptest: random sequences of writes, dedup writes, deletes, S3 puts, overwrites and deletes. Then delete `space.db`, reopen, and compare capsules, refs, content index and names with the originals. This becomes an invariant in `capsule.md` §11: **rebuild(journal, data log) == index.** ([#139](https://github.com/saworbit/SPACE/issues/139))
+- Proptest: random sequences of writes, dedup writes, deletes, S3 puts, overwrites and deletes. Then delete `space.db`, reopen, and compare capsules, refs, content index and names with the originals. This becomes an invariant in `capsule.md` §11: **rebuild(journal, data log) == index.** Done in `rebuild_proptest.rs` ([#139](https://github.com/saworbit/SPACE/issues/139)).
 - Inject a crash at each step of compaction. Reopen must succeed with no manual step.
 - `digest == blake3::hash(input)` for every proptest payload.
 

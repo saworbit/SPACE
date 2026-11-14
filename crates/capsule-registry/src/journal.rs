@@ -29,7 +29,8 @@ use uuid::Uuid;
 /// 2: names (`NAMESPACE`, `BIND`, `UNBIND`) are indexed.
 /// 3: a name's metadata (`BIND` layout version 2) is indexed with it.
 /// 4: names are also indexed under the capsule they point at (#138).
-pub const INDEX_VERSION: u32 = 4;
+/// 5: the content index follows from the live capsules alone (#188).
+pub const INDEX_VERSION: u32 = 5;
 
 /// How far into which journal the index has applied records. Stored in
 /// sled next to the index, and updated in the same transaction as each
@@ -917,7 +918,7 @@ mod compaction_tests {
     use super::*;
     use crate::{CapsuleRegistry, JOURNAL_MIN_RECLAIM};
     use common::format::{CapsuleManifest, ManifestEntry};
-    use common::{CapsuleId, Policy, SegmentId};
+    use common::{CapsuleId, ContentHash, Policy, SegmentId};
     use std::fs;
 
     /// Namespaces the workload uses. The last is never created.
@@ -1333,6 +1334,106 @@ mod compaction_tests {
         assert!(registry.compact_journal().unwrap().is_some());
         drop(registry);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A dedupe capsule of `segments`, each holding the hash its id gives,
+    /// or `hash` for all of them.
+    fn capsule_of(segments: &[u64], hash: Option<u8>, dedupe: bool) -> CapsuleManifest {
+        let entries: Vec<ManifestEntry> = segments
+            .iter()
+            .map(|&segment| ManifestEntry {
+                segment_id: SegmentId(segment),
+                plain_len: 100,
+                content_hash: [hash.unwrap_or(segment as u8); 32],
+            })
+            .collect();
+        CapsuleManifest {
+            capsule_id: CapsuleId::new(),
+            created_at: 1_700_000_000,
+            size: 100 * entries.len() as u64,
+            digest: [7u8; 32],
+            dedupe,
+            requires_encryption: false,
+            deduped_bytes: 0,
+            policy: Policy::default(),
+            entries,
+        }
+    }
+
+    /// Compact the journal, then check that a reopen and a rebuild of the
+    /// index from the compacted journal each give the live index.
+    fn assert_rebuild_after_compaction_matches(registry: CapsuleRegistry, db: &Path, what: &str) {
+        registry
+            .compact_journal_with(always, |_| false)
+            .unwrap()
+            .expect("nothing reclaimed");
+        let expected = index(&registry);
+        drop(registry);
+        let registry = CapsuleRegistry::open(db).unwrap();
+        assert_eq!(index(&registry), expected, "{what}: after a reopen");
+        drop(registry);
+        fs::remove_dir_all(db).unwrap();
+        let registry = CapsuleRegistry::open(db).unwrap();
+        assert_eq!(index(&registry), expected, "{what}: after a rebuild");
+    }
+
+    /// The content index follows from the live capsules alone, so an index
+    /// rebuilt from a compacted journal, which holds only those, is the
+    /// same index (#188).
+    #[test]
+    fn the_content_index_follows_from_the_live_capsules() {
+        // Two live segments hold one hash, as when a write that another
+        // write deduped onto gives up, and the dropped capsule held the one
+        // the index named.
+        let dir = scratch("same_hash");
+        let db = dir.join("space.db");
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        let first = capsule_of(&[5], Some(9), true);
+        let dropped = first.capsule_id;
+        registry.create_capsule(first).unwrap();
+        registry
+            .create_capsule(capsule_of(&[1], Some(9), true))
+            .unwrap();
+        registry.delete_capsule(dropped).unwrap();
+        assert_eq!(
+            registry.lookup_content(&ContentHash::from_bytes(&[9; 32])),
+            Some(SegmentId(1))
+        );
+        assert_rebuild_after_compaction_matches(registry, &db, "same hash");
+        let _ = fs::remove_dir_all(&dir);
+
+        // A segment that only a capsule with dedupe off still holds isn't
+        // offered for dedup.
+        let dir = scratch("dedupe_off");
+        let db = dir.join("space.db");
+        let registry = CapsuleRegistry::open(&db).unwrap();
+        let on = capsule_of(&[5], None, true);
+        let dropped = on.capsule_id;
+        registry.create_capsule(on).unwrap();
+        registry
+            .create_capsule(capsule_of(&[5], None, false))
+            .unwrap();
+        registry.delete_capsule(dropped).unwrap();
+        assert_eq!(
+            registry.lookup_content(&ContentHash::from_bytes(&[5; 32])),
+            None
+        );
+        assert_rebuild_after_compaction_matches(registry, &db, "dedupe off");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The workload of [`records_committed_while_compaction_runs_are_kept`]
+    /// over many seeds. Before #188, about one in five failed the rebuild.
+    #[test]
+    fn a_rebuild_after_compaction_matches_for_every_seed() {
+        for seed in 1..=60u64 {
+            let dir = scratch("seeds");
+            let db = dir.join("space.db");
+            let registry = CapsuleRegistry::open(&db).unwrap();
+            churn(&registry, &mut Rng(seed), 120);
+            assert_rebuild_after_compaction_matches(registry, &db, &format!("seed {seed}"));
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
