@@ -102,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `uring` feature of `storage` builds again, now against tokio-uring 0.5, and CI runs clippy on it. Updated rand to 0.10.3 (#115, #116).
 - Dependabot no longer opens bincode major bumps. A test pins the `space.db` record encoding (#113).
 - Removed `scripts/`. Each script was broken and duplicated a cargo test or the S3 quick start (#101).
+- An index rebuilt from a compacted journal has the same content index as the one it replaces (#188). A hash used to name the first segment written with it, and to leave the index when that segment was freed, even while another live segment held it, so the live index missed dedup hits a rebuild found. Now each hash names the lowest numbered segment that holds it and that a live dedupe capsule references, which depends only on the live capsules. The index version is 5, so an existing store rebuilds its index once, on the first open. A proptest checks that a rebuild gives the same index over random S3 histories with compactions, and that each object's digest is BLAKE3 of its body (#139).
 
 The remaining entries in this section describe the pre-reset tree (foundry, federation, mesh, web UI, and the other removed crates). That code is on `archive/pre-reset-2026-10`. See [RESET.md](RESET.md).
 

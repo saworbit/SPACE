@@ -485,7 +485,7 @@ Segment lifecycle:
 
 `Pipeline::delete_capsule(capsule_id)` runs for `spacectl delete`. It:
 
-1. Commits the delete: appends a `DROP` record to the journal, in a `BATCH` with an `UNBIND` for each name that points at the capsule ([#138](https://github.com/saworbit/SPACE/issues/138)), and fsyncs it. Applying it removes the capsule record, decrements each segment's reference count in the index, and removes a segment's hash from the content index when its count reaches zero.
+1. Commits the delete: appends a `DROP` record to the journal, in a `BATCH` with an `UNBIND` for each name that points at the capsule ([#138](https://github.com/saworbit/SPACE/issues/138)), and fsyncs it. Applying it removes the capsule record, decrements each segment's reference count in the index, and takes a segment out of the content index when no live dedupe capsule references it, pointing its hash at another segment that holds it, if any (#188).
 2. Releases the capsule's segments: for each `SegmentId` in `capsule.segments`, if the in-memory `ref_count` is above 1, decrements it; otherwise drops the segment from the log's map.
 
 The delete commits first, so a crash part way through step 2 leaves only in-memory counts, which the next open sets again from the index.
@@ -822,9 +822,10 @@ Holds across restarts: ref counts aren't stored, and opening a pipeline sets the
 ### Index rebuild
 
 ```
-rebuild(journal) == index
+rebuild(journal, data log) == index
+content[hash] == min { seg : seg holds hash, a live dedupe capsule references seg }
 ```
-Deleting `space.db` and reopening gives the same capsules, reference counts and content index, and a stale index catches up by replaying the journal past its position. Tested by `losing_the_index_rebuilds_it_from_the_journal` and `records_the_index_missed_are_replayed_on_open` in [journal_test.rs](../crates/capsule-registry/tests/journal_test.rs). It holds after journal compaction too: `compaction_keeps_only_the_live_state` and `records_committed_while_compaction_runs_are_kept` in [journal.rs](../crates/capsule-registry/src/journal.rs) rebuild the index from a compacted journal, and compare its capsules, reference counts, content index, namespaces and names with the index before.
+Deleting `space.db` and reopening gives the same capsules, reference counts and content index, and a stale index catches up by replaying the journal past its position. Tested by `losing_the_index_rebuilds_it_from_the_journal` and `records_the_index_missed_are_replayed_on_open` in [journal_test.rs](../crates/capsule-registry/tests/journal_test.rs). It holds after journal compaction too: `compaction_keeps_only_the_live_state` and `records_committed_while_compaction_runs_are_kept` in [journal.rs](../crates/capsule-registry/src/journal.rs) rebuild the index from a compacted journal, and compare its capsules, reference counts, content index, namespaces and names with the index before. The content index depends only on the live capsules, not the order they were written and dropped in, so a compacted journal, which holds only those, rebuilds the same one (#188); `a_rebuild_after_compaction_matches_for_every_seed` checks it over 60 workloads. `a_rebuilt_index_is_the_index_it_replaces` in [rebuild_proptest.rs](../crates/protocol-s3/tests/rebuild_proptest.rs) checks it over random histories of S3 PUTs, overwrites, DELETEs, batch deletes, bucket creates and deletes, and data log and journal compactions, and checks each object's digest against BLAKE3 of its body (#139).
 
 ### Crash recovery
 

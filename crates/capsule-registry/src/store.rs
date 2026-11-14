@@ -274,11 +274,19 @@ fn decode_capsule(bytes: &[u8]) -> Result<Capsule> {
 pub struct SledStore {
     db: Db,
     capsules: sled::Tree,
+    /// Content hash to the segment dedup reuses for it: the lowest numbered
+    /// of its `candidates` (#188).
     content: sled::Tree,
     /// Segment id to the number of capsule entries that reference it.
     refs: sled::Tree,
-    /// Segment id to its content-index key, for segments the index holds.
+    /// Segment id to its content hash and the number of entries in live
+    /// dedupe capsules that reference it, for segments with any.
     indexed: sled::Tree,
+    /// Content hash to every segment that holds it and that a live dedupe
+    /// capsule references, lowest first.
+    candidates: sled::Tree,
+    /// The live capsules written with dedupe on.
+    deduped: sled::Tree,
     counters: sled::Tree,
     /// Namespace to its creation time.
     namespaces: sled::Tree,
@@ -402,6 +410,8 @@ impl SledStore {
         let content = db.open_tree("content")?;
         let refs = db.open_tree("refs")?;
         let indexed = db.open_tree("indexed")?;
+        let candidates = db.open_tree("candidates")?;
+        let deduped = db.open_tree("deduped")?;
         let counters = db.open_tree("counters")?;
         let namespaces = db.open_tree("namespaces")?;
         let names = db.open_tree("names")?;
@@ -421,6 +431,8 @@ impl SledStore {
             content,
             refs,
             indexed,
+            candidates,
+            deduped,
             counters,
             namespaces,
             names,
@@ -548,32 +560,40 @@ impl MetadataStore for SledStore {
 
     fn apply_journal(&self, record: &JournalRecord, position: &JournalPosition) -> Result<()> {
         let position = bincode::serialize(position)?;
-        let result = (
+        // More trees than sled's tuples take, so a slice.
+        let trees: [&sled::Tree; 10] = [
             &self.capsules,
             &self.content,
             &self.refs,
             &self.indexed,
+            &self.candidates,
+            &self.deduped,
             &self.counters,
             &self.namespaces,
             &self.names,
             &self.capsule_names,
-        )
-            .transaction(
-                |(capsules, content, refs, indexed, counters, namespaces, names, capsule_names)| {
-                    let trees = IndexTrees {
-                        capsules,
-                        content,
-                        refs,
-                        indexed,
-                        namespaces,
-                        names,
-                        capsule_names,
-                    };
-                    apply_record(record, &trees)?;
-                    counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
-                    Ok(())
-                },
-            );
+        ];
+        let result = trees[..].transaction(|view| {
+            let [capsules, content, refs, indexed, candidates, deduped, counters, namespaces, names, capsule_names] =
+                &view[..]
+            else {
+                unreachable!("one view per tree");
+            };
+            let trees = IndexTrees {
+                capsules,
+                content,
+                refs,
+                indexed,
+                candidates,
+                deduped,
+                namespaces,
+                names,
+                capsule_names,
+            };
+            apply_record(record, &trees)?;
+            counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
+            Ok(())
+        });
         match result {
             Ok(()) => Ok(()),
             Err(TransactionError::Abort(err)) => Err(err),
@@ -600,6 +620,8 @@ impl MetadataStore for SledStore {
         self.content.clear()?;
         self.refs.clear()?;
         self.indexed.clear()?;
+        self.candidates.clear()?;
+        self.deduped.clear()?;
         self.namespaces.clear()?;
         self.names.clear()?;
         self.capsule_names.clear()?;
@@ -659,15 +681,20 @@ impl MetadataStore for SledStore {
         if self.refs.contains_key(&seg_key)? {
             return Ok(false);
         }
-        let key = bincode::serialize(hash)?;
-        let removed = self
-            .content
-            .compare_and_swap(&key, Some(seg_key.clone()), None as Option<Vec<u8>>)?
-            .is_ok();
-        if removed {
-            self.indexed.remove(seg_key)?;
+        let hash_key = bincode::serialize(hash)?;
+        let result = (&self.content, &self.indexed, &self.candidates).transaction(
+            |(content, indexed, candidates)| {
+                let named = content.get(&hash_key)?.as_deref() == Some(seg_key.as_slice());
+                indexed.remove(seg_key.as_slice())?;
+                withdraw_candidate(content, candidates, &hash_key, segment)?;
+                Ok(named)
+            },
+        );
+        match result {
+            Ok(removed) => Ok(removed),
+            Err(TransactionError::Abort(err)) => Err(err),
+            Err(TransactionError::Storage(err)) => Err(err.into()),
         }
-        Ok(removed)
     }
 
     fn get_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>> {
@@ -858,9 +885,110 @@ struct IndexTrees<'a> {
     content: &'a TransactionalTree,
     refs: &'a TransactionalTree,
     indexed: &'a TransactionalTree,
+    candidates: &'a TransactionalTree,
+    deduped: &'a TransactionalTree,
     namespaces: &'a TransactionalTree,
     names: &'a TransactionalTree,
     capsule_names: &'a TransactionalTree,
+}
+
+// The content index follows from the live capsules alone: each hash maps to
+// the lowest numbered segment that holds it and that an entry in a live
+// dedupe capsule references. It doesn't depend on the order capsules were
+// written and dropped in, so an index rebuilt from a compacted journal,
+// which holds only the live capsules, is the same index (#188). Before, a
+// hash went to the first segment written with it and left the index when
+// that segment was freed, even while another live segment held it.
+
+fn read_candidates(
+    candidates: &TransactionalTree,
+    hash_key: &[u8],
+) -> ConflictableTransactionResult<Vec<SegmentId>, anyhow::Error> {
+    match candidates.get(hash_key)? {
+        Some(v) => bincode::deserialize(&v).map_err(abort),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Point `hash_key` at the lowest of `segments`, or at nothing.
+fn write_candidates(
+    content: &TransactionalTree,
+    candidates: &TransactionalTree,
+    hash_key: &[u8],
+    segments: &[SegmentId],
+) -> ConflictableTransactionResult<(), anyhow::Error> {
+    match segments.first() {
+        Some(lowest) => {
+            content.insert(hash_key, ser(lowest)?)?;
+            candidates.insert(hash_key, ser(&segments)?)?;
+        }
+        None => {
+            content.remove(hash_key)?;
+            candidates.remove(hash_key)?;
+        }
+    }
+    Ok(())
+}
+
+/// Stop offering `segment` for `hash_key`.
+fn withdraw_candidate(
+    content: &TransactionalTree,
+    candidates: &TransactionalTree,
+    hash_key: &[u8],
+    segment: SegmentId,
+) -> ConflictableTransactionResult<(), anyhow::Error> {
+    let mut segments = read_candidates(candidates, hash_key)?;
+    let before = segments.len();
+    segments.retain(|s| *s != segment);
+    if segments.len() != before {
+        write_candidates(content, candidates, hash_key, &segments)?;
+    }
+    Ok(())
+}
+
+/// Count an entry in a dedupe capsule that references `segment`, which
+/// holds `hash`. Its first such entry offers it for dedup.
+fn add_dedupe_ref(
+    t: &IndexTrees<'_>,
+    segment: SegmentId,
+    seg_key: &[u8],
+    hash: ContentHash,
+) -> ConflictableTransactionResult<(), anyhow::Error> {
+    let (hash, count): (ContentHash, u32) = match t.indexed.get(seg_key)? {
+        Some(v) => bincode::deserialize(&v).map_err(abort)?,
+        None => (hash, 0),
+    };
+    t.indexed
+        .insert(seg_key, ser(&(&hash, count.saturating_add(1)))?)?;
+    if count == 0 {
+        let hash_key = ser(&hash)?;
+        let mut segments = read_candidates(t.candidates, &hash_key)?;
+        if let Err(at) = segments.binary_search(&segment) {
+            segments.insert(at, segment);
+        }
+        write_candidates(t.content, t.candidates, &hash_key, &segments)?;
+    }
+    Ok(())
+}
+
+/// Undo [`add_dedupe_ref`] for an entry of a dropped dedupe capsule. When no
+/// live dedupe capsule references `segment` any more, it's no longer
+/// offered, and its hash moves to the next segment that holds it, if any.
+fn remove_dedupe_ref(
+    t: &IndexTrees<'_>,
+    segment: SegmentId,
+    seg_key: &[u8],
+) -> ConflictableTransactionResult<(), anyhow::Error> {
+    let Some(v) = t.indexed.get(seg_key)? else {
+        return Ok(());
+    };
+    let (hash, count): (ContentHash, u32) = bincode::deserialize(&v).map_err(abort)?;
+    if count > 1 {
+        t.indexed.insert(seg_key, ser(&(&hash, count - 1))?)?;
+        return Ok(());
+    }
+    t.indexed.remove(seg_key)?;
+    withdraw_candidate(t.content, t.candidates, &ser(&hash)?, segment)
 }
 
 /// Remove a name from under the capsule it points at, if it's bound.
@@ -908,38 +1036,42 @@ fn apply_record(
             if t.capsules.get(&key)?.is_some() {
                 return Ok(());
             }
-            t.capsules.insert(key, ser(&manifest.to_capsule())?)?;
+            t.capsules
+                .insert(key.clone(), ser(&manifest.to_capsule())?)?;
+            if manifest.dedupe {
+                t.deduped.insert(key, &[])?;
+            }
             for entry in &manifest.entries {
                 let seg_key = ser(&entry.segment_id)?;
                 let count = read_count(t.refs, &seg_key)?;
                 t.refs
                     .insert(seg_key.clone(), ser(&count.saturating_add(1))?)?;
+                // An all-zero hash means none (on-disk format §4). Only a
+                // dedup hit on a segment stored without one carries it, and
+                // such a segment is never offered, so it's never counted.
                 if manifest.dedupe && entry.content_hash != [0u8; 32] {
-                    let hash_key = ser(&ContentHash::from_bytes(&entry.content_hash))?;
-                    if t.content.get(&hash_key)?.is_none() {
-                        t.content.insert(hash_key.clone(), seg_key.clone())?;
-                        t.indexed.insert(seg_key, hash_key)?;
-                    }
+                    let hash = ContentHash::from_bytes(&entry.content_hash);
+                    add_dedupe_ref(t, entry.segment_id, &seg_key, hash)?;
                 }
             }
         }
         JournalRecord::Drop(id) => {
-            let Some(bytes) = t.capsules.remove(ser(id)?)? else {
+            let key = ser(id)?;
+            let Some(bytes) = t.capsules.remove(key.clone())? else {
                 return Ok(());
             };
+            let dedupe = t.deduped.remove(key)?.is_some();
             let capsule = decode_capsule_bytes(&bytes).map_err(abort)?;
             for segment in &capsule.segments {
                 let seg_key = ser(segment)?;
+                if dedupe {
+                    remove_dedupe_ref(t, *segment, &seg_key)?;
+                }
                 let count = read_count(t.refs, &seg_key)?;
                 if count > 1 {
                     t.refs.insert(seg_key, ser(&(count - 1))?)?;
-                    continue;
-                }
-                t.refs.remove(seg_key.clone())?;
-                if let Some(hash_key) = t.indexed.remove(seg_key.clone())? {
-                    if t.content.get(&hash_key)?.as_deref() == Some(seg_key.as_slice()) {
-                        t.content.remove(hash_key)?;
-                    }
+                } else {
+                    t.refs.remove(seg_key)?;
                 }
             }
         }
