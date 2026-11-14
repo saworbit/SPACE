@@ -245,7 +245,12 @@ fn decode_segments(bytes: &[u8]) -> Result<Vec<SegmentId>> {
             bytes.len()
         );
     }
-    bytes.chunks_exact(8).map(decode_segment).collect()
+    Ok(bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|id| SegmentId(u64::from_le_bytes(*id)))
+        .collect())
 }
 
 /// The journal position, 36 bytes: the index version, the store id, the
