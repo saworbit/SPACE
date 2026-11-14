@@ -468,6 +468,15 @@ fn dedup_domain<'a>(compression_algo: &'a str, encryption: &EncryptionPolicy) ->
 
 /// Turn stored segment bytes back into plaintext. The streaming and range
 /// read paths share this so both apply the same integrity checks.
+/// Every chunk of `stream`, in one buffer.
+async fn collect(mut stream: DataStream) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        output.extend_from_slice(&chunk?);
+    }
+    Ok(output)
+}
+
 fn decode_segment<C: Compressor, E: Encryptor>(
     compressor: &C,
     encryptor: &E,
@@ -899,7 +908,15 @@ where
     }
 
     /// Stream up to `len` bytes of a capsule from `offset`, one segment at a
-    /// time. Segments before `offset` are skipped without being read.
+    /// time. Segments before `offset` are skipped without being read. This
+    /// is the one walk over a capsule's segments: every read goes through
+    /// it (#190).
+    ///
+    /// A stream that covers the whole capsule hashes what it yields, and
+    /// ends with an error instead of cleanly if that doesn't match the
+    /// capsule's digest. A range can't be checked against a whole-capsule
+    /// digest. Either way, segments that end before the bytes asked for are
+    /// an error, not a short read.
     pub async fn read_range_stream(
         &self,
         id: CapsuleId,
@@ -921,6 +938,10 @@ where
         let encryptor_stream = self.encryptor.clone();
         let compressor_stream = self.compressor.clone();
         let encryption_policy = capsule.policy.encryption.clone();
+        let mut digest = capsule
+            .digest
+            .filter(|_| offset == 0 && end == capsule.size)
+            .map(|expected| (expected, blake3::Hasher::new()));
 
         let stream = try_stream! {
             let mut cursor = 0u64;
@@ -957,9 +978,29 @@ where
                 if seg_end > offset {
                     let from = offset.saturating_sub(cursor) as usize;
                     let to = (end.min(seg_end) - cursor) as usize;
-                    yield Bytes::from(plain).slice(from..to);
+                    let piece = Bytes::from(plain).slice(from..to);
+                    if let Some((_, hasher)) = &mut digest {
+                        hasher.update(&piece);
+                    }
+                    yield piece;
                 }
                 cursor = seg_end;
+            }
+            if cursor < end {
+                Err(anyhow!(
+                    "capsule {:?}'s segments hold {} bytes, short of the {} asked for; they're damaged",
+                    id,
+                    cursor,
+                    end
+                ))?;
+            }
+            if let Some((expected, hasher)) = digest {
+                if *hasher.finalize().as_bytes() != expected {
+                    Err(anyhow!(
+                        "capsule {:?} doesn't match its digest; its segments are damaged",
+                        id
+                    ))?;
+                }
             }
         };
 
@@ -968,7 +1009,9 @@ where
         Ok(out)
     }
 
-    /// Deprecated: use `read_capsule_stream` instead.
+    /// The whole capsule in memory, checked against its digest
+    /// ([`Pipeline::read_range_stream`]). Prefer
+    /// [`Pipeline::read_capsule_stream`], which doesn't hold it all.
     pub async fn read_capsule(&self, id: CapsuleId) -> Result<Vec<u8>>
     where
         C: Compressor + Clone + Send + Sync + 'static,
@@ -979,84 +1022,22 @@ where
         K: Keyring + Send + Sync + 'static,
         R: CapsuleCatalog + Send + Sync + 'static,
     {
-        let mut stream = self.read_capsule_stream(id).await?;
-        let mut output = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            output.extend_from_slice(&chunk);
-        }
-        if let Some(expected) = self.catalog.lookup_capsule(id)?.digest {
-            if *blake3::hash(&output).as_bytes() != expected {
-                return Err(anyhow!(
-                    "capsule {:?} doesn't match its digest; its segments are damaged",
-                    id
-                ));
-            }
-        }
-        Ok(output)
+        collect(self.read_capsule_stream(id).await?).await
     }
 
-    pub async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let capsule = self.catalog.lookup_capsule(id)?;
-        if offset >= capsule.size {
-            return Ok(Vec::new());
-        }
-
-        let range_end = std::cmp::min(offset.saturating_add(len as u64), capsule.size);
-        let mut remaining = (range_end - offset) as usize;
-        let mut cursor = 0u64;
-        let mut output = Vec::with_capacity(remaining);
-
-        for seg_id in &capsule.segments {
-            if remaining == 0 {
-                break;
-            }
-
-            let metadata = self.storage.metadata(*seg_id).await?;
-            let seg_len_hint = metadata
-                .plain_len
-                .map(u64::from)
-                .or_else(|| (!metadata.compressed).then_some(metadata.len as u64));
-
-            if let Some(seg_len) = seg_len_hint {
-                let seg_end = cursor + seg_len;
-                if seg_end <= offset {
-                    cursor = seg_end;
-                    continue;
-                }
-            }
-
-            let raw = self.storage.read(*seg_id).await?;
-            let decompressed = decode_segment(
-                &self.compressor,
-                &self.encryptor,
-                &capsule.policy.encryption,
-                *seg_id,
-                &metadata,
-                raw,
-            )?;
-
-            let seg_len = decompressed.len() as u64;
-            let seg_end = cursor + seg_len;
-
-            if seg_end <= offset {
-                cursor = seg_end;
-                continue;
-            }
-
-            let start = if offset > cursor {
-                (offset - cursor) as usize
-            } else {
-                0
-            };
-
-            let take = std::cmp::min(remaining, decompressed.len().saturating_sub(start));
-            output.extend_from_slice(&decompressed[start..start + take]);
-            remaining -= take;
-            cursor = seg_end;
-        }
-
-        Ok(output)
+    /// Up to `len` bytes from `offset`, in memory
+    /// ([`Pipeline::read_range_stream`]).
+    pub async fn read_range(&self, id: CapsuleId, offset: u64, len: usize) -> Result<Vec<u8>>
+    where
+        C: Compressor + Clone + Send + Sync + 'static,
+        D: Deduper + Send + Sync + 'static,
+        E: Encryptor + Clone + Send + Sync + 'static,
+        S: StorageBackend + Clone + Send + Sync + 'static,
+        Eval: PolicyEvaluator + Send + Sync + 'static,
+        K: Keyring + Send + Sync + 'static,
+        R: CapsuleCatalog + Send + Sync + 'static,
+    {
+        collect(self.read_range_stream(id, offset, len as u64).await?).await
     }
 
     /// Commit the delete first, then release the capsule's references to
@@ -2040,6 +2021,95 @@ mod tests {
         let data2 = pipeline.read_capsule(id2).await.unwrap();
         assert_eq!(data1, b"capsule-one");
         assert_eq!(data2, b"capsule-two");
+    }
+
+    /// Drain a stream, as `spacectl read` and an S3 GET do: the bytes, and
+    /// the error that ended it, if one did.
+    async fn drain(mut stream: DataStream) -> (Vec<u8>, Option<anyhow::Error>) {
+        let mut out = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => out.extend_from_slice(&bytes),
+                Err(err) => return (out, Some(err)),
+            }
+        }
+        (out, None)
+    }
+
+    /// Every full read of a capsule checks its digest, whichever path
+    /// serves it. A range can't, and still reads (#190).
+    #[tokio::test]
+    async fn every_full_read_checks_the_digest() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let data: Vec<u8> = (0..100u8).collect();
+        let id = pipeline
+            .write_capsule(&data, &Policy::default())
+            .await
+            .unwrap();
+        // The segments no longer make up the bytes the digest names.
+        pipeline
+            .catalog()
+            .inner
+            .lock()
+            .unwrap()
+            .capsules
+            .get_mut(&id)
+            .unwrap()
+            .digest = Some([9; 32]);
+
+        let err = pipeline.read_capsule(id).await.unwrap_err();
+        assert!(err.to_string().contains("digest"), "{err}");
+        let (bytes, err) = drain(pipeline.read_capsule_stream(id).await.unwrap()).await;
+        assert_eq!(bytes, data, "the bytes come before the error");
+        assert!(err.unwrap().to_string().contains("digest"));
+        assert!(pipeline.read_range(id, 0, 1000).await.is_err());
+        let (_, err) = drain(pipeline.read_range_stream(id, 0, 100).await.unwrap()).await;
+        assert!(
+            err.is_some(),
+            "a range covering the whole capsule is a full read"
+        );
+
+        assert_eq!(
+            pipeline.read_range(id, 10, 20).await.unwrap(),
+            &data[10..30]
+        );
+        let (bytes, err) = drain(pipeline.read_range_stream(id, 1, 99).await.unwrap()).await;
+        assert_eq!((bytes.as_slice(), err.is_none()), (&data[1..], true));
+
+        // A capsule recorded without a digest reads as before.
+        pipeline
+            .catalog()
+            .inner
+            .lock()
+            .unwrap()
+            .capsules
+            .get_mut(&id)
+            .unwrap()
+            .digest = None;
+        assert_eq!(pipeline.read_capsule(id).await.unwrap(), data);
+    }
+
+    /// Segments that end before the capsule's size are an error, not a
+    /// short read, with or without a digest.
+    #[tokio::test]
+    async fn segments_short_of_the_size_are_an_error() {
+        let mut pipeline: InMemoryPipeline = PipelineBuilder::new().build();
+        let data = b"short".to_vec();
+        let id = pipeline
+            .write_capsule(&data, &Policy::default())
+            .await
+            .unwrap();
+        {
+            let catalog = pipeline.catalog();
+            let mut inner = catalog.inner.lock().unwrap();
+            let capsule = inner.capsules.get_mut(&id).unwrap();
+            capsule.size = 9;
+            capsule.digest = None;
+        }
+        let err = pipeline.read_capsule(id).await.unwrap_err();
+        assert!(err.to_string().contains("short of the 9"), "{err}");
+        assert!(pipeline.read_range(id, 2, 7).await.is_err());
+        assert_eq!(pipeline.read_range(id, 1, 3).await.unwrap(), b"hor");
     }
 
     #[tokio::test]

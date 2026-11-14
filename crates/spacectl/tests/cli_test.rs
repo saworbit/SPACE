@@ -878,3 +878,53 @@ fn a_store_missing_its_journal_keeps_its_segments() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `spacectl read` fails when a capsule's bytes don't match its digest,
+/// instead of writing them out and exiting 0 (#190).
+#[test]
+fn read_fails_when_a_capsule_misses_its_digest() {
+    use capsule_registry::CapsuleRegistry;
+    use common::format::{CapsuleManifest, JournalRecord, ManifestEntry};
+    use common::CapsuleId;
+
+    let dir = scratch_dir("digest_read");
+    let data = noise(5000, 4);
+    std::fs::write(dir.join("a.bin"), &data).unwrap();
+    let good = created_id(&spacectl(&dir, &["create", "-f", "a.bin"]));
+    let bad = {
+        let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
+        let capsule = registry
+            .lookup(CapsuleId::from_uuid(good.parse().unwrap()))
+            .unwrap();
+        let id = CapsuleId::new();
+        let manifest = CapsuleManifest {
+            capsule_id: id,
+            created_at: 0,
+            size: capsule.size,
+            digest: [7; 32],
+            dedupe: false,
+            requires_encryption: false,
+            deduped_bytes: 0,
+            policy: capsule.policy.clone(),
+            entries: vec![ManifestEntry {
+                segment_id: capsule.segments[0],
+                plain_len: capsule.size as u32,
+                content_hash: [0; 32],
+            }],
+        };
+        registry
+            .commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+            .unwrap();
+        id.as_uuid().to_string()
+    };
+
+    let out = spacectl(&dir, &["read", &bad]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("doesn't match its digest"), "{stderr}");
+    let out = spacectl(&dir, &["read", &good]);
+    assert!(out.status.success());
+    assert_eq!(out.stdout, data);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

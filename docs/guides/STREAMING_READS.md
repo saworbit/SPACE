@@ -8,7 +8,9 @@ The pipeline can read a capsule one segment at a time, so a reader holds roughly
 - `RegistryPipelineHandle::read_capsule_stream(id).await`, the same call through the registry-backed handle
 - `DataStream = Pin<Box<dyn Stream<Item = anyhow::Result<Bytes>> + Send>>`, defined in `common::traits`
 
-The stream looks up the capsule once, then for each segment in turn reads its bytes, verifies and decrypts it if it is encrypted, decompresses it if it is compressed, and yields the plaintext as one `Bytes` chunk. A 9 MiB capsule arrives as three chunks. `read_capsule` is the same loop collected into a `Vec<u8>`.
+The stream looks up the capsule once, then for each segment in turn reads its bytes, verifies and decrypts it if it is encrypted, decompresses it if it is compressed, and yields the plaintext as one `Bytes` chunk. A 9 MiB capsule arrives as three chunks. `read_capsule` is the same stream collected into a `Vec<u8>`.
+
+A stream that covers the whole capsule hashes what it yields. If that doesn't match the capsule's BLAKE3 `digest`, its last item is an error instead of a clean end, so `spacectl read` and an unranged S3 GET fail rather than serve bytes that aren't the capsule's ([#190](https://github.com/saworbit/SPACE/issues/190)). The bytes before the error have already been sent, as with a segment that fails mid-stream. Segments that end before the capsule's size are an error too, not a short read.
 
 Serving a stream with axum:
 
@@ -48,7 +50,7 @@ S3 GET decodes the first segment before it answers. A read that fails from the s
 
 ## Range reads
 
-`read_range(id, offset, len)` returns the bytes in `[offset, offset + len)`, clamped to the capsule size. It uses each segment's `plain_len` to skip segments that end before `offset`. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs at most two segment reads. `read_range_stream(id, offset, len)` does the same one segment at a time, and S3 GET uses it for `Range` requests.
+`read_range(id, offset, len)` returns the bytes in `[offset, offset + len)`, clamped to the capsule size. It uses each segment's `plain_len` to skip segments that end before `offset`. A segment that overlaps the range is still read, decrypted and decompressed in full, so a 4 KiB range costs at most two segment reads. `read_range` collects `read_range_stream(id, offset, len)`, the one walk over a capsule's segments that every read goes through, and S3 GET uses the stream for `Range` requests. A range can't be checked against the whole capsule's digest, so only a range that covers the whole capsule is.
 
 ## Streaming writes
 

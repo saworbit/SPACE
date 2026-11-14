@@ -468,3 +468,63 @@ async fn deleting_a_named_capsule_removes_its_key() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A full GET of an object whose bytes don't match its capsule's digest
+/// ends with an error instead of a clean end, so a client sees a broken
+/// body. A ranged GET can't be checked against the digest, and reads
+/// (#190).
+#[tokio::test]
+async fn a_full_get_of_an_object_that_misses_its_digest_fails() {
+    use common::format::{CapsuleManifest, ManifestEntry};
+    let dir = scratch("digest_get");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let good = view
+        .put_object("bkt", "good", body(b"0123456789"))
+        .await
+        .unwrap();
+    let capsule = registry.lookup(good).unwrap();
+    let bad = common::CapsuleId::new();
+    let manifest = CapsuleManifest {
+        capsule_id: bad,
+        created_at: 0,
+        size: capsule.size,
+        digest: [7; 32],
+        dedupe: false,
+        requires_encryption: capsule.policy.encryption.is_enabled(),
+        deduped_bytes: 0,
+        policy: capsule.policy.clone(),
+        entries: vec![ManifestEntry {
+            segment_id: capsule.segments[0],
+            plain_len: capsule.size as u32,
+            content_hash: [0; 32],
+        }],
+    };
+    registry
+        .commit(vec![
+            JournalRecord::Capsule(Box::new(manifest)),
+            JournalRecord::Bind {
+                ns: "s3:bkt".into(),
+                name: "bad".into(),
+                capsule_id: bad,
+                metadata: Vec::new(),
+            },
+        ])
+        .unwrap();
+
+    let object = view.get_object("bkt", "bad").await.unwrap();
+    let collected: Result<Vec<Bytes>, _> = object.body.try_collect().await;
+    assert!(collected.is_err(), "a full GET must not end cleanly");
+
+    let range = protocol_s3::ByteRange::parse("bytes=2-5").unwrap();
+    let object = view
+        .get_object_range("bkt", "bad", Some(range))
+        .await
+        .unwrap();
+    let bytes: Vec<Bytes> = object.body.try_collect().await.unwrap();
+    assert_eq!(bytes.concat(), b"2345");
+    assert_eq!(read(&view, "bkt", "good").await, b"0123456789");
+
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
