@@ -24,7 +24,7 @@ pub mod pipeline;
 
 pub mod scrub_executor;
 
-pub use error::{CompressionError, DedupError, PipelineError};
+pub use error::CompressionError;
 
 pub mod modular_pipeline {
     use std::collections::HashMap;

@@ -344,7 +344,6 @@ dependencies = [
  "sled",
  "storage",
  "subtle",
- "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
@@ -511,7 +510,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
- "tokio",
  "uuid",
 ]
 

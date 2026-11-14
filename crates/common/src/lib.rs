@@ -6,18 +6,14 @@
 //! - **Core types**: `CapsuleId`, `SegmentId`, `Capsule`, `Segment`, `ContentHash`
 //! - **Policy**: `Policy`, `EncryptionPolicy`, `CompressionPolicy`, and related types
 //! - **Traits**: `Compressor`, `Encryptor`, `Deduper`, `StorageBackend`, etc.
-//! - **Erasure coding**: `ErasureCode` trait, `ErasureProfile`, shard types
 //! - **Scrub scheduler**: `ScrubConfig`, `ScrubSchedule`, `ScrubResult`
-//! - **QoS admission control**: `QosScheduler`, `IoClass`, `QosPermit`
 
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use uuid::Uuid;
 
-pub mod erasure;
 pub mod format;
 pub mod policy;
-pub mod qos;
 pub mod scrub;
 pub mod traits;
 pub use policy::{
