@@ -661,3 +661,63 @@ async fn a_rebuilt_index_keeps_no_stale_name_under_a_capsule() {
     handle.delete_capsule(b).await.unwrap();
     assert_eq!(names(&registry, ns), [("x".to_string(), a)]);
 }
+
+/// A second capsule over `of`'s one segment, whose digest doesn't match it.
+fn misdigested(registry: &CapsuleRegistry, of: CapsuleId) -> CapsuleId {
+    use common::format::{CapsuleManifest, ManifestEntry};
+    let capsule = registry.lookup(of).unwrap();
+    assert_eq!(capsule.segments.len(), 1);
+    let id = CapsuleId::new();
+    let manifest = CapsuleManifest {
+        capsule_id: id,
+        created_at: 0,
+        size: capsule.size,
+        digest: [7; 32],
+        dedupe: false,
+        requires_encryption: capsule.policy.encryption.is_enabled(),
+        deduped_bytes: 0,
+        policy: capsule.policy.clone(),
+        entries: vec![ManifestEntry {
+            segment_id: capsule.segments[0],
+            plain_len: capsule.size as u32,
+            content_hash: [0; 32],
+        }],
+    };
+    registry
+        .commit(vec![JournalRecord::Capsule(Box::new(manifest))])
+        .unwrap();
+    id
+}
+
+/// What `spacectl read` drains, `read_capsule_stream`, fails when the
+/// bytes don't match the capsule's digest, as `read_capsule` does. A range
+/// still reads (#190).
+#[tokio::test]
+async fn a_full_read_of_a_capsule_that_misses_its_digest_fails() {
+    use futures::StreamExt;
+    let store = Store::new("digest_read");
+    let (registry, _log, mut handle) = store.open();
+    let data = patterned(5000, 3);
+    let good = handle
+        .write_capsule(&data, &Policy::default())
+        .await
+        .unwrap();
+    let bad = misdigested(&registry, good);
+
+    let mut stream = handle.read_capsule_stream(bad).await.unwrap();
+    let mut last = None;
+    while let Some(chunk) = stream.next().await {
+        last = Some(chunk);
+    }
+    let err = last.unwrap().unwrap_err();
+    assert!(err.to_string().contains("digest"), "{err}");
+    assert!(handle.read_capsule(bad).await.is_err());
+
+    let mut range = handle.read_range_stream(bad, 100, 50).await.unwrap();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = range.next().await {
+        bytes.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(bytes, &data[100..150]);
+    assert_eq!(handle.read_capsule(good).await.unwrap(), data);
+}
