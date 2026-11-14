@@ -61,12 +61,6 @@ jobs:
           grep -qx 'license = "BUSL-1.1"' Cargo.toml \
             || { echo "::error file=Cargo.toml::the workspace license must be BUSL-1.1"; exit 1; }
 
-      - name: Check the Dockerfile builds on rust-version
-        run: |
-          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
-          grep -q "^FROM rust:${msrv}-" Dockerfile \
-            || { echo "::error file=Dockerfile::the builder image must be rust:${msrv}, the workspace rust-version"; exit 1; }
-
       - name: cargo fmt
         run: cargo fmt --all --check
 
@@ -159,8 +153,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Not pinned, unlike the linters below: an old cargo-audit can fail to
-      # read a newer advisory database.
+      # Versions come from install-action's manifest at the pinned commit, so
+      # they move with Dependabot's weekly action bump. Not pinned further, as
+      # the linters below are: an old cargo-audit can fail to read a newer
+      # advisory database.
       - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-audit,cargo-deny
@@ -193,7 +189,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned: a new release's dictionary would fail CI with no commit here.
+      # Pinned, so an install-action bump doesn't bring a new dictionary in
+      # the same pull request.
       - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: typos@1.52.2
@@ -213,7 +210,7 @@ jobs:
 
       - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
-          # Pinned, like typos: new audits shouldn't arrive unannounced.
+          # Pinned, like typos: new audits arrive in their own pull request.
           tool: shellcheck@0.11.0,zizmor@1.32.0
 
       # actionlint runs shellcheck over every run: block.

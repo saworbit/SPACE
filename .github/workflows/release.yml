@@ -71,8 +71,11 @@ jobs:
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+          # Static C runtime, so spacectl.exe runs without the VC++
+          # redistributable installed.
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            rustflags: -C target-feature=+crt-static
           - target: aarch64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
@@ -81,6 +84,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

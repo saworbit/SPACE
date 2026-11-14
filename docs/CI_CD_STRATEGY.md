@@ -6,10 +6,10 @@ Everything runs on GitHub Actions. Every action is pinned to a full commit SHA, 
 
 | Workflow | Runs on | What it does | Required to merge |
 |----------|---------|--------------|-------------------|
-| [`ci.yml`](../.github/workflows/ci.yml) | pull requests, pushes to `main`, merge queue, weekly, manual, and from `release.yml` | fmt, clippy (also with `storage/uring`), tests on Linux, Windows and macOS, `cargo check` of the libraries and binaries on `rust-version`, rustdoc with warnings denied, `cargo audit`, `cargo deny`, dependency review (pull requests only), `typos`, `actionlint` and `zizmor`, plus checks that the license field is `BUSL-1.1` and the Dockerfile builds on `rust-version` | yes, through the `Build and test` job |
+| [`ci.yml`](../.github/workflows/ci.yml) | pull requests, pushes to `main`, merge queue, weekly, manual, and from `release.yml` | fmt, clippy (also with `storage/uring`), tests on Linux, Windows and macOS, `cargo check` of the libraries and binaries on `rust-version`, rustdoc with warnings denied, `cargo audit`, `cargo deny`, dependency review (pull requests only), `typos`, `actionlint` and `zizmor`, plus a check that the license field is `BUSL-1.1` | yes, through the `Build and test` job |
 | [`codeql.yml`](../.github/workflows/codeql.yml) | pull requests, pushes to `main`, weekly | CodeQL analysis of the Rust code and of the workflows; results go to code scanning | no |
 | [`scorecard.yml`](../.github/workflows/scorecard.yml) | pushes to `main`, weekly, branch protection changes | OpenSSF Scorecard; publishes the score shown in the README and uploads findings to code scanning | no |
-| [`docker.yml`](../.github/workflows/docker.yml) | changes to the Dockerfile, `.dockerignore`, `Cargo.toml` or `Cargo.lock`; weekly | hadolint, `docker build`, and a smoke test that writes and reads a capsule as the image's non-root user | no |
+| [`docker.yml`](../.github/workflows/docker.yml) | changes to the Dockerfile, `.dockerignore`, `Cargo.toml` or `Cargo.lock`; weekly | hadolint, `docker build` (on current stable Rust, from digest-pinned base images), and a smoke test that writes and reads a capsule as the image's non-root user | no |
 | [`links.yml`](../.github/workflows/links.yml) | changes to Markdown, weekly | lychee over every Markdown file (ignores in `.lycheeignore`) | no, an outside site being down shouldn't block a merge |
 | [`labeler.yml`](../.github/workflows/labeler.yml) | pull requests from this repository | labels the pull request by the paths it changes ([`.github/labeler.yml`](../.github/labeler.yml)) | no |
 | [`release.yml`](../.github/workflows/release.yml) | `v*` tags; pull requests that change it (build only) | see below | no |
@@ -57,10 +57,10 @@ The release also carries the attestations as `spacectl-vX.Y.Z.sigstore.json`; pa
 
 The workspace crates are `publish = false`, so nothing goes to crates.io. No container image is published.
 
-The Linux binaries are built on Ubuntu 24.04 and need glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40). On older systems, build from source or use the Docker image. The macOS and Windows binaries aren't code-signed, so Gatekeeper and SmartScreen warn on first run.
+The Linux binaries are built on Ubuntu 24.04 and need glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40). On older systems, build from source or use the Docker image. The Windows binary links the C runtime statically, so it needs no VC++ redistributable. The macOS and Windows binaries aren't code-signed, so Gatekeeper and SmartScreen warn on first run. Builds use the stable Rust of the day, so rebuilding a tag later doesn't give the same bytes; the attestation, not a rebuild, is how to check a download.
 
 A pull request that changes `release.yml` runs the four builds without publishing anything, so a broken release workflow shows up before a tag needs it.
 
 ## Dependencies
 
-Dependabot opens weekly pull requests for cargo crates, GitHub Actions and the Dockerfile's base images, after a seven-day cooldown on new versions (security updates don't wait). See [dependency-security.md](dependency-security.md) for how they're reviewed.
+Dependabot opens weekly pull requests for cargo crates, GitHub Actions and the digests of the Dockerfile's base images, after a seven-day cooldown on new versions. Dependabot security updates, when enabled in the repository settings, don't wait. See [dependency-security.md](dependency-security.md) for how they're reviewed.

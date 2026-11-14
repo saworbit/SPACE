@@ -45,7 +45,7 @@ CI runs the checks below on every pull request (see `.github/workflows/ci.yml` a
 | Dependency review | new dependencies with known advisories, on pull requests |
 | Spelling | `typos` (intended words go in `_typos.toml`) |
 | Workflow lint | `actionlint` and `zizmor .` |
-| License field and Docker toolchain | `license = "BUSL-1.1"`, and the Dockerfile's `rust:` image matches `rust-version` |
+| License field | `license = "BUSL-1.1"` in the root `Cargo.toml` |
 
 CodeQL, OpenSSF Scorecard, the Docker image build and the link check run in their own workflows and aren't required to merge.
 

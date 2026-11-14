@@ -1,8 +1,9 @@
 version: 2
 
 # Version updates wait out a cooldown, so a release that turns out to be
-# compromised or broken is usually yanked before it gets here. Security
-# updates skip the cooldown.
+# compromised or broken is usually yanked before it gets here. Dependabot
+# security updates, when they're enabled in the repository settings, don't
+# wait.
 
 updates:
   - package-ecosystem: cargo
@@ -81,13 +82,8 @@ updates:
     labels: [build, dependencies]
     commit-message:
       prefix: docker
+    # The FROM lines are pinned by digest; these pull requests move the
+    # digests of rust:1-bookworm and debian:bookworm-slim.
     groups:
       base-images:
         patterns: ['*']
-    ignore:
-      # The builder tracks the workspace rust-version, which moves by hand
-      # (CI checks the two match). Digest updates still come through.
-      - dependency-name: rust
-        update-types:
-          - version-update:semver-major
-          - version-update:semver-minor

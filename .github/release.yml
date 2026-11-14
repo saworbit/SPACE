@@ -1,6 +1,8 @@
 # Sections for the notes GitHub generates for a release (see
 # workflows/release.yml). A pull request lands in the first section whose
-# label it has. CHANGELOG.md stays the full record.
+# label it has. The labeler gives the kind labels (documentation,
+# dependencies, build, ci) only to pull requests that change nothing else.
+# CHANGELOG.md stays the full record.
 
 changelog:
   exclude:
@@ -17,6 +19,6 @@ changelog:
     - title: Dependencies
       labels: [dependencies]
     - title: Build and CI
-      labels: [ci, build]
+      labels: [build, ci]
     - title: Other changes
       labels: ['*']
