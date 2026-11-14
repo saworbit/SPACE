@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use capsule_registry::modular_pipeline::{
     self, registry_pipeline_from_log, stage_from_reader, ReclaimReport, RegistryPipelineHandle,
+    StoreSecurity,
 };
 use capsule_registry::CapsuleRegistry;
 use common::format::JournalRecord;
@@ -469,11 +470,15 @@ impl Drop for Lease {
 }
 
 impl S3View {
-    /// Open a view over an NVRAM log. This builds the same registry pipeline
-    /// as `serve-s3`, so it fails when `SPACE_MASTER_KEY` is set but invalid.
-    pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> anyhow::Result<Self> {
+    /// Open a view over an NVRAM log, with `security`'s key or without one
+    /// (#199). This builds the same registry pipeline as `serve-s3`.
+    pub fn new(
+        registry: CapsuleRegistry,
+        nvram: NvramLog,
+        security: &StoreSecurity,
+    ) -> anyhow::Result<Self> {
         Ok(Self::new_modular(registry_pipeline_from_log(
-            nvram, registry,
+            nvram, registry, security,
         )?))
     }
 

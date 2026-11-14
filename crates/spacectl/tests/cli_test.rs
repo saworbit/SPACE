@@ -548,6 +548,48 @@ fn spacectl_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     command.output().unwrap()
 }
 
+/// spacectl reads SPACE_MASTER_KEY and SPACE_ALLOW_PLAINTEXT itself and
+/// passes them to the store (#199). A set but invalid value of either is an
+/// error naming it, not a quiet unencrypted store (#84), and no data log is
+/// created.
+#[test]
+fn invalid_key_settings_are_refused() {
+    let dir = scratch_dir("key_settings");
+    std::fs::write(dir.join("a.txt"), b"payload").unwrap();
+    let key = "07".repeat(32);
+    for (envs, expected) in [
+        (
+            &[("SPACE_MASTER_KEY", "not-hex")][..],
+            "SPACE_MASTER_KEY must be 64 hex characters",
+        ),
+        (
+            &[("SPACE_MASTER_KEY", "0707")],
+            "SPACE_MASTER_KEY must be 64 hex characters",
+        ),
+        (
+            &[("SPACE_ALLOW_PLAINTEXT", "yes")],
+            "SPACE_ALLOW_PLAINTEXT must be 1 or unset",
+        ),
+        (
+            &[
+                ("SPACE_MASTER_KEY", key.as_str()),
+                ("SPACE_ALLOW_PLAINTEXT", "true"),
+            ],
+            "SPACE_ALLOW_PLAINTEXT must be 1 or unset",
+        ),
+    ] {
+        let out = spacectl_with(&dir, &["create", "-f", "a.txt"], envs);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{envs:?} succeeded");
+        assert!(stderr.contains(expected), "{envs:?}: {stderr}");
+        assert!(
+            !dir.join("space.nvram").exists(),
+            "{envs:?} created a data log"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A store opened once with SPACE_MASTER_KEY remembers the key (#157).
 /// Another key is refused. Without one, `create` fails before writing
 /// anything and `serve-s3` won't start, while commands that write no

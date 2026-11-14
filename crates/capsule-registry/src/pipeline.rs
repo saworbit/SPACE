@@ -5,6 +5,7 @@ use encryption::KeyManager;
 use nvram_sim::NvramLog;
 use tokio::io::AsyncRead;
 
+use crate::modular_pipeline::StoreSecurity;
 use crate::CapsuleRegistry;
 
 mod modular;
@@ -20,14 +21,19 @@ pub struct WritePipeline {
 }
 
 impl WritePipeline {
-    /// Fails when `SPACE_MASTER_KEY` is set but invalid.
-    pub fn open(registry: CapsuleRegistry, nvram: NvramLog) -> Result<Self> {
-        let inner = ModularPipeline::open(nvram, registry)?;
+    /// Open the pipeline with `security`'s key, or without one (#199).
+    pub fn open(
+        registry: CapsuleRegistry,
+        nvram: NvramLog,
+        security: &StoreSecurity,
+    ) -> Result<Self> {
+        let inner = ModularPipeline::open(nvram, registry, security)?;
         Ok(Self { inner })
     }
 
+    /// Open the pipeline without a key ([`StoreSecurity::none`]).
     pub fn new(registry: CapsuleRegistry, nvram: NvramLog) -> Self {
-        Self::open(registry, nvram).expect("open modular pipeline")
+        Self::open(registry, nvram, &StoreSecurity::none()).expect("open modular pipeline")
     }
 
     pub fn with_key_manager(
@@ -40,7 +46,7 @@ impl WritePipeline {
         Self { inner }
     }
 
-    /// Encrypted when a master key is configured.
+    /// Encrypted when the pipeline was opened with a key.
     pub async fn default_policy(&self) -> Policy {
         self.inner.default_policy().await
     }

@@ -2,6 +2,7 @@
 //! nothing, and replaced or deleted objects free their capsules (#86).
 
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use common::format::JournalRecord;
 use futures::{stream, TryStreamExt};
@@ -20,6 +21,7 @@ fn open(dir: &Path) -> (CapsuleRegistry, S3View) {
     let view = S3View::new(
         registry.clone(),
         NvramLog::open(dir.join("space.nvram")).unwrap(),
+        &StoreSecurity::none(),
     )
     .unwrap();
     (registry, view)

@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use capsule_registry::modular_pipeline::{
-    registry_pipeline_from_fs_backend, AutoFsBackend, RegistryPipelineHandle,
+    registry_pipeline_from_fs_backend, AutoFsBackend, RegistryPipelineHandle, StoreSecurity,
 };
 use capsule_registry::CapsuleRegistry;
 use common::scrub::{ScrubKind, ScrubResult};
@@ -30,7 +30,8 @@ fn patterned(len: usize, seed: u8) -> Vec<u8> {
 async fn open(db: &Path, root: &Path) -> anyhow::Result<(CapsuleRegistry, RegistryPipelineHandle)> {
     let registry = CapsuleRegistry::open(db)?;
     let storage = AutoFsBackend::open(root).await?;
-    let handle = registry_pipeline_from_fs_backend(storage, registry.clone())?;
+    let handle =
+        registry_pipeline_from_fs_backend(storage, registry.clone(), &StoreSecurity::none())?;
     Ok((registry, handle))
 }
 

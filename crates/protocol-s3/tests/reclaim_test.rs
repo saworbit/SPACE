@@ -4,6 +4,7 @@
 //! Compacting the capsule journal (#136) keeps every bucket and object.
 
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::modular_pipeline::{
     registry_pipeline_from_fs_backend, AutoFsBackend, ReclaimReport,
 };
@@ -70,7 +71,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 fn nvram_store(dir: &std::path::Path) -> (NvramLog, Arc<S3View>) {
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-    let view = S3View::new(registry, log.clone()).unwrap();
+    let view = S3View::new(registry, log.clone(), &StoreSecurity::none()).unwrap();
     view.create_bucket("bkt").unwrap();
     (log, Arc::new(view))
 }
@@ -119,8 +120,10 @@ async fn under_a_storage_root_a_pass_deletes_unreferenced_segments() {
     let storage = AutoFsBackend::open(dir.join("storage")).await.unwrap();
     let mut raw = storage.clone();
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
-    let view =
-        S3View::new_modular(registry_pipeline_from_fs_backend(storage, registry.clone()).unwrap());
+    let view = S3View::new_modular(
+        registry_pipeline_from_fs_backend(storage, registry.clone(), &StoreSecurity::none())
+            .unwrap(),
+    );
     view.create_bucket("bkt").unwrap();
 
     let old = noise(5 * MIB, 4);
@@ -238,7 +241,7 @@ async fn compacting_the_journal_keeps_every_object() {
     let listed = {
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-        let view = S3View::new(registry.clone(), log).unwrap();
+        let view = S3View::new(registry.clone(), log, &StoreSecurity::none()).unwrap();
         view.create_bucket("bkt").unwrap();
         for (seed, key) in ["a", "b", "c", "dir/d"].into_iter().enumerate() {
             view.put_object("bkt", key, body(noise(1000, seed as u64)))

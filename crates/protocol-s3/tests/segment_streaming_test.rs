@@ -3,6 +3,7 @@
 //! cross segment boundaries.
 
 use bytes::Bytes;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use futures::{stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
@@ -26,7 +27,7 @@ impl Scratch {
         std::fs::create_dir_all(&dir).unwrap();
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
-        let view = S3View::new(registry.clone(), log.clone()).unwrap();
+        let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
         view.create_bucket("bkt").unwrap();
         Self {
             dir,

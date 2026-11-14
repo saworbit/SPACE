@@ -1,32 +1,29 @@
-//! `SPACE_MASTER_KEY` handling when building the registry pipeline (#84),
-//! and `SPACE_ALLOW_PLAINTEXT` for a store that has a key (#157).
-//!
-//! This binary holds a single test because it changes a process-wide
-//! environment variable.
+//! The key a registry pipeline opens with (#84), and plaintext writes to a
+//! store that has a key (#157). Both are passed in as a `StoreSecurity`, so
+//! nothing here touches the environment (#199). `spacectl` reads
+//! `SPACE_MASTER_KEY` and `SPACE_ALLOW_PLAINTEXT`; its tests cover that.
 
-use capsule_registry::modular_pipeline::{registry_pipeline_from_env, RegistryPipelineHandle};
+use capsule_registry::modular_pipeline::{
+    registry_pipeline_from_log, RegistryPipelineHandle, StoreSecurity,
+};
 use capsule_registry::CapsuleRegistry;
 use common::{EncryptionPolicy, Policy};
+use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
+use nvram_sim::NvramLog;
 
 #[tokio::test]
-async fn master_key_must_be_valid_when_set() {
+async fn the_store_key_decides_what_a_pipeline_may_write() {
     let dir = std::env::temp_dir().join(format!("space_master_key_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
-    let nvram = dir.join("space.nvram");
-
-    // A key that is set but invalid is an error, not a quiet plain pipeline.
-    for bad in ["not-hex", "0707"] {
-        std::env::set_var("SPACE_MASTER_KEY", bad);
-        assert!(
-            registry_pipeline_from_env(&nvram, registry.clone()).is_err(),
-            "SPACE_MASTER_KEY={bad} should be rejected"
-        );
-    }
+    let log = NvramLog::open(dir.join("space.nvram")).unwrap();
+    let open = |security: StoreSecurity| {
+        registry_pipeline_from_log(log.clone(), registry.clone(), &security)
+    };
+    let key = |byte: u8| StoreSecurity::with_key(KeyManager::new([byte; MASTER_KEY_SIZE]));
 
     // No key: the plain pipeline, which refuses encrypted writes.
-    std::env::remove_var("SPACE_MASTER_KEY");
-    let mut handle = registry_pipeline_from_env(&nvram, registry.clone()).unwrap();
+    let mut handle = open(StoreSecurity::none()).unwrap();
     assert!(matches!(handle, RegistryPipelineHandle::Plain(_)));
     let encrypted = Policy {
         encryption: EncryptionPolicy::XtsAes256 { key_version: None },
@@ -38,15 +35,13 @@ async fn master_key_must_be_valid_when_set() {
         .is_err());
     drop(handle);
 
-    // A valid key: the encrypted pipeline.
-    std::env::set_var("SPACE_MASTER_KEY", "07".repeat(32));
-    let handle = registry_pipeline_from_env(&nvram, registry.clone()).unwrap();
-    std::env::remove_var("SPACE_MASTER_KEY");
+    // A key: the encrypted pipeline.
+    let handle = open(key(7)).unwrap();
     assert!(matches!(handle, RegistryPipelineHandle::Encrypted(_)));
     drop(handle);
 
     // The store now has a key, so without one it refuses writes (#157)...
-    let mut handle = registry_pipeline_from_env(&nvram, registry.clone()).unwrap();
+    let mut handle = open(StoreSecurity::none()).unwrap();
     assert!(matches!(handle, RegistryPipelineHandle::Plain(_)));
     let err = handle
         .write_capsule(b"plain", &Policy::default())
@@ -56,16 +51,8 @@ async fn master_key_must_be_valid_when_set() {
     assert!(err.contains("set SPACE_MASTER_KEY"), "{err}");
     drop(handle);
 
-    // ...unless plaintext writes are asked for, in exactly those words.
-    std::env::set_var("SPACE_ALLOW_PLAINTEXT", "yes");
-    let err = registry_pipeline_from_env(&nvram, registry.clone())
-        .err()
-        .expect("SPACE_ALLOW_PLAINTEXT=yes was taken")
-        .to_string();
-    assert!(err.contains("SPACE_ALLOW_PLAINTEXT must be 1"), "{err}");
-    std::env::set_var("SPACE_ALLOW_PLAINTEXT", "1");
-    let mut handle = registry_pipeline_from_env(&nvram, registry.clone()).unwrap();
-    std::env::remove_var("SPACE_ALLOW_PLAINTEXT");
+    // ...unless plaintext writes are asked for.
+    let mut handle = open(StoreSecurity::plaintext()).unwrap();
     assert!(matches!(handle, RegistryPipelineHandle::Plain(_)));
     handle
         .write_capsule(b"plain", &Policy::default())
@@ -73,14 +60,19 @@ async fn master_key_must_be_valid_when_set() {
         .unwrap();
     drop(handle);
 
-    // Another key is refused, with or without it.
-    std::env::set_var("SPACE_MASTER_KEY", "08".repeat(32));
-    std::env::set_var("SPACE_ALLOW_PLAINTEXT", "1");
-    let refused = registry_pipeline_from_env(&nvram, registry).err();
-    std::env::remove_var("SPACE_MASTER_KEY");
-    std::env::remove_var("SPACE_ALLOW_PLAINTEXT");
-    let err = refused.expect("opened with another key").to_string();
-    assert!(err.contains("isn't this store's key"), "{err}");
+    // Another key is refused, with or without plaintext writes.
+    for allow_plaintext in [false, true] {
+        let security = StoreSecurity {
+            allow_plaintext,
+            ..key(8)
+        };
+        let err = open(security)
+            .err()
+            .expect("opened with another key")
+            .to_string();
+        assert!(err.contains("isn't this store's key"), "{err}");
+    }
 
+    drop((registry, log));
     let _ = std::fs::remove_dir_all(&dir);
 }

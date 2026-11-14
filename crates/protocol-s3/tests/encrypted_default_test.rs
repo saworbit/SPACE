@@ -1,11 +1,9 @@
-//! S3 PUT encrypts by default when `SPACE_MASTER_KEY` is set (#82).
-//!
-//! This binary holds a single test because it changes a process-wide
-//! environment variable.
+//! S3 PUT encrypts by default when the store is opened with a key (#82).
 
 use bytes::Bytes;
-use capsule_registry::modular_pipeline::registry_pipeline_from_env;
+use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
+use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use futures::stream;
 use protocol_s3::S3View;
 
@@ -16,10 +14,9 @@ async fn put_encrypts_when_a_master_key_is_set() {
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let nvram = dir.join("space.nvram");
 
-    std::env::set_var("SPACE_MASTER_KEY", "07".repeat(32));
-    let handle = registry_pipeline_from_env(&nvram, registry.clone());
-    std::env::remove_var("SPACE_MASTER_KEY");
-    let s3 = S3View::new_modular(handle.unwrap());
+    let key = StoreSecurity::with_key(KeyManager::new([7; MASTER_KEY_SIZE]));
+    let log = nvram_sim::NvramLog::open(&nvram).unwrap();
+    let s3 = S3View::new(registry.clone(), log, &key).unwrap();
 
     let secret = b"TOP-SECRET-MARKER\n".to_vec();
     let body = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from(secret.clone()))]);

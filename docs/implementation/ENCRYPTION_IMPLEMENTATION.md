@@ -70,9 +70,9 @@ Rotation is in memory only: every constructor starts at version 1, so a restart 
 
 ### Missing or invalid keys
 
-- If `SPACE_MASTER_KEY` is unset, the registry pipeline builders choose the plaintext pipeline (`NoopEncryptor`). A write whose policy asks for encryption then fails instead of storing plaintext.
+- The registry pipeline builders and `S3View::new` take a `StoreSecurity`: the key, if any, and whether an encrypted store may take unencrypted writes. They never read the environment. `spacectl` and `serve-s3` build it from `SPACE_MASTER_KEY` and `SPACE_ALLOW_PLAINTEXT` ([#199](https://github.com/saworbit/SPACE/issues/199)). Without a key, the builders choose the plaintext pipeline (`NoopEncryptor`). A write whose policy asks for encryption then fails instead of storing plaintext.
 - A store remembers its key ([#157](https://github.com/saworbit/SPACE/issues/157)). The first time it's opened with one, its journal records a `KEY` record holding the key's fingerprint (`KeyManager::fingerprint`, [on-disk format §5.9](../on-disk-format.md)). After that, another key is refused when the store opens. Without a key, it opens, but every write is refused before a segment is stored, and `serve-s3` won't start. `SPACE_ALLOW_PLAINTEXT=1` lets new objects be stored unencrypted anyway.
-- If `SPACE_MASTER_KEY` is set but invalid, building the pipeline fails.
+- If `SPACE_MASTER_KEY` is set but invalid, `spacectl` and `serve-s3` refuse to open the store.
 - `EnvKeyProvider` fails when its variable is unset. There is no fallback key.
 
 ## XTS-AES-256
@@ -133,14 +133,19 @@ export SPACE_MASTER_KEY=$(openssl rand -hex 32)   # 64 hex characters
 ```rust
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::Policy;
+use encryption::KeyManager;
 use nvram_sim::NvramLog;
 
-let pipeline = WritePipeline::new(CapsuleRegistry::open("space.db")?, NvramLog::open("space.nvram")?);
+let pipeline = WritePipeline::with_key_manager(
+    CapsuleRegistry::open("space.db")?,
+    NvramLog::open("space.nvram")?,
+    KeyManager::from_env()?,
+);
 let id = pipeline.write_capsule_with_policy(&data, &Policy::encrypted()).await?;
 let plaintext = pipeline.read_capsule(id).await?;
 ```
 
-To pass a key explicitly instead of reading the environment, use `WritePipeline::with_key_manager(registry, nvram, key_manager)`.
+The library never reads `SPACE_MASTER_KEY` on its own: the caller passes the key, here read with `KeyManager::from_env`. `WritePipeline::open(registry, nvram, &security)` takes a `StoreSecurity` instead.
 
 ## Tests
 
