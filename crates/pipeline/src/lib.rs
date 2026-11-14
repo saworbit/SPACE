@@ -560,6 +560,148 @@ impl CapsuleWrite {
     }
 }
 
+/// A chunk of a write in the form it's stored in, with its dedup hash:
+/// what [`ChunkPreparer::prepare`] computes without the pipeline (#198).
+pub struct PreparedChunk {
+    plain_len: usize,
+    hash: ContentHash,
+    summary: common::traits::CompressionSummary,
+    /// The bytes to store: the compressed chunk, sealed when `sealed` is
+    /// set.
+    payload: Vec<u8>,
+    /// The segment `payload` was sealed for, and how. Unset, the chunk is
+    /// sealed when it's placed, if it's new.
+    sealed: Option<(SegmentId, EncryptionSummary)>,
+}
+
+/// The per-chunk work of a write that needs nothing the pipeline guards:
+/// choosing and applying compression, the dedup hash, and encryption. A
+/// [`Pipeline::preparer`] holds clones of the pipeline's compressor,
+/// encryptor and evaluator, so a caller can prepare chunks on a blocking
+/// thread with the pipeline unlocked, and lock it only to place them
+/// ([`Pipeline::place_chunk`]). Concurrent writes then share the pipeline
+/// only for the dedup lookup and the append (#198).
+#[derive(Clone)]
+pub struct ChunkPreparer<C, E, Eval> {
+    compressor: C,
+    encryptor: E,
+    evaluator: Eval,
+}
+
+impl<C: Compressor, E: Encryptor, Eval: PolicyEvaluator> ChunkPreparer<C, E, Eval> {
+    /// Take the next chunk of `write` and compute its stored form. Every
+    /// chunk but the last must be exactly `chunk_size()` bytes, and they
+    /// must come in order. An empty chunk is ignored: `None`.
+    ///
+    /// With `segment`, a segment id reserved for the chunk, an encrypted
+    /// write's chunk is sealed here, so placing it does no crypto. If the
+    /// chunk turns out to be a dedup hit, the id goes unused. Without one,
+    /// it's sealed when it's placed.
+    pub fn prepare(
+        &self,
+        write: &mut CapsuleWrite,
+        chunk: &[u8],
+        segment: Option<SegmentId>,
+    ) -> Result<Option<PreparedChunk>> {
+        prepare_chunk(
+            &self.compressor,
+            &self.encryptor,
+            &self.evaluator,
+            write,
+            chunk,
+            segment,
+        )
+    }
+}
+
+/// [`ChunkPreparer::prepare`], with the parts borrowed.
+fn prepare_chunk<C: Compressor, E: Encryptor, Eval: PolicyEvaluator>(
+    compressor: &C,
+    encryptor: &E,
+    evaluator: &Eval,
+    write: &mut CapsuleWrite,
+    chunk: &[u8],
+    segment: Option<SegmentId>,
+) -> Result<Option<PreparedChunk>> {
+    if chunk.is_empty() {
+        return Ok(None);
+    }
+    if write.ended || chunk.len() > write.chunk_size {
+        return Err(anyhow!(
+            "chunks must be {} bytes; only the last may be shorter",
+            write.chunk_size
+        ));
+    }
+    write.ended = chunk.len() < write.chunk_size;
+    write.digest.update(chunk);
+    let compression_policy = match &write.compression_policy {
+        Some(policy) => policy.clone(),
+        None => {
+            let policy =
+                evaluator.evaluate_compression(&write.policy, &chunk[..chunk.len().min(1024)])?;
+            write.compression_policy = Some(policy.clone());
+            policy
+        }
+    };
+
+    let (view, summary) = compressor.compress(chunk, &compression_policy)?;
+    // XTS needs one full block. A compressed view shorter than that is
+    // stored uncompressed instead, so `plain_len` is the exact length
+    // to strip the block padding back to on read (#94).
+    let (view, summary) = if write.encryption_policy.is_enabled()
+        && summary.compressed
+        && view.len() < MIN_SECTOR_SIZE
+    {
+        compressor.compress(chunk, &CompressionPolicy::None)?
+    } else {
+        (view, summary)
+    };
+    // Domain-separate the dedup key by compression algorithm and
+    // encryption so segments with identical stored bytes under
+    // different treatments cannot collide.
+    let hash = dedup::hash_content_with_algo(
+        view.as_ref(),
+        &dedup_domain(summary.algorithm.as_str(), &write.encryption_policy),
+    );
+    let (payload, sealed) = match segment {
+        Some(segment) => {
+            let (payload, how) = seal(
+                encryptor,
+                &write.encryption_policy,
+                view.into_owned(),
+                segment,
+            )?;
+            (payload, Some((segment, how)))
+        }
+        None => (view.into_owned(), None),
+    };
+    Ok(Some(PreparedChunk {
+        plain_len: chunk.len(),
+        hash,
+        summary,
+        payload,
+        sealed,
+    }))
+}
+
+/// The bytes a new segment stores: `view`, encrypted for `segment` when
+/// `policy` asks for it, padded to one XTS block first if it's shorter.
+fn seal<E: Encryptor>(
+    encryptor: &E,
+    policy: &EncryptionPolicy,
+    view: Vec<u8>,
+    segment: SegmentId,
+) -> Result<(Vec<u8>, EncryptionSummary)> {
+    if !policy.is_enabled() {
+        return Ok((view, EncryptionSummary::new("none")));
+    }
+    let mut plaintext = view;
+    if plaintext.len() < MIN_SECTOR_SIZE {
+        plaintext.resize(MIN_SECTOR_SIZE, 0);
+    }
+    encryptor.encrypt(Cow::Owned(plaintext), policy, segment)
+}
+
 /// Pipeline orchestrator that composes the modular traits.
 pub struct Pipeline<C, D, E, S, Eval, K, R>
 where
@@ -728,51 +870,57 @@ where
         Ok(())
     }
 
+    /// The per-chunk work of this pipeline's writes, to run without it
+    /// ([`ChunkPreparer`]).
+    pub fn preparer(&self) -> ChunkPreparer<C, E, Eval>
+    where
+        C: Clone,
+        E: Clone,
+        Eval: Clone,
+    {
+        ChunkPreparer {
+            compressor: self.compressor.clone(),
+            encryptor: self.encryptor.clone(),
+            evaluator: self.evaluator.clone(),
+        }
+    }
+
     /// Store the next chunk of an open write as one segment. Every chunk but
     /// the last must be exactly `chunk_size()` bytes. Empty chunks are ignored.
+    /// This prepares the chunk with the pipeline borrowed; a caller that
+    /// shares the pipeline can prepare it without, and only place it here
+    /// ([`ChunkPreparer::prepare`], [`Pipeline::place_chunk`]).
     pub async fn write_chunk(&mut self, write: &mut CapsuleWrite, chunk: &[u8]) -> Result<()> {
-        if chunk.is_empty() {
-            return Ok(());
+        let prepared = prepare_chunk(
+            &self.compressor,
+            &self.encryptor,
+            &self.evaluator,
+            write,
+            chunk,
+            None,
+        )?;
+        match prepared {
+            Some(prepared) => self.place_chunk(write, prepared).await,
+            None => Ok(()),
         }
-        if write.ended || chunk.len() > write.chunk_size {
-            return Err(anyhow!(
-                "chunks must be {} bytes; only the last may be shorter",
-                write.chunk_size
-            ));
-        }
-        write.ended = chunk.len() < write.chunk_size;
-        write.digest.update(chunk);
-        let compression_policy = match &write.compression_policy {
-            Some(policy) => policy.clone(),
-            None => {
-                let policy = self
-                    .evaluator
-                    .evaluate_compression(&write.policy, &chunk[..chunk.len().min(1024)])?;
-                write.compression_policy = Some(policy.clone());
-                policy
-            }
-        };
+    }
 
-        let (view, summary) = self.compressor.compress(chunk, &compression_policy)?;
-        // XTS needs one full block. A compressed view shorter than that is
-        // stored uncompressed instead, so `plain_len` is the exact length
-        // to strip the block padding back to on read (#94).
-        let (view, summary) = if write.encryption_policy.is_enabled()
-            && summary.compressed
-            && view.len() < MIN_SECTOR_SIZE
-        {
-            self.compressor.compress(chunk, &CompressionPolicy::None)?
-        } else {
-            (view, summary)
-        };
-        // Domain-separate the dedup key by compression algorithm and
-        // encryption so segments with identical stored bytes under
-        // different treatments cannot collide.
-        let hash = self.deduper.hash_content_with_algo(
-            view.as_ref(),
-            &dedup_domain(summary.algorithm.as_str(), &write.encryption_policy),
-        );
-
+    /// Store a chunk [`ChunkPreparer::prepare`] prepared for `write`: reuse
+    /// the segment that holds its hash, or append it as a new one. Writes
+    /// that prepared the same bytes at once settle here, since the lookup
+    /// and the append happen under one borrow of the pipeline (#198).
+    pub async fn place_chunk(
+        &mut self,
+        write: &mut CapsuleWrite,
+        prepared: PreparedChunk,
+    ) -> Result<()> {
+        let PreparedChunk {
+            plain_len,
+            hash,
+            summary,
+            payload,
+            sealed,
+        } = prepared;
         // With dedupe off, never reuse a segment, and never register one
         // for later writes to attach to (#87).
         let existing = if write.dedupe {
@@ -784,7 +932,7 @@ where
             let mut metadata = self.storage.metadata(existing).await?;
             metadata.ref_count += 1;
             metadata.deduplicated = metadata.ref_count > 1;
-            let entry = manifest_entry(existing, &metadata, chunk.len())?;
+            let entry = manifest_entry(existing, &metadata, plain_len)?;
             let mut txn = self.storage.begin_txn().await?;
             txn.set_segment_metadata(existing, metadata).await?;
             txn.commit().await?;
@@ -795,30 +943,23 @@ where
             self.pin(&[existing]);
             write.entries.push(entry);
         } else {
-            let mut txn = self.storage.begin_txn().await?;
-            let seg_id = self.catalog.allocate_segment()?;
-
-            let (payload, encryption_summary) = if write.encryption_policy.is_enabled() {
+            let (seg_id, payload, encryption_summary) = match sealed {
+                Some((seg_id, summary)) => (seg_id, payload, summary),
+                None => {
+                    let seg_id = self.catalog.allocate_segment()?;
+                    let (payload, summary) =
+                        seal(&self.encryptor, &write.encryption_policy, payload, seg_id)?;
+                    (seg_id, payload, summary)
+                }
+            };
+            if write.encryption_policy.is_enabled() {
                 let _key = self
                     .keyring
                     .as_ref()
                     .map(|keyring| keyring.derive_key(write.capsule_id, seg_id))
                     .transpose()?;
-                let plaintext = if view.len() < MIN_SECTOR_SIZE {
-                    let mut padded = view.to_vec();
-                    padded.resize(MIN_SECTOR_SIZE, 0);
-                    Cow::Owned(padded)
-                } else {
-                    Cow::Borrowed(view.as_ref())
-                };
-                let (encrypted, summary) =
-                    self.encryptor
-                        .encrypt(plaintext, &write.encryption_policy, seg_id)?;
-                (encrypted, summary)
-            } else {
-                (view.into_owned(), EncryptionSummary::new("none"))
-            };
-
+            }
+            let mut txn = self.storage.begin_txn().await?;
             txn.append(seg_id, &payload).await?;
             let metadata = Segment {
                 id: seg_id,
@@ -859,7 +1000,7 @@ where
             write.stats.record(summary.output_size as u64, false);
         }
 
-        write.size += chunk.len() as u64;
+        write.size += plain_len as u64;
         Ok(())
     }
 
@@ -2269,6 +2410,67 @@ mod tests {
         let mut policy = policy;
         policy.layout.strategy = common::LayoutStrategy::Fixed { segment_size };
         policy
+    }
+
+    /// Write `data` the way `stage_from_reader` does: prepare every chunk
+    /// with a reserved segment id first, as if the pipeline were unlocked,
+    /// then place them (#198).
+    async fn write_prepared(
+        p: &mut XtsInMemoryPipeline,
+        data: &[u8],
+        policy: &Policy,
+    ) -> (CapsuleWrite, Vec<PreparedChunk>) {
+        let preparer = p.preparer();
+        let mut write = p.begin_write(policy).unwrap();
+        let mut prepared = Vec::new();
+        for chunk in data.chunks(write.chunk_size()) {
+            let segment = p.catalog.allocate_segment().unwrap();
+            prepared.extend(preparer.prepare(&mut write, chunk, Some(segment)).unwrap());
+        }
+        (write, prepared)
+    }
+
+    /// Chunks prepared away from the pipeline and placed later store and
+    /// read like written ones, encrypted or not. Two writes that prepare
+    /// the same bytes at once, before either places them, end up sharing
+    /// segments: the dedup lookup happens when a chunk is placed (#198).
+    #[tokio::test]
+    async fn prepared_chunks_place_like_written_chunks() {
+        for policy in [
+            with_segment_size(Policy::default(), 4096),
+            with_segment_size(encrypted_policy(), 4096),
+        ] {
+            let mut p = xts_pipeline();
+            let data: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
+
+            let (mut a, prepared_a) = write_prepared(&mut p, &data, &policy).await;
+            let (mut b, prepared_b) = write_prepared(&mut p, &data, &policy).await;
+            for chunk in prepared_a {
+                p.place_chunk(&mut a, chunk).await.unwrap();
+            }
+            for chunk in prepared_b {
+                p.place_chunk(&mut b, chunk).await.unwrap();
+            }
+            let a = p.finish_write(a).await.unwrap();
+            let b = p.finish_write(b).await.unwrap();
+            let segments_a = p.catalog.lookup_capsule(a).unwrap().segments;
+            let segments_b = p.catalog.lookup_capsule(b).unwrap().segments;
+            assert_eq!(segments_a.len(), 5);
+            assert_eq!(segments_a, segments_b, "the second write didn't dedup");
+            for segment in &segments_a {
+                let metadata = p.storage.metadata(*segment).await.unwrap();
+                assert_eq!(metadata.encrypted, policy.encryption.is_enabled());
+                assert_eq!(metadata.ref_count, 2);
+            }
+
+            // A write through write_chunk dedups onto them too, and every
+            // capsule reads back.
+            let c = p.write_capsule(&data, &policy).await.unwrap();
+            assert_eq!(p.catalog.lookup_capsule(c).unwrap().segments, segments_a);
+            for id in [a, b, c] {
+                assert_eq!(p.read_capsule(id).await.unwrap(), data);
+            }
+        }
     }
 
     #[tokio::test]
