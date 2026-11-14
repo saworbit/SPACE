@@ -1148,6 +1148,47 @@ mod tests {
         }
     }
 
+    /// A segment's bytes can hold a whole record, as when a SPACE data log
+    /// is stored unencrypted as a capsule. Such a segment, cut short at any
+    /// byte, is still a torn tail and not damage (#137).
+    #[test]
+    fn a_segment_holding_a_record_cut_at_any_byte_is_a_torn_tail() {
+        let tmp = TempLog::new("torn_embedded");
+        let log = tmp.open();
+        commit_described(&log, 1, &payload(1));
+        commit_described(&log, 2, &payload(2));
+        let second = log.get_segment_metadata(SegmentId(2)).unwrap();
+        let start = second.offset as usize - (FRAME_LEN + 84 + 2 + 5);
+        let file = std::fs::read(&tmp.path).unwrap();
+        let embedded = file[start..second.offset as usize + second.len as usize].to_vec();
+        let last_start = tmp.len();
+        let body = [b"before".as_slice(), &embedded, &embedded, b"after"].concat();
+        commit_described(&log, 3, &body);
+        drop(log);
+        let full = std::fs::read(&tmp.path).unwrap();
+
+        for cut in last_start + 1..full.len() as u64 {
+            std::fs::write(&tmp.path, &full[..cut as usize]).unwrap();
+            let log = tmp.open();
+            assert!(log.damage().is_empty(), "cut at {cut} reported damage");
+            assert!(
+                log.get_segment_metadata(SegmentId(3)).is_err(),
+                "cut at {cut}"
+            );
+            assert_eq!(log.read(SegmentId(2)).unwrap(), payload(2), "cut at {cut}");
+            assert_eq!(tmp.len(), last_start, "cut at {cut} wasn't truncated back");
+        }
+
+        // Whole, but with a body that doesn't match its checksum.
+        let mut rotted = full.clone();
+        *rotted.last_mut().unwrap() ^= 0xFF;
+        std::fs::write(&tmp.path, &rotted).unwrap();
+        let log = tmp.open();
+        assert!(log.damage().is_empty());
+        assert!(log.get_segment_metadata(SegmentId(3)).is_err());
+        assert_eq!(tmp.len(), last_start);
+    }
+
     #[test]
     fn a_rotted_last_body_counts_as_a_torn_tail() {
         let tmp = TempLog::new("tail_body");

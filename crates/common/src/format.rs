@@ -1106,6 +1106,100 @@ impl JournalRecord {
     }
 }
 
+/// How much of a journal record's header the bytes a file holds cover, for
+/// a record that runs past the end of the file (#137).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderPrefix {
+    /// The bytes end inside the header, as an append cut short leaves them.
+    CutShort,
+    /// A whole header fits in the bytes, and is this long.
+    Whole(usize),
+}
+
+/// Walk the layout of a journal record of `kind` and layout `version` over
+/// `prefix`, the start of its header, reading only its counts and lengths.
+/// `None` for a kind or version this doesn't walk: `CAPSULE`, which holds
+/// nothing a client chooses, and kinds it doesn't know.
+pub fn journal_header_prefix(kind: u8, version: u8, prefix: &[u8]) -> Option<HeaderPrefix> {
+    struct Walk<'a> {
+        bytes: &'a [u8],
+        at: usize,
+    }
+    impl Walk<'_> {
+        fn skip(&mut self, n: usize) -> Option<()> {
+            self.at = self
+                .at
+                .checked_add(n)
+                .filter(|end| *end <= self.bytes.len())?;
+            Some(())
+        }
+        fn uint<const N: usize>(&mut self) -> Option<usize> {
+            let start = self.at;
+            self.skip(N)?;
+            let mut bytes = [0u8; 8];
+            bytes[..N].copy_from_slice(&self.bytes[start..self.at]);
+            usize::try_from(u64::from_le_bytes(bytes)).ok()
+        }
+        fn str(&mut self) -> Option<()> {
+            let len = self.uint::<2>()?;
+            self.skip(len)
+        }
+    }
+    fn walk(kind: u8, version: u8, w: &mut Walk<'_>) -> Option<()> {
+        match kind {
+            kind::DROP => w.skip(16),
+            kind::KEY => w.skip(StoreKey::LEN),
+            kind::NAMESPACE => {
+                w.skip(1 + 8)?;
+                w.str()
+            }
+            kind::BIND => {
+                w.skip(16)?;
+                w.str()?;
+                w.str()?;
+                if version == BIND_VERSION {
+                    for _ in 0..w.uint::<2>()? {
+                        w.str()?;
+                        w.str()?;
+                    }
+                }
+                Some(())
+            }
+            kind::UNBIND => {
+                w.str()?;
+                w.str()
+            }
+            _ => {
+                // BATCH: each sub-record says how long its header is.
+                for _ in 0..w.uint::<4>()? {
+                    w.skip(1 + 1 + 2)?;
+                    let len = w.uint::<4>()?;
+                    w.skip(len)?;
+                }
+                Some(())
+            }
+        }
+    }
+    let supported = match kind {
+        kind::BIND => version == 1 || version == BIND_VERSION,
+        kind::DROP | kind::KEY | kind::NAMESPACE | kind::UNBIND | kind::BATCH => {
+            version == JOURNAL_VERSION
+        }
+        _ => false,
+    };
+    if !supported {
+        return None;
+    }
+    let mut w = Walk {
+        bytes: prefix,
+        at: 0,
+    };
+    Some(match walk(kind, version, &mut w) {
+        Some(()) => HeaderPrefix::Whole(w.at),
+        None => HeaderPrefix::CutShort,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1497,6 +1591,72 @@ mod tests {
                 Err(FormatError::Invalid(_))
             ));
         }
+    }
+
+    #[test]
+    fn a_journal_header_cut_short_is_told_from_a_whole_one() {
+        let id = CapsuleId::from_uuid(Uuid::from_u128(7));
+        let records = [
+            JournalRecord::Drop(id),
+            JournalRecord::Namespace {
+                ns: "s3:demo".into(),
+                created_at: 9,
+            },
+            JournalRecord::Bind {
+                ns: "s3:demo".into(),
+                name: "dir/a.txt".into(),
+                capsule_id: id,
+                metadata: vec![("content-type".into(), "text/plain".into())],
+            },
+            JournalRecord::Unbind {
+                ns: "s3:demo".into(),
+                name: "a".into(),
+            },
+            JournalRecord::Key(StoreKey {
+                key_version: 1,
+                fingerprint: [4; 16],
+            }),
+            JournalRecord::Batch(vec![
+                JournalRecord::Drop(id),
+                JournalRecord::Unbind {
+                    ns: "s3:demo".into(),
+                    name: "a".into(),
+                },
+            ]),
+        ];
+        for record in records {
+            let bytes = record.encode_record().unwrap();
+            let frame = frame_of(&bytes);
+            let header = &bytes[FRAME_LEN..];
+            for cut in 0..header.len() {
+                assert_eq!(
+                    journal_header_prefix(frame.kind, frame.version, &header[..cut]),
+                    Some(HeaderPrefix::CutShort),
+                    "{record:?} cut at {cut}"
+                );
+            }
+            // Trailing bytes, such as a record after it, aren't read.
+            let mut more = header.to_vec();
+            more.extend_from_slice(b"SPCR and more");
+            assert_eq!(
+                journal_header_prefix(frame.kind, frame.version, &more),
+                Some(HeaderPrefix::Whole(header.len())),
+                "{record:?}"
+            );
+        }
+        // A version 1 BIND stops after its name.
+        let v1 = [&[0u8; 16][..], &[1, 0, b'n', 1, 0, b'k']].concat();
+        assert_eq!(
+            journal_header_prefix(kind::BIND, 1, &v1),
+            Some(HeaderPrefix::Whole(v1.len()))
+        );
+        let manifest = JournalRecord::Capsule(Box::new(sample_manifest()));
+        let bytes = manifest.encode_record().unwrap();
+        assert_eq!(
+            journal_header_prefix(kind::CAPSULE, 1, &bytes[FRAME_LEN..]),
+            None
+        );
+        assert_eq!(journal_header_prefix(kind::DROP, 2, &[0; 16]), None);
     }
 
     #[test]

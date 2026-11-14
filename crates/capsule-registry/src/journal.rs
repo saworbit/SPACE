@@ -728,6 +728,140 @@ mod tests {
         }
     }
 
+    /// A DROP record whose bytes are valid UTF-8, so a name can hold it.
+    fn record_a_name_can_hold() -> String {
+        (0u64..)
+            .find_map(|n| {
+                let id: [u8; 16] = format!("{n:016}").as_bytes().try_into().unwrap();
+                let record = JournalRecord::Drop(CapsuleId::from_uuid(Uuid::from_bytes(id)));
+                String::from_utf8(record.encode_record().unwrap()).ok()
+            })
+            .unwrap()
+    }
+
+    fn scratch_journal(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("space_journal_{name}_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("space.journal");
+        (dir, path)
+    }
+
+    /// A name or metadata value can hold the bytes of a whole record. A BIND
+    /// carrying one, cut short at any byte, is still a torn tail and not
+    /// damage, so the journal opens (#137).
+    #[test]
+    fn a_bind_holding_a_record_cut_at_any_byte_is_a_torn_tail() {
+        let (dir, path) = scratch_journal("embedded");
+        let embedded = record_a_name_can_hold();
+        let kept = manifest();
+        let (clean_len, bytes) = {
+            let journal = Journal::open(&path).unwrap();
+            let mut writer = journal.lock();
+            writer
+                .append(&JournalRecord::Capsule(Box::new(kept.clone())))
+                .unwrap();
+            let clean_len = std::fs::metadata(&path).unwrap().len();
+            for record in [
+                JournalRecord::Bind {
+                    ns: "s3:b".into(),
+                    name: format!("key {embedded} tail"),
+                    capsule_id: kept.capsule_id,
+                    metadata: vec![("x-amz-meta-a".into(), embedded.clone())],
+                },
+                JournalRecord::Batch(vec![JournalRecord::Unbind {
+                    ns: "s3:b".into(),
+                    name: format!("{embedded}{embedded}"),
+                }]),
+            ] {
+                writer.append(&record).unwrap();
+            }
+            (clean_len as usize, std::fs::read(&path).unwrap())
+        };
+        let bind_len = JournalRecord::Bind {
+            ns: "s3:b".into(),
+            name: format!("key {embedded} tail"),
+            capsule_id: kept.capsule_id,
+            metadata: vec![("x-amz-meta-a".into(), embedded.clone())],
+        }
+        .record_len()
+        .unwrap() as usize;
+
+        // Cut inside the BIND, and inside the BATCH after it.
+        for cut in (clean_len + 1..bytes.len()).filter(|cut| *cut != clean_len + bind_len) {
+            let kept_len = if cut < clean_len + bind_len {
+                clean_len
+            } else {
+                clean_len + bind_len
+            };
+            std::fs::write(&path, &bytes[..cut]).unwrap();
+            let journal =
+                Journal::open(&path).unwrap_or_else(|err| panic!("cut at {cut}: {err:#}"));
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len() as usize,
+                kept_len,
+                "cut at {cut}"
+            );
+            let mut records = 0;
+            journal
+                .replay(&journal.start(), |_, _| {
+                    records += 1;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(
+                records,
+                1 + usize::from(kept_len > clean_len),
+                "cut at {cut}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A flipped bit in a record's header length makes it claim to run
+    /// past the end of the file. Its header is whole, which an append cut
+    /// short can't leave, so it's damage and the journal refuses to open,
+    /// whether records follow it or not. Nothing is truncated (#137).
+    #[test]
+    fn a_record_whose_length_is_damaged_is_not_taken_for_a_torn_tail() {
+        let bind = |name: &str| JournalRecord::Bind {
+            ns: "s3:b".into(),
+            name: name.into(),
+            capsule_id: CapsuleId::from_uuid(Uuid::from_u128(3)),
+            metadata: Vec::new(),
+        };
+        for records_after in [2, 0] {
+            let (dir, path) = scratch_journal("damaged_length");
+            let damaged_at = {
+                let journal = Journal::open(&path).unwrap();
+                let mut writer = journal.lock();
+                writer.append(&bind("first")).unwrap();
+                let at = std::fs::metadata(&path).unwrap().len() as usize;
+                writer.append(&bind("damaged")).unwrap();
+                for i in 0..records_after {
+                    writer.append(&bind(&format!("after {i}"))).unwrap();
+                }
+                at
+            };
+            let mut bytes = std::fs::read(&path).unwrap();
+            // header_len is bytes 8..12 of the frame.
+            bytes[damaged_at + 10] ^= 0x04;
+            std::fs::write(&path, &bytes).unwrap();
+
+            let err = Journal::open(&path).err().unwrap();
+            assert!(
+                err.to_string()
+                    .contains(&format!("damaged at bytes {damaged_at}..")),
+                "{records_after} after: {err:#}"
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "{records_after} after"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn a_batch_cut_at_any_byte_is_dropped_as_a_torn_tail() {
         let dir = std::env::temp_dir().join(format!("space_journal_unit_{}", Uuid::new_v4()));
