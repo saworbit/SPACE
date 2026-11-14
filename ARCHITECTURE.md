@@ -1,12 +1,12 @@
 # SPACE Architecture
 
-**Last updated:** 2026-11-13
+**Last updated:** 2026-11-15
 
 Post-reset architecture. Previous distributed and multi-protocol diagrams are on the archive branch.
 
 ## Core idea
 
-Everything is a capsule (128-bit ID). The write pipeline does segmentation → compression → BLAKE3 content hash → dedup check → XTS-AES-256 encryption (deterministic tweak from the hash so dedup is preserved) → store. The read path reverses it, verifying the MAC on encrypted segments and the content hash on unencrypted ones. The same capsule can be read through the S3-compatible API or the spacectl CLI without extra copies, though not at the same time: both open the same sled database ([#92](https://github.com/saworbit/SPACE/issues/92)).
+Everything is a capsule (128-bit ID). The write pipeline does segmentation → compression → BLAKE3 content hash → dedup check → XTS-AES-256 encryption (deterministic tweak from the hash so dedup is preserved) → store. The read path reverses it, verifying the MAC on encrypted segments and the content hash on unencrypted ones. A read of a whole capsule also checks its BLAKE3 digest. The same capsule can be read through the S3-compatible API or the spacectl CLI without extra copies, though not at the same time: both open the same sled database ([#92](https://github.com/saworbit/SPACE/issues/92)).
 
 ## Current crates
 
@@ -28,7 +28,7 @@ The data log and the journal are the truth; `space.db` can be rebuilt from them.
 `serve-s3` runs two loops. `spacectl` runs each on demand, with the server stopped:
 
 - **Reclaim** (`--reclaim-interval`; `spacectl gc` and `spacectl compact`): compacts `space.nvram` into its next generation once enough of it is unreferenced, or deletes unreferenced segment files under `SPACE_STORAGE_ROOT`. Then it compacts `space.journal` once enough of it is dead: deleted and overwritten capsules, and removed S3 keys. See [capsule.md §7](docs/capsule.md#7-deletion-ref-counting-and-gc).
-- **Scrub** (`--scrub-interval` and `--deep-scrub-interval`; `spacectl scrub`): light scrub checks each record's checksums, and deep scrub checks MACs and content hashes. See [capsule.md §8](docs/capsule.md#8-scrub-continuous-integrity).
+- **Scrub** (`--scrub-interval` and `--deep-scrub-interval`; `spacectl scrub`): light scrub checks each record's checksums, and deep scrub checks MACs and content hashes, then reads capsules whole to check their digests. See [capsule.md §8](docs/capsule.md#8-scrub-continuous-integrity).
 
 ## Status
 
