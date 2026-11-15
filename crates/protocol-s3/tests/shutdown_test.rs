@@ -170,3 +170,54 @@ async fn a_request_still_running_after_the_grace_period_is_cut_off() {
         "half a PUT was stored"
     );
 }
+
+/// A GET whose response is still streaming at the cut-off, to a client that
+/// stopped reading it, is closed, so the store can be opened again once
+/// `run` returns, though the client still holds its end open (#239). Until
+/// then the response is the handler's own: it keeps its `Content-Length`.
+#[tokio::test]
+async fn a_response_still_streaming_after_the_grace_period_is_closed() {
+    const SIZE: usize = 24 << 20;
+    let mut running = Running::start("streaming", Duration::from_millis(300)).await;
+
+    let mut put = TcpStream::connect(running.addr).await.unwrap();
+    let request =
+        format!("PUT /demo/big HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {SIZE}\r\n\r\n");
+    put.write_all(request.as_bytes()).await.unwrap();
+    let body: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
+    put.write_all(&body).await.unwrap();
+    let head = read_head(&mut put).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    drop(put);
+
+    // A client with a small receive buffer, which reads a little and stops.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut get = socket.connect(running.addr).await.unwrap();
+    get.write_all(b"GET /demo/big HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+    let head = read_head(&mut get).await.to_ascii_lowercase();
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(
+        head.contains(&format!("content-length: {SIZE}\r\n")),
+        "{head}"
+    );
+    assert!(!head.contains("transfer-encoding"), "{head}");
+    let mut some = vec![0u8; 64 * 1024];
+    timeout(PATIENCE, get.read_exact(&mut some))
+        .await
+        .expect("the body didn't start")
+        .unwrap();
+    assert_eq!(some[..], body[..some.len()]);
+
+    running.signal();
+    let (dir, took) = running.stopped().await;
+    assert!(
+        took < PATIENCE / 2,
+        "didn't stop after the grace period: {took:?}"
+    );
+    let view = open_view(&dir);
+    assert_eq!(view.head_object("demo", "big").unwrap().size(), SIZE as u64);
+    drop(get);
+}
