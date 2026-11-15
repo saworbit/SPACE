@@ -20,7 +20,10 @@ pub mod aws_chunked;
 pub mod checksum;
 pub mod handlers;
 mod multipart;
-pub use multipart::{Part, ABANDONED_UPLOAD_AGE, MAX_PART_NUMBER, MIN_PART_SIZE, UPLOAD_PREFIX};
+pub use multipart::{
+    OpenUpload, Part, UploadPage, ABANDONED_UPLOAD_AGE, MAX_PART_NUMBER, MIN_PART_SIZE,
+    UPLOAD_PREFIX,
+};
 pub mod server;
 
 /// Raw keys read from the store per batch while building a listing.
@@ -554,6 +557,10 @@ impl S3View {
     /// deletes the bucket. This runs under the pipeline lock, which a PUT
     /// holds to commit, so no key can be bound between the check and the
     /// delete.
+    ///
+    /// The bucket's open multipart uploads are aborted in the same batch
+    /// (#233): their parts are dropped, so an upload id from before can't
+    /// complete into a new bucket of the same name.
     pub async fn delete_bucket(&self, bucket: &str) -> S3Result<()> {
         let mut handle = self.pipeline.lock().await;
         self.head_bucket(bucket)?;
@@ -579,11 +586,14 @@ impl S3View {
                 break;
             }
         }
+        records.extend(self.removal_of_uploads_into(bucket)?);
         records.push(JournalRecord::DropNamespace {
             ns,
             dropped_at: now_secs(),
         });
-        handle.commit(records)?;
+        for capsule in handle.commit(records)? {
+            self.release(&mut handle, capsule).await;
+        }
         Ok(())
     }
 

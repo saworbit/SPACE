@@ -1284,6 +1284,9 @@ pub async fn list_objects(
             Err(e) => e.into_response(),
         };
     }
+    if query.iter().any(|(name, _)| name == "uploads") {
+        return list_multipart_uploads(&s3, &bucket, &query);
+    }
     info!("LIST /{}", bucket);
     if let Err(e) = check_query(&query, LIST_PARAMS, &["ListObjects", "ListObjectsV2"]) {
         return e.into_response();
@@ -1331,6 +1334,76 @@ pub async fn list_objects(
         }
         Err(e) => e.into_response(),
     }
+}
+
+/// GET /{bucket}?uploads: ListMultipartUploads (#234), with `prefix`,
+/// `key-marker`, `upload-id-marker`, `max-uploads` (1 to 1000) and
+/// `encoding-type=url`. `delimiter` isn't implemented.
+fn list_multipart_uploads(s3: &S3View, bucket: &str, query: &[(String, String)]) -> Response {
+    if let Err(e) = check_query(
+        query,
+        &[
+            "uploads",
+            "prefix",
+            "key-marker",
+            "upload-id-marker",
+            "max-uploads",
+            "encoding-type",
+        ],
+        &["ListMultipartUploads"],
+    ) {
+        return e.into_response();
+    }
+    let max = match query_param(query, "max-uploads").map(str::parse::<usize>) {
+        None => MAX_KEYS,
+        Some(Ok(n)) => n.clamp(1, MAX_KEYS),
+        Some(Err(_)) => {
+            return S3Error::InvalidArgument("max-uploads must be a non-negative integer".into())
+                .into_response()
+        }
+    };
+    let prefix = query_param(query, "prefix").unwrap_or("");
+    let key_marker = query_param(query, "key-marker").filter(|m| !m.is_empty());
+    let upload_id_marker = query_param(query, "upload-id-marker").filter(|m| !m.is_empty());
+    let page = match s3.list_multipart_uploads(bucket, prefix, key_marker, upload_id_marker, max) {
+        Ok(page) => page,
+        Err(e) => return e.into_response(),
+    };
+
+    let url = query_param(query, "encoding-type") == Some("url");
+    let enc = |s: &str| if url { url_encode(s) } else { s.to_string() };
+    let mut x = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    element(&mut x, "Bucket", bucket);
+    element(&mut x, "KeyMarker", &enc(key_marker.unwrap_or("")));
+    element(&mut x, "UploadIdMarker", upload_id_marker.unwrap_or(""));
+    if let Some(last) = page.uploads.last() {
+        element(&mut x, "NextKeyMarker", &enc(&last.key));
+    }
+    element(&mut x, "Prefix", &enc(prefix));
+    if let Some(last) = page.uploads.last() {
+        element(&mut x, "NextUploadIdMarker", &last.upload_id);
+    }
+    element(&mut x, "MaxUploads", &max.to_string());
+    element(
+        &mut x,
+        "IsTruncated",
+        if page.truncated { "true" } else { "false" },
+    );
+    for upload in &page.uploads {
+        x.push_str("<Upload>");
+        element(&mut x, "Key", &enc(&upload.key));
+        element(&mut x, "UploadId", &upload.upload_id);
+        element(&mut x, "StorageClass", "STANDARD");
+        element(&mut x, "Initiated", &iso8601(upload.initiated));
+        x.push_str("</Upload>");
+    }
+    if url {
+        element(&mut x, "EncodingType", "url");
+    }
+    x.push_str("</ListMultipartUploadsResult>");
+    xml_response(x)
 }
 
 /// GetBucketLocation, which some clients, such as the MinIO SDK, call to

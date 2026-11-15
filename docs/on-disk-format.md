@@ -186,7 +186,7 @@ Notes:
 | 1 | 8 | `created_at` | Unix seconds: when it was created, or for a delete, deleted |
 | 9 | 2 + n | `ns` | `str` |
 
-A delete leaves the namespace's names alone, so a writer unbinds them in the same `BATCH`. S3 DeleteBucket does that for keys whose capsule is gone, and refuses a bucket that still holds objects ([#159](https://github.com/saworbit/SPACE/issues/159)). Deleting a namespace that doesn't exist changes nothing. A build from before op 2 refuses a journal that holds one.
+A delete leaves the namespace's names alone, so a writer unbinds them in the same `BATCH`. S3 DeleteBucket does that for keys whose capsule is gone, and refuses a bucket that still holds objects ([#159](https://github.com/saworbit/SPACE/issues/159)). The same `BATCH` aborts the bucket's open multipart uploads ([#233](https://github.com/saworbit/SPACE/issues/233)). Deleting a namespace that doesn't exist changes nothing. A build from before op 2 refuses a journal that holds one.
 
 ### 5.6 `BIND` and `UNBIND`
 
@@ -265,7 +265,7 @@ The fingerprint names the key without revealing it, or any key derived from it: 
 | S3 PUT, overwrite | New segments | `BATCH[CAPSULE, BIND, DROP old]` | The `BATCH` |
 | S3 DELETE | Nothing | `BATCH[UNBIND, DROP]` | The `BATCH` |
 | S3 DeleteObjects | Nothing | `BATCH[UNBIND, DROP, …]` for every key that's there | The `BATCH` |
-| S3 DeleteBucket | Nothing | `NAMESPACE` delete, in a `BATCH` after an `UNBIND` for each key whose capsule is gone | The record or `BATCH` |
+| S3 DeleteBucket | Nothing | `NAMESPACE` delete, in a `BATCH` after an `UNBIND` for each key whose capsule is gone and an abort of each open upload into the bucket | The record or `BATCH` |
 | S3 CreateMultipartUpload | Nothing | `BATCH[NAMESPACE mpu:<id>, BIND "" to no capsule]` | The `BATCH` |
 | S3 UploadPart | New segments | `BATCH[CAPSULE, BIND part:NNNNN, DROP part replaced]` | The `BATCH` |
 | S3 CompleteMultipartUpload | Nothing | `BATCH[CAPSULE composed, BIND, DROP old, UNBIND and DROP each part…, UNBIND "", NAMESPACE delete]` | The `BATCH` |

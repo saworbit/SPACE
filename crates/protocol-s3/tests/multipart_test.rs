@@ -360,6 +360,175 @@ async fn open_uploads_last_until_completed_or_abandoned() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// DeleteBucket aborts the bucket's open uploads in its own batch (#233):
+/// their parts are dropped, and an upload id from before can't complete
+/// into a new bucket of the same name. Other buckets' uploads stay, and a
+/// bucket that isn't empty keeps its uploads.
+#[tokio::test]
+async fn deleting_a_bucket_aborts_its_open_uploads() {
+    let dir = scratch("delete_bucket");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    view.create_bucket("other").unwrap();
+    let upload = view
+        .create_multipart_upload("bkt", "k", Vec::new())
+        .await
+        .unwrap();
+    let tag = part(&view, "k", &upload, 1, b"part").await;
+    let kept = view
+        .create_multipart_upload("other", "k", Vec::new())
+        .await
+        .unwrap();
+    let kept_tag = view
+        .upload_part(
+            "other",
+            "k",
+            &kept,
+            1,
+            body(b"kept"),
+            &PutOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    // Not empty: nothing changes, uploads included.
+    view.put_object("bkt", "obj", body(b"object"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        view.delete_bucket("bkt").await,
+        Err(S3Error::BucketNotEmpty(_))
+    ));
+    assert_eq!(view.list_parts("bkt", "k", &upload).unwrap().len(), 1);
+    view.delete_object("bkt", "obj").await.unwrap();
+
+    view.delete_bucket("bkt").await.unwrap();
+    assert_eq!(registry.capsules().len(), 1, "only the other bucket's part");
+    let open_uploads = registry
+        .list_namespaces(protocol_s3::UPLOAD_PREFIX, None, usize::MAX)
+        .unwrap();
+    assert_eq!(open_uploads.len(), 1);
+    assert!(open_uploads[0].0.ends_with(&kept));
+
+    view.create_bucket("bkt").unwrap();
+    assert!(matches!(
+        view.complete_multipart_upload("bkt", "k", &upload, &[(1, tag)])
+            .await,
+        Err(S3Error::NoSuchUpload(_))
+    ));
+    assert!(matches!(
+        view.upload_part("bkt", "k", &upload, 2, body(b"x"), &PutOptions::default())
+            .await,
+        Err(S3Error::NoSuchUpload(_))
+    ));
+    assert!(view.head_object("bkt", "k").is_err());
+    assert_eq!(registry.capsules().len(), 1);
+
+    view.complete_multipart_upload(
+        "other",
+        "k",
+        &kept,
+        &[(1, format!("\"{}\"", kept_tag.as_uuid()))],
+    )
+    .await
+    .unwrap();
+    assert_eq!(read(&view, "other", "k", None).await, b"kept");
+
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ListMultipartUploads (#234) lists a bucket's open uploads by key and
+/// then upload id, filtered by prefix, and pages with `max` and the
+/// markers. Other buckets' uploads, and completed or aborted ones, aren't
+/// listed.
+#[tokio::test]
+async fn open_uploads_are_listed_by_bucket_and_paged() {
+    let dir = scratch("list_uploads");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    view.create_bucket("other").unwrap();
+    let start = |bucket: &'static str, key: &'static str| {
+        let view = &view;
+        async move {
+            view.create_multipart_upload(bucket, key, Vec::new())
+                .await
+                .unwrap()
+        }
+    };
+    let mut expected = vec![
+        ("a/one".to_string(), start("bkt", "a/one").await),
+        ("a/one".to_string(), start("bkt", "a/one").await),
+        ("a/two".to_string(), start("bkt", "a/two").await),
+        ("b".to_string(), start("bkt", "b").await),
+    ];
+    expected.sort();
+    start("other", "a/one").await;
+    let done = start("bkt", "a/done").await;
+    let tag = part(&view, "a/done", &done, 1, b"done").await;
+    view.complete_multipart_upload("bkt", "a/done", &done, &[(1, tag)])
+        .await
+        .unwrap();
+    let aborted = start("bkt", "a/aborted").await;
+    view.abort_multipart_upload("bkt", "a/aborted", &aborted)
+        .await
+        .unwrap();
+
+    let listed = |page: &protocol_s3::UploadPage| -> Vec<(String, String)> {
+        page.uploads
+            .iter()
+            .map(|u| (u.key.clone(), u.upload_id.clone()))
+            .collect()
+    };
+    let all = view
+        .list_multipart_uploads("bkt", "", None, None, 1000)
+        .unwrap();
+    assert_eq!(listed(&all), expected);
+    assert!(!all.truncated);
+    assert!(all.uploads.iter().all(|u| u.initiated > 0));
+
+    let prefixed = view
+        .list_multipart_uploads("bkt", "a/", None, None, 1000)
+        .unwrap();
+    assert_eq!(listed(&prefixed), expected[..3]);
+
+    // A page at a time, carrying both markers on.
+    let mut paged = Vec::new();
+    let (mut key, mut id): (Option<String>, Option<String>) = (None, None);
+    loop {
+        let page = view
+            .list_multipart_uploads("bkt", "", key.as_deref(), id.as_deref(), 1)
+            .unwrap();
+        paged.extend(listed(&page));
+        if !page.truncated {
+            break;
+        }
+        let last = page.uploads.last().unwrap();
+        (key, id) = (Some(last.key.clone()), Some(last.upload_id.clone()));
+    }
+    assert_eq!(paged, expected);
+
+    // A key marker alone skips every upload of that key.
+    let after_key = view
+        .list_multipart_uploads("bkt", "", Some("a/one"), None, 1000)
+        .unwrap();
+    assert_eq!(listed(&after_key), expected[2..]);
+    // The second upload of a key, after the first.
+    let after_first = view
+        .list_multipart_uploads("bkt", "", Some("a/one"), Some(&expected[0].1), 1)
+        .unwrap();
+    assert_eq!(listed(&after_first), expected[1..2]);
+    assert!(after_first.truncated);
+
+    assert!(matches!(
+        view.list_multipart_uploads("nobkt", "", None, None, 1000),
+        Err(S3Error::NoSuchBucket(_))
+    ));
+
+    drop((registry, view));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 async fn send(app: &axum::Router, request: Request<Body>) -> (StatusCode, String) {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
@@ -428,6 +597,24 @@ async fn the_multipart_routes_work_over_http() {
     assert_eq!(text.matches("<Part>").count(), 2, "{text}");
     assert!(text.contains(tags[1].trim_matches('"')), "{text}");
 
+    // ListMultipartUploads shows the open upload (#234).
+    let list_uploads = || {
+        host(Request::get("/bkt?uploads&prefix=dir%2F&max-uploads=5"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, text) = send(&app, list_uploads()).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("<ListMultipartUploadsResult"), "{text}");
+    let listed = between(&text, "<Upload>", "</Upload>");
+    assert!(listed.contains("<Key>dir/obj.bin</Key>"), "{text}");
+    assert!(
+        listed.contains(&format!("<UploadId>{upload}</UploadId>")),
+        "{text}"
+    );
+    assert!(text.contains("<MaxUploads>5</MaxUploads>"), "{text}");
+    assert!(text.contains("<IsTruncated>false</IsTruncated>"), "{text}");
+
     let xml = format!(
         "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
          <Part><PartNumber>1</PartNumber><ETag>{}</ETag><ChecksumCRC32>AAAAAA==</ChecksumCRC32></Part>\
@@ -444,6 +631,9 @@ async fn the_multipart_routes_work_over_http() {
     assert_eq!(status, StatusCode::OK, "{text}");
     assert!(text.contains("<CompleteMultipartUploadResult"), "{text}");
     assert!(text.contains("<Key>dir/obj.bin</Key>"), "{text}");
+    let (status, text) = send(&app, list_uploads()).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(!text.contains("<Upload>"), "{text}");
 
     let response = app
         .clone()
