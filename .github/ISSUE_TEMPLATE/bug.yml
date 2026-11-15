@@ -1,21 +1,96 @@
-name: 🐛 Bug Report
-description: File a bug report
-title: "[BUG] "
+name: Bug report
+description: SPACE does something wrong, loses or damages data, or crashes
+title: "[Bug] "
 labels: [bug]
 body:
-  - type: textarea
+  - type: markdown
     attributes:
-      label: Description
-      description: Clear & concise description of the bug.
+      value: |
+        Thanks for reporting. **Security vulnerabilities don't belong here**: report them privately as described in [SECURITY.md](https://github.com/saworbit/SPACE/blob/main/SECURITY.md).
+
+        Please check [open issues](https://github.com/saworbit/SPACE/issues) first.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core (registry, pipeline, journal, index)
+        - Storage (data log, storage root, compaction)
+        - Encryption and keys
+        - Compression or dedup
+        - Scrub and reclaim
+        - S3 view (serve-s3)
+        - spacectl
+        - Docker image
+        - Documentation
+        - Build or CI
+        - Not sure
     validations:
       required: true
+
   - type: textarea
+    id: what-happened
     attributes:
-      label: Reproduction
-      description: Steps to reproduce.
+      label: What happened
+      description: What you saw, including the exact error message or HTTP response.
     validations:
       required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Commands or requests that show the bug, starting from an empty store if you can.
+      placeholder: |
+        1. spacectl create notes.txt
+        2. spacectl read <id>
+        3. ...
+    validations:
+      required: true
+
   - type: input
+    id: version
     attributes:
       label: Version
-      value: "main"
+      description: The output of `spacectl --version`, or the commit you built.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Docker
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output, for example with `RUST_LOG=debug`. Remove keys and anything private first.
+      render: text
+
+  - type: dropdown
+    id: data-at-risk
+    attributes:
+      label: Is data lost or damaged?
+      options:
+        - "No"
+        - "Yes, or it can be"
+        - Not sure
+    validations:
+      required: true

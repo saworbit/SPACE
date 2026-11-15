@@ -1,11 +1,20 @@
+# Spell checking with typos (https://github.com/crate-ci/typos), run in CI.
+# Run `typos` locally before pushing; `typos --write-changes` fixes what it can.
+
+[files]
+extend-exclude = ["Cargo.lock"]
+
+[default]
+extend-ignore-re = [
+    # S3's DELETE verb, pluralised: "DELETEs".
+    "\\bDELETEs\\b",
+]
+
 [default.extend-words]
-nvmeof = "nvmeof"
-dedup = "dedup"
-podms = "podms"
-kyber = "kyber"
-rdma = "rdma"
-spdk = "spdk"
-FPR = "FPR"
-RTO = "RTO"
-Hashi = "Hashi"
-HashiCorp = "HashiCorp"
+# Deliberate: test data and misspelled keys a test expects to be refused.
+caf = "caf"             # "caf\u{e9}", a non-ASCII test string
+conten = "conten"       # same-length corrupted bytes in a scrub test
+compresion = "compresion" # an unknown policy key that must be rejected
+unparseable = "unparseable"
+# Domain terms.
+Hashi = "Hashi"           # HashiCorp Vault

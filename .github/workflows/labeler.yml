@@ -1,0 +1,31 @@
+name: Labeler
+
+# Labels a pull request by the paths it changes (see .github/labeler.yml).
+# This uses pull_request, not pull_request_target, so it never runs with a
+# write token on a fork's code; pull requests from forks are left to label by
+# hand. Dependabot's pull requests get a read-only token and already carry
+# the labels dependabot.yml gives them, so they're skipped too.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # add labels
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0

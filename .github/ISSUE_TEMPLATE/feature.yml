@@ -1,14 +1,36 @@
-name: ✨ Feature Request
-description: Suggest an idea
-title: "[FEATURE] "
+name: Feature request
+description: Something SPACE should do that it doesn't
+title: "[Feature] "
 labels: [enhancement]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        SPACE is a single-node capsule store. [MVP_SCOPE.md](https://github.com/saworbit/SPACE/blob/main/MVP_SCOPE.md) and [ROADMAP.md](https://github.com/saworbit/SPACE/blob/main/ROADMAP.md) say what's in and out of scope.
+
   - type: textarea
+    id: problem
     attributes:
       label: Problem
-      description: What problem are you trying to solve?
+      description: What are you trying to do, and what stops you today?
     validations:
       required: true
+
   - type: textarea
+    id: proposal
     attributes:
-      label: Proposed Solution
+      label: Proposed solution
+      description: How it could work, from the outside (CLI, S3 request, API).
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use now, or other designs you considered.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This fits the single-node core described in MVP_SCOPE.md.

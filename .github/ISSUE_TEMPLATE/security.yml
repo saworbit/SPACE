@@ -1,13 +1,13 @@
 name: Security Concern
 description: Report a non-critical security hardening issue (for vulnerabilities, use private reporting)
-title: "[SECURITY] "
+title: "[Security] "
 labels: [security]
 body:
   - type: markdown
     attributes:
       value: |
         **For actual vulnerabilities** (exploitable bugs, key leaks, auth bypass), please use
-        [GitHub private vulnerability reporting](https://github.com/saworbit/space/security/advisories/new)
+        [GitHub private vulnerability reporting](https://github.com/saworbit/SPACE/security/advisories/new)
         or email security@adaptive-storage.dev instead of this template.
 
         This template is for non-critical security improvements: hardening suggestions,

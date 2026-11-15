@@ -1,0 +1,36 @@
+# Text files are stored with LF and checked out with LF on every OS, whatever
+# core.autocrlf says, so a Windows checkout, CI on Windows and the release
+# archives all see the same bytes.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Language-aware diff hunk headers.
+*.rs diff=rust
+*.md diff=markdown
+
+# Generated: collapsed in GitHub diffs (expand it to review a dependency
+# change) and left out of the language statistics.
+Cargo.lock linguist-generated=true
+
+docs/** linguist-documentation
+
+# Never converted or diffed as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.gz binary
+*.tgz binary
+*.zip binary
+*.zst binary
+*.lz4 binary
+*.bin binary
+*.seg binary
+*.nvram binary
+*.journal binary
