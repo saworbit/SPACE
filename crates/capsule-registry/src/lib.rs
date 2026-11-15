@@ -1184,6 +1184,11 @@ impl CapsuleRegistry {
     /// that has been used is never opened without it (#194). A new journal
     /// would rebuild the index as empty, and the next reclaim would then
     /// delete every segment.
+    ///
+    /// A lock on the database that clears within 1 s, as sled's own does
+    /// for a moment after a store is closed, is waited for (#246). A store
+    /// another process holds is refused with sled's `could not acquire
+    /// lock` error.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
