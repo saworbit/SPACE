@@ -49,6 +49,8 @@ While it runs, the server reclaims the space of deleted objects and interrupted 
 
 It also scrubs the store, reading at most 64 MiB/s (`--scrub-rate`): each segment gets a deep scrub weekly (`--deep-scrub-interval`) and a light scrub daily (`--scrub-interval`, `0` to turn scrubbing off). When each segment was last checked is kept in `space.db`, so a restart only scrubs segments that are new or due. Damage is logged at `WARN`, and it's kept in `space.db` too, so it's reported every cycle and after a restart until a scrub passes the segment ([#195](https://github.com/saworbit/SPACE/issues/195)). A deep scrub also reads capsules whole and checks each against its digest ([#140](https://github.com/saworbit/SPACE/issues/140)). With the server stopped, `spacectl scrub --deep` lists any damaged segments and the capsules that hold them, and any capsule that doesn't read back as its digest.
 
+Stop the server with Ctrl-C, or SIGTERM, which is what `docker stop` sends. It stops taking new connections and gives the requests in flight 5 seconds (`--shutdown-grace`) to finish. Any still running after that get `503 ServiceUnavailable`, which S3 clients retry. It logs `stopped` and exits 0. A second Ctrl-C stops it at once.
+
 ## 2. PUT an object
 
 Create a bucket, then PUT an object into it:
@@ -116,7 +118,7 @@ Use `--data-binary`. Plain `-d` strips newlines.
 
 ## 6. Read the same capsule through spacectl
 
-The S3 view and `spacectl` share one capsule store. Stop the server first (Ctrl-C; it lets requests in flight finish): sled allows only one process to open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
+The S3 view and `spacectl` share one capsule store. Stop the server first (Ctrl-C): sled allows only one process to open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
 
 ```bash
 ./target/release/spacectl list

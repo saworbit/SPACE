@@ -714,16 +714,28 @@ fn load_policy_file(path: &PathBuf, base: Policy) -> Result<Policy> {
     Ok(file.apply(base)?)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let default_level = match cli.command {
-        Commands::ServeS3 { .. } => "info",
-        _ => "warn",
-    };
-    init_tracing(default_level);
+/// How long `spacectl` waits at exit for blocking work a command left
+/// running. Only `serve-s3` leaves any: a reclaim pass compacts on a
+/// blocking thread, which stopping the server can't cancel. Dropping the
+/// runtime would wait for it however long it takes, past `docker stop`'s
+/// timeout on a large store. Abandoning it is safe: compaction writes the
+/// next generation beside the live file and renames it in, and the next
+/// open discards a generation it didn't finish, as after a crash.
+const EXIT_WAIT: Duration = Duration::from_secs(2);
 
-    match run(cli).await {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new().context("couldn't start the async runtime")?;
+    let result = runtime.block_on(async {
+        let cli = Cli::parse();
+        let default_level = match cli.command {
+            Commands::ServeS3 { .. } => "info",
+            _ => "warn",
+        };
+        init_tracing(default_level);
+        run(cli).await
+    });
+    runtime.shutdown_timeout(EXIT_WAIT);
+    match result {
         // A reader that stopped early, such as `head`, isn't a failure.
         Err(err) if broken_pipe(&err) => Ok(()),
         result => result,
