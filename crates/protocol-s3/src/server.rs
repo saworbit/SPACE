@@ -9,13 +9,15 @@ use axum::{
     Router,
 };
 
-use std::future::IntoFuture;
+use std::future::{Future, IntoFuture};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::{BoxFuture, FutureExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
 
@@ -184,6 +186,7 @@ pub struct S3Server {
     reclaim_every: Option<Duration>,
     scrub: Option<ScrubConfig>,
     hosts: AllowedHosts,
+    shutdown: Option<(BoxFuture<'static, ()>, Duration)>,
 }
 
 impl S3Server {
@@ -196,7 +199,22 @@ impl S3Server {
             reclaim_every: None,
             scrub: None,
             hosts: AllowedHosts::default(),
+            shutdown: None,
         }
+    }
+
+    /// Stop when `signal` completes: stop accepting connections, close idle
+    /// keep-alive ones, and let the requests in flight finish for up to
+    /// `grace`. Requests still running then are cut off with a 503, which S3
+    /// clients retry, and `run` returns. Without this, the default, the
+    /// server runs until it fails or the process is killed.
+    pub fn shutdown_on(
+        mut self,
+        signal: impl Future<Output = ()> + Send + 'static,
+        grace: Duration,
+    ) -> Self {
+        self.shutdown = Some((Box::pin(signal), grace));
+        self
     }
 
     /// The hosts requests may name ([`AllowedHosts`]). The default is
@@ -220,6 +238,10 @@ impl S3Server {
         self
     }
 
+    /// Serve until a listener fails or, with [`shutdown_on`](Self::shutdown_on),
+    /// until the shutdown signal. The background reclaim and scrub tasks stop
+    /// when this returns. Like a crash, stopping one part way leaves nothing
+    /// a later open has to repair by hand.
     pub async fn run(self) -> Result<()> {
         let _reclaim = self
             .reclaim_every
@@ -236,17 +258,75 @@ impl S3Server {
                 "try: curl -X PUT http://{addr}/demo-bucket && curl -X PUT http://{addr}/demo-bucket/hello.txt --data-binary 'Hello SPACE!'"
             );
         }
-        let servers = self
-            .listeners
-            .into_iter()
-            .map(|listener| axum::serve(listener, app.clone()).into_future());
-        futures::future::try_join_all(servers).await?;
+        let Some((signal, grace)) = self.shutdown else {
+            let servers = self
+                .listeners
+                .into_iter()
+                .map(|listener| axum::serve(listener, app.clone()).into_future());
+            futures::future::try_join_all(servers).await?;
+            return Ok(());
+        };
 
+        // Every listener stops on the one signal.
+        let signal = signal.shared();
+        let cut_off = CancellationToken::new();
+        let app = app.layer(middleware::from_fn_with_state(
+            cut_off.clone(),
+            cut_off_when_told,
+        ));
+        let servers = self.listeners.into_iter().map(|listener| {
+            axum::serve(listener, app.clone())
+                .with_graceful_shutdown(signal.clone())
+                .into_future()
+        });
+        let draining = futures::future::try_join_all(servers);
+        tokio::pin!(draining);
+        let deadline = async {
+            signal.clone().await;
+            tokio::time::sleep(grace).await;
+        };
+        tokio::select! {
+            served = &mut draining => {
+                served?;
+                return Ok(());
+            }
+            () = deadline => {}
+        }
+
+        warn!("cutting off the requests still in flight {grace:?} after the shutdown signal");
+        cut_off.cancel();
+        // A connection closes once its handler has answered. One with
+        // nothing to cancel, such as a response body still streaming, closes
+        // when the runtime shuts down.
+        if tokio::time::timeout(WIND_DOWN, &mut draining)
+            .await
+            .is_err()
+        {
+            warn!("some connections were still open after the cut-off");
+        }
         Ok(())
     }
 }
 
-/// Stops the reclaim task when the server stops.
+/// How long [`S3Server::run`] waits for connections to close after cutting
+/// off their requests.
+const WIND_DOWN: Duration = Duration::from_secs(1);
+
+/// Drops a request's handler, and answers 503 ServiceUnavailable, once the
+/// server cuts off what's still in flight after a shutdown signal. S3
+/// clients retry a 503, so the request can go to the next server.
+async fn cut_off_when_told(
+    State(cut_off): State<CancellationToken>,
+    request: Request,
+    next: Next,
+) -> Response {
+    tokio::select! {
+        response = next.run(request) => response,
+        () = cut_off.cancelled() => S3Error::ServiceUnavailable.into_response(),
+    }
+}
+
+/// Stops a background task when the server stops.
 struct AbortOnDrop(JoinHandle<()>);
 
 impl Drop for AbortOnDrop {

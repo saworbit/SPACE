@@ -71,6 +71,9 @@ impl IntoResponse for S3Error {
                 );
                 return (StatusCode::NOT_MODIFIED, headers).into_response();
             }
+            S3Error::ServiceUnavailable => {
+                (StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailable", "")
+            }
             S3Error::Internal(err) => {
                 error!("request failed: {err:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "InternalError", "")

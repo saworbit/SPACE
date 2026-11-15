@@ -116,7 +116,7 @@ Use `--data-binary`. Plain `-d` strips newlines.
 
 ## 6. Read the same capsule through spacectl
 
-The S3 view and `spacectl` share one capsule store. Stop the server first: sled allows only one process to open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
+The S3 view and `spacectl` share one capsule store. Stop the server first (Ctrl-C; it lets requests in flight finish): sled allows only one process to open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
 
 ```bash
 ./target/release/spacectl list
