@@ -359,9 +359,35 @@ fn decode_scrub_times(bytes: &[u8]) -> Result<ScrubTimes> {
     })
 }
 
+/// How long [`SledStore::open`] waits for a lock on the database to clear.
+/// sled 0.34 writes buffers on background threads that keep the file, and
+/// its lock, for a moment after the last `Db` is dropped, so a store closed
+/// and opened again at once can find its own lock still held (#246).
+const LOCK_WAIT: Duration = Duration::from_secs(1);
+
+/// `sled::open`, retried while the database's lock is held, for up to
+/// [`LOCK_WAIT`]. A lock still held after that is the error sled gives,
+/// which `spacectl` reports as a store in use by another process.
+fn open_db(path: &str) -> sled::Result<Db> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    let mut pause = Duration::from_millis(5);
+    loop {
+        match sled::open(path) {
+            Err(sled::Error::Io(err))
+                if err.to_string().contains("could not acquire lock")
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(100));
+            }
+            opened => return opened,
+        }
+    }
+}
+
 impl SledStore {
     pub fn open(path: &str) -> Result<Self> {
-        let db = sled::open(path)?;
+        let db = open_db(path)?;
         let capsules = db.open_tree("capsules")?;
         let content = db.open_tree("content")?;
         let refs = db.open_tree("refs")?;
@@ -985,6 +1011,44 @@ fn apply_record(
 mod tests {
     use super::*;
     use common::Policy;
+
+    fn scratch_db(name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("space_{name}_{}", uuid::Uuid::new_v4()));
+        dir.to_str().unwrap().to_string()
+    }
+
+    /// A lock that clears soon after, as when sled's background threads
+    /// let go of a store just dropped, is waited for (#246).
+    #[test]
+    fn open_waits_for_a_lock_that_clears() {
+        let path = scratch_db("lock_clears");
+        let first = SledStore::open(&path).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(first);
+        });
+        let second = SledStore::open(&path);
+        closer.join().unwrap();
+        assert!(second.is_ok(), "{:?}", second.err());
+        drop(second);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// A lock held past the wait is still refused, with sled's error.
+    #[test]
+    fn open_refuses_a_lock_still_held() {
+        let path = scratch_db("lock_held");
+        let held = SledStore::open(&path).unwrap();
+        let started = std::time::Instant::now();
+        let err = SledStore::open(&path).err().expect("opened a locked store");
+        assert!(
+            format!("{err:#}").contains("could not acquire lock"),
+            "{err:#}"
+        );
+        assert!(started.elapsed() >= LOCK_WAIT);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&path);
+    }
 
     #[test]
     fn scrub_times_round_trip_and_survive_a_reopen() {
