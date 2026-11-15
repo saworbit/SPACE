@@ -153,7 +153,7 @@ A PUT body can also come in `aws-chunked` framing, as SDKs send streamed uploads
 
 - These S3 operations aren't implemented, and each gets a `501 NotImplemented` error:
   - CopyObject and UploadPartCopy;
-  - `delimiter` on ListMultipartUploads;
+  - `delimiter` on ListMultipartUploads ([#253](https://github.com/saworbit/SPACE/issues/253));
   - object tagging and ACLs, and bucket configuration such as `?versioning`;
   - object versions: DeleteObjects reports a key given with a version id other than `null` as an error, and leaves it;
   - PUT headers asking for something the server can't do: Object Lock, server-side encryption options (objects are encrypted when the server has `SPACE_MASTER_KEY`), `x-amz-tagging`, ACLs other than `x-amz-acl: private`, storage classes other than `STANDARD`, website redirects, and checksum algorithms other than those above.
