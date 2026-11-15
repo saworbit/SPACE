@@ -13,8 +13,10 @@
 //! parts' segments, the key's `BIND`, the drop of the object the key held,
 //! and the removal of every part, the upload's name and its namespace. The
 //! parts' bytes aren't written again (`docs/on-disk-format.md` §6).
-//! AbortMultipartUpload removes the parts, the name and the namespace, and
-//! a reclaim pass aborts uploads older than [`ABANDONED_UPLOAD_AGE`].
+//! AbortMultipartUpload removes the parts, the name and the namespace, as
+//! DeleteBucket does for each upload into the bucket, and a reclaim pass
+//! aborts uploads older than [`ABANDONED_UPLOAD_AGE`]. ListMultipartUploads
+//! reads every upload's name to find those into a bucket.
 
 use std::time::Duration;
 
@@ -50,6 +52,23 @@ pub struct Part {
     pub capsule_id: CapsuleId,
     pub size: u64,
     pub created_at: u64,
+}
+
+/// An open upload, as ListMultipartUploads lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenUpload {
+    pub key: String,
+    pub upload_id: String,
+    /// When CreateMultipartUpload started it, in seconds since the epoch.
+    pub initiated: u64,
+}
+
+/// A page of ListMultipartUploads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadPage {
+    pub uploads: Vec<OpenUpload>,
+    /// Whether more uploads follow the last one listed.
+    pub truncated: bool,
 }
 
 /// What the journal holds for an open upload.
@@ -116,6 +135,79 @@ impl S3View {
             Some(upload) if upload.bucket == bucket && upload.key == key => Ok(upload),
             _ => Err(missing()),
         }
+    }
+
+    /// The open uploads into `bucket`, by key and then upload id. Upload
+    /// ids are random, so this reads every open upload's name.
+    fn uploads_into(&self, bucket: &str) -> S3Result<Vec<OpenUpload>> {
+        let mut uploads = Vec::new();
+        for (ns, initiated) in self
+            .registry
+            .list_namespaces(UPLOAD_PREFIX, None, usize::MAX)?
+        {
+            let Some(binding) = self.registry.binding(&ns, "")? else {
+                continue;
+            };
+            let field = |name: &str| {
+                binding
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.as_str())
+            };
+            if field(BUCKET_FIELD) != Some(bucket) {
+                continue;
+            }
+            uploads.push(OpenUpload {
+                key: field(KEY_FIELD).unwrap_or_default().to_string(),
+                upload_id: ns[UPLOAD_PREFIX.len()..].to_string(),
+                initiated,
+            });
+        }
+        uploads.sort_by(|a, b| (&a.key, &a.upload_id).cmp(&(&b.key, &b.upload_id)));
+        Ok(uploads)
+    }
+
+    /// The records that abort every open upload into `bucket`, for
+    /// DeleteBucket to commit with the bucket's own removal (#233). Call it
+    /// with the pipeline locked.
+    pub(crate) fn removal_of_uploads_into(&self, bucket: &str) -> S3Result<Vec<JournalRecord>> {
+        let mut records = Vec::new();
+        for open in self.uploads_into(bucket)? {
+            if let Some(upload) = self.upload_at(&upload_namespace(&open.upload_id))? {
+                records.extend(self.removal_of(&upload)?);
+            }
+        }
+        Ok(records)
+    }
+
+    /// ListMultipartUploads (#234): the open uploads into `bucket` whose
+    /// keys start with `prefix`, by key and then upload id, at most `max`
+    /// of them. With `key_marker` the list starts after that key, or, with
+    /// `upload_id_marker` as well, after that upload of that key. Without
+    /// `key_marker`, `upload_id_marker` is ignored, as in S3.
+    pub fn list_multipart_uploads(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        key_marker: Option<&str>,
+        upload_id_marker: Option<&str>,
+        max: usize,
+    ) -> S3Result<UploadPage> {
+        self.head_bucket(bucket)?;
+        let after = |upload: &OpenUpload| match (key_marker, upload_id_marker) {
+            (None, _) => true,
+            (Some(key), None) => upload.key.as_str() > key,
+            (Some(key), Some(id)) => (upload.key.as_str(), upload.upload_id.as_str()) > (key, id),
+        };
+        let mut uploads: Vec<OpenUpload> = self
+            .uploads_into(bucket)?
+            .into_iter()
+            .filter(|upload| upload.key.starts_with(prefix) && after(upload))
+            .collect();
+        let truncated = uploads.len() > max;
+        uploads.truncate(max);
+        Ok(UploadPage { uploads, truncated })
     }
 
     /// The records that remove `upload`: its parts, dropping each capsule
