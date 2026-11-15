@@ -16,11 +16,16 @@ pub enum CryptoProfile {
 pub enum CompressionPolicy {
     /// No compression
     None,
-    /// LZ4 fast compression (level 1-16)
+    /// LZ4 fast compression (level 1 to 16)
     LZ4 { level: i32 },
-    /// Zstd balanced compression (level 1-22)
+    /// Zstd balanced compression (level -5 to 22)
     Zstd { level: i32 },
 }
+
+/// The LZ4 levels a policy may ask for, which the compressor uses as given.
+pub const LZ4_LEVELS: std::ops::RangeInclusive<i32> = 1..=16;
+/// The Zstd levels a policy may ask for, which the compressor uses as given.
+pub const ZSTD_LEVELS: std::ops::RangeInclusive<i32> = -5..=22;
 
 impl Default for CompressionPolicy {
     fn default() -> Self {
@@ -440,6 +445,18 @@ impl Policy {
         if size == 0 || size > MAX_SEGMENT_SIZE {
             return Err(PolicyError::SegmentSizeOutOfRange { size });
         }
+        let (algorithm, level, levels) = match self.compression {
+            CompressionPolicy::None => return Ok(()),
+            CompressionPolicy::LZ4 { level } => ("LZ4", level, LZ4_LEVELS),
+            CompressionPolicy::Zstd { level } => ("Zstd", level, ZSTD_LEVELS),
+        };
+        if !levels.contains(&level) {
+            return Err(PolicyError::CompressionLevelOutOfRange {
+                algorithm,
+                level,
+                levels,
+            });
+        }
         Ok(())
     }
 }
@@ -456,6 +473,12 @@ pub enum PolicyError {
     SegmentSizeOutOfRange {
         size: usize,
     },
+    /// A compression level outside the range the compressor uses (#236).
+    CompressionLevelOutOfRange {
+        algorithm: &'static str,
+        level: i32,
+        levels: std::ops::RangeInclusive<i32>,
+    },
 }
 
 impl std::fmt::Display for PolicyError {
@@ -468,6 +491,16 @@ impl std::fmt::Display for PolicyError {
                 f,
                 "segment size {size} is out of range: it must be between 1 byte and \
                  {MAX_SEGMENT_SIZE} bytes (16 MiB)"
+            ),
+            PolicyError::CompressionLevelOutOfRange {
+                algorithm,
+                level,
+                levels,
+            } => write!(
+                f,
+                "{algorithm} level {level} is out of range: it must be between {} and {}",
+                levels.start(),
+                levels.end()
             ),
         }
     }
@@ -700,6 +733,60 @@ mod tests {
             }
         );
         assert!(Policy::default().validate().is_ok());
+    }
+
+    /// A level the compressor would clamp is refused, so the policy a
+    /// capsule stores is the one it was written with (#236).
+    #[test]
+    fn compression_levels_must_be_in_the_codecs_range() {
+        let with = |compression| Policy {
+            compression,
+            ..Policy::default()
+        };
+        for level in [*LZ4_LEVELS.start(), 4, *LZ4_LEVELS.end()] {
+            assert!(with(CompressionPolicy::LZ4 { level }).validate().is_ok());
+        }
+        for level in [*ZSTD_LEVELS.start(), 0, 3, *ZSTD_LEVELS.end()] {
+            assert!(with(CompressionPolicy::Zstd { level }).validate().is_ok());
+        }
+        assert!(with(CompressionPolicy::None).validate().is_ok());
+
+        for (compression, algorithm, level) in [
+            (CompressionPolicy::LZ4 { level: 0 }, "LZ4", 0),
+            (CompressionPolicy::LZ4 { level: 17 }, "LZ4", 17),
+            (CompressionPolicy::Zstd { level: -6 }, "Zstd", -6),
+            (CompressionPolicy::Zstd { level: 99 }, "Zstd", 99),
+            (CompressionPolicy::Zstd { level: -5000 }, "Zstd", -5000),
+        ] {
+            let err = with(compression).validate().unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    PolicyError::CompressionLevelOutOfRange { algorithm: a, level: l, .. }
+                        if *a == algorithm && *l == level
+                ),
+                "{err:?}"
+            );
+        }
+        assert_eq!(
+            with(CompressionPolicy::Zstd { level: 99 })
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "Zstd level 99 is out of range: it must be between -5 and 22"
+        );
+
+        // The presets pass.
+        for policy in [
+            Policy::default(),
+            Policy::encrypted(),
+            Policy::encrypted_compressed(),
+            Policy::text_optimized(),
+            Policy::precompressed(),
+            Policy::edge_optimized(),
+        ] {
+            assert!(policy.validate().is_ok(), "{:?}", policy.compression);
+        }
     }
 
     #[test]
