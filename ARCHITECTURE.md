@@ -21,13 +21,15 @@ Everything is a capsule (128-bit ID). The write pipeline does segmentation → c
 
 Client → segment → compress → hash → dedup (reuse or new) → encrypt with deterministic tweak → append a `SEGMENT` record to the data log → commit a `CAPSULE` record to the journal (the commit point) → apply it to the sled index.
 
+A streaming write (S3 PUT and UploadPart, `spacectl create`) compresses, hashes and encrypts each chunk on a blocking thread before it takes the pipeline lock, which covers only the dedup lookup and the append. A chunk that turns out to be a dedup hit drops its ciphertext ([#198](https://github.com/saworbit/SPACE/issues/198)). Completing a multipart upload commits a capsule made of its parts' segments, without writing them again ([#201](https://github.com/saworbit/SPACE/issues/201)).
+
 The data log and the journal are the truth; `space.db` can be rebuilt from them. The byte layouts are in [on-disk-format.md](docs/on-disk-format.md).
 
 ## Background maintenance
 
 `serve-s3` runs two loops. `spacectl` runs each on demand, with the server stopped:
 
-- **Reclaim** (`--reclaim-interval`; `spacectl gc` and `spacectl compact`): compacts `space.nvram` into its next generation once enough of it is unreferenced, or deletes unreferenced segment files under `SPACE_STORAGE_ROOT`. Then it compacts `space.journal` once enough of it is dead: deleted and overwritten capsules, and removed S3 keys. See [capsule.md §7](docs/capsule.md#7-deletion-ref-counting-and-gc).
+- **Reclaim** (`--reclaim-interval`; `spacectl gc` and `spacectl compact`): `serve-s3`'s pass first aborts multipart uploads started more than 7 days ago. It compacts `space.nvram` into its next generation once enough of it is unreferenced, or deletes unreferenced segment files under `SPACE_STORAGE_ROOT`. Then it compacts `space.journal` once enough of it is dead: deleted and overwritten capsules, and removed S3 keys. See [capsule.md §7](docs/capsule.md#7-deletion-ref-counting-and-gc).
 - **Scrub** (`--scrub-interval` and `--deep-scrub-interval`; `spacectl scrub`): light scrub checks each record's checksums, and deep scrub checks MACs and content hashes, then reads capsules whole to check their digests. See [capsule.md §8](docs/capsule.md#8-scrub-continuous-integrity).
 
 On SIGTERM or Ctrl-C, `serve-s3` stops accepting connections and gives the requests in flight `--shutdown-grace` seconds (default 5) to finish. Requests still running then get a 503, which S3 clients retry. Then it stops both loops and exits. A compaction still running is abandoned, as a crash would leave it, and the next open discards the unfinished generation.

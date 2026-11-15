@@ -143,7 +143,7 @@ s3.put_object(Bucket="demo-bucket", Key="k.txt", Body=b"hi")
 print(s3.get_object(Bucket="demo-bucket", Key="k.txt")["Body"].read())
 ```
 
-`upload_file` switches to multipart upload above its 8 MiB threshold, and that works too ([#201](https://github.com/saworbit/SPACE/issues/201)): CreateMultipartUpload, UploadPart, ListParts, CompleteMultipartUpload and AbortMultipartUpload. Each part is checked against its digests as a PUT body is. Every part but the last must be at least 5 MiB. Completing reads the parts once to compute the object's digest, but doesn't write them again: the object is made of the parts' segments. An open upload survives a restart. `serve-s3`'s reclaim pass aborts uploads started more than 7 days ago. The object's ETag is its capsule id, like a PUT's, not S3's MD5 with a `-N` suffix. ListMultipartUploads and UploadPartCopy aren't implemented. The AWS CLI hasn't been tested.
+`upload_file` switches to multipart upload above its 8 MiB threshold, and that works too ([#201](https://github.com/saworbit/SPACE/issues/201)): CreateMultipartUpload, UploadPart, ListParts, CompleteMultipartUpload and AbortMultipartUpload. Each part is checked against its digests as a PUT body is. Every part but the last must be at least 5 MiB. Completing reads the parts once to compute the object's digest, but doesn't write them again: the object is made of the parts' segments. An open upload survives a restart. `serve-s3`'s reclaim pass aborts uploads started more than 7 days ago. The object's ETag is its capsule id, like a PUT's, not S3's MD5 with a `-N` suffix. ListMultipartUploads ([#234](https://github.com/saworbit/SPACE/issues/234)) and UploadPartCopy aren't implemented. Deleting a bucket leaves its open uploads until they're aborted ([#233](https://github.com/saworbit/SPACE/issues/233)). The AWS CLI hasn't been tested.
 
 A PUT body is checked against the digests its headers give, as S3 does: `Content-MD5`, `x-amz-checksum-crc32`, `-crc32c`, `-crc64nvme`, `-sha1` and `-sha256`, and a hex `x-amz-content-sha256`. A body that doesn't match gets `400 BadDigest` (`XAmzContentSHA256Mismatch` for the last) and stores nothing ([#196](https://github.com/saworbit/SPACE/issues/196)). The SDKs send a CRC32 or CRC64NVME by default, so their uploads are checked.
 
@@ -153,7 +153,7 @@ A PUT body can also come in `aws-chunked` framing, as SDKs send streamed uploads
 
 - These S3 operations aren't implemented, and each gets a `501 NotImplemented` error:
   - CopyObject and UploadPartCopy;
-  - ListMultipartUploads;
+  - ListMultipartUploads ([#234](https://github.com/saworbit/SPACE/issues/234));
   - object tagging and ACLs, and bucket configuration such as `?versioning`;
   - object versions: DeleteObjects reports a key given with a version id other than `null` as an error, and leaves it;
   - PUT headers asking for something the server can't do: Object Lock, server-side encryption options (objects are encrypted when the server has `SPACE_MASTER_KEY`), `x-amz-tagging`, ACLs other than `x-amz-acl: private`, storage classes other than `STANDARD`, website redirects, and checksum algorithms other than those above.

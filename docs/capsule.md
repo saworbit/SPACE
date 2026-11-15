@@ -300,8 +300,8 @@ The registry has two parts:
 - **The capsule journal**, `space.journal` next to `space.db`. An append-only file of framed records: a `CAPSULE` manifest commits each write, a `DROP` commits each delete, and `NAMESPACE`, `BIND` and `UNBIND` records create namespaces and point names at capsules ([on-disk-format.md](on-disk-format.md) §5–§7). Several records can commit together as one `BATCH`. It's the durable record of which capsules and names exist.
 - **A sled index of the journal**, in `space.db`:
   - `Capsule` records keyed by `CapsuleId`
-  - the content-hash index, `ContentHash → SegmentId`, for dedup lookup
-  - per-segment reference counts, and which segment each indexed hash belongs to
+  - the content-hash index, `ContentHash → SegmentId`, for dedup lookup. Each hash names the lowest numbered segment that holds it and that a live dedupe capsule references, so it depends only on the live capsules, and a rebuild gives the same index ([#188](https://github.com/saworbit/SPACE/issues/188))
+  - per-segment reference counts, each segment's hash and dedupe references, the segments that hold each hash, and the live dedupe capsules
   - namespaces, and the capsule each name points at
   - the journal position the index has reached
   - a counter for allocating `SegmentId`s
@@ -310,7 +310,7 @@ Each journal record, or each whole `BATCH`, is applied to the index in one sled 
 
 **Journal compaction** (`CapsuleRegistry::compact_journal()`) stops the journal growing without bound under deletes and overwrites ([on-disk-format.md](on-disk-format.md) §9.2). It writes the live capsules, namespaces and names to `space.journal.compact`, the journal's next generation, while commits carry on. Then, under the journal lock, it copies the records committed meanwhile, renames the new file over the journal, and moves the index's position to the new generation. A crash before the rename leaves the old journal, and open deletes the unfinished file. A crash after it leaves the new generation, and open rebuilds the index from it. `serve-s3`'s reclaim pass compacts the journal once a quarter of it, and at least 1 MiB, is dead, and `spacectl compact` compacts it whenever anything in it is.
 
-Names are opaque strings to the registry. The S3 view keeps each bucket as the namespace `s3:<bucket>` and each key as a name in it.
+Names are opaque strings to the registry. The S3 view keeps each bucket as the namespace `s3:<bucket>` and each key as a name in it. An open multipart upload is the namespace `mpu:<upload id>`, holding its parts as names ([#201](https://github.com/saworbit/SPACE/issues/201)).
 
 Segment metadata isn't in the registry: the descriptor is written once, in the segment's record in the NVRAM log, through `StorageBackend::begin_txn()…commit()`, and the log's in-memory ref counts are set from the index when a pipeline opens. See [§9.3](#93-metadata-commits) for the commit order.
 
@@ -378,7 +378,7 @@ client bytes
 
 ### Stage-by-stage
 
-**1. Segmentation.** The write pipeline splits the input into chunks. Default chunk size is 4 MiB (`SEGMENT_SIZE`). `LayoutPolicy` can set another size, either `Fixed { segment_size }` or a zone size with `ZnsGraph { zone_size_mib }`. `AdaptiveEntropy`, `Learned` and `QuantumReady` all fall back to 4 MiB, so there's no variable-size chunking. `Policy::validate` rejects a size of 0 or above 16 MiB (`MAX_SEGMENT_SIZE`), which keeps each segment within the XTS data unit limit.
+**1. Segmentation.** The write pipeline splits the input into chunks. Default chunk size is 4 MiB (`SEGMENT_SIZE`). `LayoutPolicy` can set another size, either `Fixed { segment_size }` or a zone size with `ZnsGraph { zone_size_mib }`. `AdaptiveEntropy`, `Learned` and `QuantumReady` all fall back to 4 MiB, so there's no variable-size chunking. `Policy::validate` rejects a size of 0 or above 16 MiB (`MAX_SEGMENT_SIZE`), which keeps each segment within the XTS data unit limit. A capsule a multipart upload completes is made of its parts' segments, so its segments needn't all be one size ([#201](https://github.com/saworbit/SPACE/issues/201)).
 
 **2. Compression.** Driven by `policy.compression`. Returns both the compressed bytes and the **algorithm string** (e.g., `"lz4:1"`, `"zstd:3"`, `"identity"`). The algorithm string is critical for step 3.
 
@@ -387,6 +387,8 @@ client bytes
 **4. Dedup check.** The registry looks up the content hash. On hit, the existing `SegmentId` is reused — no further work, just `ref_count += 1` on the existing segment and append the SegmentId to the new Capsule's segment list. On miss, proceed. The hash domain includes the encryption mode, so encrypted and plaintext writes never share a segment. With `policy.dedupe = false` the lookup is skipped.
 
 **5. Encrypt.** Runs only when the policy enables encryption. XTS-AES-256, with the tweak taken from the first 16 bytes of a plain BLAKE3 hash of the compressed segment (not the algorithm-separated `content_hash`). Encryption is deterministic: the same compressed bytes under the same key version give the same ciphertext. This is the property that lets encryption preserve dedup ([§10.2](#102-deterministic-encryption-preserves-dedup)). XTS needs at least 16 bytes, so a shorter segment is stored uncompressed and zero-padded to 16 bytes. The read strips the padding using `plain_len`.
+
+**Where the lock is.** `write_capsule` runs the stages in this order, with the pipeline borrowed. A streaming write (`modular_pipeline::stage_from_reader`, behind S3 PUT, UploadPart and `spacectl create`) reserves a segment id and runs stages 2, 3, 5 and 6 on a blocking thread with the pipeline unlocked (`ChunkPreparer::prepare`). It locks the pipeline only for stages 4 and 7 (`Pipeline::place_chunk`), so concurrent writes overlap. A chunk that turns out to be a dedup hit drops its ciphertext, and its reserved id goes unused. Writes of the same bytes at once still share a segment, because the lookup happens under the lock ([#198](https://github.com/saworbit/SPACE/issues/198)). Each new segment's append and fsync still run under the lock ([#235](https://github.com/saworbit/SPACE/issues/235)).
 
 **6. MAC.** BLAKE3-keyed MAC over the ciphertext plus the encryption metadata (encryption version, key version, tweak, ciphertext length). The MAC key is derived from both XTS subkeys. The first 16 bytes of the keyed hash become the `integrity_tag`.
 
@@ -400,7 +402,7 @@ client bytes
 - **No partially visible capsules**: the `CAPSULE` record is appended only after every segment is stored, so a failed or interrupted write never shows up in `list` or `read`. Any segments it had already stored stay behind, unreferenced and out of the content index, until compaction runs ([#97](https://github.com/saworbit/SPACE/issues/97)).
 - **Order-independent dedup**: which Capsule "owns" a segment doesn't matter; ref counting makes the relationship symmetric.
 
-The implementation is `Pipeline::write_capsule` in [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs). `capsule_registry::pipeline::WritePipeline` and `capsule_registry::modular_pipeline::RegistryPipelineHandle` wrap it.
+The stages are `ChunkPreparer::prepare` and `Pipeline::place_chunk` in [crates/pipeline/src/lib.rs](../crates/pipeline/src/lib.rs). `Pipeline::write_capsule` runs both in turn. `capsule_registry::pipeline::WritePipeline` and `capsule_registry::modular_pipeline::RegistryPipelineHandle` wrap it.
 
 ---
 
