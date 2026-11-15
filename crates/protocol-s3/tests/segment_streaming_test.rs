@@ -8,32 +8,32 @@ use capsule_registry::CapsuleRegistry;
 use futures::{stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{ByteRange, S3Error, S3View};
-use std::path::PathBuf;
 use std::time::Duration;
+use test_support::TempDir;
 
 const MIB: usize = 1024 * 1024;
 
 struct Scratch {
-    dir: PathBuf,
     registry: CapsuleRegistry,
     /// Shares the segment map the view's pipeline uses.
     log: NvramLog,
     view: S3View,
+    /// Last, so the store is closed before the directory goes.
+    dir: TempDir,
 }
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("s3_segments_{name}_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new(&format!("s3_segments_{name}"));
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
         let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
         view.create_bucket("bkt").unwrap();
         Self {
-            dir,
             registry,
             log,
             view,
+            dir,
         }
     }
 
@@ -46,12 +46,6 @@ impl Scratch {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("timed out waiting for {what}");
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

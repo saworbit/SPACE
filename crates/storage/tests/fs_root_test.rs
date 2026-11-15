@@ -10,13 +10,10 @@ use std::path::{Path, PathBuf};
 use common::traits::{StorageBackend, StorageTransaction};
 use common::{ContentHash, Segment, SegmentId};
 use storage::TokioFsBackend;
+use test_support::TempDir;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("space_fs_root_test")
-        .join(format!("{name}_{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("space_fs_root_test_{name}"))
 }
 
 fn segment_file(root: &Path, id: u64) -> PathBuf {
@@ -97,7 +94,6 @@ async fn a_segment_file_holds_its_descriptor_and_bytes() {
         .ends_with(".tmp")));
 
     drop(backend);
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[tokio::test]
@@ -137,7 +133,6 @@ async fn verify_stored_catches_a_flipped_byte_in_any_segment_file() {
     );
 
     drop(backend);
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[tokio::test]
@@ -155,7 +150,6 @@ async fn a_file_holding_another_segment_is_rejected() {
     );
 
     drop(backend);
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[tokio::test]
@@ -175,7 +169,6 @@ async fn reopening_keeps_the_store_id_and_drops_unfinished_writes() {
     assert_eq!(backend.segment_id_floor().unwrap(), 5);
 
     drop(backend);
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[tokio::test]
@@ -200,9 +193,6 @@ async fn a_root_in_the_old_layout_is_refused() {
     fs::remove_file(orphaned.join("store")).unwrap();
     let err = TokioFsBackend::open(&orphaned).await.err().unwrap();
     assert!(err.to_string().contains("no store file"), "{err:#}");
-
-    let _ = fs::remove_dir_all(&root);
-    let _ = fs::remove_dir_all(&orphaned);
 }
 
 #[tokio::test]
@@ -241,7 +231,6 @@ async fn ref_counts_are_recounted_and_kept_in_memory() {
     assert_eq!(backend.segment_ids().await.unwrap(), vec![SegmentId(1)]);
 
     drop(backend);
-    let _ = fs::remove_dir_all(&root);
 }
 
 /// The store file's FILE record is checked as the data log's is, and a bad
@@ -295,7 +284,6 @@ async fn the_store_file_is_checked_as_every_format_one_file_is() {
         fs::write(&log_path, &log).unwrap();
         let log_err = format!("{:#}", nvram_sim::NvramLog::open(&log_path).err().unwrap());
         assert!(log_err.contains(&says), "{log_err}");
-        let _ = fs::remove_dir_all(&root);
     }
 
     // The wrong kind, in the same words.
@@ -321,5 +309,4 @@ async fn the_store_file_is_checked_as_every_format_one_file_is() {
         err.contains("isn't an on-disk format 1 storage root store file (it holds more than its FILE record)"),
         "{err}"
     );
-    let _ = fs::remove_dir_all(&root);
 }

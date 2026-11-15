@@ -9,13 +9,12 @@
 //! cargo bench -p capsule-registry --bench end_to_end
 //! ```
 
-use std::path::PathBuf;
-
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::{EncryptionPolicy, Policy};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
+use test_support::TempDir;
 
 const PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
 
@@ -43,14 +42,14 @@ fn policy(encrypted: bool) -> Policy {
 
 /// A fresh store that is deleted on drop.
 struct Store {
-    dir: PathBuf,
-    pipeline: Option<WritePipeline>,
+    pipeline: WritePipeline,
+    /// Last, so the log and sled are closed before their files go.
+    _dir: TempDir,
 }
 
 impl Store {
     fn open(encrypted: bool) -> Self {
-        let dir = std::env::temp_dir().join(format!("space_bench_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("space_bench");
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let nvram = NvramLog::open(dir.join("space.nvram")).unwrap();
         let pipeline = if encrypted {
@@ -60,21 +59,13 @@ impl Store {
             WritePipeline::new(registry, nvram)
         };
         Self {
-            dir,
-            pipeline: Some(pipeline),
+            pipeline,
+            _dir: dir,
         }
     }
 
     fn pipeline(&self) -> &WritePipeline {
-        self.pipeline.as_ref().unwrap()
-    }
-}
-
-impl Drop for Store {
-    fn drop(&mut self) {
-        // Close the log and sled before removing their files.
-        self.pipeline.take();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        &self.pipeline
     }
 }
 

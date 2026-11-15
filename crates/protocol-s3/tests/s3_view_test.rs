@@ -4,15 +4,12 @@ use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{ListQuery, S3View};
-use std::{fs, path::Path};
-use uuid::Uuid;
+use test_support::TempDir;
 
 #[tokio::test]
 async fn test_s3_put_and_get() {
     // Setup
-    let (log_path, meta_path) = temp_paths("test_s3");
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
+    let (_dir, log_path, meta_path) = temp_paths("test_s3");
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
@@ -66,17 +63,13 @@ async fn test_s3_put_and_get() {
     println!("DELETE: Object and capsule removed");
 
     // Cleanup
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
 
     println!("\nAll S3 view tests passed!");
 }
 
 #[tokio::test]
 async fn test_s3_multiple_objects() {
-    let (log_path, meta_path) = temp_paths("test_s3_multi");
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
+    let (_dir, log_path, meta_path) = temp_paths("test_s3_multi");
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
@@ -129,17 +122,13 @@ async fn test_s3_multiple_objects() {
     assert_eq!(data, b"Content 2");
 
     // Cleanup
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
 
     println!("Multi-object test passed!");
 }
 
 #[tokio::test]
 async fn test_s3_large_object() {
-    let (log_path, meta_path) = temp_paths("test_s3_large");
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
+    let (_dir, log_path, meta_path) = temp_paths("test_s3_large");
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
@@ -163,8 +152,6 @@ async fn test_s3_large_object() {
     println!("GET: Retrieved and verified {} bytes", retrieved.len());
 
     // Cleanup
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
 
     println!("Large object test passed!");
 }
@@ -189,36 +176,12 @@ where
         .expect("streaming read failed")
 }
 
-fn temp_paths(prefix: &str) -> (String, String) {
-    let base = std::env::temp_dir().join("space_s3_tests");
-    let _ = fs::create_dir_all(&base);
-    let unique = format!("{}_{}", prefix, Uuid::new_v4());
-    let log = base.join(format!("{unique}.nvram"));
-    let meta = base.join(format!("{unique}.metadata"));
-    (
-        log.to_string_lossy().to_string(),
-        meta.to_string_lossy().to_string(),
-    )
-}
-
-fn cleanup_paths(path: &str) {
-    cleanup_path(path);
-    cleanup_path(&format!("{}.segments", path));
-}
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => (),
-        Err(err) => {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if err.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
+/// A scratch directory, and the log and registry paths inside it.
+fn temp_paths(prefix: &str) -> (TempDir, String, String) {
+    let dir = TempDir::new(prefix);
+    let log = dir.join("space.nvram").to_string_lossy().into_owned();
+    let meta = dir.join("space.metadata").to_string_lossy().into_owned();
+    (dir, log, meta)
 }
 
 fn generate_large_payload(len: usize) -> Vec<u8> {

@@ -6,11 +6,11 @@ use capsule_registry::CapsuleRegistry;
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use futures::stream;
 use protocol_s3::S3View;
+use test_support::TempDir;
 
 #[tokio::test]
 async fn put_encrypts_when_a_master_key_is_set() {
-    let dir = std::env::temp_dir().join(format!("s3_encrypted_default_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_encrypted_default");
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let nvram = dir.join("space.nvram");
 
@@ -31,5 +31,4 @@ async fn put_encrypts_when_a_master_key_is_set() {
     );
 
     drop(s3);
-    let _ = std::fs::remove_dir_all(&dir);
 }

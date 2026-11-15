@@ -11,6 +11,7 @@ use nvram_sim::NvramLog;
 use protocol_s3::S3View;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::Duration;
+use test_support::TempDir;
 
 fn body(data: Vec<u8>) -> impl futures::Stream<Item = Result<Bytes, std::io::Error>> + Send {
     stream::once(futures::future::ready(Ok(Bytes::from(data))))
@@ -18,8 +19,7 @@ fn body(data: Vec<u8>) -> impl futures::Stream<Item = Result<Bytes, std::io::Err
 
 #[tokio::test]
 async fn a_scheduled_scrub_finds_a_damaged_object() {
-    let dir = std::env::temp_dir().join(format!("s3_scrub_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_scrub");
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
@@ -70,7 +70,6 @@ async fn a_scheduled_scrub_finds_a_damaged_object() {
     task.abort();
 
     drop((registry, log, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A second capsule over `of`'s segments, listed in reverse, with `of`'s
@@ -117,8 +116,7 @@ fn reversed_capsule(registry: &CapsuleRegistry, of: CapsuleId) -> CapsuleId {
 /// too (#140).
 #[tokio::test]
 async fn a_scheduled_scrub_finds_an_object_whose_segments_are_out_of_order() {
-    let dir = std::env::temp_dir().join(format!("s3_scrub_order_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_scrub_order");
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let view = S3View::new(registry.clone(), log.clone(), &StoreSecurity::none()).unwrap();
@@ -151,5 +149,4 @@ async fn a_scheduled_scrub_finds_an_object_whose_segments_are_out_of_order() {
     assert_eq!(outcome, (ScrubKind::Deep, 1));
 
     drop(view);
-    let _ = std::fs::remove_dir_all(&dir);
 }

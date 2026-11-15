@@ -8,6 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use test_support::TempDir;
 
 use capsule_registry::modular_pipeline::{
     registry_pipeline_from_log_with_key, RegistryPipelineHandle,
@@ -20,19 +21,16 @@ use nvram_sim::NvramLog;
 use uuid::Uuid;
 
 struct Store {
-    dir: PathBuf,
     key: Arc<Mutex<KeyManager>>,
+    dir: TempDir,
 }
 
 impl Store {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir()
-            .join("space_journal_test")
-            .join(format!("{name}_{}", Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new(&format!("space_journal_test_{name}"));
         Self {
-            dir,
             key: Arc::new(Mutex::new(KeyManager::new([0x3Cu8; MASTER_KEY_SIZE]))),
+            dir,
         }
     }
 
@@ -54,12 +52,6 @@ impl Store {
         )
         .unwrap();
         (registry, log, handle)
-    }
-}
-
-impl Drop for Store {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 

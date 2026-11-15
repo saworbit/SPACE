@@ -12,6 +12,7 @@ use nvram_sim::NvramLog;
 use protocol_s3::S3View;
 use std::sync::Arc;
 use std::time::Duration;
+use test_support::TempDir;
 
 const MIB: usize = 1024 * 1024;
 
@@ -62,8 +63,7 @@ fn held_body(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_puts_and_gets_share_the_store() {
-    let dir = std::env::temp_dir().join(format!("s3_concurrency_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_concurrency");
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let key = StoreSecurity::with_key(KeyManager::new([3; MASTER_KEY_SIZE]));
@@ -133,5 +133,4 @@ async fn concurrent_puts_and_gets_share_the_store() {
         );
     }
     drop(view);
-    let _ = std::fs::remove_dir_all(&dir);
 }

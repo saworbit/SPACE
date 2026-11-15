@@ -6,8 +6,9 @@ use capsule_registry::CapsuleRegistry;
 use nvram_sim::NvramLog;
 use protocol_s3::{server::S3Server, S3View};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
+use test_support::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -19,16 +20,15 @@ use tokio::time::timeout;
 const PATIENCE: Duration = Duration::from_secs(20);
 
 struct Running {
-    dir: PathBuf,
     addr: SocketAddr,
     stop: Option<oneshot::Sender<()>>,
     server: JoinHandle<anyhow::Result<()>>,
+    dir: TempDir,
 }
 
 impl Running {
     async fn start(name: &str, grace: Duration) -> Self {
-        let dir = std::env::temp_dir().join(format!("s3_shutdown_{name}_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new(&format!("s3_shutdown_{name}"));
         let view = open_view(&dir);
         view.create_bucket("demo").unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -41,10 +41,10 @@ impl Running {
             grace,
         );
         Self {
-            dir,
             addr,
             stop: Some(stop),
             server: tokio::spawn(server.run()),
+            dir,
         }
     }
 
@@ -53,7 +53,7 @@ impl Running {
     }
 
     /// Waits for the server to return, and says how long it took.
-    async fn stopped(self) -> (PathBuf, Duration) {
+    async fn stopped(self) -> (TempDir, Duration) {
         let started = Instant::now();
         timeout(PATIENCE, self.server)
             .await

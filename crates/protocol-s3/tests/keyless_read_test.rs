@@ -12,6 +12,7 @@ use nvram_sim::NvramLog;
 use protocol_s3::{server, S3View};
 use std::path::Path;
 use std::sync::Arc;
+use test_support::TempDir;
 use tower::ServiceExt;
 
 fn router(nvram: &Path, registry: &CapsuleRegistry, security: &StoreSecurity) -> Router {
@@ -35,8 +36,7 @@ async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Vec<u8>) 
 
 #[tokio::test]
 async fn encrypted_get_without_a_key_is_an_error() {
-    let dir = std::env::temp_dir().join(format!("s3_keyless_read_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_keyless_read");
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let nvram = dir.join("space.nvram");
     let secret = b"TOP SECRET PAYLOAD".to_vec();
@@ -83,5 +83,4 @@ async fn encrypted_get_without_a_key_is_an_error() {
     assert_eq!(send(&keyed, get).await, (StatusCode::OK, secret));
 
     drop(keyed);
-    let _ = std::fs::remove_dir_all(&dir);
 }

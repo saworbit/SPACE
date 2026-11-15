@@ -1,35 +1,13 @@
 use anyhow::Result;
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use nvram_sim::NvramLog;
-use std::fs;
-use std::path::Path;
-use uuid::Uuid;
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => (),
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if e.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
-    let _ = fs::remove_file(format!("{}.segments", path));
-}
+use test_support::TempDir;
 
 #[tokio::test]
 async fn test_read_range_logic() -> Result<()> {
-    let base = std::env::temp_dir().join("space_range_read");
-    let _ = fs::create_dir_all(&base);
-    let unique = Uuid::new_v4();
-    let log_path = base.join(format!("range_{unique}.log"));
-    let meta_path = base.join(format!("range_{unique}.db"));
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
+    let dir = TempDir::new("space_range_read");
+    let log_path = dir.join("range.log");
+    let meta_path = dir.join("range.db");
 
     let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref())?;
     let nvram = NvramLog::open(log_path.to_string_lossy().as_ref())?;
@@ -56,8 +34,5 @@ async fn test_read_range_logic() -> Result<()> {
     // 4. Test Out of Bounds
     let oob_slice = pipeline.read_range(capsule_id, 300, 10).await?;
     assert_eq!(oob_slice.len(), 0);
-
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
     Ok(())
 }

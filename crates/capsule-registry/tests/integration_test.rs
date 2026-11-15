@@ -1,34 +1,12 @@
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use nvram_sim::NvramLog;
-use std::fs;
-use std::path::Path;
-use uuid::Uuid;
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => (),
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if e.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
-}
+use test_support::TempDir;
 
 #[tokio::test]
 async fn test_write_and_read_capsule() {
-    let base = std::env::temp_dir().join("space_registry_integration");
-    let _ = fs::create_dir_all(&base);
-    let unique = Uuid::new_v4();
-    let log_path = base.join(format!("test_nvram_{unique}.log"));
-    let meta_path = base.join(format!("test_nvram_{unique}.metadata"));
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
+    let dir = TempDir::new("space_integration_test_nvram");
+    let log_path = dir.join("space.log");
+    let meta_path = dir.join("space.metadata");
 
     let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).unwrap();
     let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).unwrap();
@@ -42,22 +20,13 @@ async fn test_write_and_read_capsule() {
     let read_data = pipeline.read_capsule(capsule_id).await.unwrap();
     assert_eq!(test_data.as_slice(), read_data.as_slice());
     println!("Write/Read test passed!");
-
-    let _ = fs::remove_file(log_path.to_string_lossy().as_ref());
-    let _ = fs::remove_file(format!("{}.segments", log_path.to_string_lossy()));
-    let _ = fs::remove_file(meta_path.to_string_lossy().as_ref());
 }
 
 #[tokio::test]
 async fn test_compression_integration() {
-    let base = std::env::temp_dir().join("space_registry_integration");
-    let _ = fs::create_dir_all(&base);
-    let unique = Uuid::new_v4();
-    let log_path = base.join(format!("test_compression_{unique}.log"));
-    let meta_path = base.join(format!("test_compression_{unique}.metadata"));
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
+    let dir = TempDir::new("space_integration_test_compression");
+    let log_path = dir.join("space.log");
+    let meta_path = dir.join("space.metadata");
 
     let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).unwrap();
     let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).unwrap();
@@ -69,21 +38,15 @@ async fn test_compression_integration() {
 
     assert_eq!(test_data, read_data);
     println!("Compression integration test passed!");
-
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
 }
 
 #[tokio::test]
 async fn hybrid_kyber_with_dedup_is_rejected_at_pipeline_boundary() {
     use common::{CryptoProfile, Policy};
 
-    let base = std::env::temp_dir().join("space_registry_integration");
-    let _ = fs::create_dir_all(&base);
-    let unique = Uuid::new_v4();
-    let log_path = base.join(format!("test_kyber_dedup_{unique}.log"));
-    let meta_path = base.join(format!("test_kyber_dedup_{unique}.metadata"));
+    let dir = TempDir::new("space_integration_test_kyber_dedup");
+    let log_path = dir.join("space.log");
+    let meta_path = dir.join("space.metadata");
 
     let registry = CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).unwrap();
     let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).unwrap();
@@ -104,10 +67,6 @@ async fn hybrid_kyber_with_dedup_is_rejected_at_pipeline_boundary() {
         msg.contains("HybridKyber") && msg.contains("not supported"),
         "error must say HybridKyber isn't supported; got: {msg}"
     );
-
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
 }
 
 mod modular_pipeline_integration {
@@ -154,12 +113,10 @@ mod modular_pipeline_integration {
 
     #[tokio::test]
     async fn modular_pipeline_encryption_sets_metadata() {
-        let log_path = "modular_pipeline_integration.log";
-        let segments_path = format!("{}.segments", log_path);
-        let _ = fs::remove_file(log_path);
-        let _ = fs::remove_file(&segments_path);
+        let dir = TempDir::new("space_integration_modular");
+        let log_path = dir.join("modular_pipeline_integration.log");
 
-        let storage = NvramBackend::open(log_path).unwrap();
+        let storage = NvramBackend::open(&log_path).unwrap();
         let key_manager = Arc::new(Mutex::new(KeyManager::new([0xA5; MASTER_KEY_SIZE])));
 
         let encryptor = XtsEncryptor::new(Arc::clone(&key_manager));
@@ -181,7 +138,7 @@ mod modular_pipeline_integration {
             .unwrap();
 
         // Re-open the log to inspect persisted metadata.
-        let log = nvram_sim::NvramLog::open(log_path).unwrap();
+        let log = nvram_sim::NvramLog::open(&log_path).unwrap();
         let segment = log.get_segment_metadata(SegmentId(0)).unwrap();
 
         assert!(segment.encrypted, "segment should be marked encrypted");
@@ -189,26 +146,16 @@ mod modular_pipeline_integration {
             segment.integrity_tag.is_some(),
             "integrity tag should be recorded for encrypted segment"
         );
-
-        let _ = fs::remove_file(log_path);
-        let _ = fs::remove_file(segments_path);
     }
 
     #[tokio::test]
     async fn registry_pipeline_lifecycle() {
         // A fresh directory per run: a journal left by an earlier run would
         // belong to another store than this run's new data log.
-        let dir = std::env::temp_dir()
-            .join("space_registry_integration")
-            .join(format!("lifecycle_{}", Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("space_integration_lifecycle");
         let log_path = dir.join("space.nvram").to_string_lossy().to_string();
-        let segments_path = format!("{}.segments", log_path);
         let meta_string = dir.join("space.db").to_string_lossy().to_string();
         let meta_path = meta_string.as_str();
-        let _ = fs::remove_file(&log_path);
-        let _ = fs::remove_file(&segments_path);
-        let _ = fs::remove_file(meta_path);
 
         let registry = CapsuleRegistry::open(meta_path).unwrap();
         let key_manager = Arc::new(Mutex::new(KeyManager::new([0x5Au8; MASTER_KEY_SIZE])));
@@ -230,27 +177,16 @@ mod modular_pipeline_integration {
 
         pipeline.delete_capsule(capsule_id).await.unwrap();
         assert!(pipeline.read_capsule(capsule_id).await.is_err());
-
-        let _ = fs::remove_file(&log_path);
-        let _ = fs::remove_file(segments_path);
-        let _ = fs::remove_file(meta_path);
     }
 
     #[tokio::test]
     async fn registry_pipeline_garbage_collects_orphans() {
         // A fresh directory per run: a journal left by an earlier run would
         // belong to another store than this run's new data log.
-        let dir = std::env::temp_dir()
-            .join("space_registry_integration")
-            .join(format!("gc_{}", Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("space_integration_gc");
         let log_path = dir.join("space.nvram").to_string_lossy().to_string();
-        let segments_path = format!("{}.segments", log_path);
         let meta_string = dir.join("space.db").to_string_lossy().to_string();
         let meta_path = meta_string.as_str();
-        let _ = fs::remove_file(&log_path);
-        let _ = fs::remove_file(&segments_path);
-        let _ = fs::remove_file(meta_path);
 
         let registry = CapsuleRegistry::open(meta_path).unwrap();
         let key_manager = Arc::new(Mutex::new(KeyManager::new([0x4Bu8; MASTER_KEY_SIZE])));
@@ -300,20 +236,14 @@ mod modular_pipeline_integration {
         drop(log);
         let log = NvramLog::open(&log_path).unwrap();
         assert!(log.get_segment_metadata(seg_id).is_err());
-
-        let _ = fs::remove_file(&log_path);
-        let _ = fs::remove_file(segments_path);
-        let _ = fs::remove_file(meta_path);
     }
 }
 
 #[tokio::test]
 async fn write_capsule_encrypts_by_default_when_a_key_is_configured() {
-    let base = std::env::temp_dir().join("space_registry_integration");
-    let _ = fs::create_dir_all(&base);
-    let unique = Uuid::new_v4();
-    let log_path = base.join(format!("default_policy_{unique}.log"));
-    let meta_path = base.join(format!("default_policy_{unique}.metadata"));
+    let dir = TempDir::new("space_integration_default_policy");
+    let log_path = dir.join("space.log");
+    let meta_path = dir.join("space.metadata");
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
@@ -325,14 +255,11 @@ async fn write_capsule_encrypts_by_default_when_a_key_is_configured() {
     assert!(registry.lookup(id).unwrap().policy.encryption.is_enabled());
     assert_eq!(pipeline.read_capsule(id).await.unwrap(), secret);
 
-    let stored = fs::read(&log_path).unwrap();
+    let stored = std::fs::read(&log_path).unwrap();
     assert!(
         !stored.windows(secret.len()).any(|w| w == secret),
         "plaintext found in the log"
     );
 
     drop(pipeline);
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
-    let _ = fs::remove_dir_all(&meta_path);
 }

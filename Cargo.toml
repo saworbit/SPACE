@@ -11,6 +11,7 @@ members = [
     "crates/capsule-registry",
     "crates/protocol-s3",
     "crates/spacectl",
+    "crates/test-support",
 ]
 
 [workspace.package]

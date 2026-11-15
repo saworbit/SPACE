@@ -163,6 +163,7 @@ mod tests {
     use super::*;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
+    use test_support::TempDir;
 
     fn block_on<F: Future>(fut: F) -> F::Output {
         let mut fut = std::pin::pin!(fut);
@@ -239,8 +240,7 @@ mod tests {
 
     #[test]
     fn a_key_file_holds_hex_or_raw_bytes() {
-        let dir = std::env::temp_dir().join(format!("space_key_file_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("space_key_file");
         let path = dir.join("key");
         for (contents, key) in [
             (
@@ -262,7 +262,6 @@ mod tests {
         }
         std::fs::write(&path, b"short").unwrap();
         assert!(block_on(FileKeyProvider::new(&path).fetch_master_key()).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A raw key whose first or last byte is ASCII whitespace loads as it is.
@@ -270,8 +269,7 @@ mod tests {
     /// refused (#216).
     #[test]
     fn a_raw_key_file_keeps_whitespace_bytes_at_either_end() {
-        let dir = std::env::temp_dir().join(format!("space_key_file_ws_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("space_key_file_ws");
         let path = dir.join("key");
         for byte in [0x09u8, 0x0A, 0x0C, 0x0D, 0x20] {
             for at in [0, MASTER_KEY_SIZE - 1] {
@@ -293,7 +291,6 @@ mod tests {
             .to_string();
         assert!(err.contains("32 raw bytes"), "{err}");
         assert!(err.contains("64 hex characters"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

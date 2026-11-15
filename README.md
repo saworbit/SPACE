@@ -37,7 +37,7 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 - `spacectl` for local create, read, list, delete, `gc`, `compact`, `scrub`, `serve-s3` and `completions`. For scripts, `create` reads stdin and `-q` prints only the ID, `read -o` writes a file, and `list --json` prints one object per capsule.
 - Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)
 
-The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`.
+The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`, plus `test-support`, which only the tests use.
 
 Known gaps are tracked in [GitHub issues](https://github.com/saworbit/SPACE/issues).
 

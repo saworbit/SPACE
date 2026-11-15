@@ -7,48 +7,20 @@ use common::Policy;
 use compression::Lz4ZstdCompressor;
 use dedup::Blake3Deduper;
 use futures::StreamExt;
-use std::fs;
-use std::path::Path;
 use storage::NvramBackend;
-use uuid::Uuid;
+use test_support::TempDir;
 
-fn test_paths(prefix: &str) -> (String, String) {
-    let base = std::env::temp_dir().join("space_streaming_tests");
-    let _ = fs::create_dir_all(&base);
-    let unique = format!("{prefix}_{}", Uuid::new_v4());
-    let log = base.join(format!("{unique}.log"));
-    let meta = base.join(format!("{unique}.db"));
-    (
-        log.to_string_lossy().to_string(),
-        meta.to_string_lossy().to_string(),
-    )
-}
-
-fn cleanup(path: &str) {
-    cleanup_path(path);
-    cleanup_path(&format!("{path}.segments"));
-}
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => (),
-        Err(err) => {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if err.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
+/// A scratch directory, and the log and registry paths inside it.
+fn test_paths(prefix: &str) -> (TempDir, String, String) {
+    let dir = TempDir::new(&format!("space_streaming_{prefix}"));
+    let log = dir.join("space.log").to_string_lossy().into_owned();
+    let meta = dir.join("space.db").to_string_lossy().into_owned();
+    (dir, log, meta)
 }
 
 #[tokio::test]
 async fn test_streaming_consistency() -> Result<()> {
-    let (log_path, meta_path) = test_paths("streaming");
-    cleanup(&log_path);
-    cleanup(&meta_path);
+    let (_dir, log_path, meta_path) = test_paths("streaming");
 
     let registry = CapsuleRegistry::open(&meta_path)?;
     let storage = NvramBackend::open(&log_path)?;
@@ -82,8 +54,6 @@ async fn test_streaming_consistency() -> Result<()> {
 
     drop(stream);
     drop(pipeline);
-    cleanup(&log_path);
-    cleanup(&meta_path);
 
     Ok(())
 }

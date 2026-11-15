@@ -1035,6 +1035,7 @@ async fn run(cli: Cli) -> Result<()> {
 mod tests {
     use super::*;
     use common::format::CapsuleManifest;
+    use test_support::TempDir;
 
     #[test]
     fn binary_capsules_are_told_from_text() {
@@ -1049,8 +1050,7 @@ mod tests {
 
     #[test]
     fn capsules_resolve_by_full_id_or_unique_prefix() {
-        let dir = std::env::temp_dir().join(format!("spacectl_resolve_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("spacectl_resolve");
         let registry = CapsuleRegistry::open(dir.join(REGISTRY_DB_PATH)).unwrap();
         let ids = [
             "69b97199-3eec-4acd-adb2-e6ee831001c8",
@@ -1104,7 +1104,6 @@ mod tests {
         );
 
         drop(registry);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

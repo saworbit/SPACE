@@ -4,11 +4,12 @@
 //! so a restart only scrubs segments that are due (#134).
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use test_support::TempDir;
 
 use capsule_registry::modular_pipeline::{
     registry_pipeline_from_log, registry_pipeline_from_log_with_key, spawn_scrub,
@@ -19,14 +20,9 @@ use common::scrub::{ScrubConfig, ScrubKind, ScrubResult, ScrubState, ScrubTimes}
 use common::{CapsuleId, Policy, SegmentId};
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
-use uuid::Uuid;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("space_scrub_test")
-        .join(format!("{name}_{}", Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("space_scrub_test_{name}"))
 }
 
 fn key() -> Arc<Mutex<KeyManager>> {
@@ -136,7 +132,6 @@ async fn light_scrub_finds_damage_without_the_key_and_deep_scrub_says_what() {
     ));
 
     drop((registry, handle));
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -166,8 +161,6 @@ async fn a_scheduled_scrub_reports_damage_on_a_live_store() {
     .expect("no scrub cycle completed");
     assert_eq!(outcome, (ScrubKind::Deep, 2));
     task.abort();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -190,7 +183,6 @@ async fn a_healthy_store_scrubs_clean() {
         assert!(report.bytes_checked > 0);
     }
     drop(handle);
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -265,7 +257,6 @@ async fn after_a_restart_only_due_segments_are_scrubbed() {
 
     let _ = task.await;
     drop((registry, pipeline));
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// Damage a scheduled scrub found is reported again after a restart, though

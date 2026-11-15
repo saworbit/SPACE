@@ -5,15 +5,13 @@ use futures::stream;
 use nvram_sim::NvramLog;
 use protocol_s3::{server, S3View};
 use reqwest::{Client, StatusCode};
-use std::{fs, path::Path, sync::Arc};
+use std::sync::Arc;
+use test_support::TempDir;
 use tokio::net::TcpListener;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn streaming_upload_round_trip() {
-    let (log_path, meta_path) = temp_paths("streaming_upload");
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
+    let (_dir, log_path, meta_path) = temp_paths("streaming_upload");
 
     let registry = CapsuleRegistry::open(&meta_path).unwrap();
     let nvram = NvramLog::open(&log_path).unwrap();
@@ -53,38 +51,12 @@ async fn streaming_upload_round_trip() {
     assert_eq!(body.len(), 5 * 1_048_576);
 
     server_handle.abort();
-    cleanup_paths(&log_path);
-    cleanup_paths(&meta_path);
 }
 
-fn temp_paths(prefix: &str) -> (String, String) {
-    let base = std::env::temp_dir().join("space_s3_streaming_tests");
-    let _ = fs::create_dir_all(&base);
-    let unique = format!("{}_{}", prefix, Uuid::new_v4());
-    let log = base.join(format!("{unique}.nvram"));
-    let meta = base.join(format!("{unique}.metadata"));
-    (
-        log.to_string_lossy().to_string(),
-        meta.to_string_lossy().to_string(),
-    )
-}
-
-fn cleanup_paths(path: &str) {
-    cleanup_path(path);
-    cleanup_path(&format!("{}.segments", path));
-}
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => (),
-        Err(err) => {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if err.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
+/// A scratch directory, and the log and registry paths inside it.
+fn temp_paths(prefix: &str) -> (TempDir, String, String) {
+    let dir = TempDir::new(prefix);
+    let log = dir.join("space.nvram").to_string_lossy().into_owned();
+    let meta = dir.join("space.metadata").to_string_lossy().into_owned();
+    (dir, log, meta)
 }
