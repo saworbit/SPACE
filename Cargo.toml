@@ -60,3 +60,17 @@ bytes = { version = "^1.10.1" }
 "capsule-registry" = []
 "spacectl" = []
 "encryption" = ["std"]
+
+# Smaller dev and test builds. Each new mix of features and dependencies gets its own
+# copy of every test binary in target/, so the size of one copy adds up quickly.
+# Line tables keep file and line numbers in panics and backtraces. For full debugger
+# info in workspace crates, build with CARGO_PROFILE_DEV_DEBUG=true.
+# Incremental compilation is off: on Windows it made rebuilds slower and target/ twice
+# as big. CI already sets CARGO_INCREMENTAL=0. Set CARGO_INCREMENTAL=1 to turn it back on.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+# Dependencies keep their symbol names in backtraces but carry no line tables.
+[profile.dev.package."*"]
+debug = false
