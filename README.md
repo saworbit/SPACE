@@ -33,8 +33,8 @@ Everything else is preserved on the `archive/pre-reset-2026-10` branch. See [RES
 - Modular pipeline (`pipeline`): the registry write and read path
 - Basic S3: ListBuckets, creating and deleting buckets, PUT / GET / HEAD / DELETE, multipart upload, DeleteObjects, ranged GETs, ListObjects and GetBucketLocation. A PUT keeps its `Content-Type` and `x-amz-meta-*` headers and is checked against the digests its headers give. Other S3 operations, such as CopyObject, get `501 NotImplemented`. See [the S3 quick start](docs/guides/QUICKSTART_S3.md).
 - On-disk format 1: segments are framed, checksummed records in `space.nvram`, or one file each under `SPACE_STORAGE_ROOT`, and capsule writes and deletes, S3 buckets and S3 keys are committed to a journal, `space.journal`. `space.db` is an index of the journal and can be rebuilt from it ([spec](docs/on-disk-format.md)).
-- Background maintenance in `serve-s3`: it reclaims space (compacting `space.nvram`, or deleting unreferenced segment files under `SPACE_STORAGE_ROOT`, then compacting `space.journal`) and scrubs every segment on a schedule. A deep scrub also checks each capsule against its digest.
-- `spacectl` for local create, read, list, delete, `gc`, `compact`, `scrub`, and `serve-s3`
+- Background maintenance in `serve-s3`: it reclaims space (aborting multipart uploads started more than 7 days ago, compacting `space.nvram`, or deleting unreferenced segment files under `SPACE_STORAGE_ROOT`, then compacting `space.journal`) and scrubs every segment on a schedule. A deep scrub also checks each capsule against its digest.
+- `spacectl` for local create, read, list, delete, `gc`, `compact`, `scrub`, `serve-s3` and `completions`. For scripts, `create` reads stdin and `-q` prints only the ID, `read -o` writes a file, and `list --json` prints one object per capsule.
 - Property tests in `crates/capsule-registry/tests/proptest_pipeline.rs` (round-trip, encrypted round-trip, dedup)
 
 The workspace members are `common`, `compression`, `dedup`, `encryption`, `storage`, `nvram-sim`, `pipeline`, `capsule-registry`, `protocol-s3`, and `spacectl`.
