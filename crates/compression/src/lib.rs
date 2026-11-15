@@ -5,6 +5,7 @@ use std::io::Write;
 
 use anyhow::{Context, Result};
 use common::{
+    policy::{LZ4_LEVELS, ZSTD_LEVELS},
     traits::{CompressionSummary, Compressor},
     CompressionPolicy,
 };
@@ -153,11 +154,12 @@ pub fn decompress_zstd(data: &[u8]) -> CompressionOpResult<Vec<u8>> {
     Ok(decompressed)
 }
 
-/// Adjust compression level based on policy
+/// Clamp a level to the range the codec takes. `Policy::validate` refuses
+/// levels outside it, so only a policy that skipped validation is clamped.
 fn adjusted_level(level: i32, algorithm: &'static str) -> CompressionOpResult<i32> {
     let clamped = match algorithm {
-        "lz4" => level.clamp(1, 16),
-        "zstd" => level.clamp(-5, 22),
+        "lz4" => level.clamp(*LZ4_LEVELS.start(), *LZ4_LEVELS.end()),
+        "zstd" => level.clamp(*ZSTD_LEVELS.start(), *ZSTD_LEVELS.end()),
         _ => level,
     };
 

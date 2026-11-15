@@ -748,6 +748,11 @@ fn policy_files_refuse_unknown_and_unsupported_settings() {
             "layout:\n  strategy: AdaptiveEntropy\n",
             "a layout strategy other than Fixed is not supported",
         ),
+        (
+            "level.yaml",
+            "compression: !Zstd { level: 99 }\n",
+            "Zstd level 99 is out of range",
+        ),
     ] {
         std::fs::write(dir.join(name), yaml).unwrap();
         let out = spacectl(&dir, &["create", "-f", "a.txt", "--policy-file", name]);
