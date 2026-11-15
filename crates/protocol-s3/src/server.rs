@@ -10,14 +10,18 @@ use axum::{
 };
 
 use std::future::{Future, IntoFuture};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::io;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::future::{BoxFuture, FutureExt};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
 
@@ -206,8 +210,10 @@ impl S3Server {
     /// Stop when `signal` completes: stop accepting connections, close idle
     /// keep-alive ones, and let the requests in flight finish for up to
     /// `grace`. Requests still running then are cut off with a 503, which S3
-    /// clients retry, and `run` returns. Without this, the default, the
-    /// server runs until it fails or the process is killed.
+    /// clients retry. A second later, connections still open, such as one
+    /// whose response body is still streaming, are closed, and `run`
+    /// returns. Without this, the default, the server runs until it fails or
+    /// the process is killed.
     pub fn shutdown_on(
         mut self,
         signal: impl Future<Output = ()> + Send + 'static,
@@ -270,11 +276,16 @@ impl S3Server {
         // Every listener stops on the one signal.
         let signal = signal.shared();
         let cut_off = CancellationToken::new();
+        let close = CancellationToken::new();
         let app = app.layer(middleware::from_fn_with_state(
             cut_off.clone(),
             cut_off_when_told,
         ));
         let servers = self.listeners.into_iter().map(|listener| {
+            let listener = ClosingListener {
+                listener,
+                close: close.clone(),
+            };
             axum::serve(listener, app.clone())
                 .with_graceful_shutdown(signal.clone())
                 .into_future()
@@ -295,22 +306,125 @@ impl S3Server {
 
         warn!("cutting off the requests still in flight {grace:?} after the shutdown signal");
         cut_off.cancel();
-        // A connection closes once its handler has answered. One with
-        // nothing to cancel, such as a response body still streaming, closes
-        // when the runtime shuts down.
+        // A connection closes once its handler has answered. One whose
+        // response was already on its way, such as a GET body still
+        // streaming, or one the client stopped reading, has no handler to
+        // cancel. Each holds the store open, so it's closed (#239).
         if tokio::time::timeout(WIND_DOWN, &mut draining)
             .await
             .is_err()
         {
-            warn!("some connections were still open after the cut-off");
+            warn!("closing the connections still open after the cut-off");
+            close.cancel();
+            if tokio::time::timeout(WIND_DOWN, &mut draining)
+                .await
+                .is_err()
+            {
+                warn!("some connections were still open after they were closed");
+            }
         }
         Ok(())
     }
 }
 
 /// How long [`S3Server::run`] waits for connections to close after cutting
-/// off their requests.
+/// off their requests, and again after closing them.
 const WIND_DOWN: Duration = Duration::from_secs(1);
+
+/// A listener whose connections [`S3Server::run`] can close at shutdown.
+struct ClosingListener {
+    listener: TcpListener,
+    close: CancellationToken,
+}
+
+impl axum::serve::Listener for ClosingListener {
+    type Io = ClosingIo;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (stream, addr) = axum::serve::Listener::accept(&mut self.listener).await;
+        let io = ClosingIo {
+            stream,
+            closed: Box::pin(self.close.clone().cancelled_owned()),
+        };
+        (io, addr)
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
+
+/// A connection that fails every read and write once its listener's token
+/// is cancelled. A write waiting on a client that stopped reading is woken
+/// and fails too, so hyper drops the connection, its response and the
+/// store they hold. Until then it is the stream itself.
+struct ClosingIo {
+    stream: TcpStream,
+    closed: Pin<Box<WaitForCancellationFutureOwned>>,
+}
+
+impl ClosingIo {
+    /// An error once the connection is closed. Until then it registers the
+    /// task to be woken when it is.
+    fn check(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        match self.closed.as_mut().poll(cx) {
+            Poll::Ready(()) => Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "the server closed the connection as it stopped",
+            )),
+            Poll::Pending => Ok(()),
+        }
+    }
+}
+
+impl AsyncRead for ClosingIo {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for ClosingIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.stream).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
+}
 
 /// Drops a request's handler, and answers 503 ServiceUnavailable, once the
 /// server cuts off what's still in flight after a shutdown signal. S3
