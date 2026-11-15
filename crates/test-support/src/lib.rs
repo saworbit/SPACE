@@ -7,8 +7,8 @@
 //!
 //! Create it before anything that opens files inside it. Locals are dropped
 //! in reverse order, so the registry, log or view is closed by the time the
-//! directory is deleted; Windows won't delete a file that's still open. In a
-//! struct, fields are dropped in declaration order, so declare the
+//! directory is deleted; on Windows a file that's still open may not be. In
+//! a struct, fields are dropped in declaration order, so declare the
 //! [`TempDir`] last.
 
 use std::ffi::OsStr;
