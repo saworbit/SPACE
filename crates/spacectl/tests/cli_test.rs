@@ -80,6 +80,16 @@ fn entries(dir: &Path) -> Vec<String> {
 
 /// spacectl with no SPACE_* variables, its output piped.
 fn spawn(dir: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Child {
+    spawn_with(dir, args, envs, |_| {})
+}
+
+/// [`spawn`], with `configure` given the command before it starts.
+fn spawn_with(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+    configure: impl FnOnce(&mut Command),
+) -> Child {
     let mut command = Command::new(env!("CARGO_BIN_EXE_spacectl"));
     command
         .args(args)
@@ -93,6 +103,7 @@ fn spawn(dir: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Child {
     for (name, value) in envs {
         command.env(name, value);
     }
+    configure(&mut command);
     command.spawn().unwrap()
 }
 
@@ -885,19 +896,97 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// SIGTERM, as `docker stop` sends it, stops `serve-s3` cleanly: it logs the
-/// shutdown, exits 0 well within docker's 10 s, and leaves a store the next
-/// command opens. Unix only: a test can't send a child Ctrl-C on Windows.
+/// SIGTERM, as `docker stop` sends it, stops `serve-s3` cleanly.
 #[cfg(unix)]
 #[test]
 fn serve_s3_stops_cleanly_on_sigterm() {
+    serve_s3_stops_cleanly_on(
+        "serve_sigterm",
+        "SIGTERM",
+        |_| {},
+        |pid| {
+            let kill = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status()
+                .unwrap();
+            assert!(kill.success());
+        },
+    );
+}
+
+/// Ctrl-Break stops `serve-s3` cleanly on Windows (#240). Ctrl-C can't be
+/// sent to another process group, so the test sends Ctrl-Break, which goes
+/// through the same shutdown.
+#[cfg(windows)]
+#[test]
+fn serve_s3_stops_cleanly_on_ctrl_break() {
+    use std::os::windows::process::CommandExt;
+    use std::os::windows::raw::HANDLE;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CTRL_BREAK_EVENT: u32 = 1;
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE and STD_ERROR_HANDLE.
+    const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AllocConsole() -> i32;
+        fn GenerateConsoleCtrlEvent(event: u32, process_group_id: u32) -> i32;
+        fn GetStdHandle(which: u32) -> HANDLE;
+        fn SetStdHandle(which: u32, handle: HANDLE) -> i32;
+    }
+
+    // A console event reaches only processes on the sender's console. Run
+    // without one, as under some CI runners, the test makes one for the
+    // child to share, and keeps its own output where it was going. With a
+    // console already, AllocConsole fails and changes nothing.
+    // SAFETY: the calls take no pointers, and the handles set are the ones
+    // read just before.
+    unsafe {
+        let saved = STD_HANDLES.map(|which| GetStdHandle(which));
+        if AllocConsole() != 0 {
+            for (which, handle) in STD_HANDLES.into_iter().zip(saved) {
+                SetStdHandle(which, handle);
+            }
+        }
+    }
+    serve_s3_stops_cleanly_on(
+        "serve_ctrl_break",
+        "Ctrl-Break",
+        // The child leads a new process group, so the event reaches it
+        // alone, and not this test.
+        |command| {
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        },
+        |pid| {
+            // SAFETY: as above. A new group's id is its leader's pid.
+            let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+            assert_ne!(
+                sent,
+                0,
+                "GenerateConsoleCtrlEvent: {}",
+                std::io::Error::last_os_error()
+            );
+        },
+    );
+}
+
+/// Starts `serve-s3`, calls `stop` with its pid once it listens, and checks
+/// that it stops cleanly: it logs a shutdown naming `signal`, exits 0 well
+/// within `docker stop`'s 10 s, and leaves a store the next command opens.
+fn serve_s3_stops_cleanly_on(
+    name: &str,
+    signal: &str,
+    configure: impl FnOnce(&mut Command),
+    stop: impl FnOnce(u32),
+) {
     use std::io::{BufRead, BufReader};
 
-    let dir = scratch_dir("serve_sigterm");
-    let mut child = spawn(
+    let dir = scratch_dir(name);
+    let mut child = spawn_with(
         &dir,
         &["serve-s3", "--port", "0"],
         &[("RUST_LOG", Path::new("info"))],
+        configure,
     );
     let stderr = child.stderr.take().unwrap();
     let (lines, rx) = std::sync::mpsc::channel();
@@ -921,12 +1010,8 @@ fn serve_s3_stops_cleanly_on_sigterm() {
     }
 
     let sent = Instant::now();
-    let kill = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(kill.success());
-    let out = exit_of(child, "serve-s3 ignored SIGTERM");
+    stop(child.id());
+    let out = exit_of(child, &format!("serve-s3 ignored {signal}"));
     let took = sent.elapsed();
     // The reader thread ends at the end of stderr, once the process exits.
     while let Ok(line) = rx.recv_timeout(Duration::from_secs(10)) {
@@ -936,7 +1021,7 @@ fn serve_s3_stops_cleanly_on_sigterm() {
     assert!(took < Duration::from_secs(8), "took {took:?} to stop");
     assert!(
         seen.iter()
-            .any(|line| line.contains("shutting down") && line.contains("SIGTERM")),
+            .any(|line| line.contains("shutting down") && line.contains(signal)),
         "{seen:?}"
     );
     assert!(seen.iter().any(|line| line.contains("stopped")), "{seen:?}");
