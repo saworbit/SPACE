@@ -56,4 +56,24 @@ jobs:
           docker volume create space-ci > /dev/null
           id=$(echo 'hello from the image' | docker run --rm -i -v space-ci:/data space-core:ci create -q -)
           docker run --rm -v space-ci:/data space-core:ci read "$id" | grep -qx 'hello from the image'
+
+      # As PID 1, serve-s3 must handle docker stop's SIGTERM itself: stop well
+      # inside the 10 s timeout, with exit status 0, not a SIGKILL.
+      - name: docker stop
+        run: |
+          docker run -d --name space-stop -v space-ci:/data space-core:ci serve-s3 > /dev/null
+          for _ in $(seq 60); do
+            docker logs space-stop 2>&1 | grep -q ' listening ' && break
+            sleep 1
+          done
+          docker logs space-stop 2>&1 | grep -q ' listening ' \
+            || { docker logs space-stop; echo "::error::serve-s3 didn't start"; exit 1; }
+          start=$(date +%s)
+          docker stop space-stop > /dev/null
+          took=$(( $(date +%s) - start ))
+          status=$(docker inspect --format '{{.State.ExitCode}}' space-stop)
+          docker logs space-stop 2>&1 | tail -n 3
+          docker rm space-stop > /dev/null
           docker volume rm space-ci > /dev/null
+          [ "$status" = 0 ] || { echo "::error::serve-s3 exited with $status after docker stop"; exit 1; }
+          [ "$took" -lt 8 ] || { echo "::error::docker stop took ${took}s"; exit 1; }
