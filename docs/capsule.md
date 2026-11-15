@@ -498,7 +498,7 @@ Segments still referenced by other Capsules remain. `spacectl delete` removes an
 
 **Bytes remain in the log** until compaction (`NvramLog::compact()`) writes the next generation without them. The two-step design keeps deletion cheap (touch one record) and bulk reclamation infrequent. In the NVRAM log, compaction alone reclaims unreferenced segments, since they have no references in the log's counts. Under `SPACE_STORAGE_ROOT` each segment is a file, and garbage collection deletes it.
 
-**Scheduling.** `serve-s3` runs a reclaim pass at startup and then every `--reclaim-interval` seconds (default 300; 0 turns it off):
+**Scheduling.** `serve-s3` runs a reclaim pass at startup and then every `--reclaim-interval` seconds (default 300; 0 turns it off). Stopping the server abandons a pass part way, as a crash would. The next open discards an unfinished compaction, so nothing needs repairing by hand:
 
 - On the NVRAM log it compacts once a quarter of the log, and at least one default segment (4 MiB), is reclaimable, on a blocking thread and without the pipeline lock, so requests carry on.
 - Under `SPACE_STORAGE_ROOT` it garbage-collects, with the pipeline lock held.

@@ -880,6 +880,68 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// SIGTERM, as `docker stop` sends it, stops `serve-s3` cleanly: it logs the
+/// shutdown, exits 0 well within docker's 10 s, and leaves a store the next
+/// command opens. Unix only: a test can't send a child Ctrl-C on Windows.
+#[cfg(unix)]
+#[test]
+fn serve_s3_stops_cleanly_on_sigterm() {
+    use std::io::{BufRead, BufReader};
+
+    let dir = scratch_dir("serve_sigterm");
+    let mut child = spawn(
+        &dir,
+        &["serve-s3", "--port", "0"],
+        &[("RUST_LOG", Path::new("info"))],
+    );
+    let stderr = child.stderr.take().unwrap();
+    let (lines, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut seen = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(line) if line.contains(" listening ") => break,
+            Ok(line) => seen.push(line),
+            Err(err) => {
+                let _ = child.kill();
+                panic!("no listening line ({err}): {seen:?}");
+            }
+        }
+    }
+
+    let sent = Instant::now();
+    let kill = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    let out = exit_of(child, "serve-s3 ignored SIGTERM");
+    let took = sent.elapsed();
+    // The reader thread ends at the end of stderr, once the process exits.
+    while let Ok(line) = rx.recv_timeout(Duration::from_secs(10)) {
+        seen.push(line);
+    }
+    assert!(out.status.success(), "{:?}: {seen:?}", out.status);
+    assert!(took < Duration::from_secs(8), "took {took:?} to stop");
+    assert!(
+        seen.iter()
+            .any(|line| line.contains("shutting down") && line.contains("SIGTERM")),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|line| line.contains("stopped")), "{seen:?}");
+
+    // The store it served opens again.
+    let list = spacectl(&dir, &["list"]);
+    assert!(list.status.success(), "{list:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A store whose space.journal is missing isn't opened, so nothing reclaims
 /// its segments: not `compact`, and not the pass `serve-s3` runs at startup
 /// (#194).

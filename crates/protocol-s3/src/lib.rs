@@ -123,6 +123,10 @@ pub enum S3Error {
     /// 304 carrying the object's validators.
     #[error("Not Modified")]
     NotModified(Box<ObjectMapping>),
+    /// A request the server cut off because it was shutting down and the
+    /// grace period ran out. S3 clients retry a 503.
+    #[error("The server is shutting down. Please retry the request.")]
+    ServiceUnavailable,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }

@@ -3,10 +3,10 @@
 #   docker run --rm space-core:latest --help
 #
 # Stores live in /data, the working directory. Mount a volume there to keep
-# them, and bind beyond the container's loopback to reach serve-s3. Pass
-# --init so that docker stop and Ctrl-C reach spacectl, which doesn't handle
-# signals itself and would otherwise be killed after the stop timeout:
-#   docker run --rm --init -v space-data:/data -p 8080:8080 space-core:latest serve-s3 --bind 0.0.0.0
+# them, and bind beyond the container's loopback to reach serve-s3:
+#   docker run --rm -v space-data:/data -p 8080:8080 space-core:latest serve-s3 --bind 0.0.0.0
+# docker stop lets requests in flight finish for --shutdown-grace seconds
+# (default 5) before serve-s3 exits.
 #
 # The image runs as uid 10001. To bind-mount a host directory instead of a
 # volume, make it writable by that uid or run with --user "$(id -u):$(id -g)".

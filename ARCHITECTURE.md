@@ -32,6 +32,8 @@ The data log and the journal are the truth; `space.db` can be rebuilt from them.
 - **Reclaim** (`--reclaim-interval`; `spacectl gc` and `spacectl compact`): `serve-s3`'s pass first aborts multipart uploads started more than 7 days ago. It compacts `space.nvram` into its next generation once enough of it is unreferenced, or deletes unreferenced segment files under `SPACE_STORAGE_ROOT`. Then it compacts `space.journal` once enough of it is dead: deleted and overwritten capsules, and removed S3 keys. See [capsule.md §7](docs/capsule.md#7-deletion-ref-counting-and-gc).
 - **Scrub** (`--scrub-interval` and `--deep-scrub-interval`; `spacectl scrub`): light scrub checks each record's checksums, and deep scrub checks MACs and content hashes, then reads capsules whole to check their digests. See [capsule.md §8](docs/capsule.md#8-scrub-continuous-integrity).
 
+On SIGTERM or Ctrl-C, `serve-s3` stops accepting connections and gives the requests in flight `--shutdown-grace` seconds (default 5) to finish. Requests still running then get a 503, which S3 clients retry. Then it stops both loops and exits. A compaction still running is abandoned, as a crash would leave it, and the next open discards the unfinished generation.
+
 ## Status
 
 Single-node only. Property tests cover the main pipeline invariants. See [RESET.md](RESET.md) and [README.md](README.md).

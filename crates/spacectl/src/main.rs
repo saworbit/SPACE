@@ -432,6 +432,12 @@ enum Commands {
         /// them off.
         #[arg(long, default_value_t = 300, value_name = "SECONDS")]
         reclaim_interval: u64,
+        /// Seconds to let requests in flight finish after SIGTERM or Ctrl-C
+        /// before stopping anyway. New connections are refused at once, and a
+        /// second signal stops the server without waiting. The default leaves
+        /// time inside docker stop's 10 s.
+        #[arg(long, default_value_t = 5, value_name = "SECONDS")]
+        shutdown_grace: u64,
         #[command(flatten)]
         scrub: ScrubArgs,
     },
@@ -616,6 +622,90 @@ fn log_startup(
     }
 }
 
+/// The signals that stop serve-s3: SIGTERM and SIGINT (Ctrl-C), or on
+/// Windows Ctrl-C, Ctrl-Break and the console closing or the system shutting
+/// down. They're registered before the server starts, so a failure to listen
+/// for them is a startup error rather than a server that can't be stopped.
+/// Once registered, they no longer kill the process on their own, which
+/// matters most for PID 1 in a container: there the kernel ignores a signal
+/// with no handler, so `docker stop` used to wait out its timeout.
+struct StopSignals {
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+    #[cfg(windows)]
+    ctrl_close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    ctrl_shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl StopSignals {
+    fn register() -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Ok(Self {
+                terminate: signal(SignalKind::terminate())?,
+                interrupt: signal(SignalKind::interrupt())?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows;
+            Ok(Self {
+                ctrl_c: windows::ctrl_c()?,
+                ctrl_break: windows::ctrl_break()?,
+                ctrl_close: windows::ctrl_close()?,
+                ctrl_shutdown: windows::ctrl_shutdown()?,
+            })
+        }
+    }
+
+    /// Waits for the next stop signal and names it.
+    async fn next(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.terminate.recv() => "SIGTERM",
+                _ = self.interrupt.recv() => "SIGINT",
+            }
+        }
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.ctrl_c.recv() => "Ctrl-C",
+                _ = self.ctrl_break.recv() => "Ctrl-Break",
+                _ = self.ctrl_close.recv() => "console closed",
+                _ = self.ctrl_shutdown.recv() => "system shutdown",
+            }
+        }
+    }
+
+    /// Resolves on the first stop signal. A second one exits the process at
+    /// once, for when the requests in flight aren't worth waiting for.
+    async fn first_then_force(mut self, grace: Duration) {
+        let signal = self.next().await;
+        info!(
+            signal,
+            grace_secs = grace.as_secs(),
+            "shutting down: finishing requests in flight; signal again to stop now"
+        );
+        tokio::spawn(async move {
+            let signal = self.next().await;
+            warn!(
+                signal,
+                "stopping now, without waiting for requests in flight"
+            );
+            std::process::exit(130);
+        });
+    }
+}
+
 /// A policy file's settings over `base`. Unknown keys and settings nothing
 /// implements are errors (#161, #162).
 fn load_policy_file(path: &PathBuf, base: Policy) -> Result<Policy> {
@@ -624,16 +714,28 @@ fn load_policy_file(path: &PathBuf, base: Policy) -> Result<Policy> {
     Ok(file.apply(base)?)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let default_level = match cli.command {
-        Commands::ServeS3 { .. } => "info",
-        _ => "warn",
-    };
-    init_tracing(default_level);
+/// How long `spacectl` waits at exit for blocking work a command left
+/// running. Only `serve-s3` leaves any: a reclaim pass compacts on a
+/// blocking thread, which stopping the server can't cancel. Dropping the
+/// runtime would wait for it however long it takes, past `docker stop`'s
+/// timeout on a large store. Abandoning it is safe: compaction writes the
+/// next generation beside the live file and renames it in, and the next
+/// open discards a generation it didn't finish, as after a crash.
+const EXIT_WAIT: Duration = Duration::from_secs(2);
 
-    match run(cli).await {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new().context("couldn't start the async runtime")?;
+    let result = runtime.block_on(async {
+        let cli = Cli::parse();
+        let default_level = match cli.command {
+            Commands::ServeS3 { .. } => "info",
+            _ => "warn",
+        };
+        init_tracing(default_level);
+        run(cli).await
+    });
+    runtime.shutdown_timeout(EXIT_WAIT);
+    match result {
         // A reader that stopped early, such as `head`, isn't a failure.
         Err(err) if broken_pipe(&err) => Ok(()),
         result => result,
@@ -890,6 +992,7 @@ async fn run(cli: Cli) -> Result<()> {
             bind,
             allow_host,
             reclaim_interval,
+            shutdown_grace,
             scrub,
         } => {
             use protocol_s3::{
@@ -912,11 +1015,16 @@ async fn run(cli: Cli) -> Result<()> {
             let s3_view = S3View::new_modular(store);
             let reclaim_every =
                 (reclaim_interval > 0).then(|| Duration::from_secs(reclaim_interval));
+            let grace = Duration::from_secs(shutdown_grace);
+            let signals = StopSignals::register()
+                .context("couldn't listen for the signals that stop the server")?;
             let server = S3Server::new(s3_view, listeners)
                 .allow_hosts(AllowedHosts::with_names(allow_host))
                 .reclaim_every(reclaim_every)
-                .scrub(scrub.config());
+                .scrub(scrub.config())
+                .shutdown_on(signals.first_then_force(grace), grace);
             server.run().await?;
+            info!("stopped");
         }
     }
 
@@ -1030,6 +1138,12 @@ mod tests {
         assert_eq!(port, 8080);
         assert_eq!(bind, None, "both loopback addresses");
         assert_eq!(reclaim_interval, 300);
+
+        let cli = Cli::try_parse_from(["spacectl", "serve-s3"]).unwrap();
+        let Commands::ServeS3 { shutdown_grace, .. } = cli.command else {
+            panic!("expected serve-s3");
+        };
+        assert_eq!(shutdown_grace, 5, "inside docker stop's 10 s");
 
         let cli = Cli::try_parse_from(["spacectl", "serve-s3", "--reclaim-interval", "0"]).unwrap();
         let Commands::ServeS3 {
