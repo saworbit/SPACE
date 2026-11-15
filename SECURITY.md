@@ -4,7 +4,7 @@
 
 **Do not file a public issue for security vulnerabilities.**
 
-Use GitHub's [private vulnerability reporting](https://github.com/saworbit/space/security/advisories/new)
+Use GitHub's [private vulnerability reporting](https://github.com/saworbit/SPACE/security/advisories/new)
 or email security@adaptive-storage.dev.
 
 We aim to acknowledge reports within 48 hours and provide a fix timeline within

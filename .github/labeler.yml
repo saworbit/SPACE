@@ -1,0 +1,53 @@
+# Labels for actions/labeler (see workflows/labeler.yml). Each key is an
+# existing repository label.
+#
+# Area labels (core, encryption, protocol-s3, cli, testing) go on any pull
+# request that touches the area. The kind labels (documentation, dependencies,
+# build, ci) go only on a pull request that changes nothing else, since
+# .github/release.yml sorts release notes by them: a fix that also edits
+# CHANGELOG.md is not a docs change. any-glob-to-all-files needs one glob to
+# match every changed file, hence the brace patterns.
+
+documentation:
+  - changed-files:
+      - any-glob-to-all-files: ['{**/*.md,docs/**,CITATION.cff}']
+
+dependencies:
+  - changed-files:
+      - any-glob-to-all-files: ['{Cargo.lock,Cargo.toml,crates/*/Cargo.toml}']
+
+build:
+  - changed-files:
+      - any-glob-to-all-files:
+          - '{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,Dockerfile,.dockerignore,.cargo/**,deny.toml,_typos.toml,.gitattributes,.gitignore,.editorconfig}'
+
+ci:
+  - changed-files:
+      - any-glob-to-all-files: ['.github/**']
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/common/**'
+          - 'crates/capsule-registry/**'
+          - 'crates/pipeline/**'
+          - 'crates/storage/**'
+          - 'crates/nvram-sim/**'
+          - 'crates/compression/**'
+          - 'crates/dedup/**'
+
+encryption:
+  - changed-files:
+      - any-glob-to-any-file: ['crates/encryption/**']
+
+protocol-s3:
+  - changed-files:
+      - any-glob-to-any-file: ['crates/protocol-s3/**']
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file: ['crates/spacectl/**']
+
+testing:
+  - changed-files:
+      - any-glob-to-any-file: ['crates/*/tests/**', 'crates/*/benches/**']

@@ -89,21 +89,15 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",      # ISC License (OSI approved, FSF Free/Libre) - used by ring, rustls-webpki, simple_asn1, untrusted
+    "ISC",
     "MIT",
     "Unicode-3.0",
     "Zlib",
 ]
 confidence-threshold = 0.85
-
-[[licenses.exceptions]]
-name = "libfuzzer-sys"
-allow = ["NCSA"]
-
-[[licenses.clarify]]
-name = "rdma-sys"
-expression = "MIT"
-license-files = [{ path = "LICENSE", hash = 0x57d00757 }]
+# The list above is the permissive licenses this project accepts, not the ones
+# the tree happens to use today, so an unused entry isn't worth a warning.
+unused-allowed-license = "allow"
 
 [licenses.private]
 ignore = true

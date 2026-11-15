@@ -1,5 +1,10 @@
 # SPACE
 
+[![CI](https://github.com/saworbit/SPACE/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/saworbit/SPACE/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/saworbit/SPACE/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/saworbit/SPACE/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/saworbit/SPACE/badge)](https://scorecard.dev/viewer/?uri=github.com/saworbit/SPACE)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+
 Storage Platform for Adaptive Computational Ecosystems
 
 **One capsule. Multiple views. Zero copies.**
@@ -38,7 +43,7 @@ Known gaps are tracked in [GitHub issues](https://github.com/saworbit/SPACE/issu
 
 ## Quick start
 
-Requires Rust 1.89 or newer.
+Building needs Rust 1.89 or newer; running the tests needs a recent stable Rust.
 
 ```bash
 git clone https://github.com/saworbit/SPACE.git

@@ -14,15 +14,15 @@ can scale without a retroactive power struggle.
 
 ## Decision-making
 
-1. **Consensus first.** Proposals are discussed in GitHub Issues or Discussions.
+1. **Consensus first.** Proposals are discussed in GitHub Issues.
    The maintainer aims for consensus but retains final call on unresolved items.
 2. **Architecture Decision Records.** Significant design choices are documented
-   in `docs/` (e.g., `docs/architecture.md`, phase specs). Changes to these
+   in [ARCHITECTURE.md](ARCHITECTURE.md) and `docs/` (e.g., `docs/on-disk-format.md`). Changes to these
    require a PR and review, not unilateral edits.
 3. **Lazy consensus for small changes.** Bug fixes, typo corrections, and minor
    refactors can be merged by any reviewer after CI passes, unless they touch
    security-sensitive code (`crates/encryption/`, `SECURITY.md`,
-   `docs/security/`).
+   `deny.toml`, `.github/workflows/`).
 
 ## Path to Reviewer
 
