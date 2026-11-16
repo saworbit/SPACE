@@ -426,6 +426,17 @@ impl Default for ListQuery {
     }
 }
 
+/// The common prefix a listing rolls `key` into: the key up to and including
+/// the first `delimiter` after its first `prefix_len` bytes, the listing's
+/// prefix. `None` without a delimiter, with an empty one, or when the key has
+/// none past the prefix.
+fn common_prefix(key: &str, prefix_len: usize, delimiter: Option<&str>) -> Option<String> {
+    let delimiter = delimiter.filter(|d| !d.is_empty())?;
+    key[prefix_len..]
+        .find(delimiter)
+        .map(|i| key[..prefix_len + i + delimiter.len()].to_string())
+}
+
 /// One page of a listing.
 #[derive(Debug, Default)]
 pub struct ListPage {
@@ -837,7 +848,7 @@ impl S3View {
         if query.max_keys == 0 {
             return Ok(page);
         }
-        let delimiter = query.delimiter.as_deref().filter(|d| !d.is_empty());
+        let delimiter = query.delimiter.as_deref();
         let prefix_len = query.prefix.len();
         // The last key or common prefix returned. Starting from the previous
         // page's last common prefix skips the keys it already covered.
@@ -852,11 +863,7 @@ impl S3View {
             after = batch.last().map(|(key, _)| key.clone());
 
             for (key, binding) in batch {
-                let group = delimiter.and_then(|d| {
-                    key[prefix_len..]
-                        .find(d)
-                        .map(|i| key[..prefix_len + i + d.len()].to_string())
-                });
+                let group = common_prefix(&key, prefix_len, delimiter);
                 if group.is_some() && group == last {
                     continue;
                 }

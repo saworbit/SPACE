@@ -475,14 +475,14 @@ async fn open_uploads_are_listed_by_bucket_and_paged() {
             .collect()
     };
     let all = view
-        .list_multipart_uploads("bkt", "", None, None, 1000)
+        .list_multipart_uploads("bkt", "", None, None, None, 1000)
         .unwrap();
     assert_eq!(listed(&all), expected);
     assert!(!all.truncated);
     assert!(all.uploads.iter().all(|u| u.initiated > 0));
 
     let prefixed = view
-        .list_multipart_uploads("bkt", "a/", None, None, 1000)
+        .list_multipart_uploads("bkt", "a/", None, None, None, 1000)
         .unwrap();
     assert_eq!(listed(&prefixed), expected[..3]);
 
@@ -491,7 +491,7 @@ async fn open_uploads_are_listed_by_bucket_and_paged() {
     let (mut key, mut id): (Option<String>, Option<String>) = (None, None);
     loop {
         let page = view
-            .list_multipart_uploads("bkt", "", key.as_deref(), id.as_deref(), 1)
+            .list_multipart_uploads("bkt", "", None, key.as_deref(), id.as_deref(), 1)
             .unwrap();
         paged.extend(listed(&page));
         if !page.truncated {
@@ -504,20 +504,143 @@ async fn open_uploads_are_listed_by_bucket_and_paged() {
 
     // A key marker alone skips every upload of that key.
     let after_key = view
-        .list_multipart_uploads("bkt", "", Some("a/one"), None, 1000)
+        .list_multipart_uploads("bkt", "", None, Some("a/one"), None, 1000)
         .unwrap();
     assert_eq!(listed(&after_key), expected[2..]);
     // The second upload of a key, after the first.
     let after_first = view
-        .list_multipart_uploads("bkt", "", Some("a/one"), Some(&expected[0].1), 1)
+        .list_multipart_uploads("bkt", "", None, Some("a/one"), Some(&expected[0].1), 1)
         .unwrap();
     assert_eq!(listed(&after_first), expected[1..2]);
     assert!(after_first.truncated);
 
     assert!(matches!(
-        view.list_multipart_uploads("nobkt", "", None, None, 1000),
+        view.list_multipart_uploads("nobkt", "", None, None, None, 1000),
         Err(S3Error::NoSuchBucket(_))
     ));
+
+    drop((registry, view));
+}
+
+/// Uploads of one key are listed in the order they were started, as in S3,
+/// and paging by upload id keeps that order (#253).
+#[tokio::test]
+async fn uploads_of_a_key_list_in_the_order_they_were_started() {
+    let dir = scratch("uploads_in_start_order");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let mut started = Vec::new();
+    for _ in 0..8 {
+        started.push(
+            view.create_multipart_upload("bkt", "same", Vec::new())
+                .await
+                .unwrap(),
+        );
+    }
+
+    let ids = |page: &protocol_s3::UploadPage| -> Vec<String> {
+        page.uploads.iter().map(|u| u.upload_id.clone()).collect()
+    };
+    let all = view
+        .list_multipart_uploads("bkt", "", None, None, None, 1000)
+        .unwrap();
+    assert_eq!(ids(&all), started);
+
+    let mut paged = Vec::new();
+    let (mut key, mut id) = (None, None);
+    loop {
+        let page = view
+            .list_multipart_uploads("bkt", "", None, key.as_deref(), id.as_deref(), 3)
+            .unwrap();
+        paged.extend(ids(&page));
+        if !page.truncated {
+            break;
+        }
+        (key, id) = (page.next_key_marker, page.next_upload_id_marker);
+    }
+    assert_eq!(paged, started);
+
+    drop((registry, view));
+}
+
+/// With a delimiter, keys that hold it past the prefix are rolled into
+/// common prefixes, which count toward the page size and page like keys
+/// (#253).
+#[tokio::test]
+async fn a_delimiter_rolls_upload_keys_into_common_prefixes() {
+    let dir = scratch("uploads_delimiter");
+    let (registry, view) = open(&dir);
+    view.create_bucket("bkt").unwrap();
+    let mut ids = std::collections::HashMap::new();
+    for key in ["a/one", "a/two", "a/two", "b", "c/x/y", "c/z"] {
+        let id = view
+            .create_multipart_upload("bkt", key, Vec::new())
+            .await
+            .unwrap();
+        ids.entry(key).or_insert(id);
+    }
+    let keys = |page: &protocol_s3::UploadPage| -> Vec<String> {
+        page.uploads.iter().map(|u| u.key.clone()).collect()
+    };
+
+    let all = view
+        .list_multipart_uploads("bkt", "", Some("/"), None, None, 1000)
+        .unwrap();
+    assert_eq!(keys(&all), ["b"]);
+    assert_eq!(all.common_prefixes, ["a/", "c/"]);
+    assert!(!all.truncated);
+
+    let under_c = view
+        .list_multipart_uploads("bkt", "c/", Some("/"), None, None, 1000)
+        .unwrap();
+    assert_eq!(keys(&under_c), ["c/z"]);
+    assert_eq!(under_c.common_prefixes, ["c/x/"]);
+
+    // An empty delimiter groups nothing, as with no delimiter.
+    let flat = view
+        .list_multipart_uploads("bkt", "", Some(""), None, None, 1000)
+        .unwrap();
+    assert_eq!(flat.uploads.len(), 6);
+    assert!(flat.common_prefixes.is_empty());
+
+    // One entry a page: a common prefix, then an upload, then a common
+    // prefix. A page that ends on a common prefix gives no upload id marker.
+    let first = view
+        .list_multipart_uploads("bkt", "", Some("/"), None, None, 1)
+        .unwrap();
+    assert_eq!(first.common_prefixes, ["a/"]);
+    assert!(first.uploads.is_empty() && first.truncated);
+    assert_eq!(first.next_key_marker.as_deref(), Some("a/"));
+    assert_eq!(first.next_upload_id_marker, None);
+    let second = view
+        .list_multipart_uploads("bkt", "", Some("/"), Some("a/"), None, 1)
+        .unwrap();
+    assert_eq!(keys(&second), ["b"]);
+    assert!(second.common_prefixes.is_empty() && second.truncated);
+    assert_eq!(second.next_key_marker.as_deref(), Some("b"));
+    assert_eq!(second.next_upload_id_marker.as_ref(), Some(&ids["b"]));
+    let third = view
+        .list_multipart_uploads(
+            "bkt",
+            "",
+            Some("/"),
+            second.next_key_marker.as_deref(),
+            second.next_upload_id_marker.as_deref(),
+            1,
+        )
+        .unwrap();
+    assert!(third.uploads.is_empty());
+    assert_eq!(third.common_prefixes, ["c/"]);
+    assert!(!third.truncated);
+
+    // Two a page: the last common prefix fills the page exactly, so it isn't
+    // truncated.
+    let page = view
+        .list_multipart_uploads("bkt", "", Some("/"), Some("a/"), None, 2)
+        .unwrap();
+    assert_eq!(keys(&page), ["b"]);
+    assert_eq!(page.common_prefixes, ["c/"]);
+    assert!(!page.truncated);
 
     drop((registry, view));
 }
@@ -607,6 +730,26 @@ async fn the_multipart_routes_work_over_http() {
     );
     assert!(text.contains("<MaxUploads>5</MaxUploads>"), "{text}");
     assert!(text.contains("<IsTruncated>false</IsTruncated>"), "{text}");
+    // With a delimiter, the key rolls into its common prefix (#253).
+    let (status, text) = send(
+        &app,
+        host(Request::get("/bkt?uploads&delimiter=%2F"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("<Delimiter>/</Delimiter>"), "{text}");
+    assert!(!text.contains("<Upload>"), "{text}");
+    assert!(
+        text.contains("<CommonPrefixes><Prefix>dir/</Prefix></CommonPrefixes>"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<NextKeyMarker>dir/</NextKeyMarker>"),
+        "{text}"
+    );
+    assert!(!text.contains("<NextUploadIdMarker>"), "{text}");
 
     let xml = format!(
         "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
