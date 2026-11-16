@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Linux release binaries are built in the Dockerfile's Debian 12 builder image and need glibc 2.34, not 2.39, so they run on Debian 12, Ubuntu 22.04 and RHEL 9 (#241). Each build checks the binary starts on Debian 12 and Ubuntu 22.04.
 - The Linux release archives are reproducible (#242): the builder image pins the Rust toolchain, paths are remapped, and the archive is sorted with fixed owners and the commit's time. Each archive has a `TOOLCHAIN.txt`. docs/CI_CD_STRATEGY.md says how to rebuild one and compare.
 - `docs/capsule.md`, ARCHITECTURE.md, README.md and ROADMAP.md describe what landed with #169, #188, #198 and #201: where the write path takes the pipeline lock, how the content index is kept, multipart upload namespaces and composed capsules, the reclaim pass aborting old uploads, and `spacectl`'s scripting flags and completions.
+- docs/capsule.md, CONTRIBUTING.md, SECURITY.md and the S3 quick start describe what landed with #243, #244 and #252: the redb index in place of sled, the fuzz targets, and the release dry run under `Build and test`. The quick start's reset command also removes `space.db.sled-old`.
 
 ### Removed
 

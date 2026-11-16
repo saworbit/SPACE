@@ -50,7 +50,7 @@ The bet is non-trivial:
 
 - **Every byte must fit a single, opinionated representation.** Compression, encryption, dedup, and integrity verification all assume capsule structure. You cannot opt out of the abstraction for "fast path" data.
 - **Encryption must be deterministic to preserve dedup.** SPACE uses XTS-AES-256 with tweaks derived from a hash of each segment's bytes. This is unusual — most systems pick deterministic-or-secure, not both. (See [§10.2](#102-deterministic-encryption-preserves-dedup).)
-- **Metadata is on the hot path.** Every read touches Sled (for capsule lookup), the NVRAM segment map (for offsets), and the key manager (for decryption). Metadata cannot be slow.
+- **Metadata is on the hot path.** Every read touches the index in `space.db` (for capsule lookup), the NVRAM segment map (for offsets), and the key manager (for decryption). Metadata cannot be slow.
 
 The rest of this document explains how SPACE pays that cost.
 
@@ -73,7 +73,7 @@ A Capsule is *not*:
 - An object. Objects are projected onto Capsules via the S3 view.
 - A byte stream. Capsules contain bytes; they are not themselves byte streams.
 
-The Capsule is the only logical durable object in SPACE. Its physical realization is split across two stores — segment bytes in the NVRAM log, capsule records and content-hash index in Sled — but at the abstraction layer there is only the Capsule. See [§4](#4-where-capsules-live) for the physical layout.
+The Capsule is the only logical durable object in SPACE. Its physical realization is split across two stores — segment bytes in the NVRAM log, capsule records and content-hash index in the redb index, `space.db` — but at the abstraction layer there is only the Capsule. See [§4](#4-where-capsules-live) for the physical layout.
 
 ### 2.1 Identity vs. representation
 
@@ -255,7 +255,7 @@ A Capsule's existence is split across two persistence layers:
 | Store | Holds | Format | Crate |
 |---|---|---|---|
 | **NVRAM log** | Segment bytes + segment metadata | Append-only log of framed records ([on-disk format](on-disk-format.md)) | [`nvram-sim`](../crates/nvram-sim/) |
-| **Capsule registry** | Capsule records + content hash index | Sled (embedded KV) | [`capsule-registry`](../crates/capsule-registry/) |
+| **Capsule registry** | Capsule records + content hash index | redb (embedded KV), `space.db` | [`capsule-registry`](../crates/capsule-registry/) |
 
 The split is deliberate: segment bytes are bulky and want streaming I/O; capsule metadata is small and wants point lookups + transactions. Fusing them would mean either slow lookups or slow appends.
 
@@ -750,15 +750,15 @@ Compaction doesn't rewrite the log either. It writes the next generation to a ne
 
 The trade-off is space overhead: GC'd segments occupy bytes until the next compaction. For workloads with rapid churn this is real. `serve-s3 --reclaim-interval` sets how often a pass checks, and compaction waits until a quarter of the log is reclaimable. The per-capsule `compact_interval_secs` is still read by nothing: how often to compact is a property of the log, not of a capsule.
 
-### 10.9 Two-store split: NVRAM log + Sled registry
+### 10.9 Two-store split: NVRAM log + embedded KV registry
 
-**Decision**: bytes in NVRAM log, metadata in Sled.
+**Decision**: bytes in NVRAM log, metadata in an embedded key-value store: sled until [#244](https://github.com/saworbit/SPACE/issues/244), redb since.
 
 **Alternative**: a single store for both.
 
 **Why**: the access patterns are fundamentally different. Segment bytes want streaming sequential I/O, large blocks, and append semantics. Capsule metadata wants point lookups, transactional updates, and small records. Fusing them means either the metadata path is slow (full-log scans) or the byte path is slow (random-write database pages).
 
-Sled gives crash-safe point updates for metadata. NVRAM log gives append throughput for bytes. The handoff between the two is the one place where atomicity matters, and it isn't atomic yet; see [§9.3](#93-metadata-commits).
+The key-value store gives crash-safe point updates for metadata. NVRAM log gives append throughput for bytes. The handoff between the two is the one place where atomicity matters, and it isn't atomic yet; see [§9.3](#93-metadata-commits).
 
 ### 10.10 Trust segment metadata over policy on read
 

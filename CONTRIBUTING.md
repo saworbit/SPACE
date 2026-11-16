@@ -49,8 +49,9 @@ CI runs the checks below on every pull request (see `.github/workflows/ci.yml` a
 | Spelling | `typos` (intended words go in `_typos.toml`) |
 | Workflow lint | `actionlint` and `zizmor .` |
 | License field | `license = "BUSL-1.1"` in the root `Cargo.toml` |
+| Release dry run | the four release builds of `.github/workflows/release-build.yml`, only on a pull request that changes it, `release.yml` or the `Dockerfile` |
 
-CodeQL, OpenSSF Scorecard, the Docker image build and the link check run in their own workflows and aren't required to merge.
+CodeQL, OpenSSF Scorecard, the Docker image build, the link check and the fuzz targets run in their own workflows and aren't required to merge.
 
 Line endings are LF everywhere (`.gitattributes`), and `.editorconfig` sets indentation for editors that read it.
 

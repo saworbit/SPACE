@@ -173,5 +173,5 @@ A PUT body can also come in `aws-chunked` framing, as SDKs send streamed uploads
 **Start from an empty store (deletes all data):**
 
 ```bash
-rm -rf space.db space.journal space.nvram space.nvram.segments space.storage
+rm -rf space.db space.db.sled-old space.journal space.nvram space.nvram.segments space.storage
 ```
