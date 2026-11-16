@@ -1,4 +1,4 @@
-//! The capsule journal through the registry: the sled index, names included,
+//! The capsule journal through the registry: the index, names included,
 //! is rebuilt or caught up from it on open, a commit is all or nothing,
 //! crashed writes leave no index entries, and a journal and data log from
 //! different stores don't pair.
@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use test_support::TempDir;
 
@@ -52,19 +52,6 @@ impl Store {
         )
         .unwrap();
         (registry, log, handle)
-    }
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), target).unwrap();
-        }
     }
 }
 
@@ -152,7 +139,7 @@ async fn losing_the_index_rebuilds_it_from_the_journal() {
     assert_eq!(before.capsules.len(), 3);
     assert!(!before.content.is_empty());
 
-    fs::remove_dir_all(store.db_path()).unwrap();
+    fs::remove_file(store.db_path()).unwrap();
 
     let (registry, _log, handle) = store.open();
     assert_eq!(index_state(&registry), before);
@@ -175,7 +162,7 @@ async fn records_the_index_missed_are_replayed_on_open() {
     };
     // The index as it stood after the first write.
     let snapshot = store.dir.join("space.db.snapshot");
-    copy_dir(&store.db_path(), &snapshot);
+    fs::copy(store.db_path(), &snapshot).unwrap();
 
     let (b, after) = {
         let (registry, _log, mut handle) = store.open();
@@ -189,8 +176,7 @@ async fn records_the_index_missed_are_replayed_on_open() {
 
     // A crash after the journal records were fsynced but before the index
     // took them: put the older index back.
-    fs::remove_dir_all(store.db_path()).unwrap();
-    copy_dir(&snapshot, &store.db_path());
+    fs::copy(&snapshot, store.db_path()).unwrap();
 
     let (registry, _log, handle) = store.open();
     assert_eq!(index_state(&registry), after);
@@ -344,7 +330,7 @@ async fn names_are_rebuilt_from_the_journal() {
     };
     assert!(created_at.is_some());
 
-    fs::remove_dir_all(store.db_path()).unwrap();
+    fs::remove_file(store.db_path()).unwrap();
 
     let (registry, _log, handle) = store.open();
     assert_eq!(index_state(&registry), before);
@@ -423,47 +409,61 @@ async fn a_torn_batch_is_dropped_whole() {
     assert_eq!(handle.read_capsule(a).await.unwrap(), old);
 }
 
-#[test]
-fn s3_names_from_before_the_journal_are_refused_or_dropped() {
-    // A space.db whose S3 buckets were never journaled is refused, so going
-    // back to the build that wrote it still finds them.
-    let store = Store::new("legacy");
-    {
-        let db = sled::open(store.db_path()).unwrap();
-        db.open_tree("s3_buckets")
-            .unwrap()
-            .insert("demo", vec![0u8; 8])
-            .unwrap();
-        db.flush().unwrap();
+/// A sled database, which `space.db` was before #244, in place of the
+/// index: a directory with a file in it.
+fn put_sled_index(store: &Store) {
+    let db = store.db_path();
+    if db.is_file() {
+        fs::remove_file(&db).unwrap();
     }
-    let err = CapsuleRegistry::open(store.db_path()).err().unwrap();
-    assert!(
-        err.to_string().contains("before the capsule journal"),
-        "{err}"
-    );
+    fs::create_dir_all(&db).unwrap();
+    fs::write(db.join("conf"), b"sled").unwrap();
+}
 
-    // An index being rebuilt from the journal drops them: nothing reads
-    // them, and the journal doesn't hold them.
-    let store = Store::new("legacy_rebuild");
-    drop(CapsuleRegistry::open(store.db_path()).unwrap());
-    {
-        let db = sled::open(store.db_path()).unwrap();
-        db.open_tree("s3_objects")
-            .unwrap()
-            .insert("demo\0k", vec![0u8; 24])
+/// An older build's sled index is moved to `space.db.sled-old` and the
+/// index is rebuilt from the journal into a new file (#244).
+#[tokio::test]
+async fn an_older_builds_sled_index_is_moved_aside_and_rebuilt() {
+    let store = Store::new("sled_moved");
+    let data = patterned(70_000, 6);
+    let (id, before) = {
+        let (registry, _log, mut handle) = store.open();
+        let id = handle
+            .write_capsule(&data, &Policy::default())
+            .await
             .unwrap();
-        db.flush().unwrap();
-    }
-    // Another store's journal doesn't match the index, so it's rebuilt.
-    let other = Store::new("legacy_other");
-    drop(CapsuleRegistry::open(other.db_path()).unwrap());
-    fs::copy(other.journal_path(), store.journal_path()).unwrap();
+        (id, index_state(&registry))
+    };
+    put_sled_index(&store);
+
+    let (registry, _log, handle) = store.open();
+    assert_eq!(index_state(&registry), before);
+    assert_eq!(handle.read_capsule(id).await.unwrap(), data);
+    assert!(store.db_path().is_file());
+    let old = store.dir.join("space.db.sled-old");
+    assert_eq!(fs::read(old.join("conf")).unwrap(), b"sled");
+}
+
+/// The move is refused, changing nothing, without the journal the index
+/// would be rebuilt from, or when something already has the new name.
+#[test]
+fn an_older_builds_sled_index_is_kept_when_it_cant_be_rebuilt() {
+    let store = Store::new("sled_refused");
     drop(CapsuleRegistry::open(store.db_path()).unwrap());
-    let db = sled::open(store.db_path()).unwrap();
-    assert!(!db
-        .tree_names()
-        .iter()
-        .any(|name| name.as_ref() == b"s3_objects"));
+    put_sled_index(&store);
+    let old = store.dir.join("space.db.sled-old");
+
+    fs::create_dir_all(&old).unwrap();
+    let err = CapsuleRegistry::open(store.db_path()).err().unwrap();
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert!(store.db_path().join("conf").exists());
+    fs::remove_dir_all(&old).unwrap();
+
+    fs::remove_file(store.journal_path()).unwrap();
+    let err = CapsuleRegistry::open(store.db_path()).err().unwrap();
+    assert!(err.to_string().contains("is missing"), "{err}");
+    assert!(store.db_path().join("conf").exists());
+    assert!(!old.exists());
 }
 
 #[tokio::test]
@@ -486,7 +486,7 @@ async fn segment_ids_are_not_reused_after_compaction_and_a_lost_index() {
     };
     // The allocator's counter goes with space.db; the data log keeps the
     // floor in its FILE record.
-    fs::remove_dir_all(store.db_path()).unwrap();
+    fs::remove_file(store.db_path()).unwrap();
 
     let (registry, _log, mut handle) = store.open();
     let c = handle
@@ -550,7 +550,7 @@ async fn a_store_missing_its_journal_is_refused() {
 
     // With space.db gone too, a new journal can't take over a data log that
     // holds segments.
-    fs::remove_dir_all(store.db_path()).unwrap();
+    fs::remove_file(store.db_path()).unwrap();
     let registry = CapsuleRegistry::open(store.db_path()).unwrap();
     let log = NvramLog::open(&nvram).unwrap();
     let err = registry_pipeline_from_log_with_key(log, registry, Arc::clone(&store.key))
@@ -612,7 +612,7 @@ async fn deleting_a_capsule_unbinds_the_names_that_point_at_it() {
         (a, b)
     };
 
-    fs::remove_dir_all(store.db_path()).unwrap();
+    fs::remove_file(store.db_path()).unwrap();
     let (registry, _log, _handle) = store.open();
     assert!(registry.names_of(a).unwrap().is_empty());
     assert_eq!(

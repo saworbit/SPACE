@@ -15,9 +15,9 @@ For each segment of the input, `Pipeline::write_capsule` (in `crates/pipeline/sr
    BLAKE3("space.dedup.v1\0algo:" || algo || "\0" || bytes)  →  hex ContentHash
    ```
    `algo` is the compressor's label (`identity`, `lz4:1`, `zstd:3`, ...). Because the algorithm is part of the hash, the same stored bytes produced by different compression settings can never collide.
-4. **Looks up** the hash in the registry's content index, a sled tree in `space.db` mapping `ContentHash → SegmentId`, then in the in-memory pending index of segments stored by writes that haven't committed yet.
+4. **Looks up** the hash in the registry's content index, a table in `space.db` mapping `ContentHash → SegmentId`, then in the in-memory pending index of segments stored by writes that haven't committed yet.
    - **Hit:** increments the segment's `ref_count`, adds its ID to the capsule, and writes nothing. The capsule's `deduped_bytes` grows by the segment's compressed size.
-   - **Miss:** allocates a new `SegmentId` (a counter in sled), encrypts if the policy says to, appends the segment's record to the log, and puts the hash in the pending index.
+   - **Miss:** allocates a new `SegmentId` (a counter in `space.db`), encrypts if the policy says to, appends the segment's record to the log, and puts the hash in the pending index.
 5. **Commits** the capsule: appends its `CAPSULE` manifest to `space.journal`, with each segment's plain length and content hash. Applying it to the index adds the capsule record, raises each segment's reference count, and moves its hashes into the durable content index (unless the policy turned dedup off). A write that never commits leaves nothing in the durable index.
 
 Dedup happens before encryption, and the hash is taken over the pre-encryption bytes. [ENCRYPTED_DEDUP_FLOW.md](ENCRYPTED_DEDUP_FLOW.md) explains how the two fit together.
@@ -72,7 +72,7 @@ These numbers come from a test pass on a Ryzen 9 5900X running Windows 11:
 
 - Each segment's metadata is written once, in its record in `space.nvram`: a 48-byte frame and a descriptor of about 90 bytes. Dedup hits and deletes write nothing to the log.
 - Opening the log reads every record's header, and rebuilding the index replays the whole journal. Both grow with the store; a normal open replays only the records the index hasn't applied.
-- Content lookups are point reads in sled.
+- Content lookups are point reads in the redb index.
 
 ## Tests
 

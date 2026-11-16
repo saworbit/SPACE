@@ -24,7 +24,7 @@ cargo build --release -p spacectl
 | Path | Contents |
 |------|----------|
 | `space.journal` | capsule journal: a record for each capsule write and delete and each bucket and key change; the durable record of which capsules, buckets and keys exist |
-| `space.db/` | sled database: an index of the journal (capsule records, content-hash index, buckets and keys), rebuilt from the journal if it's lost |
+| `space.db` | redb database: an index of the journal (capsule records, content-hash index, buckets and keys), rebuilt from the journal if it's lost |
 | `space.nvram` | append-only segment log; each segment's compression and encryption metadata is stored with its bytes ([on-disk format](../on-disk-format.md)) |
 
 A store created before on-disk format 1 has a `space.nvram.segments` file as well. This version refuses to open it.
@@ -118,7 +118,7 @@ Use `--data-binary`. Plain `-d` strips newlines.
 
 ## 6. Read the same capsule through spacectl
 
-The S3 view and `spacectl` share one capsule store. Stop the server first (Ctrl-C): sled allows only one process to open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
+The S3 view and `spacectl` share one capsule store. Stop the server first (Ctrl-C): only one process can open `space.db`, so `spacectl` can't run alongside `serve-s3` ([#92](https://github.com/saworbit/SPACE/issues/92)). Then read the capsule by the ETag from step 2:
 
 ```bash
 ./target/release/spacectl list

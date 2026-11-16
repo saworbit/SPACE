@@ -6,20 +6,20 @@ Post-reset architecture. Previous distributed and multi-protocol diagrams are on
 
 ## Core idea
 
-Everything is a capsule (128-bit ID). The write pipeline does segmentation → compression → BLAKE3 content hash → dedup check → XTS-AES-256 encryption (deterministic tweak from the hash so dedup is preserved) → store. The read path reverses it, verifying the MAC on encrypted segments and the content hash on unencrypted ones. A read of a whole capsule also checks its BLAKE3 digest. The same capsule can be read through the S3-compatible API or the spacectl CLI without extra copies, though not at the same time: both open the same sled database ([#92](https://github.com/saworbit/SPACE/issues/92)).
+Everything is a capsule (128-bit ID). The write pipeline does segmentation → compression → BLAKE3 content hash → dedup check → XTS-AES-256 encryption (deterministic tweak from the hash so dedup is preserved) → store. The read path reverses it, verifying the MAC on encrypted segments and the content hash on unencrypted ones. A read of a whole capsule also checks its BLAKE3 digest. The same capsule can be read through the S3-compatible API or the spacectl CLI without extra copies, though not at the same time: both open the same index database, which one process at a time can hold ([#92](https://github.com/saworbit/SPACE/issues/92)).
 
 ## Current crates
 
 - `common` — shared types (CapsuleId, SegmentId, Policy)
 - `compression`, `dedup`, `encryption` — pipeline stages
 - `storage` / `nvram-sim` — segment storage: the data log, `space.nvram` (framed records, compacted by writing its next generation), and the file backends
-- `pipeline` / `capsule-registry` — modular write/read pipeline; the capsule journal, `space.journal`, and its sled index, `space.db`; the scrub executor
+- `pipeline` / `capsule-registry` — modular write/read pipeline; the capsule journal, `space.journal`, and its index, `space.db`, a redb database; the scrub executor
 - `protocol-s3` — S3 view
 - `spacectl` — CLI
 
 ## Data flow (write)
 
-Client → segment → compress → hash → dedup (reuse or new) → encrypt with deterministic tweak → append a `SEGMENT` record to the data log → commit a `CAPSULE` record to the journal (the commit point) → apply it to the sled index.
+Client → segment → compress → hash → dedup (reuse or new) → encrypt with deterministic tweak → append a `SEGMENT` record to the data log → commit a `CAPSULE` record to the journal (the commit point) → apply it to the index.
 
 A streaming write (S3 PUT and UploadPart, `spacectl create`) compresses, hashes and encrypts each chunk on a blocking thread before it takes the pipeline lock, which covers only the dedup lookup and the append. A chunk that turns out to be a dedup hit drops its ciphertext ([#198](https://github.com/saworbit/SPACE/issues/198)). Completing a multipart upload commits a capsule made of its parts' segments, without writing them again ([#201](https://github.com/saworbit/SPACE/issues/201)).
 

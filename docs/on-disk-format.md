@@ -21,9 +21,9 @@ Not goals for format 1: aligned records for O_DIRECT, multi-node anything, an ex
 | Segment bytes | `space.nvram` | Body of a `SEGMENT` record in the data log |
 | Segment descriptor (compression, content hash, crypto fields) | Sidecar JSON, rewritten on every append and every ref-count change | Header of the same `SEGMENT` record, written once |
 | Segment offset | Sidecar | Position of the record in the data log |
-| Segment ref count | Sidecar, updated in place on every dedup hit and delete | **Derived** from live manifests, indexed in sled |
+| Segment ref count | Sidecar, updated in place on every dedup hit and delete | **Derived** from live manifests, indexed in `space.db` |
 | Capsule record | sled only | `CAPSULE` record in the journal |
-| Content index (hash → segment) | sled | **Derived**, indexed in sled |
+| Content index (hash → segment) | sled | **Derived**, indexed in `space.db` |
 | S3 buckets and keys | sled only | `NAMESPACE` / `BIND` / `UNBIND` records in the journal |
 | Next segment id | sled counter | **Derived** at open (§8.3) |
 
@@ -37,7 +37,7 @@ The observation the design rests on: **ref counts are the only segment metadata 
 | `space.nvram` | `FILE`, `SEGMENT` records | Truth for segment bytes and descriptors |
 | `<root>/store`, `<root>/segments/<id>.seg` | Under `SPACE_STORAGE_ROOT`, instead of `space.nvram`: a `FILE` record, and one `SEGMENT` record per segment file (§10) | Truth for segment bytes and descriptors |
 | `space.nvram.ckpt` | Snapshot of the segment map (§8.2) | Optional cache, never authoritative |
-| `space.db` | sled: capsules, refs, content index, names, `journal_applied` | Index of the journal, rebuildable |
+| `space.db` | redb: capsules, refs, content index, names, `journal_applied`, the scrub schedule | Index of the journal, rebuildable. Before [#244](https://github.com/saworbit/SPACE/issues/244) it was a sled directory; the first open moves one to `space.db.sled-old` and rebuilds the index |
 
 `space.journal` lives next to `space.db`. The old `space.nvram.segments` sidecar goes away.
 
@@ -277,11 +277,11 @@ The fingerprint names the key without revealing it, or any key derived from it: 
 
 **Pins.** An open write pins the segments it has written or dedup-hit; a streaming read pins the segments of the capsule it is reading. Pins live in memory only, and compaction treats pinned segments as live. The S3 leases from #124 become read pins: an overwrite can drop the old capsule at once, because its bytes stay readable until compaction and compaction won't take pinned segments.
 
-**Pending dedup entries.** A segment written by an open write goes into an in-memory pending index, so a concurrent write can dedup against it. It reaches the durable content index only when its write commits. If a crashed write's hash were registered in sled, a later write could dedup-hit a segment that compaction then removed, and the capsule would be lost.
+**Pending dedup entries.** A segment written by an open write goes into an in-memory pending index, so a concurrent write can dedup against it. It reaches the durable content index only when its write commits. If a crashed write's hash were registered in the index, a later write could dedup-hit a segment that compaction then removed, and the capsule would be lost.
 
 ## 7. The index: applying the journal
 
-sled holds `journal_applied = (index_version, store_id, generation, offset)`. An index whose version, store or generation doesn't match the journal is rebuilt; bump the index version whenever an index record's encoding changes. Each journal record, or each whole `BATCH`, is applied in one sled transaction that also advances `journal_applied`. Because the journal is the durable copy, sled no longer needs to flush on every update, as it does today. On open, records after `journal_applied` are replayed.
+`space.db` holds `journal_applied = (index_version, store_id, generation, offset)`. An index whose version, store or generation doesn't match the journal is rebuilt; bump the index version whenever an index record's encoding changes. Each journal record, or each whole `BATCH`, is applied in one write transaction that also advances `journal_applied`. Because the journal is the durable copy, that transaction commits without an fsync: a crash loses only records the journal still holds, and they are replayed. On open, records after `journal_applied` are replayed.
 
 | Record | Effect on the index |
 |---|---|
@@ -293,9 +293,9 @@ sled holds `journal_applied = (index_version, store_id, generation, offset)`. An
 
 A segment can appear more than once in one capsule; each occurrence counts. A `DROP` of a capsule that isn't there is ignored with a warning, so replay is idempotent. The writer refuses a `CAPSULE` whose id is already live; if replay meets one anyway, it reports and skips it. Within a `BATCH`, the overwrite order `CAPSULE`, `BIND`, `DROP` means segments shared by the old and new capsule never reach zero references mid-batch. Replay reads only the journal; the content hashes it registers come from manifest entries.
 
-sled also keeps the scrub schedule (`scrub_schedule`: segment id to when it was last light- and deep-scrubbed, and any damage a scrub found that a later scrub hasn't cleared). It isn't journal state, and a rebuild keeps it, since segment ids are never reused.
+`space.db` also keeps the scrub schedule (`scrub_schedule`: segment id to when it was last light- and deep-scrubbed, and any damage a scrub found that a later scrub hasn't cleared). It isn't journal state, and a rebuild keeps it, since segment ids are never reused.
 
-**Rebuild** is: clear the sled trees and replay the journal from the start. `spacectl doctor --rebuild-index` does exactly that, and losing `space.db` costs one replay.
+**Rebuild** is: clear the index tables and replay the journal from the start. `spacectl doctor --rebuild-index` does exactly that, and losing `space.db` costs one replay.
 
 This fixes the ref-count drift in #97. A dedup hit writes nothing until its capsule commits, so a crash can't leave an increment behind, and a crash between commit and index update is repaired by replay.
 
@@ -322,8 +322,8 @@ The checkpoint is a startup optimization only. A first implementation can skip i
 
 1. Read and check the `FILE` record; `store_id` must match the data log's.
 2. Scan, applying §8.1.
-3. Replay into sled after `journal_applied`.
-4. Initialise the segment allocator in memory to the largest of: each file's `segment_id_floor`, 1 + the highest segment id in the data log, and 1 + the highest id in any manifest entry. The sled counter is no longer needed. Ids are never reused within a store.
+3. Replay into the index after `journal_applied`.
+4. Initialise the segment allocator in memory to the largest of: each file's `segment_id_floor`, 1 + the highest segment id in the data log, and 1 + the highest id in any manifest entry. The index's counter is no longer needed. Ids are never reused within a store.
 
 After open, the orphans from interrupted writes are simply the segments in the map with `refs == 0` and no pins. No GC pass is needed to find them; compaction reclaims them.
 
@@ -405,20 +405,20 @@ Format 1 is new. The current data log has no `FILE` record, so open fails with a
 Suggested PRs:
 
 1. Codec, framed `SEGMENT` records and scan-on-open. Closes #96. **Done.** Until the journal exists:
-   - Ref counts are held in memory only. Scanned segments start at 1, and opening a registry pipeline recounts them from the capsule records in sled, which already removes the ref-count inflation of #97. Compaction refuses to run until they've been recounted.
+   - Ref counts are held in memory only. Scanned segments start at 1, and opening a registry pipeline recounts them from the capsule records in the index, which already removes the ref-count inflation of #97. Compaction refuses to run until they've been recounted.
    - `Segment` keeps all its fields; `ref_count`, `deduplicated` and `access_count` just aren't written. `set_segment_metadata` on a stored segment changes only the in-memory copy.
    - Compaction is still the in-place rewrite guarded by a marker, now `space.nvram.compacting`.
    - Losing `space.db` still loses the capsule records. The data survives in the log, but nothing can say which segments make up which capsule until the journal lands.
 2. Journal (`FILE`, `CAPSULE`, `DROP`, `BATCH`), derived refs, pins, digest. Fixes the ref-count half of #97; orphans become `refs == 0`. **Done**, with these differences from the draft:
-   - The sled `refs` tree is maintained by journal apply, as drafted. The data log's in-memory counts, which also count open writes, are set from it when a pipeline opens; there is no separate pin structure.
-   - sled also keeps an `indexed` tree, segment to its hash and dedupe references, a `candidates` tree, hash to the segments that hold it, and a `deduped` tree of live dedupe capsules. The content index then follows from the live capsules alone, whatever order they came in, so an index rebuilt from a compacted journal is the same index ([#188](https://github.com/saworbit/SPACE/issues/188)).
-   - The segment allocator is still the sled counter. A pipeline open raises it above the highest id in the data log, rather than deriving it in memory (§8.3).
+   - The `refs` table is maintained by journal apply, as drafted. The data log's in-memory counts, which also count open writes, are set from it when a pipeline opens; there is no separate pin structure.
+   - The index also keeps an `indexed` table, segment to its hash and dedupe references, a `candidates` table, hash to the segments that hold it, and a `deduped` table of live dedupe capsules. The content index then follows from the live capsules alone, whatever order they came in, so an index rebuilt from a compacted journal is the same index ([#188](https://github.com/saworbit/SPACE/issues/188)).
+   - The segment allocator is still the index's counter. A pipeline open raises it above the highest id in the data log, rather than deriving it in memory (§8.3).
    - A journal with damage inside it is refused rather than opened read-only.
    - Every full read of a capsule checks the digest, streamed or not ([#190](https://github.com/saworbit/SPACE/issues/190)). A range read can't. A deep scrub reads capsules whole to check it ([#140](https://github.com/saworbit/SPACE/issues/140)). The S3 ETag doesn't use it yet.
    - `BATCH` is encoded, decoded and applied, but nothing writes one until the S3 view moves onto the journal.
 3. `NAMESPACE`, `BIND`, `UNBIND`; the S3 view moves onto the journal. **Done**, with these differences from the draft:
    - `BATCH` sub-records lost their frame (§5.7). Embedded whole records made a torn `BATCH` look like damage in the middle of the journal, which refuses to open.
-   - Names are generic, as drafted (open question 5). sled indexes them in `namespaces` and `names`; the old `s3_buckets` and `s3_objects` trees go. A `space.db` that still holds S3 buckets or keys but has no journal position is refused, like one holding capsules. An index being rebuilt drops those trees, warning if they held anything, since the journal doesn't have them.
+   - Names are generic, as drafted (open question 5). The index keeps them in `namespaces` and `names`. The old `s3_buckets` and `s3_objects` trees were sled's, and a sled `space.db` that still held them was refused. Since the index moved to redb ([#244](https://github.com/saworbit/SPACE/issues/244)), such a store, which has no journal, is refused when its sled directory would be moved aside.
    - The index version is 2, so an index written before names were journaled is rebuilt.
    - Pins are the data log's in-memory reference counts. An S3 overwrite or DELETE commits its `DROP` at once, and the S3 view holds back releasing the dropped capsule's references while a GET is reading it. `Pipeline::garbage_collect` doesn't know about pins and would remove such segments, but nothing calls it while `serve-s3` runs.
    - `spacectl delete` of a named capsule keeps today's behaviour (open question 6): the name stays, and reads as missing.
@@ -448,7 +448,7 @@ Suggested PRs:
    - Memory: a live capsule is held as the offset of the record that holds its `CAPSULE`, which is read again when the new generation is written. Namespaces and names are held whole.
    - The `FILE` record keeps `store_id`, `created_at` and `segment_id_floor`. A journal compacted down to no records still belongs to its store, and is refused with another store's data log or storage root.
    - `serve-s3`'s reclaim pass compacts the journal once a quarter of it, and at least 1 MiB, is dead. Finding that out reads the whole journal, so a pass does it the first time after the store opens, and after that only when an estimate kept as records are appended says it may be worth it. The estimate is what the last reading found, plus every byte appended since, plus the average live `CAPSULE` record for each `DROP` among them. `spacectl compact` compacts the journal whenever anything in it is dead.
-   - The index's `journal_applied` moves to the new generation under the journal lock, so no commit lands in between. sled doesn't flush on every update, so a crash shortly after a compaction can still find the old position, and the index is then rebuilt.
+   - The index's `journal_applied` moves to the new generation under the journal lock, so no commit lands in between. The new position is committed durably, so only a crash between the rename and that commit finds the old position, and the index is then rebuilt.
 
 ## 15. Tests
 

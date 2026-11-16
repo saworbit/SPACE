@@ -305,7 +305,7 @@ fn run(ops: &[Op]) {
         let before = index(&store.registry);
         drop(store);
 
-        std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+        std::fs::remove_file(dir.join("space.db")).unwrap();
         let store = open(&dir);
         assert_eq!(index(&store.registry), before, "the rebuilt index differs");
         check(&store, &model);

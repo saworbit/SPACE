@@ -19,7 +19,7 @@ use nvram_sim::NvramLog;
 struct Store {
     registry: Option<CapsuleRegistry>,
     key: Arc<Mutex<KeyManager>>,
-    /// Last: sled holds its files open until the registry is dropped.
+    /// Last: the index holds its file open until the registry is dropped.
     dir: TempDir,
 }
 

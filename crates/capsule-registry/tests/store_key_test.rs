@@ -121,7 +121,7 @@ async fn another_key_is_refused_and_no_key_refuses_writes() {
     assert!(registry.compact_journal().unwrap().is_some());
     assert_eq!(registry.store_key(), Some(recorded));
     drop(registry);
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     assert_eq!(registry.store_key(), Some(recorded));
     assert!(open_with(&dir, &registry, 8).is_err());
