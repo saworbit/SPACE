@@ -7,13 +7,14 @@ use capsule_registry::modular_pipeline::StoreSecurity;
 use capsule_registry::CapsuleRegistry;
 use nvram_sim::NvramLog;
 use protocol_s3::{server, server::AllowedHosts, S3View};
-use std::path::PathBuf;
 use std::sync::Arc;
+use test_support::TempDir;
 use tower::ServiceExt;
 
 struct App {
     router: Router,
-    dir: PathBuf,
+    /// Last, so the router's view is closed before the directory goes.
+    dir: TempDir,
 }
 
 impl App {
@@ -24,8 +25,7 @@ impl App {
     /// An app over a store `setup` has prepared, as an older build might
     /// have left it.
     fn with_store(name: &str, setup: impl FnOnce(&CapsuleRegistry)) -> Self {
-        let dir = std::env::temp_dir().join(format!("s3_http_{name}_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new(&format!("s3_http_{name}"));
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         let log = NvramLog::open(dir.join("space.nvram")).unwrap();
         let view = S3View::new(registry.clone(), log, &StoreSecurity::none()).unwrap();
@@ -81,12 +81,6 @@ impl App {
             headers,
             String::from_utf8_lossy(&bytes).into_owned(),
         )
-    }
-}
-
-impl Drop for App {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -1184,8 +1178,7 @@ async fn requests_from_other_origins_are_refused() {
 /// answered too, whatever their case (#200).
 #[tokio::test]
 async fn names_given_to_the_server_are_answered() {
-    let dir = std::env::temp_dir().join(format!("s3_http_named_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_http_named");
     let view = S3View::new(
         CapsuleRegistry::open(dir.join("space.db")).unwrap(),
         NvramLog::open(dir.join("space.nvram")).unwrap(),

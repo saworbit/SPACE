@@ -2,7 +2,7 @@
 //! first open with a key records the key's fingerprint in the journal. From
 //! then on another key is refused, and without one it refuses writes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use capsule_registry::modular_pipeline::registry_pipeline_from_log_with_key;
@@ -11,14 +11,10 @@ use common::format::{CapsuleManifest, JournalRecord};
 use common::{CapsuleId, EncryptionPolicy, Policy};
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
-use uuid::Uuid;
+use test_support::TempDir;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("space_store_key_test")
-        .join(format!("{name}_{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("space_store_key_test_{name}"))
 }
 
 fn key(byte: u8) -> Arc<Mutex<KeyManager>> {
@@ -132,7 +128,6 @@ async fn another_key_is_refused_and_no_key_refuses_writes() {
     open_with(&dir, &registry, 7).unwrap();
 
     drop(registry);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -154,5 +149,4 @@ fn a_store_never_opened_with_a_key_records_nothing() {
     assert_eq!(registry.store_key(), None);
 
     drop(registry);
-    let _ = std::fs::remove_dir_all(&dir);
 }

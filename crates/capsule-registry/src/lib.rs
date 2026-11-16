@@ -1170,12 +1170,6 @@ impl common::scrub::ScheduleStore for RegistryScrubSchedule {
 }
 
 impl CapsuleRegistry {
-    pub fn new() -> Self {
-        Self::open("space.db").expect(
-            "failed to open registry DB at 'space.db'; check disk permissions and available space",
-        )
-    }
-
     /// Open the registry database at `path` and the capsule journal next to
     /// it. Records the index hasn't applied yet are replayed; an index that
     /// doesn't match the journal is rebuilt from it.
@@ -1657,12 +1651,6 @@ impl CapsuleRegistry {
 
     pub fn content_entries(&self) -> Vec<(ContentHash, SegmentId)> {
         self.store.list_content().unwrap_or_default()
-    }
-}
-
-impl Default for CapsuleRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

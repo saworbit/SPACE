@@ -14,7 +14,6 @@
 //! Tests share a single Tokio runtime across proptest cases; each case opens
 //! a fresh `NvramLog` in a unique temp file so cases stay isolated.
 
-use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -23,8 +22,8 @@ use common::Policy;
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
 use proptest::prelude::*;
+use test_support::TempDir;
 use tokio::runtime::Runtime;
-use uuid::Uuid;
 
 fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
@@ -35,13 +34,13 @@ struct PipelineHarness {
     pipeline: WritePipeline,
     registry: CapsuleRegistry,
     nvram: NvramLog,
-    log_path: PathBuf,
-    meta_path: PathBuf,
+    /// Last, so the registry and log are closed before the directory goes.
+    _dir: TempDir,
 }
 
 impl PipelineHarness {
     fn new_unencrypted() -> Self {
-        let (log_path, meta_path) = unique_paths("proptest");
+        let (dir, log_path, meta_path) = unique_paths("proptest");
         let registry =
             CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).expect("open registry");
         let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).expect("open nvram");
@@ -50,13 +49,12 @@ impl PipelineHarness {
             pipeline,
             registry,
             nvram,
-            log_path,
-            meta_path,
+            _dir: dir,
         }
     }
 
     fn new_encrypted() -> Self {
-        let (log_path, meta_path) = unique_paths("proptest_enc");
+        let (dir, log_path, meta_path) = unique_paths("proptest_enc");
         let registry =
             CapsuleRegistry::open(meta_path.to_string_lossy().as_ref()).expect("open registry");
         let nvram = NvramLog::open(log_path.to_string_lossy().as_ref()).expect("open nvram");
@@ -69,29 +67,17 @@ impl PipelineHarness {
             pipeline,
             registry,
             nvram,
-            log_path,
-            meta_path,
+            _dir: dir,
         }
     }
 }
 
-impl Drop for PipelineHarness {
-    fn drop(&mut self) {
-        // Best-effort cleanup; tests should not fail if a file is gone already.
-        let _ = fs::remove_file(&self.log_path);
-        let _ = fs::remove_file(format!("{}.segments", self.log_path.to_string_lossy()));
-        let _ = fs::remove_file(&self.meta_path);
-    }
-}
-
-fn unique_paths(prefix: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join("space_proptest_pipeline");
-    let _ = fs::create_dir_all(&base);
-    let unique = Uuid::new_v4();
-    (
-        base.join(format!("{prefix}_{unique}.log")),
-        base.join(format!("{prefix}_{unique}.metadata")),
-    )
+/// A scratch directory, and the log and registry paths inside it.
+fn unique_paths(prefix: &str) -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir::new(&format!("space_proptest_{prefix}"));
+    let log_path = dir.join("space.log");
+    let meta_path = dir.join("space.metadata");
+    (dir, log_path, meta_path)
 }
 
 // ---------------------------------------------------------------------------

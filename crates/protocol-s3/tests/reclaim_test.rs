@@ -14,16 +14,14 @@ use common::{Segment, SegmentId};
 use futures::{stream, StreamExt, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{server::spawn_reclaim, ListQuery, ObjectBody, S3Error, S3View};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use test_support::TempDir;
 
 const MIB: usize = 1024 * 1024;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("s3_reclaim_{name}_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("s3_reclaim_{name}"))
 }
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
@@ -111,7 +109,6 @@ async fn a_pass_compacts_once_a_quarter_of_the_log_is_reclaimable() {
     );
 
     drop((log, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -198,7 +195,6 @@ async fn under_a_storage_root_a_pass_deletes_unreferenced_segments() {
     );
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -222,7 +218,6 @@ async fn the_background_loop_reclaims_on_its_own() {
     task.abort();
 
     drop((log, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn keys(view: &S3View) -> Vec<String> {
@@ -287,5 +282,4 @@ async fn compacting_the_journal_keeps_every_object() {
     ));
 
     drop((log, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }

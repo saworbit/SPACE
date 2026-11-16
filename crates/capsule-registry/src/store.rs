@@ -1011,17 +1011,20 @@ fn apply_record(
 mod tests {
     use super::*;
     use common::Policy;
+    use test_support::TempDir;
 
-    fn scratch_db(name: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("space_{name}_{}", uuid::Uuid::new_v4()));
-        dir.to_str().unwrap().to_string()
+    /// A scratch directory, and the path of a database inside it.
+    fn scratch_db(name: &str) -> (TempDir, String) {
+        let dir = TempDir::new(&format!("space_{name}"));
+        let path = dir.join("db").to_str().unwrap().to_string();
+        (dir, path)
     }
 
     /// A lock that clears soon after, as when sled's background threads
     /// let go of a store just dropped, is waited for (#246).
     #[test]
     fn open_waits_for_a_lock_that_clears() {
-        let path = scratch_db("lock_clears");
+        let (_dir, path) = scratch_db("lock_clears");
         let first = SledStore::open(&path).unwrap();
         let closer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
@@ -1031,13 +1034,12 @@ mod tests {
         closer.join().unwrap();
         assert!(second.is_ok(), "{:?}", second.err());
         drop(second);
-        let _ = std::fs::remove_dir_all(&path);
     }
 
     /// A lock held past the wait is still refused, with sled's error.
     #[test]
     fn open_refuses_a_lock_still_held() {
-        let path = scratch_db("lock_held");
+        let (_dir, path) = scratch_db("lock_held");
         let held = SledStore::open(&path).unwrap();
         let started = std::time::Instant::now();
         let err = SledStore::open(&path).err().expect("opened a locked store");
@@ -1047,13 +1049,11 @@ mod tests {
         );
         assert!(started.elapsed() >= LOCK_WAIT);
         drop(held);
-        let _ = std::fs::remove_dir_all(&path);
     }
 
     #[test]
     fn scrub_times_round_trip_and_survive_a_reopen() {
-        let dir = std::env::temp_dir().join(format!("space_scrub_times_{}", uuid::Uuid::new_v4()));
-        let path = dir.to_str().unwrap().to_string();
+        let (_dir, path) = scratch_db("scrub_times");
         let light = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
         let deep = UNIX_EPOCH + Duration::from_millis(1_700_000_500_456);
         {
@@ -1115,7 +1115,6 @@ mod tests {
             ]
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

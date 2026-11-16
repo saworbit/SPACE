@@ -37,6 +37,7 @@ tokio-util = { version = "^0.7.11", features = ["io"] }
 async-stream = "0.3"
 
 [dev-dependencies]
+test-support = { path = "../test-support" }
 tracing-test = { workspace = true }
 futures = { workspace = true }
 criterion = "0.5"

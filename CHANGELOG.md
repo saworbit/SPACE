@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Windows tests stop `serve-s3` with Ctrl-Break and check it shuts down cleanly, as the SIGTERM test does on Linux and macOS (#240). The Windows stop handlers used to be compiled in CI but never run.
 - `docs/capsule.md`, ARCHITECTURE.md, README.md and ROADMAP.md describe what landed with #169, #188, #198 and #201: where the write path takes the pipeline lock, how the content index is kept, multipart upload namespaces and composed capsules, the reclaim pass aborting old uploads, and `spacectl`'s scripting flags and completions.
 
+### Removed
+
+- `CapsuleRegistry::new()` and `CapsuleRegistry::default()`. They opened `space.db` in the current directory and panicked if they couldn't, and nothing used them. Use `CapsuleRegistry::open(path)`.
+
 ### Fixed
 
 - Opening a store waits up to 1 s for a lock on `space.db` to clear before it fails (#246). sled 0.34 keeps the file, and its lock, on background threads for a moment after a store is closed, so closing a store and opening it again at once could fail with `could not acquire lock`, as tests on Linux and macOS did about one run in ten. A store another process holds is still refused, a second later than before.

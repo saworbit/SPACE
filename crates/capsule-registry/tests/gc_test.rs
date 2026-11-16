@@ -1,30 +1,19 @@
 use capsule_registry::{pipeline::WritePipeline, CapsuleRegistry};
 use common::Policy;
 use nvram_sim::NvramLog;
-use std::fs;
-use std::path::Path;
-use uuid::Uuid;
+use test_support::TempDir;
 
-fn setup_paths(prefix: &str) -> (String, String) {
-    let base = std::env::temp_dir().join("space_registry_tests");
-    let _ = fs::create_dir_all(&base);
-    let unique = format!("{}_{}", prefix, Uuid::new_v4());
-    let log_path = base.join(format!("{unique}.log"));
-    let meta_path = base.join(format!("{unique}.metadata"));
-
-    cleanup_path(log_path.to_string_lossy().as_ref());
-    cleanup_path(format!("{}.segments", log_path.to_string_lossy()).as_ref());
-    cleanup_path(meta_path.to_string_lossy().as_ref());
-
-    (
-        log_path.to_string_lossy().to_string(),
-        meta_path.to_string_lossy().to_string(),
-    )
+/// A scratch directory, and the log and registry paths inside it.
+fn setup_paths(prefix: &str) -> (TempDir, String, String) {
+    let dir = TempDir::new(&format!("space_registry_{prefix}"));
+    let log_path = dir.join("space.log").to_string_lossy().into_owned();
+    let meta_path = dir.join("space.metadata").to_string_lossy().into_owned();
+    (dir, log_path, meta_path)
 }
 
 #[tokio::test]
 async fn refcounts_increase_and_decrease_with_capsules() {
-    let (log_path, meta_path) = setup_paths("refcount");
+    let (_dir, log_path, meta_path) = setup_paths("refcount");
 
     let registry = CapsuleRegistry::open(meta_path.as_str()).unwrap();
     let registry_view = registry.clone();
@@ -67,14 +56,11 @@ async fn refcounts_increase_and_decrease_with_capsules() {
     assert!(registry_view.lookup_content(&segment_hash).is_none());
 
     drop(pipeline);
-    cleanup_path(log_path.as_str());
-    cleanup_path(format!("{}.segments", log_path).as_str());
-    cleanup_path(meta_path.as_str());
 }
 
 #[tokio::test]
 async fn garbage_collect_reclaims_orphan_segments() {
-    let (log_path, meta_path) = setup_paths("gc_sweep");
+    let (_dir, log_path, meta_path) = setup_paths("gc_sweep");
 
     let registry = CapsuleRegistry::open(meta_path.as_str()).unwrap();
     let registry_view = registry.clone();
@@ -106,24 +92,6 @@ async fn garbage_collect_reclaims_orphan_segments() {
     }
 
     drop(pipeline);
-    cleanup_path(log_path.as_str());
-    cleanup_path(format!("{}.segments", log_path).as_str());
-    cleanup_path(meta_path.as_str());
-}
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => {}
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if e.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
 }
 
 mod modular_pipeline_gc {
@@ -141,12 +109,10 @@ mod modular_pipeline_gc {
 
     #[tokio::test]
     async fn modular_pipeline_segments_record_their_key_version() {
-        let log_path = "modular_gc.log";
-        let segments_path = format!("{}.segments", log_path);
-        let _ = fs::remove_file(log_path);
-        let _ = fs::remove_file(segments_path.as_str());
+        let dir = TempDir::new("space_modular_gc");
+        let log_path = dir.join("modular_gc.log");
 
-        let storage = NvramBackend::open(log_path).unwrap();
+        let storage = NvramBackend::open(&log_path).unwrap();
         let key_manager = Arc::new(Mutex::new(KeyManager::new([0x3Cu8; MASTER_KEY_SIZE])));
 
         let encryptor = XtsEncryptor::new(Arc::clone(&key_manager));
@@ -174,7 +140,7 @@ mod modular_pipeline_gc {
             .await
             .unwrap();
 
-        let log = nvram_sim::NvramLog::open(log_path).unwrap();
+        let log = nvram_sim::NvramLog::open(&log_path).unwrap();
         let first = log.get_segment_metadata(SegmentId(0)).unwrap();
         let second = log.get_segment_metadata(SegmentId(1)).unwrap();
 
@@ -182,8 +148,5 @@ mod modular_pipeline_gc {
         assert!(first.encrypted && second.encrypted);
         assert_eq!(first.key_version, Some(1));
         assert_eq!(second.key_version, Some(1));
-
-        let _ = fs::remove_file(log_path);
-        let _ = fs::remove_file(segments_path.as_str());
     }
 }

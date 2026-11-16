@@ -6,6 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use test_support::TempDir;
 
 use capsule_registry::modular_pipeline::{
     registry_pipeline_from_log_with_key, RegistryPipelineHandle,
@@ -14,25 +15,22 @@ use capsule_registry::CapsuleRegistry;
 use common::Policy;
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
-use uuid::Uuid;
 
 struct Store {
-    dir: PathBuf,
     registry: Option<CapsuleRegistry>,
     key: Arc<Mutex<KeyManager>>,
+    /// Last: sled holds its files open until the registry is dropped.
+    dir: TempDir,
 }
 
 impl Store {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir()
-            .join("space_data_log_test")
-            .join(format!("{name}_{}", Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new(&format!("space_data_log_test_{name}"));
         let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
         Self {
-            dir,
             registry: Some(registry),
             key: Arc::new(Mutex::new(KeyManager::new([0x5Au8; MASTER_KEY_SIZE]))),
+            dir,
         }
     }
 
@@ -58,14 +56,6 @@ impl Store {
         )
         .unwrap();
         (log, handle)
-    }
-}
-
-impl Drop for Store {
-    fn drop(&mut self) {
-        // sled holds its files open until the registry is dropped.
-        drop(self.registry.take());
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 

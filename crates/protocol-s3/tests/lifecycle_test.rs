@@ -8,12 +8,11 @@ use common::format::JournalRecord;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{ListQuery, Preconditions, PutOptions, S3Error, S3View};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use test_support::TempDir;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("s3_lifecycle_{name}_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("s3_lifecycle_{name}"))
 }
 
 fn open(dir: &Path) -> (CapsuleRegistry, S3View) {
@@ -73,7 +72,6 @@ async fn keys_and_buckets_survive_a_restart() {
     ));
 
     drop(view);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -101,7 +99,6 @@ async fn overwrite_and_delete_free_the_old_capsule() {
     assert!(registry.content_entries().is_empty());
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -120,7 +117,6 @@ async fn overwrite_with_the_same_bytes_keeps_the_shared_segment() {
     assert_eq!(read(&view, "bkt", "k").await, b"same bytes");
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -142,7 +138,6 @@ async fn a_key_whose_capsule_is_gone_reads_as_missing() {
     assert_eq!(read(&view, "bkt", "k").await, b"again");
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -180,7 +175,6 @@ async fn keys_and_buckets_survive_losing_the_index() {
     assert_eq!(registry.capsules().len(), capsules);
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -210,7 +204,6 @@ async fn an_overwrite_cut_short_leaves_the_old_object() {
     assert_eq!(registry.capsules().len(), 1);
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Two create-only PUTs of one key race. Both pass the check made before
@@ -251,7 +244,6 @@ async fn only_one_racing_create_only_put_wins() {
     assert_eq!(keys(&view, "bkt"), ["k"]);
 
     drop(view);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The metadata a PUT stores is in the journal with the key (#163), so it
@@ -288,7 +280,6 @@ async fn metadata_survives_a_restart_and_a_lost_index() {
         assert_eq!(listed.objects[0].content_type(), "image/jpeg");
         drop((registry, view));
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Only the headers S3 stores can be stored, with ASCII values.
@@ -316,7 +307,6 @@ async fn metadata_s3_doesnt_store_is_refused() {
     }
     assert!(registry.capsules().is_empty());
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A deleted bucket stays deleted after a restart and a lost index, and a
@@ -365,7 +355,6 @@ async fn a_deleted_bucket_stays_deleted() {
     assert!(keys(&view, "gone").is_empty());
     assert!(registry.name("s3:gone", "k").unwrap().is_none());
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A PUT whose bucket is deleted while its body is being stored fails at
@@ -390,7 +379,6 @@ async fn a_put_into_a_bucket_deleted_meanwhile_stores_nothing() {
     assert!(registry.capsules().is_empty());
     assert!(registry.name("s3:bkt", "k").unwrap().is_none());
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Keys an older `spacectl delete` left pointing at a removed capsule read
@@ -423,7 +411,6 @@ async fn a_dead_key_makes_no_common_prefix() {
     assert!(page.objects.is_empty());
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `spacectl delete` of a capsule an S3 key points at removes the key too,
@@ -468,7 +455,6 @@ async fn deleting_a_named_capsule_removes_its_key() {
         );
         drop((registry, view));
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A full GET of an object whose bytes don't match its capsule's digest
@@ -528,5 +514,4 @@ async fn a_full_get_of_an_object_that_misses_its_digest_fails() {
     assert_eq!(read(&view, "bkt", "good").await, b"0123456789");
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }

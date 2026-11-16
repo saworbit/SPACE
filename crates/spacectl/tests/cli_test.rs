@@ -1,13 +1,12 @@
 //! Runs the real `spacectl` binary in a scratch directory.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use test_support::TempDir;
 
-fn scratch_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("spacectl_{name}_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch_dir(name: &str) -> TempDir {
+    TempDir::new(&format!("spacectl_{name}"))
 }
 
 fn spacectl(dir: &Path, args: &[&str]) -> Output {
@@ -50,8 +49,6 @@ fn stdout_carries_only_command_output() {
     let read = spacectl(&dir, &["read", id]);
     assert!(read.status.success());
     assert_eq!(read.stdout, b"Hello SPACE!\n");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -66,7 +63,6 @@ fn locked_store_is_an_error_not_a_panic() {
     assert!(stderr.contains("locked by another process"), "{stderr}");
 
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn entries(dir: &Path) -> Vec<String> {
@@ -157,8 +153,6 @@ fn commands_other_than_create_need_an_existing_store() {
         .unwrap();
     assert!(String::from_utf8_lossy(&list.stdout).contains(&id));
     assert_eq!(entries(&dir), ["a.txt", "store"]);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A reader that stops early, as `head` does, ends the command quietly with
@@ -177,7 +171,6 @@ fn a_closed_stdout_is_a_clean_exit() {
         assert!(out.status.success(), "{args:?}: {stderr}");
         assert!(stderr.is_empty(), "{args:?}: {stderr}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// SPACE_STORAGE_ROOT set but empty is an error. A store's journal is
@@ -229,9 +222,6 @@ fn a_wrong_storage_root_creates_nothing() {
     assert!(stderr.contains("SPACE_STORAGE_ROOT"), "{stderr}");
     assert!(stderr.contains("different stores"), "{stderr}");
     assert_eq!(entries(&dir), before);
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&rooted);
 }
 
 /// serve-s3 listens before it opens the store, so a port in use is an
@@ -252,7 +242,6 @@ fn serve_s3_on_a_busy_port_leaves_no_store() {
     assert_eq!(entries(&dir), Vec::<String>::new());
 
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -278,8 +267,6 @@ fn delete_removes_the_capsule() {
     let list = spacectl(&dir, &["list"]);
     assert_eq!(String::from_utf8(list.stdout).unwrap(), "(no capsules)\n");
     assert!(!spacectl(&dir, &["delete", id]).status.success());
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -293,7 +280,6 @@ fn removed_flags_and_commands_are_rejected() {
             "{args:?} should be a usage error"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn created_id(out: &Output) -> String {
@@ -391,8 +377,6 @@ fn gc_and_compact_reclaim_what_no_capsule_references() {
         String::from_utf8(again.stdout).unwrap(),
         "space.nvram: nothing to reclaim\nspace.journal: nothing to reclaim\n"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -417,8 +401,6 @@ fn compact_under_a_storage_root_compacts_only_the_journal() {
         "{stdout}"
     );
     assert!(!dir.join("space.nvram").exists());
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -469,8 +451,6 @@ fn scrub_names_the_damaged_segment_and_its_capsule() {
             "{args:?}: {stderr}"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn spacectl_in_root(dir: &Path, root: &Path, args: &[&str]) -> Output {
@@ -535,8 +515,6 @@ fn create_read_and_delete_use_the_storage_root() {
         !dir.join("space.nvram").exists(),
         "something used space.nvram"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn spacectl_with_key(dir: &Path, args: &[&str]) -> Output {
@@ -598,7 +576,6 @@ fn invalid_key_settings_are_refused() {
             "{envs:?} created a data log"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A store opened once with SPACE_MASTER_KEY remembers the key (#157).
@@ -702,9 +679,6 @@ fn an_encrypted_store_needs_its_key() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("set SPACE_MASTER_KEY"), "{stderr}");
-
-    let _ = std::fs::remove_dir_all(&root_dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -732,8 +706,6 @@ fn reading_an_encrypted_capsule_needs_its_key() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(out.stdout, secret);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A misspelled key in a policy file is an error, not a setting silently
@@ -795,8 +767,6 @@ fn policy_files_refuse_unknown_and_unsupported_settings() {
         list.lines().any(|line| line.trim_end().ends_with(" 4")),
         "{list}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// serve-s3 logs one line with the addresses it actually listens on, the
@@ -893,7 +863,6 @@ fn serve_s3_reports_and_serves_every_address_it_listens_on() {
     }
 
     drop(server);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// SIGTERM, as `docker stop` sends it, stops `serve-s3` cleanly.
@@ -1029,7 +998,6 @@ fn serve_s3_stops_cleanly_on(
     // The store it served opens again.
     let list = spacectl(&dir, &["list"]);
     assert!(list.status.success(), "{list:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A store whose space.journal is missing isn't opened, so nothing reclaims
@@ -1069,8 +1037,6 @@ fn a_store_missing_its_journal_keeps_its_segments() {
     let out = spacectl(&dir, &["create", "-f", "a.bin"]);
     assert!(!out.status.success());
     assert_eq!(std::fs::read(dir.join("space.nvram")).unwrap(), log);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `spacectl read` fails when a capsule's bytes don't match its digest,
@@ -1119,8 +1085,6 @@ fn read_fails_when_a_capsule_misses_its_digest() {
     let out = spacectl(&dir, &["read", &good]);
     assert!(out.status.success());
     assert_eq!(out.stdout, data);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `spacectl scrub --deep` checks every capsule against its digest and
@@ -1191,8 +1155,6 @@ fn deep_scrub_names_a_capsule_whose_segments_are_out_of_order() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn spacectl_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Output {
@@ -1304,6 +1266,4 @@ fn spacectl_works_in_scripts() {
     let out = spacectl(&dir, &["completions", "bash"]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("spacectl"));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

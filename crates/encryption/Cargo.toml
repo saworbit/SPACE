@@ -31,6 +31,7 @@ cpufeatures = { workspace = true }
 subtle = { workspace = true }
 
 [dev-dependencies]
+test-support = { path = "../test-support" }
 proptest = { version = "^1.8.0" } # Tier2 dev-only per docs/dependency-security.md
 rand = { version = "^0.10.3" }  # For generating test keys
 serial_test = { version = "^4.0.1" }

@@ -10,11 +10,11 @@ use capsule_registry::CapsuleRegistry;
 use common::{EncryptionPolicy, Policy};
 use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use nvram_sim::NvramLog;
+use test_support::TempDir;
 
 #[tokio::test]
 async fn the_store_key_decides_what_a_pipeline_may_write() {
-    let dir = std::env::temp_dir().join(format!("space_master_key_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("space_master_key");
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let open = |security: StoreSecurity| {
@@ -74,5 +74,4 @@ async fn the_store_key_decides_what_a_pipeline_may_write() {
     }
 
     drop((registry, log));
-    let _ = std::fs::remove_dir_all(&dir);
 }

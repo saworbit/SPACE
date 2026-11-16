@@ -12,17 +12,16 @@ use encryption::keymanager::{KeyManager, MASTER_KEY_SIZE};
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{server, ByteRange, PutOptions, S3Error, S3View, MIN_PART_SIZE};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use test_support::TempDir;
 use tower::ServiceExt;
 
 const MIB: usize = 1024 * 1024;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("s3_multipart_{name}_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TempDir {
+    TempDir::new(&format!("s3_multipart_{name}"))
 }
 
 fn open_with(dir: &Path, security: &StoreSecurity) -> (CapsuleRegistry, S3View) {
@@ -168,7 +167,6 @@ async fn complete_and_check(security: StoreSecurity, name: &str) {
     let (_registry, view) = open_with(&dir, &security);
     assert_eq!(read(&view, "bkt", "big.bin", None).await, whole);
     drop(view);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -239,7 +237,6 @@ async fn parts_are_replaced_and_uploads_aborted() {
         .is_empty());
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// CompleteMultipartUpload refuses parts out of order, parts that aren't
@@ -310,7 +307,6 @@ async fn completion_checks_its_parts() {
     );
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// An open upload is in the journal: it survives a restart and a rebuilt
@@ -357,7 +353,6 @@ async fn open_uploads_last_until_completed_or_abandoned() {
     assert_eq!(registry.capsules().len(), 1);
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// DeleteBucket aborts the bucket's open uploads in its own batch (#233):
@@ -435,7 +430,6 @@ async fn deleting_a_bucket_aborts_its_open_uploads() {
     assert_eq!(read(&view, "other", "k", None).await, b"kept");
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// ListMultipartUploads (#234) lists a bucket's open uploads by key and
@@ -526,7 +520,6 @@ async fn open_uploads_are_listed_by_bucket_and_paged() {
     ));
 
     drop((registry, view));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 async fn send(app: &axum::Router, request: Request<Body>) -> (StatusCode, String) {
@@ -687,5 +680,4 @@ async fn the_multipart_routes_work_over_http() {
     assert!(text.contains("NoSuchUpload"), "{text}");
 
     drop(app);
-    let _ = std::fs::remove_dir_all(&dir);
 }

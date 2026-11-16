@@ -706,6 +706,7 @@ mod tests {
     use super::*;
     use common::format::{CapsuleManifest, ManifestEntry};
     use common::{CapsuleId, Policy, SegmentId};
+    use test_support::TempDir;
 
     fn manifest() -> CapsuleManifest {
         CapsuleManifest {
@@ -736,9 +737,8 @@ mod tests {
             .unwrap()
     }
 
-    fn scratch_journal(name: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("space_journal_{name}_{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn scratch_journal(name: &str) -> (TempDir, PathBuf) {
+        let dir = TempDir::new(&format!("space_journal_{name}"));
         let path = dir.join("space.journal");
         (dir, path)
     }
@@ -748,7 +748,7 @@ mod tests {
     /// damage, so the journal opens (#137).
     #[test]
     fn a_bind_holding_a_record_cut_at_any_byte_is_a_torn_tail() {
-        let (dir, path) = scratch_journal("embedded");
+        let (_dir, path) = scratch_journal("embedded");
         let embedded = record_a_name_can_hold();
         let kept = manifest();
         let (clean_len, bytes) = {
@@ -811,7 +811,6 @@ mod tests {
                 "cut at {cut}"
             );
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A flipped bit in a record's header length makes it claim to run
@@ -827,7 +826,7 @@ mod tests {
             metadata: Vec::new(),
         };
         for records_after in [2, 0] {
-            let (dir, path) = scratch_journal("damaged_length");
+            let (_dir, path) = scratch_journal("damaged_length");
             let damaged_at = {
                 let journal = Journal::open(&path).unwrap();
                 let mut writer = journal.lock();
@@ -855,14 +854,12 @@ mod tests {
                 bytes,
                 "{records_after} after"
             );
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
     #[test]
     fn a_batch_cut_at_any_byte_is_dropped_as_a_torn_tail() {
-        let dir = std::env::temp_dir().join(format!("space_journal_unit_{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new("space_journal_unit");
         let path = dir.join("space.journal");
 
         let old = manifest();
@@ -907,7 +904,6 @@ mod tests {
                 .unwrap();
             assert_eq!(records, 1, "cut at {cut}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -921,6 +917,7 @@ mod compaction_tests {
     use common::format::{CapsuleManifest, ManifestEntry};
     use common::{CapsuleId, ContentHash, Policy, SegmentId};
     use std::fs;
+    use test_support::TempDir;
 
     /// Namespaces the workload uses. The last is never created.
     const NAMESPACES: [&str; 3] = ["s3:a", "s3:b", "s3:never"];
@@ -936,12 +933,8 @@ mod compaction_tests {
         }
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join("space_journal_compaction")
-            .join(format!("{name}_{}", Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TempDir {
+        TempDir::new(&format!("space_journal_compaction_{name}"))
     }
 
     /// A manifest of one to four entries drawn from 40 segments. A segment's
@@ -1194,7 +1187,6 @@ mod compaction_tests {
         assert_eq!(index(&registry), after);
 
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1231,7 +1223,6 @@ mod compaction_tests {
             churn(&registry, &mut Rng(8), 20);
             assert!(registry.compact_journal().unwrap().is_some(), "{step:?}");
             drop(registry);
-            let _ = fs::remove_dir_all(&dir);
         }
     }
 
@@ -1251,7 +1242,6 @@ mod compaction_tests {
         assert_eq!(index(&registry), before);
 
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A swap whose rename fails leaves the journal as it was, and usable
@@ -1287,7 +1277,6 @@ mod compaction_tests {
         assert_eq!(registry.journal.start().generation, 1);
         assert_eq!(index(&registry), after);
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A swap that can't rename or reopen loses the journal's handle.
@@ -1334,7 +1323,6 @@ mod compaction_tests {
         churn(&registry, &mut Rng(17), 20);
         assert!(registry.compact_journal().unwrap().is_some());
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A dedupe capsule of `segments`, each holding the hash its id gives,
@@ -1433,7 +1421,6 @@ mod compaction_tests {
         assert_eq!(kept, vec![(SegmentId(3), times)]);
         assert!(registry.store.allocate_segment_id().unwrap().0 > next.0);
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The content index follows from the live capsules alone, so an index
@@ -1459,7 +1446,6 @@ mod compaction_tests {
             Some(SegmentId(1))
         );
         assert_rebuild_after_compaction_matches(registry, &db, "same hash");
-        let _ = fs::remove_dir_all(&dir);
 
         // A segment that only a capsule with dedupe off still holds isn't
         // offered for dedup.
@@ -1478,7 +1464,6 @@ mod compaction_tests {
             None
         );
         assert_rebuild_after_compaction_matches(registry, &db, "dedupe off");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The workload of [`records_committed_while_compaction_runs_are_kept`]
@@ -1491,7 +1476,6 @@ mod compaction_tests {
             let registry = CapsuleRegistry::open(&db).unwrap();
             churn(&registry, &mut Rng(seed), 120);
             assert_rebuild_after_compaction_matches(registry, &db, &format!("seed {seed}"));
-            let _ = fs::remove_dir_all(&dir);
         }
     }
 
@@ -1529,7 +1513,6 @@ mod compaction_tests {
         assert_eq!(index(&registry), expected);
 
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1582,7 +1565,6 @@ mod compaction_tests {
         assert!(registry.name("s3:b", "kept").unwrap().is_some());
 
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1604,6 +1586,5 @@ mod compaction_tests {
         assert!(err.to_string().contains("different stores"), "{err:#}");
 
         drop(registry);
-        let _ = fs::remove_dir_all(&dir);
     }
 }

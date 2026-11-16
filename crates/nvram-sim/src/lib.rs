@@ -965,26 +965,21 @@ impl Drop for NvramTransaction {
 mod tests {
     use super::*;
     use common::format::FRAME_LEN;
-    use std::sync::atomic::AtomicUsize;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use test_support::TempDir;
 
+    /// A log path in a scratch directory, which goes with everything the
+    /// log wrote beside it.
     struct TempLog {
         path: PathBuf,
+        _dir: TempDir,
     }
 
     impl TempLog {
         fn new(name: &str) -> Self {
-            static N: AtomicUsize = AtomicUsize::new(0);
-            let dir = std::env::temp_dir().join("space_nvram_sim_tests");
-            std::fs::create_dir_all(&dir).unwrap();
-            let unique = format!(
-                "{name}_{}_{}_{}.nvram",
-                std::process::id(),
-                N.fetch_add(1, Ordering::SeqCst),
-                now_nanos()
-            );
+            let dir = TempDir::new(&format!("space_nvram_sim_{name}"));
             Self {
-                path: dir.join(unique),
+                path: dir.join("space.nvram"),
+                _dir: dir,
             }
         }
 
@@ -994,14 +989,6 @@ mod tests {
 
         fn len(&self) -> u64 {
             std::fs::metadata(&self.path).unwrap().len()
-        }
-    }
-
-    impl Drop for TempLog {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-            let _ = std::fs::remove_file(compacting_marker(&self.path));
-            let _ = std::fs::remove_file(record_file::compaction_path(&self.path));
         }
     }
 
@@ -1021,13 +1008,6 @@ mod tests {
         let mut ids = log.list_segment_ids();
         ids.sort();
         ids
-    }
-
-    fn now_nanos() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
     }
 
     fn described(id: u64, data: &[u8]) -> Segment {

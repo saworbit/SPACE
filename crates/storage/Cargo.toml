@@ -17,6 +17,9 @@ tokio = { workspace = true, features = ["fs", "io-util", "rt", "macros"] }
 uuid = { workspace = true }
 tracing = { workspace = true, optional = true }
 
+[dev-dependencies]
+test-support = { path = "../test-support" }
+
 [features]
 default = []
 # Linux-only io_uring backend (requires kernel support at runtime).

@@ -12,49 +12,24 @@ use capsule_registry::CapsuleRegistry;
 use futures::{stream, TryStreamExt};
 use nvram_sim::NvramLog;
 use protocol_s3::{ListQuery, S3View};
-use std::{fs, path::Path};
-use uuid::Uuid;
+use test_support::TempDir;
 
 // ── Test infrastructure ─────────────────────────────────────────
 
 struct TestHarness {
     s3: S3View,
-    log_path: String,
-    meta_path: String,
+    /// Last, so the view is closed before the directory goes.
+    _dir: TempDir,
 }
 
 impl TestHarness {
     fn new(prefix: &str) -> Self {
-        let base = std::env::temp_dir().join("space_behavior_tests");
-        let _ = fs::create_dir_all(&base);
-        let unique = format!("{}_{}", prefix, Uuid::new_v4());
-        let log_path = base
-            .join(format!("{unique}.nvram"))
-            .to_string_lossy()
-            .to_string();
-        let meta_path = base
-            .join(format!("{unique}.metadata"))
-            .to_string_lossy()
-            .to_string();
-        cleanup_paths(&log_path);
-        cleanup_paths(&meta_path);
-
-        let registry = CapsuleRegistry::open(&meta_path).unwrap();
-        let nvram = NvramLog::open(&log_path).unwrap();
+        let dir = TempDir::new(&format!("space_behavior_{prefix}"));
+        let registry = CapsuleRegistry::open(dir.join("space.metadata")).unwrap();
+        let nvram = NvramLog::open(dir.join("space.nvram")).unwrap();
         let s3 = S3View::new(registry, nvram, &StoreSecurity::none()).expect("open S3 view");
 
-        Self {
-            s3,
-            log_path,
-            meta_path,
-        }
-    }
-}
-
-impl Drop for TestHarness {
-    fn drop(&mut self) {
-        cleanup_paths(&self.log_path);
-        cleanup_paths(&self.meta_path);
+        Self { s3, _dir: dir }
     }
 }
 
@@ -209,24 +184,4 @@ where
         })
         .await
         .expect("streaming read failed")
-}
-
-fn cleanup_paths(path: &str) {
-    cleanup_path(path);
-    cleanup_path(&format!("{}.segments", path));
-}
-
-fn cleanup_path(path: &str) {
-    let p = Path::new(path);
-    match fs::remove_file(p) {
-        Ok(_) => (),
-        Err(err) => {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                return;
-            }
-            if err.kind() == std::io::ErrorKind::IsADirectory {
-                let _ = fs::remove_dir_all(p);
-            }
-        }
-    }
 }

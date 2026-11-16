@@ -15,6 +15,7 @@ use protocol_s3::{ListQuery, S3Error, S3View};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::OnceLock;
+use test_support::TempDir;
 
 const BUCKETS: [&str; 2] = ["bkt-a", "bkt-b"];
 const KEYS: usize = 5;
@@ -288,8 +289,7 @@ fn check(store: &Store, model: &Model) {
 }
 
 fn run(ops: &[Op]) {
-    let dir = std::env::temp_dir().join(format!("s3_rebuild_prop_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("s3_rebuild_prop");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -310,7 +310,6 @@ fn run(ops: &[Op]) {
         assert_eq!(index(&store.registry), before, "the rebuilt index differs");
         check(&store, &model);
     });
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 proptest! {
