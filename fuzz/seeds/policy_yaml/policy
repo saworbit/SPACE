@@ -1,0 +1,5 @@
+compression: !Zstd { level: 3 }
+dedupe: false
+encryption: !XtsAes256 { key_version: null }
+layout:
+  strategy: !Fixed { segment_size: 1048576 }

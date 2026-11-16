@@ -28,6 +28,7 @@ By submitting a pull request, you agree that your contribution is licensed under
 - Install the latest stable Rust toolchain (`rustup default stable`). Building needs Rust 1.89 or newer; the test suite's dev-dependencies need a more recent stable.
 - Run `cargo test --workspace` before opening a pull request. That is what CI runs.
 - Property tests live in `crates/capsule-registry/tests/proptest_pipeline.rs`. Run them with the workspace tests.
+- The parsers that read untrusted input have cargo-fuzz targets in [`fuzz/`](fuzz/README.md), which need nightly. A change to one of those parsers runs them for 30 seconds each in CI.
 - A test that needs a directory makes it with `test_support::TempDir`, which deletes it when dropped, including when the test fails. Create it before anything that opens files in it, or declare it as the last field of a struct, so those files are closed first. A test run that's killed can still leave directories under `space-tests` in the system temp directory.
 - Dev and test builds use line-tables-only debug info and no incremental compilation, set in the root `Cargo.toml`, to keep `target/` small. Build with `CARGO_PROFILE_DEV_DEBUG=true` when you need a debugger. Old copies of test binaries still pile up in `target/` as features and dependencies change, so run `cargo clean` now and then.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [RESET.md](RESET.md) describe this branch. The pre-reset design docs are on `archive/pre-reset-2026-10`.
