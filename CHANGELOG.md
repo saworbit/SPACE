@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Linux release archives are reproducible (#242): the builder image pins the Rust toolchain, paths are remapped, and the archive is sorted with fixed owners and the commit's time. Each archive has a `TOOLCHAIN.txt`. docs/CI_CD_STRATEGY.md says how to rebuild one and compare.
 - `docs/capsule.md`, ARCHITECTURE.md, README.md and ROADMAP.md describe what landed with #169, #188, #198 and #201: where the write path takes the pipeline lock, how the content index is kept, multipart upload namespaces and composed capsules, the reclaim pass aborting old uploads, and `spacectl`'s scripting flags and completions.
 - docs/capsule.md, CONTRIBUTING.md, SECURITY.md and the S3 quick start describe what landed with #243, #244 and #252: the redb index in place of sled, the fuzz targets, and the release dry run under `Build and test`. The quick start's reset command also removes `space.db.sled-old`.
+- README.md explains what SPACE is and how encryption keeps deduplication, with Mermaid diagrams of the capsule model, the crate architecture, the write and read paths and shared segments. It also has a table of the store files, the background maintenance loops, a quick start that stores an object through S3 and reads it back with `spacectl`, and a list of limits and trade-offs. It uses ASD-STE100 Simplified Technical English where that fits.
 
 ### Removed
 
