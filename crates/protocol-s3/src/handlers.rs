@@ -1337,14 +1337,15 @@ pub async fn list_objects(
 }
 
 /// GET /{bucket}?uploads: ListMultipartUploads (#234), with `prefix`,
-/// `key-marker`, `upload-id-marker`, `max-uploads` (1 to 1000) and
-/// `encoding-type=url`. `delimiter` isn't implemented.
+/// `delimiter` (#253), `key-marker`, `upload-id-marker`, `max-uploads` (1 to
+/// 1000) and `encoding-type=url`.
 fn list_multipart_uploads(s3: &S3View, bucket: &str, query: &[(String, String)]) -> Response {
     if let Err(e) = check_query(
         query,
         &[
             "uploads",
             "prefix",
+            "delimiter",
             "key-marker",
             "upload-id-marker",
             "max-uploads",
@@ -1363,9 +1364,17 @@ fn list_multipart_uploads(s3: &S3View, bucket: &str, query: &[(String, String)])
         }
     };
     let prefix = query_param(query, "prefix").unwrap_or("");
+    let delimiter = query_param(query, "delimiter").filter(|d| !d.is_empty());
     let key_marker = query_param(query, "key-marker").filter(|m| !m.is_empty());
     let upload_id_marker = query_param(query, "upload-id-marker").filter(|m| !m.is_empty());
-    let page = match s3.list_multipart_uploads(bucket, prefix, key_marker, upload_id_marker, max) {
+    let page = match s3.list_multipart_uploads(
+        bucket,
+        prefix,
+        delimiter,
+        key_marker,
+        upload_id_marker,
+        max,
+    ) {
         Ok(page) => page,
         Err(e) => return e.into_response(),
     };
@@ -1378,12 +1387,15 @@ fn list_multipart_uploads(s3: &S3View, bucket: &str, query: &[(String, String)])
     element(&mut x, "Bucket", bucket);
     element(&mut x, "KeyMarker", &enc(key_marker.unwrap_or("")));
     element(&mut x, "UploadIdMarker", upload_id_marker.unwrap_or(""));
-    if let Some(last) = page.uploads.last() {
-        element(&mut x, "NextKeyMarker", &enc(&last.key));
+    if let Some(next) = &page.next_key_marker {
+        element(&mut x, "NextKeyMarker", &enc(next));
     }
     element(&mut x, "Prefix", &enc(prefix));
-    if let Some(last) = page.uploads.last() {
-        element(&mut x, "NextUploadIdMarker", &last.upload_id);
+    if let Some(delimiter) = delimiter {
+        element(&mut x, "Delimiter", &enc(delimiter));
+    }
+    if let Some(next) = &page.next_upload_id_marker {
+        element(&mut x, "NextUploadIdMarker", next);
     }
     element(&mut x, "MaxUploads", &max.to_string());
     element(
@@ -1398,6 +1410,11 @@ fn list_multipart_uploads(s3: &S3View, bucket: &str, query: &[(String, String)])
         element(&mut x, "StorageClass", "STANDARD");
         element(&mut x, "Initiated", &iso8601(upload.initiated));
         x.push_str("</Upload>");
+    }
+    for prefix in &page.common_prefixes {
+        x.push_str("<CommonPrefixes>");
+        element(&mut x, "Prefix", &enc(prefix));
+        x.push_str("</CommonPrefixes>");
     }
     if url {
         element(&mut x, "EncodingType", "url");

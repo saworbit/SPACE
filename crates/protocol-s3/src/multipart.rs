@@ -64,11 +64,20 @@ pub struct OpenUpload {
 }
 
 /// A page of ListMultipartUploads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UploadPage {
     pub uploads: Vec<OpenUpload>,
-    /// Whether more uploads follow the last one listed.
+    /// With a delimiter, the common prefixes that the keys of the uploads
+    /// left out of `uploads` were rolled into (#253).
+    pub common_prefixes: Vec<String>,
+    /// Whether more uploads or common prefixes follow the last one listed.
     pub truncated: bool,
+    /// The key or common prefix listed last: the key marker for the next
+    /// page.
+    pub next_key_marker: Option<String>,
+    /// The id of the upload listed last, unless a common prefix came after
+    /// it: the upload id marker for the next page.
+    pub next_upload_id_marker: Option<String>,
 }
 
 /// What the journal holds for an open upload.
@@ -137,8 +146,10 @@ impl S3View {
         }
     }
 
-    /// The open uploads into `bucket`, by key and then upload id. Upload
-    /// ids are random, so this reads every open upload's name.
+    /// The open uploads into `bucket`, by key and then upload id, which for
+    /// one key is the order they were started in. Uploads started before
+    /// #253 have random ids, and sort among the others by them. Nothing
+    /// indexes uploads by bucket, so this reads every open upload's name.
     fn uploads_into(&self, bucket: &str) -> S3Result<Vec<OpenUpload>> {
         let mut uploads = Vec::new();
         for (ns, initiated) in self
@@ -186,10 +197,17 @@ impl S3View {
     /// of them. With `key_marker` the list starts after that key, or, with
     /// `upload_id_marker` as well, after that upload of that key. Without
     /// `key_marker`, `upload_id_marker` is ignored, as in S3.
+    ///
+    /// With a `delimiter`, uploads whose keys hold it past the prefix are
+    /// rolled into one common prefix per key up to it, which counts toward
+    /// `max` as an upload does, as ListObjects does (#253). A key marker
+    /// that is a common prefix skips the uploads it covers, so the next
+    /// page starts after it.
     pub fn list_multipart_uploads(
         &self,
         bucket: &str,
         prefix: &str,
+        delimiter: Option<&str>,
         key_marker: Option<&str>,
         upload_id_marker: Option<&str>,
         max: usize,
@@ -200,14 +218,37 @@ impl S3View {
             (Some(key), None) => upload.key.as_str() > key,
             (Some(key), Some(id)) => (upload.key.as_str(), upload.upload_id.as_str()) > (key, id),
         };
-        let mut uploads: Vec<OpenUpload> = self
-            .uploads_into(bucket)?
-            .into_iter()
-            .filter(|upload| upload.key.starts_with(prefix) && after(upload))
-            .collect();
-        let truncated = uploads.len() > max;
-        uploads.truncate(max);
-        Ok(UploadPage { uploads, truncated })
+        let mut page = UploadPage::default();
+        // The common prefix listed last. Uploads are in key order, so those
+        // of one common prefix come together.
+        let mut last_group = key_marker.map(str::to_string);
+        for upload in self.uploads_into(bucket)? {
+            if !upload.key.starts_with(prefix) || !after(&upload) {
+                continue;
+            }
+            let group = common_prefix(&upload.key, prefix.len(), delimiter);
+            if group.is_some() && group == last_group {
+                continue;
+            }
+            if page.uploads.len() + page.common_prefixes.len() == max {
+                page.truncated = true;
+                break;
+            }
+            match group {
+                Some(group) => {
+                    page.next_key_marker = Some(group.clone());
+                    page.next_upload_id_marker = None;
+                    page.common_prefixes.push(group.clone());
+                    last_group = Some(group);
+                }
+                None => {
+                    page.next_key_marker = Some(upload.key.clone());
+                    page.next_upload_id_marker = Some(upload.upload_id.clone());
+                    page.uploads.push(upload);
+                }
+            }
+        }
+        Ok(page)
     }
 
     /// The records that remove `upload`: its parts, dropping each capsule
@@ -246,7 +287,10 @@ impl S3View {
     ) -> S3Result<String> {
         check_key(key)?;
         check_metadata(&metadata)?;
-        let upload_id = uuid::Uuid::new_v4().simple().to_string();
+        // A version 7 UUID starts with the time it was made, and the uuid
+        // crate keeps those made in one process in order, so uploads of a
+        // key list in the order they were started, as in S3 (#253).
+        let upload_id = uuid::Uuid::now_v7().simple().to_string();
         let ns = upload_namespace(&upload_id);
         let mut fields = vec![
             (BUCKET_FIELD.to_string(), bucket.to_string()),
