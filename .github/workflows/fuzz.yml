@@ -64,10 +64,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # cargo-fuzz itself builds with stable: its locked rustix doesn't
+      # compile on a newer nightly. The targets build with the nightly.
       - name: Install nightly and cargo-fuzz
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal --no-self-update
-          cargo +"$NIGHTLY" install cargo-fuzz@0.13.1 --locked
+          cargo +stable install cargo-fuzz@0.13.1 --locked
 
       # New inputs go to fuzz/corpus/, which isn't kept; the seeds start
       # every run.
