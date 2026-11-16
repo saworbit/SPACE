@@ -1,0 +1,86 @@
+name: Fuzz
+
+# Runs each cargo-fuzz target in fuzz/ (#243) on nightly: for 5 minutes each
+# every week, and for 30 seconds each on a pull request that changes the
+# targets or the code they reach. A crash fails the job and uploads the input
+# that caused it.
+#
+# Not part of `Build and test`: a weekly run can find an old bug at any time,
+# and that shouldn't block an unrelated merge.
+
+on:
+  pull_request:
+    paths:
+      - 'fuzz/**'
+      - 'crates/common/src/**'
+      - 'crates/nvram-sim/src/**'
+      - 'crates/protocol-s3/src/**'
+      - '.github/workflows/fuzz.yml'
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  # A dated nightly, so a new one can't break the job without a commit.
+  # Bump it by hand, with fuzz/README.md.
+  NIGHTLY: nightly-2026-11-14
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aws_chunked
+          - checksum
+          - complete_xml
+          - delete_xml
+          - journal_record
+          - policy_yaml
+          - record_file
+    env:
+      TARGET: ${{ matrix.target }}
+      SECONDS_EACH: ${{ github.event_name == 'pull_request' && '30' || '300' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --no-self-update
+          cargo +"$NIGHTLY" install cargo-fuzz@0.13.1 --locked
+
+      # New inputs go to fuzz/corpus/, which isn't kept; the seeds start
+      # every run.
+      - name: Fuzz
+        run: |
+          mkdir -p "fuzz/corpus/$TARGET"
+          cargo +"$NIGHTLY" fuzz run "$TARGET" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" -- \
+            -max_total_time="$SECONDS_EACH" -timeout=10 -rss_limit_mb=2048
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30

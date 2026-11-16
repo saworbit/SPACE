@@ -1,0 +1,82 @@
+[package]
+name = "space-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "BUSL-1.1"
+publish = false
+description = "cargo-fuzz targets for the parsers that read untrusted input (#243)"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not a member of the root workspace: libFuzzer's sanitizer flags need
+# nightly, and stable builds of the workspace shouldn't.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "=0.4.10"
+common = { path = "../crates/common" }
+nvram-sim = { path = "../crates/nvram-sim" }
+protocol-s3 = { path = "../crates/protocol-s3", features = ["fuzzing"] }
+# The versions the workspace uses.
+futures = "0.3.31"
+serde_norway = "=0.9.42"
+tokio = { version = "1.48.0", features = ["rt", "io-util"] }
+
+[dev-dependencies]
+uuid = "1.18.1"
+
+[[bin]]
+name = "aws_chunked"
+path = "fuzz_targets/aws_chunked.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checksum"
+path = "fuzz_targets/checksum.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "complete_xml"
+path = "fuzz_targets/complete_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delete_xml"
+path = "fuzz_targets/delete_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_record"
+path = "fuzz_targets/journal_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_yaml"
+path = "fuzz_targets/policy_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record_file"
+path = "fuzz_targets/record_file.rs"
+test = false
+doc = false
+bench = false
+
+# Writes the seed corpora from the encoders: cargo run --example seeds
+[[example]]
+name = "seeds"
+path = "examples/seeds.rs"

@@ -1,0 +1,1 @@
+<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Part><PartNumber>1</PartNumber><ETag>"0123"</ETag><ChecksumCRC32>AAAAAA==</ChecksumCRC32></Part><Part><PartNumber>2</PartNumber><ETag>&quot;4567&quot;</ETag></Part></CompleteMultipartUpload>

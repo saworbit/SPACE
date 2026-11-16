@@ -34,3 +34,4 @@ docs/** linguist-documentation
 *.seg binary
 *.nvram binary
 *.journal binary
+fuzz/seeds/** binary

@@ -1634,6 +1634,25 @@ pub fn iso8601(secs: u64) -> String {
     )
 }
 
+/// The request body parsers, for the fuzz targets in `fuzz/` (#243). Not
+/// part of the API: the `fuzzing` feature exists only for them.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    /// Parse a DeleteObjects body. The keys, or why the body was refused.
+    pub fn parse_delete(body: &[u8]) -> Result<Vec<String>, String> {
+        super::parse_delete(body)
+            .map(|request| request.objects.into_iter().map(|(key, _)| key).collect())
+            .map_err(|err| err.to_string())
+    }
+
+    /// Parse a CompleteMultipartUpload body. The part numbers and ETags,
+    /// or why the body was refused.
+    pub fn parse_complete(body: &[u8]) -> Result<Vec<(u32, String)>, String> {
+        super::parse_complete(body).map_err(|err| err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

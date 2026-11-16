@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Exposes the request body parsers to the fuzz targets in fuzz/ (#243).
+fuzzing = []
+
 [dependencies]
 common = { path = "../common" }
 capsule-registry = { path = "../capsule-registry" }

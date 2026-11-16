@@ -50,4 +50,4 @@ cli:
 
 testing:
   - changed-files:
-      - any-glob-to-any-file: ['crates/*/tests/**', 'crates/*/benches/**']
+      - any-glob-to-any-file: ['crates/*/tests/**', 'crates/*/benches/**', 'fuzz/**']
