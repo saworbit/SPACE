@@ -13,7 +13,9 @@
 #
 # Base images are pinned by digest, and Dependabot updates the digests. The
 # builder tracks current stable Rust; CI checks the workspace still builds on
-# its rust-version.
+# its rust-version. The Linux release binaries are built in the same builder
+# image and checked on the same runtime image: release-build.yml reads both
+# FROM lines, so keep their form.
 FROM rust:1-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS builder
 WORKDIR /usr/src/space
 COPY Cargo.toml Cargo.lock ./

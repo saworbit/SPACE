@@ -1,32 +1,24 @@
 name: Release
 
 # Pushing a tag vX.Y.Z (the workspace version in Cargo.toml) runs the whole CI
-# suite on the tagged commit, builds spacectl for each platform below, and
+# suite on the tagged commit, builds spacectl for each platform, and
 # publishes a GitHub release with the archives, a SHA256SUMS file, and a build
 # provenance attestation for each archive.
 #
-# A pull request that changes this file runs the builds without publishing, so
+# The builds are in release-build.yml. ci.yml runs them as a dry run on a pull
+# request that changes how a release is built, as part of `Build and test`, so
 # a broken release is found before a tag needs it.
 
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
-  pull_request:
-    paths: ['.github/workflows/release.yml']
 
 permissions: {}
 
-# A dry run on a pull request gives way to a newer push; a tag's run never
-# gets cancelled.
+# A tag's run never gets cancelled.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0
-  CARGO_NET_RETRY: 10
-  RUSTUP_MAX_RETRIES: 10
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -35,7 +27,6 @@ defaults:
 jobs:
   check-tag:
     name: Check the tag
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -55,80 +46,22 @@ jobs:
 
   ci:
     name: CI
-    if: github.event_name == 'push'
     permissions:
       contents: read
     # Not the newer $/ form: actionlint 1.7.12 rejects it.
     uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
 
   build:
-    name: Build (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-          # Static C runtime, so spacectl.exe runs without the VC++
-          # redistributable installed.
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            rustflags: -C target-feature=+crt-static
-          - target: aarch64-apple-darwin
-            os: macos-latest
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    name: Build
     permissions:
       contents: read
-    env:
-      TARGET: ${{ matrix.target }}
-      RUSTFLAGS: ${{ matrix.rustflags }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # Every runner image above ships rustup. No build cache: a release is
-      # built from a clean slate.
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal --target "$TARGET" --no-self-update
-          rustup default stable
-
-      - name: Build spacectl
-        run: cargo build --release --locked -p spacectl --target "$TARGET"
-
-      - name: Package
-        env:
-          REF_NAME: ${{ github.ref_name }}
-          EVENT: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT" = push ]; then version="$REF_NAME"; else version=dry-run; fi
-          name="spacectl-${version}-${TARGET}"
-          mkdir -p "dist/$name"
-          cp LICENSE NOTICE README.md "dist/$name/"
-          if [ "$RUNNER_OS" = Windows ]; then
-            cp "target/$TARGET/release/spacectl.exe" "dist/$name/"
-            (cd dist && 7z a -tzip "$name.zip" "$name" > /dev/null)
-          else
-            cp "target/$TARGET/release/spacectl" "dist/$name/"
-            tar -C dist -czf "dist/$name.tar.gz" "$name"
-          fi
-          rm -rf "dist/$name"
-          ls -l dist
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: spacectl-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 7
+    # Not the newer $/ form: actionlint 1.7.12 rejects it.
+    uses: ./.github/workflows/release-build.yml # zizmor: ignore[self-repository]
+    with:
+      version: ${{ github.ref_name }}
 
   publish:
     name: Publish the release
-    if: github.event_name == 'push'
     needs: [check-tag, ci, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
