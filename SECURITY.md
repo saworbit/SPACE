@@ -64,6 +64,7 @@ This describes the post-reset `main` branch. None of it has been professionally 
 
 - Lock acquisitions in `storage`, `pipeline`, `protocol-s3` and `capsule-registry` mostly recover from poisoned locks with `unwrap_or_else(|e| e.into_inner())`. `nvram-sim` still uses `.unwrap()`.
 - Cryptographic and serialization dependencies are pinned to exact versions in the root `Cargo.toml`, and `Cargo.lock` is committed.
+- The parsers that read untrusted input, such as S3 request bodies, digest headers, journal and data log records, and policy files, have cargo-fuzz targets in [`fuzz/`](fuzz/README.md). CI runs them weekly, and briefly on pull requests that change them ([#243](https://github.com/saworbit/SPACE/issues/243)).
 
 ### Removed in the reset
 
