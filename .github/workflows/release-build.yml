@@ -1,0 +1,171 @@
+name: Release build
+
+# Builds the spacectl release archives. release.yml calls this for a tag and
+# publishes what it builds. ci.yml calls it, as a dry run that publishes
+# nothing, on a pull request that changes how a release is built, so a broken
+# release build fails `Build and test`.
+#
+# The Linux binaries are built in the Dockerfile's builder image, pinned by
+# digest, so they link against Debian 12's glibc and use that image's Rust.
+# The Windows and macOS builds install the same Rust version. Archives take
+# their timestamps from the commit, so two builds of one commit give the same
+# Linux archives (see docs/CI_CD_STRATEGY.md).
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version in the archive names, such as v0.2.0
+        type: string
+        required: true
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Pick the toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      builder: ${{ steps.pick.outputs.builder }}
+      runtime: ${{ steps.pick.outputs.runtime }}
+      rust: ${{ steps.pick.outputs.rust }}
+      epoch: ${{ steps.pick.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dependabot keeps the Dockerfile's digests current, and the release
+      # follows them.
+      - id: pick
+        run: |
+          builder=$(sed -n 's/^FROM \(rust:[^ ]*@sha256:[0-9a-f]\{64\}\) AS builder$/\1/p' Dockerfile)
+          runtime=$(sed -n 's/^FROM \(debian:[^ ]*@sha256:[0-9a-f]\{64\}\)$/\1/p' Dockerfile)
+          [ -n "$builder" ] && [ -n "$runtime" ] \
+            || { echo "::error file=Dockerfile::no digest-pinned rust builder or debian runtime image"; exit 1; }
+          rust=$(docker buildx imagetools inspect "$builder" \
+                   --format '{{json (index .Image "linux/amd64").Config.Env}}' \
+                 | jq -r '.[] | select(startswith("RUST_VERSION=")) | ltrimstr("RUST_VERSION=")')
+          [ -n "$rust" ] || { echo "::error::no RUST_VERSION in $builder"; exit 1; }
+          {
+            echo "builder=$builder"
+            echo "runtime=$runtime"
+            echo "rust=$rust"
+            echo "epoch=$(git log -1 --format=%ct)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          # Static C runtime, so spacectl.exe runs without the VC++
+          # redistributable installed.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            rustflags: -C target-feature=+crt-static
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+      NAME: spacectl-${{ inputs.version }}-${{ matrix.target }}
+      SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No build cache: a release is built from a clean slate. The source is
+      # always at /src and the cargo home at the image's, so paths in the
+      # binary don't depend on the runner.
+      - name: Build spacectl in the builder image
+        if: runner.os == 'Linux'
+        env:
+          BUILDER: ${{ needs.prepare.outputs.builder }}
+        run: |
+          docker run --rm --volume "$PWD:/src" --workdir /src \
+            --env TARGET --env CARGO_TERM_COLOR --env CARGO_INCREMENTAL --env CARGO_NET_RETRY \
+            "$BUILDER" bash -euo pipefail -c '
+              export RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=$CARGO_HOME=/cargo"
+              cargo build --release --locked -p spacectl --target "$TARGET"
+              rustc -vV > target/toolchain.txt
+            '
+
+      # Every runner image here ships rustup.
+      - name: Build spacectl
+        if: runner.os != 'Linux'
+        env:
+          RUST_VERSION: ${{ needs.prepare.outputs.rust }}
+          TARGET_RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target "$TARGET" --no-self-update
+          rustup default "$RUST_VERSION"
+          RUSTFLAGS="$TARGET_RUSTFLAGS --remap-path-prefix=$GITHUB_WORKSPACE=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" \
+            cargo build --release --locked -p spacectl --target "$TARGET"
+          rustc -vV > target/toolchain.txt
+
+      # The Linux binary must start on the older systems the docs promise.
+      - name: Check spacectl runs on Debian 12 and Ubuntu 22.04
+        if: runner.os == 'Linux'
+        env:
+          DEBIAN: ${{ needs.prepare.outputs.runtime }}
+          UBUNTU: ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde
+        run: |
+          for image in "$DEBIAN" "$UBUNTU"; do
+            docker run --rm --volume "$PWD/target/$TARGET/release:/opt/space:ro" "$image" /opt/space/spacectl --version
+          done
+
+      # Sorted, with fixed owners and modes, every timestamp the commit's,
+      # and no name or time in the gzip header. GNU tar on macOS too.
+      - name: Package
+        run: |
+          mkdir -p "dist/$NAME"
+          cp LICENSE NOTICE README.md "dist/$NAME/"
+          cp target/toolchain.txt "dist/$NAME/TOOLCHAIN.txt"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "target/$TARGET/release/spacectl.exe" "dist/$NAME/"
+            (cd dist && 7z a -tzip "$NAME.zip" "$NAME" > /dev/null)
+          else
+            cp "target/$TARGET/release/spacectl" "dist/$NAME/"
+            tar=tar
+            if [ "$RUNNER_OS" = macOS ]; then
+              tar=gtar
+              command -v gtar > /dev/null || { echo "::error::GNU tar (gtar) is missing"; exit 1; }
+            fi
+            "$tar" -C dist --sort=name --format=gnu --owner=0 --group=0 --numeric-owner \
+              --mtime="@$SOURCE_DATE_EPOCH" --mode=go-w -cf - "$NAME" \
+              | gzip -n > "dist/$NAME.tar.gz"
+          fi
+          rm -rf "dist/$NAME"
+          if command -v sha256sum > /dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+          (cd dist && "${sum[@]}" -- *)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: spacectl-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

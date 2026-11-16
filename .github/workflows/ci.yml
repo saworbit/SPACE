@@ -224,15 +224,55 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: zizmor --format=github .
 
+  # A pull request that changes how a release is built also runs the release
+  # builds, publishing nothing, so a broken release fails this check before a
+  # tag needs it. Other pull requests skip them.
+  release-changes:
+    name: Look for release changes
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      # The checkout is the pull request merged into its base, so the first
+      # parent is the base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      # The Linux release builds run in the Dockerfile's builder image.
+      - id: diff
+        run: |
+          files=$(git diff --name-only HEAD^1 HEAD)
+          changed=false
+          if grep -Eq '^(\.github/workflows/release(-build)?\.yml|Dockerfile)$' <<< "$files"; then
+            changed=true
+          fi
+          echo "changed=$changed" | tee -a "$GITHUB_OUTPUT"
+
+  release-dry-run:
+    name: Release dry run
+    needs: release-changes
+    if: needs.release-changes.outputs.changed == 'true'
+    permissions:
+      contents: read
+    # Not the newer $/ form: actionlint 1.7.12 rejects it.
+    uses: ./.github/workflows/release-build.yml # zizmor: ignore[self-repository]
+    with:
+      version: dry-run
+
   ci-ok:
     name: Build and test
     if: always()
-    needs: [lint, test, msrv, docs, audit, dependency-review, typos, workflows]
+    needs: [lint, test, msrv, docs, audit, dependency-review, typos, workflows, release-changes, release-dry-run]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # A skipped job is fine (dependency review only runs on pull requests);
-      # a failed or cancelled one is not.
+      # A skipped job is fine (dependency review only runs on pull requests,
+      # the release dry run only when a release change needs it); a failed or
+      # cancelled one is not.
       - name: Check every job passed
         env:
           RESULTS: ${{ toJSON(needs) }}
