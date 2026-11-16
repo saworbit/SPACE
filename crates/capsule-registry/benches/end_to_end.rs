@@ -43,7 +43,7 @@ fn policy(encrypted: bool) -> Policy {
 /// A fresh store that is deleted on drop.
 struct Store {
     pipeline: WritePipeline,
-    /// Last, so the log and sled are closed before their files go.
+    /// Last, so the log and the index are closed before their files go.
     _dir: TempDir,
 }
 

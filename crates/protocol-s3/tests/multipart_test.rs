@@ -163,7 +163,7 @@ async fn complete_and_check(security: StoreSecurity, name: &str) {
 
     // It reads back after a restart and a rebuild of the index.
     drop((registry, log, view));
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
     let (_registry, view) = open_with(&dir, &security);
     assert_eq!(read(&view, "bkt", "big.bin", None).await, whole);
     drop(view);
@@ -322,7 +322,7 @@ async fn open_uploads_last_until_completed_or_abandoned() {
         .unwrap();
     let tag = part(&view, "kept", &kept, 1, b"kept part").await;
     drop((registry, view));
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
 
     let (registry, view) = open(&dir);
     assert_eq!(view.list_parts("bkt", "kept", &kept).unwrap().len(), 1);

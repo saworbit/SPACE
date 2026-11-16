@@ -1,7 +1,7 @@
 //! The capsule journal (`docs/on-disk-format.md` §5–§7): an append-only file
 //! of `CAPSULE`, `DROP`, `NAMESPACE`, `BIND`, `UNBIND`, `KEY` and `BATCH`
 //! records. It's the durable record of which capsules and names exist, and
-//! of an encrypted store's key; sled is an index rebuilt from it.
+//! of an encrypted store's key; `space.db` is an index rebuilt from it.
 //!
 //! Records are never removed in place. Compaction (§9.2,
 //! [`Journal::compact_with`]) writes the live state to the next generation
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 
-/// Version of the index sled keeps. Bump it whenever the encoding of an index
+/// Version of the index in `space.db`. Bump it whenever the encoding of an index
 /// record changes or the index starts holding something new from the
 /// journal: an index of another version is rebuilt from the journal.
 ///
@@ -31,10 +31,11 @@ use uuid::Uuid;
 /// 4: names are also indexed under the capsule they point at (#138).
 /// 5: the content index follows from the live capsules alone (#188).
 /// 6: the index's records are no longer bincode (#152).
-pub const INDEX_VERSION: u32 = 6;
+/// 7: the index is a redb database file, not a sled directory (#244).
+pub const INDEX_VERSION: u32 = 7;
 
 /// How far into which journal the index has applied records. Stored in
-/// sled next to the index, and updated in the same transaction as each
+/// `space.db` next to the index, and updated in the same transaction as each
 /// record's effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalPosition {
@@ -293,7 +294,7 @@ fn write_live(
 }
 
 impl Journal {
-    /// The journal that sits next to the sled database at `db_path`.
+    /// The journal that sits next to the index database at `db_path`.
     pub fn path_for(db_path: &Path) -> PathBuf {
         db_path.with_extension("journal")
     }
@@ -1182,7 +1183,7 @@ mod compaction_tests {
         drop(registry);
 
         // An index rebuilt from the compacted journal is the same index.
-        fs::remove_dir_all(&db).unwrap();
+        fs::remove_file(&db).unwrap();
         let registry = CapsuleRegistry::open(&db).unwrap();
         assert_eq!(index(&registry), after);
 
@@ -1361,16 +1362,16 @@ mod compaction_tests {
         let registry = CapsuleRegistry::open(db).unwrap();
         assert_eq!(index(&registry), expected, "{what}: after a reopen");
         drop(registry);
-        fs::remove_dir_all(db).unwrap();
+        fs::remove_file(db).unwrap();
         let registry = CapsuleRegistry::open(db).unwrap();
         assert_eq!(index(&registry), expected, "{what}: after a rebuild");
     }
 
-    /// A store whose space.db still has bincode's journal position, as every
-    /// store did before #152, rebuilds the same index on open, and keeps its
-    /// scrub schedule and segment counter, which read the same either way.
+    /// A store whose journal position is in another encoding, such as
+    /// bincode's before #152, rebuilds the same index on open, and keeps its
+    /// scrub schedule and segment counter, which aren't journal state.
     #[test]
-    fn a_store_indexed_with_bincode_rebuilds_on_open() {
+    fn a_store_with_a_position_in_another_encoding_rebuilds_on_open() {
         use common::scrub::ScrubTimes;
         use std::time::{Duration, UNIX_EPOCH};
 
@@ -1400,10 +1401,13 @@ mod compaction_tests {
         old.extend_from_slice(&position.generation.to_le_bytes());
         old.extend_from_slice(&position.offset.to_le_bytes());
         {
-            let sled = sled::open(&db).unwrap();
-            let counters = sled.open_tree("counters").unwrap();
-            counters.insert("journal_position", old).unwrap();
-            sled.flush().unwrap();
+            let index = redb::Database::create(&db).unwrap();
+            let txn = index.begin_write().unwrap();
+            txn.open_table(redb::TableDefinition::<&[u8], &[u8]>::new("counters"))
+                .unwrap()
+                .insert(&b"journal_position"[..], &old[..])
+                .unwrap();
+            txn.commit().unwrap();
         }
 
         let registry = CapsuleRegistry::open(&db).unwrap();
@@ -1508,7 +1512,7 @@ mod compaction_tests {
         let registry = CapsuleRegistry::open(&db).unwrap();
         assert_eq!(index(&registry), expected);
         drop(registry);
-        fs::remove_dir_all(&db).unwrap();
+        fs::remove_file(&db).unwrap();
         let registry = CapsuleRegistry::open(&db).unwrap();
         assert_eq!(index(&registry), expected);
 

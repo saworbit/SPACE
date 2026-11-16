@@ -164,7 +164,7 @@ async fn keys_and_buckets_survive_losing_the_index() {
     drop((registry, view));
 
     // Buckets and keys are in the capsule journal, so the index rebuilds.
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
 
     let (registry, view) = open(&dir);
     assert_eq!(keys(&view, "photos"), ["a/1.jpg", "a/2.jpg"]);
@@ -267,7 +267,7 @@ async fn metadata_survives_a_restart_and_a_lost_index() {
 
     for lose_index in [false, true] {
         if lose_index {
-            std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+            std::fs::remove_file(dir.join("space.db")).unwrap();
         }
         let (registry, view) = open(&dir);
         let meta = view.head_object("bkt", "img").unwrap();
@@ -331,7 +331,7 @@ async fn a_deleted_bucket_stays_deleted() {
 
     for lose_index in [false, true] {
         if lose_index {
-            std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+            std::fs::remove_file(dir.join("space.db")).unwrap();
         }
         let (registry, view) = open(&dir);
         let buckets: Vec<String> = view
@@ -439,7 +439,7 @@ async fn deleting_a_named_capsule_removes_its_key() {
 
     for lose_index in [false, true] {
         if lose_index {
-            std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+            std::fs::remove_file(dir.join("space.db")).unwrap();
         }
         let (registry, view) = open(&dir);
         assert!(registry.name("s3:bkt", "photos/a.jpg").unwrap().is_none());

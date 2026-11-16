@@ -1,25 +1,21 @@
 use anyhow::{anyhow, bail, Context, Result};
 use common::scrub::{Damage, DamageKind, ScrubKind, ScrubTimes};
 use common::{Capsule, CapsuleId, ContentHash, SegmentId};
-use sled::transaction::{
-    ConflictableTransactionError, ConflictableTransactionResult, TransactionError,
-    TransactionalTree,
+use redb::{
+    Database, DatabaseError, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata,
+    TableDefinition, WriteTransaction,
 };
-use sled::{Db, Transactional};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::warn;
 
 use crate::journal::JournalPosition;
 use common::format::JournalRecord;
 
 const NEXT_SEGMENT_KEY: &[u8] = b"next_segment_id";
-/// Key in the counters tree for the journal position the index has reached.
+/// Key in the counters table for the journal position the index has reached.
 const JOURNAL_POSITION_KEY: &[u8] = b"journal_position";
 
-/// Abstraction over the metadata storage backend.
-/// Allows swapping Sled for other engines (e.g., RocksDB, in-memory) without
-/// changing the registry surface.
 /// What a name points at: a capsule, and the metadata kept with the name
 /// (`docs/on-disk-format.md` §5.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +24,8 @@ pub struct Binding {
     pub metadata: Vec<(String, String)>,
 }
 
+/// The registry's index of the capsule journal. The storage engine under it
+/// can change without the registry noticing (#244).
 pub trait MetadataStore: Send + Sync {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>>;
     fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>>;
@@ -90,37 +88,55 @@ pub trait MetadataStore: Send + Sync {
     ) -> Result<Vec<(String, Binding)>>;
 }
 
-/// Sled-backed metadata store: crash-safe, concurrent, embeddable.
-pub struct SledStore {
-    db: Db,
-    capsules: sled::Tree,
-    /// Content hash to the segment dedup reuses for it: the lowest numbered
-    /// of its `candidates` (#188).
-    content: sled::Tree,
-    /// Segment id to the number of capsule entries that reference it.
-    refs: sled::Tree,
-    /// Segment id to its content hash and the number of entries in live
-    /// dedupe capsules that reference it, for segments with any.
-    indexed: sled::Tree,
-    /// Content hash to every segment that holds it and that a live dedupe
-    /// capsule references, lowest first.
-    candidates: sled::Tree,
-    /// The live capsules written with dedupe on.
-    deduped: sled::Tree,
-    counters: sled::Tree,
-    /// Namespace to its creation time.
-    namespaces: sled::Tree,
-    /// Namespace and name ([`name_key`]) to the capsule the name points at.
-    names: sled::Tree,
-    /// Each name under the capsule it points at ([`capsule_name_key`]), so
-    /// deleting a capsule can unbind its names (#138).
-    capsule_names: sled::Tree,
-    /// Segment id to when it was last light- and deep-scrubbed.
-    scrub_schedule: sled::Tree,
+/// The index in one redb database file, `space.db` (#244). Every table maps
+/// byte strings to byte strings, in byte order; the encodings are below.
+pub struct RedbStore {
+    db: Database,
 }
 
-/// Trees that held S3 buckets and keys before names moved to the journal.
-const LEGACY_NAME_TREES: [&str; 2] = ["s3_buckets", "s3_objects"];
+type Def = TableDefinition<'static, &'static [u8], &'static [u8]>;
+type Tbl<'txn> = redb::Table<'txn, &'static [u8], &'static [u8]>;
+
+/// Capsule id to its capsule record.
+const CAPSULES: Def = TableDefinition::new("capsules");
+/// Content hash to the segment dedup reuses for it: the lowest numbered of
+/// its `candidates` (#188).
+const CONTENT: Def = TableDefinition::new("content");
+/// Segment id to the number of capsule entries that reference it.
+const REFS: Def = TableDefinition::new("refs");
+/// Segment id to its content hash and the number of entries in live dedupe
+/// capsules that reference it, for segments with any.
+const INDEXED: Def = TableDefinition::new("indexed");
+/// Content hash to every segment that holds it and that a live dedupe
+/// capsule references, lowest first.
+const CANDIDATES: Def = TableDefinition::new("candidates");
+/// The live capsules written with dedupe on.
+const DEDUPED: Def = TableDefinition::new("deduped");
+/// The segment counter and the journal position.
+const COUNTERS: Def = TableDefinition::new("counters");
+/// Namespace to its creation time.
+const NAMESPACES: Def = TableDefinition::new("namespaces");
+/// Namespace and name ([`name_key`]) to the capsule the name points at.
+const NAMES: Def = TableDefinition::new("names");
+/// Each name under the capsule it points at ([`capsule_name_key`]), so
+/// deleting a capsule can unbind its names (#138).
+const CAPSULE_NAMES: Def = TableDefinition::new("capsule_names");
+/// Segment id to when it was last light- and deep-scrubbed. Not journal
+/// state, so a rebuild keeps it.
+const SCRUB_SCHEDULE: Def = TableDefinition::new("scrub_schedule");
+
+/// The tables a rebuild empties and the journal fills again.
+const INDEX_TABLES: [Def; 9] = [
+    CAPSULES,
+    CONTENT,
+    REFS,
+    INDEXED,
+    CANDIDATES,
+    DEDUPED,
+    NAMESPACES,
+    NAMES,
+    CAPSULE_NAMES,
+];
 
 /// Index key for a name. Namespaces can't contain NUL, so the separator
 /// keeps every namespace's names apart.
@@ -359,101 +375,139 @@ fn decode_scrub_times(bytes: &[u8]) -> Result<ScrubTimes> {
     })
 }
 
-/// How long [`SledStore::open`] waits for a lock on the database to clear.
-/// sled 0.34 writes buffers on background threads that keep the file, and
-/// its lock, for a moment after the last `Db` is dropped, so a store closed
-/// and opened again at once can find its own lock still held (#246).
-const LOCK_WAIT: Duration = Duration::from_secs(1);
+/// The database at `path` is open in another process, or elsewhere in this
+/// one. redb allows one open per file (#244).
+#[derive(Debug)]
+pub struct StoreInUse(pub PathBuf);
 
-/// `sled::open`, retried while the database's lock is held, for up to
-/// [`LOCK_WAIT`]. A lock still held after that is the error sled gives,
-/// which `spacectl` reports as a store in use by another process.
-fn open_db(path: &str) -> sled::Result<Db> {
-    let deadline = std::time::Instant::now() + LOCK_WAIT;
-    let mut pause = Duration::from_millis(5);
-    loop {
-        match sled::open(path) {
-            Err(sled::Error::Io(err))
-                if err.to_string().contains("could not acquire lock")
-                    && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(pause);
-                pause = (pause * 2).min(Duration::from_millis(100));
-            }
-            opened => return opened,
-        }
+impl std::fmt::Display for StoreInUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "'{}' is open in another process", self.0.display())
     }
 }
 
-impl SledStore {
-    pub fn open(path: &str) -> Result<Self> {
-        let db = open_db(path)?;
-        let capsules = db.open_tree("capsules")?;
-        let content = db.open_tree("content")?;
-        let refs = db.open_tree("refs")?;
-        let indexed = db.open_tree("indexed")?;
-        let candidates = db.open_tree("candidates")?;
-        let deduped = db.open_tree("deduped")?;
-        let counters = db.open_tree("counters")?;
-        let namespaces = db.open_tree("namespaces")?;
-        let names = db.open_tree("names")?;
-        let capsule_names = db.open_tree("capsule_names")?;
-        let scrub_schedule = db.open_tree("scrub_schedule")?;
+impl std::error::Error for StoreInUse {}
 
-        // Initialize the segment counter if it doesn't exist yet.
-        let _ = counters.compare_and_swap(
-            NEXT_SEGMENT_KEY,
-            None as Option<&[u8]>,
-            Some(&0_u64.to_le_bytes()[..]),
-        )?;
-
-        Ok(Self {
-            db,
-            capsules,
-            content,
-            refs,
-            indexed,
-            candidates,
-            deduped,
-            counters,
-            namespaces,
-            names,
-            capsule_names,
-            scrub_schedule,
-        })
-    }
-
-    fn flush(&self) -> Result<()> {
-        self.db.flush()?;
-        Ok(())
-    }
-
-    /// How many entries the legacy S3 trees hold. Checked without opening a
-    /// tree that isn't there, since opening one creates it.
-    fn legacy_name_entries(&self) -> Result<usize> {
-        let existing = self.db.tree_names();
-        let mut entries = 0;
-        for tree in LEGACY_NAME_TREES {
-            if existing.iter().any(|name| name.as_ref() == tree.as_bytes()) {
-                entries += self.db.open_tree(tree)?.len();
+impl RedbStore {
+    /// Open the database at `path`, creating it if needed. A database
+    /// another process has open is refused at once with [`StoreInUse`]:
+    /// redb takes and drops its lock with the file, so a store closed a
+    /// moment ago opens again without waiting.
+    pub fn open(path: &Path) -> Result<Self> {
+        let db = Database::create(path).map_err(|err| match err {
+            DatabaseError::DatabaseAlreadyOpen => {
+                anyhow::Error::new(StoreInUse(path.to_path_buf()))
             }
+            other => anyhow::Error::new(other).context(format!(
+                "can't open the registry index '{}'",
+                path.display()
+            )),
+        })?;
+        let store = Self { db };
+        // Every table exists from the start, so a read never finds one
+        // missing, and the segment counter starts at 0.
+        store.write(Durability::Immediate, |txn| {
+            for table in INDEX_TABLES {
+                txn.open_table(table)?;
+            }
+            txn.open_table(SCRUB_SCHEDULE)?;
+            let mut counters = txn.open_table(COUNTERS)?;
+            if counters.get(NEXT_SEGMENT_KEY)?.is_none() {
+                counters.insert(NEXT_SEGMENT_KEY, &0_u64.to_le_bytes()[..])?;
+            }
+            Ok(())
+        })?;
+        Ok(store)
+    }
+
+    /// Run `f` in a write transaction and commit it with `durability`. An
+    /// error from `f` aborts the transaction, leaving nothing changed.
+    ///
+    /// The index is a copy of the journal, so applying a record commits
+    /// with [`Durability::None`]: a crash loses those commits and the
+    /// journal replays them on the next open, since the journal position
+    /// goes in the same transaction. What isn't journal state, such as the
+    /// segment counter and the scrub schedule, commits with
+    /// [`Durability::Immediate`].
+    fn write<T>(
+        &self,
+        durability: Durability,
+        f: impl FnOnce(&WriteTransaction) -> Result<T>,
+    ) -> Result<T> {
+        let mut txn = self.db.begin_write()?;
+        txn.set_durability(durability)?;
+        let out = f(&txn)?;
+        txn.commit()?;
+        Ok(out)
+    }
+
+    /// The value at `key` in `table`.
+    fn get(&self, table: Def, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(table)?;
+        get(&table, key)
+    }
+
+    /// Every entry of `table`, in key order.
+    fn entries(&self, table: Def) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(table)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (k, v) = entry?;
+            out.push((k.value().to_vec(), v.value().to_vec()));
         }
-        Ok(entries)
+        Ok(out)
+    }
+
+    /// Up to `limit` entries of `table` from `start` on whose keys start
+    /// with `prefix`, in key order.
+    fn scan(
+        &self,
+        table: Def,
+        start: &[u8],
+        prefix: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(table)?;
+        let mut out = Vec::new();
+        for entry in table.range(start..)? {
+            if out.len() >= limit {
+                break;
+            }
+            let (k, v) = entry?;
+            if !k.value().starts_with(prefix) {
+                break;
+            }
+            out.push((k.value().to_vec(), v.value().to_vec()));
+        }
+        Ok(out)
     }
 }
 
-impl MetadataStore for SledStore {
+/// The value at `key` in `table`, copied out.
+fn get(
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>> {
+    Ok(table.get(key)?.map(|v| v.value().to_vec()))
+}
+
+/// Remove `key` from `table`, returning what it held.
+fn take(table: &mut Tbl<'_>, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    Ok(table.remove(key)?.map(|v| v.value().to_vec()))
+}
+
+impl MetadataStore for RedbStore {
     fn get_capsule(&self, id: &CapsuleId) -> Result<Option<Capsule>> {
-        match self.capsules.get(capsule_key(*id))? {
-            Some(bytes) => Ok(Some(decode_capsule(&bytes)?)),
-            None => Ok(None),
-        }
+        self.get(CAPSULES, &capsule_key(*id))?
+            .map(|bytes| decode_capsule(&bytes))
+            .transpose()
     }
 
     fn list_capsules(&self, limit: usize, start_after: Option<CapsuleId>) -> Result<Vec<Capsule>> {
-        let mut capsules = Vec::with_capacity(limit);
-
-        let start_key = match start_after {
+        let start = match start_after {
             Some(id) => {
                 let mut key = capsule_key(id).to_vec();
                 key.push(0);
@@ -461,224 +515,175 @@ impl MetadataStore for SledStore {
             }
             None => Vec::new(),
         };
-
-        let iter = self.capsules.range(start_key..);
-
-        for entry in iter.take(limit) {
-            let (_, value) = entry?;
-            capsules.push(decode_capsule(&value)?);
-        }
-
-        Ok(capsules)
+        self.scan(CAPSULES, &start, &[], limit)?
+            .iter()
+            .map(|(_, value)| decode_capsule(value))
+            .collect()
     }
 
     fn add_deduped_bytes(&self, id: &CapsuleId, bytes: u64) -> Result<()> {
-        let updated =
-            self.capsules
-                .fetch_and_update(capsule_key(*id), |existing| -> Option<Vec<u8>> {
-                    let data = existing?;
-                    let mut capsule: Capsule = decode_capsule(data).ok()?;
-                    capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
-                    encode_capsule(&capsule).ok()
-                })?;
-
-        if updated.is_none() {
-            // No-op when capsule is missing (e.g., dedup update races deletion in tests).
-            return Ok(());
-        }
-
-        self.flush()?;
-        Ok(())
+        self.write(Durability::Immediate, |txn| {
+            let mut capsules = txn.open_table(CAPSULES)?;
+            let key = capsule_key(*id);
+            // No-op when the capsule is missing (e.g., a dedup update races
+            // a deletion in tests).
+            if let Some(data) = get(&capsules, &key)? {
+                let mut capsule = decode_capsule(&data)?;
+                capsule.deduped_bytes = capsule.deduped_bytes.saturating_add(bytes);
+                capsules.insert(&key[..], &encode_capsule(&capsule)?[..])?;
+            }
+            Ok(())
+        })
     }
 
     fn allocate_segment_id(&self) -> Result<SegmentId> {
-        let next = self
-            .counters
-            .fetch_and_update(NEXT_SEGMENT_KEY, |existing| -> Option<Vec<u8>> {
-                let current = existing
-                    .and_then(|ivec| decode_u64(ivec, "the segment counter").ok())
-                    .unwrap_or(0);
-                Some((current + 1).to_le_bytes().to_vec())
-            })?
-            .map(|ivec| decode_u64(&ivec, "the segment counter"))
-            .transpose()?
-            .unwrap_or(0);
-
-        self.flush()?;
-        Ok(SegmentId(next))
+        self.write(Durability::Immediate, |txn| {
+            let mut counters = txn.open_table(COUNTERS)?;
+            let next = match get(&counters, NEXT_SEGMENT_KEY)? {
+                Some(v) => decode_u64(&v, "the segment counter")?,
+                None => 0,
+            };
+            counters.insert(NEXT_SEGMENT_KEY, &(next + 1).to_le_bytes()[..])?;
+            Ok(SegmentId(next))
+        })
     }
 
     fn ensure_segment_floor(&self, floor: u64) -> Result<()> {
-        self.counters
-            .fetch_and_update(NEXT_SEGMENT_KEY, |existing| -> Option<Vec<u8>> {
-                let current = existing
-                    .and_then(|ivec| decode_u64(ivec, "the segment counter").ok())
-                    .unwrap_or(0);
-                Some(current.max(floor).to_le_bytes().to_vec())
-            })?;
-        Ok(())
+        self.write(Durability::Immediate, |txn| {
+            let mut counters = txn.open_table(COUNTERS)?;
+            let current = match get(&counters, NEXT_SEGMENT_KEY)? {
+                Some(v) => decode_u64(&v, "the segment counter")?,
+                None => 0,
+            };
+            if floor > current {
+                counters.insert(NEXT_SEGMENT_KEY, &floor.to_le_bytes()[..])?;
+            }
+            Ok(())
+        })
     }
 
     fn apply_journal(&self, record: &JournalRecord, position: &JournalPosition) -> Result<()> {
         let position = encode_position(position);
-        // More trees than sled's tuples take, so a slice.
-        let trees: [&sled::Tree; 10] = [
-            &self.capsules,
-            &self.content,
-            &self.refs,
-            &self.indexed,
-            &self.candidates,
-            &self.deduped,
-            &self.counters,
-            &self.namespaces,
-            &self.names,
-            &self.capsule_names,
-        ];
-        let result = trees[..].transaction(|view| {
-            let [capsules, content, refs, indexed, candidates, deduped, counters, namespaces, names, capsule_names] =
-                &view[..]
-            else {
-                unreachable!("one view per tree");
+        self.write(Durability::None, |txn| {
+            let mut trees = IndexTrees {
+                capsules: txn.open_table(CAPSULES)?,
+                content: txn.open_table(CONTENT)?,
+                refs: txn.open_table(REFS)?,
+                indexed: txn.open_table(INDEXED)?,
+                candidates: txn.open_table(CANDIDATES)?,
+                deduped: txn.open_table(DEDUPED)?,
+                namespaces: txn.open_table(NAMESPACES)?,
+                names: txn.open_table(NAMES)?,
+                capsule_names: txn.open_table(CAPSULE_NAMES)?,
             };
-            let trees = IndexTrees {
-                capsules,
-                content,
-                refs,
-                indexed,
-                candidates,
-                deduped,
-                namespaces,
-                names,
-                capsule_names,
-            };
-            apply_record(record, &trees)?;
-            counters.insert(JOURNAL_POSITION_KEY, position.clone())?;
+            apply_record(record, &mut trees)?;
+            txn.open_table(COUNTERS)?
+                .insert(JOURNAL_POSITION_KEY, &position[..])?;
             Ok(())
-        });
-        match result {
-            Ok(()) => Ok(()),
-            Err(TransactionError::Abort(err)) => Err(err),
-            Err(TransactionError::Storage(err)) => Err(err.into()),
-        }
+        })
     }
 
     fn set_journal_position(&self, position: &JournalPosition) -> Result<()> {
-        self.counters
-            .insert(JOURNAL_POSITION_KEY, encode_position(position))?;
-        Ok(())
+        let position = encode_position(position);
+        self.write(Durability::Immediate, |txn| {
+            txn.open_table(COUNTERS)?
+                .insert(JOURNAL_POSITION_KEY, &position[..])?;
+            Ok(())
+        })
     }
 
     fn journal_position(&self) -> Result<Option<JournalPosition>> {
         Ok(self
-            .counters
-            .get(JOURNAL_POSITION_KEY)?
+            .get(COUNTERS, JOURNAL_POSITION_KEY)?
             .map(|v| decode_position(&v)))
     }
 
     fn clear_index(&self) -> Result<()> {
-        self.capsules.clear()?;
-        self.content.clear()?;
-        self.refs.clear()?;
-        self.indexed.clear()?;
-        self.candidates.clear()?;
-        self.deduped.clear()?;
-        self.namespaces.clear()?;
-        self.names.clear()?;
-        self.capsule_names.clear()?;
-        self.counters.remove(JOURNAL_POSITION_KEY)?;
-        // Names written before the journal held them aren't in it, so a
-        // rebuild can't keep them.
-        let legacy = self.legacy_name_entries()?;
-        if legacy > 0 {
-            warn!(
-                entries = legacy,
-                "dropping S3 buckets and keys recorded before names moved to the capsule journal"
-            );
-        }
-        for tree in LEGACY_NAME_TREES {
-            self.db.drop_tree(tree)?;
-        }
-        self.flush()
+        self.write(Durability::Immediate, |txn| {
+            for table in INDEX_TABLES {
+                txn.open_table(table)?.retain(|_, _| false)?;
+            }
+            txn.open_table(COUNTERS)?.remove(JOURNAL_POSITION_KEY)?;
+            Ok(())
+        })
     }
 
     fn has_records(&self) -> Result<bool> {
-        Ok(!self.capsules.is_empty() || self.legacy_name_entries()? > 0)
+        let txn = self.db.begin_read()?;
+        Ok(!txn.open_table(CAPSULES)?.is_empty()?)
     }
 
     fn segment_refs(&self) -> Result<HashMap<SegmentId, u32>> {
-        let mut out = HashMap::new();
-        for entry in self.refs.iter() {
-            let (key, value) = entry?;
-            out.insert(
-                decode_segment(&key)?,
-                decode_u32(&value, "a reference count")?,
-            );
-        }
-        Ok(out)
+        self.entries(REFS)?
+            .iter()
+            .map(|(key, value)| {
+                Ok((
+                    decode_segment(key)?,
+                    decode_u32(value, "a reference count")?,
+                ))
+            })
+            .collect()
     }
 
     fn scrub_times(&self) -> Result<Vec<(SegmentId, ScrubTimes)>> {
-        let mut out = Vec::new();
-        for entry in self.scrub_schedule.iter() {
-            let (key, value) = entry?;
-            out.push((decode_segment(&key)?, decode_scrub_times(&value)?));
-        }
-        Ok(out)
+        self.entries(SCRUB_SCHEDULE)?
+            .iter()
+            .map(|(key, value)| Ok((decode_segment(key)?, decode_scrub_times(value)?)))
+            .collect()
     }
 
     fn put_scrub_times(&self, changes: &[(SegmentId, Option<ScrubTimes>)]) -> Result<()> {
-        let mut batch = sled::Batch::default();
-        for (segment, times) in changes {
-            let key = segment_key(*segment).to_vec();
-            match times {
-                Some(t) => batch.insert(key, encode_scrub_times(t)?),
-                None => batch.remove(key),
+        self.write(Durability::Immediate, |txn| {
+            let mut schedule = txn.open_table(SCRUB_SCHEDULE)?;
+            for (segment, times) in changes {
+                let key = segment_key(*segment);
+                match times {
+                    Some(t) => {
+                        schedule.insert(&key[..], &encode_scrub_times(t)?[..])?;
+                    }
+                    None => {
+                        schedule.remove(&key[..])?;
+                    }
+                }
             }
-        }
-        self.scrub_schedule.apply_batch(batch)?;
-        self.flush()
+            Ok(())
+        })
     }
 
+    // Garbage collection deletes the segment once this returns, so the
+    // removal is made durable first: a crash can't bring back an index
+    // entry for a segment that's gone.
     fn deregister_unreferenced(&self, hash: &ContentHash, segment: SegmentId) -> Result<bool> {
         let seg_key = segment_key(segment);
-        if self.refs.contains_key(seg_key)? {
-            return Ok(false);
-        }
         let hash_key = hash_key(hash);
-        let result = (&self.content, &self.indexed, &self.candidates).transaction(
-            |(content, indexed, candidates)| {
-                let named = content.get(&hash_key)?.as_deref() == Some(&seg_key[..]);
-                indexed.remove(&seg_key[..])?;
-                withdraw_candidate(content, candidates, &hash_key, segment)?;
-                Ok(named)
-            },
-        );
-        match result {
-            Ok(removed) => Ok(removed),
-            Err(TransactionError::Abort(err)) => Err(err),
-            Err(TransactionError::Storage(err)) => Err(err.into()),
-        }
+        self.write(Durability::Immediate, |txn| {
+            if txn.open_table(REFS)?.get(&seg_key[..])?.is_some() {
+                return Ok(false);
+            }
+            let mut content = txn.open_table(CONTENT)?;
+            let mut candidates = txn.open_table(CANDIDATES)?;
+            let named = get(&content, &hash_key)?.as_deref() == Some(&seg_key[..]);
+            txn.open_table(INDEXED)?.remove(&seg_key[..])?;
+            withdraw_candidate(&mut content, &mut candidates, &hash_key, segment)?;
+            Ok(named)
+        })
     }
 
     fn get_content(&self, hash: &ContentHash) -> Result<Option<SegmentId>> {
-        self.content
-            .get(hash_key(hash))?
+        self.get(CONTENT, &hash_key(hash))?
             .map(|bytes| decode_segment(&bytes))
             .transpose()
     }
 
     fn list_content(&self) -> Result<Vec<(ContentHash, SegmentId)>> {
-        let mut entries = Vec::new();
-        for entry in self.content.iter() {
-            let (key, value) = entry?;
-            entries.push((decode_hash(&key)?, decode_segment(&value)?));
-        }
-        Ok(entries)
+        self.entries(CONTENT)?
+            .iter()
+            .map(|(key, value)| Ok((decode_hash(key)?, decode_segment(value)?)))
+            .collect()
     }
 
     fn get_namespace(&self, ns: &str) -> Result<Option<u64>> {
-        self.namespaces
-            .get(ns.as_bytes())?
+        self.get(NAMESPACES, ns.as_bytes())?
             .map(|v| decode_u64(&v, "a namespace's creation time"))
             .transpose()
     }
@@ -699,37 +704,31 @@ impl MetadataStore for SledStore {
             }
             None => scan.clone(),
         };
-        let mut out = Vec::new();
-        for entry in self.namespaces.range(start..) {
-            if out.len() >= limit {
-                break;
-            }
-            let (k, v) = entry?;
-            if !k.starts_with(&scan) {
-                break;
-            }
-            let ns = String::from_utf8(k.to_vec()).context("namespace is not UTF-8")?;
-            out.push((ns, decode_u64(&v, "a namespace's creation time")?));
-        }
-        Ok(out)
+        self.scan(NAMESPACES, &start, &scan, limit)?
+            .into_iter()
+            .map(|(k, v)| {
+                let ns = String::from_utf8(k).context("namespace is not UTF-8")?;
+                Ok((ns, decode_u64(&v, "a namespace's creation time")?))
+            })
+            .collect()
     }
 
     fn names_of(&self, capsule: CapsuleId) -> Result<Vec<(String, String)>> {
-        let mut out = Vec::new();
-        for entry in self.capsule_names.scan_prefix(capsule.as_uuid().as_bytes()) {
-            let (key, _) = entry?;
-            let key = std::str::from_utf8(&key[16..]).context("name is not UTF-8")?;
-            let (ns, name) = key
-                .split_once('\0')
-                .ok_or_else(|| anyhow!("a name index key has no namespace"))?;
-            out.push((ns.to_string(), name.to_string()));
-        }
-        Ok(out)
+        let prefix = capsule.as_uuid().as_bytes();
+        self.scan(CAPSULE_NAMES, prefix, prefix, usize::MAX)?
+            .iter()
+            .map(|(key, _)| {
+                let key = std::str::from_utf8(&key[16..]).context("name is not UTF-8")?;
+                let (ns, name) = key
+                    .split_once('\0')
+                    .ok_or_else(|| anyhow!("a name index key has no namespace"))?;
+                Ok((ns.to_string(), name.to_string()))
+            })
+            .collect()
     }
 
     fn get_name(&self, ns: &str, name: &str) -> Result<Option<Binding>> {
-        self.names
-            .get(name_key(ns, name))?
+        self.get(NAMES, &name_key(ns, name))?
             .map(|v| decode_binding(&v))
             .transpose()
     }
@@ -751,36 +750,29 @@ impl MetadataStore for SledStore {
             }
             None => scan.clone(),
         };
-
-        let mut out = Vec::new();
-        for entry in self.names.range(start..) {
-            if out.len() >= limit {
-                break;
-            }
-            let (k, v) = entry?;
-            if !k.starts_with(&scan) {
-                break;
-            }
-            let name = std::str::from_utf8(&k[ns.len() + 1..])
-                .context("name is not UTF-8")?
-                .to_string();
-            out.push((name, decode_binding(&v)?));
-        }
-        Ok(out)
+        self.scan(NAMES, &start, &scan, limit)?
+            .iter()
+            .map(|(k, v)| {
+                let name = std::str::from_utf8(&k[ns.len() + 1..])
+                    .context("name is not UTF-8")?
+                    .to_string();
+                Ok((name, decode_binding(v)?))
+            })
+            .collect()
     }
 }
 
-/// The trees a journal record changes, inside one transaction.
-struct IndexTrees<'a> {
-    capsules: &'a TransactionalTree,
-    content: &'a TransactionalTree,
-    refs: &'a TransactionalTree,
-    indexed: &'a TransactionalTree,
-    candidates: &'a TransactionalTree,
-    deduped: &'a TransactionalTree,
-    namespaces: &'a TransactionalTree,
-    names: &'a TransactionalTree,
-    capsule_names: &'a TransactionalTree,
+/// The tables a journal record changes, inside one write transaction.
+struct IndexTrees<'txn> {
+    capsules: Tbl<'txn>,
+    content: Tbl<'txn>,
+    refs: Tbl<'txn>,
+    indexed: Tbl<'txn>,
+    candidates: Tbl<'txn>,
+    deduped: Tbl<'txn>,
+    namespaces: Tbl<'txn>,
+    names: Tbl<'txn>,
+    capsule_names: Tbl<'txn>,
 }
 
 // The content index follows from the live capsules alone: each hash maps to
@@ -791,27 +783,24 @@ struct IndexTrees<'a> {
 // hash went to the first segment written with it and left the index when
 // that segment was freed, even while another live segment held it.
 
-fn read_candidates(
-    candidates: &TransactionalTree,
-    hash_key: &[u8],
-) -> ConflictableTransactionResult<Vec<SegmentId>, anyhow::Error> {
-    match candidates.get(hash_key)? {
-        Some(v) => decode_segments(&v).map_err(abort),
+fn read_candidates(candidates: &Tbl<'_>, hash_key: &[u8]) -> Result<Vec<SegmentId>> {
+    match get(candidates, hash_key)? {
+        Some(v) => decode_segments(&v),
         None => Ok(Vec::new()),
     }
 }
 
 /// Point `hash_key` at the lowest of `segments`, or at nothing.
 fn write_candidates(
-    content: &TransactionalTree,
-    candidates: &TransactionalTree,
+    content: &mut Tbl<'_>,
+    candidates: &mut Tbl<'_>,
     hash_key: &[u8],
     segments: &[SegmentId],
-) -> ConflictableTransactionResult<(), anyhow::Error> {
+) -> Result<()> {
     match segments.first() {
         Some(lowest) => {
             content.insert(hash_key, &segment_key(*lowest)[..])?;
-            candidates.insert(hash_key, encode_segments(segments))?;
+            candidates.insert(hash_key, &encode_segments(segments)[..])?;
         }
         None => {
             content.remove(hash_key)?;
@@ -823,11 +812,11 @@ fn write_candidates(
 
 /// Stop offering `segment` for `hash_key`.
 fn withdraw_candidate(
-    content: &TransactionalTree,
-    candidates: &TransactionalTree,
+    content: &mut Tbl<'_>,
+    candidates: &mut Tbl<'_>,
     hash_key: &[u8],
     segment: SegmentId,
-) -> ConflictableTransactionResult<(), anyhow::Error> {
+) -> Result<()> {
     let mut segments = read_candidates(candidates, hash_key)?;
     let before = segments.len();
     segments.retain(|s| *s != segment);
@@ -840,24 +829,26 @@ fn withdraw_candidate(
 /// Count an entry in a dedupe capsule that references `segment`, which
 /// holds `hash`. Its first such entry offers it for dedup.
 fn add_dedupe_ref(
-    t: &IndexTrees<'_>,
+    t: &mut IndexTrees<'_>,
     segment: SegmentId,
     seg_key: &[u8],
     hash: ContentHash,
-) -> ConflictableTransactionResult<(), anyhow::Error> {
-    let (hash, count): (ContentHash, u32) = match t.indexed.get(seg_key)? {
-        Some(v) => decode_dedupe_refs(&v).map_err(abort)?,
+) -> Result<()> {
+    let (hash, count): (ContentHash, u32) = match get(&t.indexed, seg_key)? {
+        Some(v) => decode_dedupe_refs(&v)?,
         None => (hash, 0),
     };
-    t.indexed
-        .insert(seg_key, encode_dedupe_refs(&hash, count.saturating_add(1)))?;
+    t.indexed.insert(
+        seg_key,
+        &encode_dedupe_refs(&hash, count.saturating_add(1))[..],
+    )?;
     if count == 0 {
         let hash_key = hash_key(&hash);
-        let mut segments = read_candidates(t.candidates, &hash_key)?;
+        let mut segments = read_candidates(&t.candidates, &hash_key)?;
         if let Err(at) = segments.binary_search(&segment) {
             segments.insert(at, segment);
         }
-        write_candidates(t.content, t.candidates, &hash_key, &segments)?;
+        write_candidates(&mut t.content, &mut t.candidates, &hash_key, &segments)?;
     }
     Ok(())
 }
@@ -865,47 +856,33 @@ fn add_dedupe_ref(
 /// Undo [`add_dedupe_ref`] for an entry of a dropped dedupe capsule. When no
 /// live dedupe capsule references `segment` any more, it's no longer
 /// offered, and its hash moves to the next segment that holds it, if any.
-fn remove_dedupe_ref(
-    t: &IndexTrees<'_>,
-    segment: SegmentId,
-    seg_key: &[u8],
-) -> ConflictableTransactionResult<(), anyhow::Error> {
-    let Some(v) = t.indexed.get(seg_key)? else {
+fn remove_dedupe_ref(t: &mut IndexTrees<'_>, segment: SegmentId, seg_key: &[u8]) -> Result<()> {
+    let Some(v) = get(&t.indexed, seg_key)? else {
         return Ok(());
     };
-    let (hash, count) = decode_dedupe_refs(&v).map_err(abort)?;
+    let (hash, count) = decode_dedupe_refs(&v)?;
     if count > 1 {
         t.indexed
-            .insert(seg_key, encode_dedupe_refs(&hash, count - 1))?;
+            .insert(seg_key, &encode_dedupe_refs(&hash, count - 1)[..])?;
         return Ok(());
     }
     t.indexed.remove(seg_key)?;
-    withdraw_candidate(t.content, t.candidates, &hash_key(&hash), segment)
+    withdraw_candidate(&mut t.content, &mut t.candidates, &hash_key(&hash), segment)
 }
 
 /// Remove a name from under the capsule it points at, if it's bound.
-fn unindex_name(
-    t: &IndexTrees<'_>,
-    key: &[u8],
-) -> ConflictableTransactionResult<(), anyhow::Error> {
-    if let Some(old) = t.names.get(key)? {
-        let old = decode_binding(&old).map_err(abort)?;
+fn unindex_name(t: &mut IndexTrees<'_>, key: &[u8]) -> Result<()> {
+    if let Some(old) = get(&t.names, key)? {
+        let old = decode_binding(&old)?;
         t.capsule_names
-            .remove(capsule_name_key(old.capsule_id, key))?;
+            .remove(&capsule_name_key(old.capsule_id, key)[..])?;
     }
     Ok(())
 }
 
-fn abort<E: std::fmt::Display>(err: E) -> ConflictableTransactionError<anyhow::Error> {
-    ConflictableTransactionError::Abort(anyhow!("{err}"))
-}
-
-fn read_count(
-    refs: &TransactionalTree,
-    key: &[u8],
-) -> ConflictableTransactionResult<u32, anyhow::Error> {
-    match refs.get(key)? {
-        Some(v) => decode_u32(&v, "a reference count").map_err(abort),
+fn read_count(refs: &Tbl<'_>, key: &[u8]) -> Result<u32> {
+    match get(refs, key)? {
+        Some(v) => decode_u32(&v, "a reference count"),
         None => Ok(0),
     }
 }
@@ -914,26 +891,21 @@ fn read_count(
 /// a record that's already applied changes nothing: a `CAPSULE` for a
 /// capsule that exists, or a `DROP` for one that doesn't, is skipped, and
 /// the name records set state rather than change it.
-fn apply_record(
-    record: &JournalRecord,
-    t: &IndexTrees<'_>,
-) -> ConflictableTransactionResult<(), anyhow::Error> {
+fn apply_record(record: &JournalRecord, t: &mut IndexTrees<'_>) -> Result<()> {
     match record {
         JournalRecord::Capsule(manifest) => {
             let key = capsule_key(manifest.capsule_id);
-            if t.capsules.get(key)?.is_some() {
+            if t.capsules.get(&key[..])?.is_some() {
                 return Ok(());
             }
-            t.capsules.insert(
-                &key[..],
-                encode_capsule(&manifest.to_capsule()).map_err(abort)?,
-            )?;
+            t.capsules
+                .insert(&key[..], &encode_capsule(&manifest.to_capsule())?[..])?;
             if manifest.dedupe {
-                t.deduped.insert(&key[..], &[])?;
+                t.deduped.insert(&key[..], &[][..])?;
             }
             for entry in &manifest.entries {
                 let seg_key = segment_key(entry.segment_id);
-                let count = read_count(t.refs, &seg_key)?;
+                let count = read_count(&t.refs, &seg_key)?;
                 t.refs
                     .insert(&seg_key[..], &count.saturating_add(1).to_le_bytes()[..])?;
                 // An all-zero hash means none (on-disk format §4). Only a
@@ -947,17 +919,17 @@ fn apply_record(
         }
         JournalRecord::Drop(id) => {
             let key = capsule_key(*id);
-            let Some(bytes) = t.capsules.remove(&key[..])? else {
+            let Some(bytes) = take(&mut t.capsules, &key)? else {
                 return Ok(());
             };
-            let dedupe = t.deduped.remove(&key[..])?.is_some();
-            let capsule = decode_capsule(&bytes).map_err(abort)?;
+            let dedupe = take(&mut t.deduped, &key)?.is_some();
+            let capsule = decode_capsule(&bytes)?;
             for segment in &capsule.segments {
                 let seg_key = segment_key(*segment);
                 if dedupe {
                     remove_dedupe_ref(t, *segment, &seg_key)?;
                 }
-                let count = read_count(t.refs, &seg_key)?;
+                let count = read_count(&t.refs, &seg_key)?;
                 if count > 1 {
                     t.refs
                         .insert(&seg_key[..], &(count - 1).to_le_bytes()[..])?;
@@ -984,17 +956,15 @@ fn apply_record(
         } => {
             let key = name_key(ns, name);
             unindex_name(t, &key)?;
-            t.names.insert(
-                key.clone(),
-                encode_binding(*capsule_id, metadata).map_err(abort)?,
-            )?;
+            t.names
+                .insert(&key[..], &encode_binding(*capsule_id, metadata)?[..])?;
             t.capsule_names
-                .insert(capsule_name_key(*capsule_id, &key), &[])?;
+                .insert(&capsule_name_key(*capsule_id, &key)[..], &[][..])?;
         }
         JournalRecord::Unbind { ns, name } => {
             let key = name_key(ns, name);
             unindex_name(t, &key)?;
-            t.names.remove(key)?;
+            t.names.remove(&key[..])?;
         }
         // The journal keeps the store's key itself.
         JournalRecord::Key(_) => {}
@@ -1014,41 +984,67 @@ mod tests {
     use test_support::TempDir;
 
     /// A scratch directory, and the path of a database inside it.
-    fn scratch_db(name: &str) -> (TempDir, String) {
+    fn scratch_db(name: &str) -> (TempDir, PathBuf) {
         let dir = TempDir::new(&format!("space_{name}"));
-        let path = dir.join("db").to_str().unwrap().to_string();
+        let path = dir.join("db");
         (dir, path)
     }
 
-    /// A lock that clears soon after, as when sled's background threads
-    /// let go of a store just dropped, is waited for (#246).
+    /// A database another handle has open is refused at once, and opens
+    /// again as soon as that handle is dropped, with no wait for a lock to
+    /// clear as sled needed (#246, #244).
     #[test]
-    fn open_waits_for_a_lock_that_clears() {
-        let (_dir, path) = scratch_db("lock_clears");
-        let first = SledStore::open(&path).unwrap();
-        let closer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            drop(first);
-        });
-        let second = SledStore::open(&path);
-        closer.join().unwrap();
-        assert!(second.is_ok(), "{:?}", second.err());
-        drop(second);
+    fn a_store_in_use_is_refused_and_reopens_once_closed() {
+        let (_dir, path) = scratch_db("in_use");
+        let first = RedbStore::open(&path).unwrap();
+        let err = RedbStore::open(&path).err().expect("opened a store in use");
+        assert!(err.is::<StoreInUse>(), "{err:#}");
+        drop(first);
+        let again = RedbStore::open(&path);
+        assert!(again.is_ok(), "{:?}", again.err());
+        drop(again);
     }
 
-    /// A lock held past the wait is still refused, with sled's error.
+    /// Records applied with no durability are still there after a clean
+    /// close, and each table is created on the first open.
     #[test]
-    fn open_refuses_a_lock_still_held() {
-        let (_dir, path) = scratch_db("lock_held");
-        let held = SledStore::open(&path).unwrap();
-        let started = std::time::Instant::now();
-        let err = SledStore::open(&path).err().expect("opened a locked store");
-        assert!(
-            format!("{err:#}").contains("could not acquire lock"),
-            "{err:#}"
+    fn applied_records_survive_a_reopen() {
+        let (_dir, path) = scratch_db("reopen");
+        let id = sample_capsule().id;
+        let position = JournalPosition {
+            index_version: crate::journal::INDEX_VERSION,
+            store_id: uuid::Uuid::from_u128(7),
+            generation: 1,
+            offset: 128,
+        };
+        {
+            let store = RedbStore::open(&path).unwrap();
+            assert!(!store.has_records().unwrap());
+            assert_eq!(store.allocate_segment_id().unwrap(), SegmentId(0));
+            store
+                .apply_journal(
+                    &JournalRecord::Bind {
+                        ns: "s3:bkt".to_string(),
+                        name: "k".to_string(),
+                        capsule_id: id,
+                        metadata: Vec::new(),
+                    },
+                    &position,
+                )
+                .unwrap();
+        }
+        let store = RedbStore::open(&path).unwrap();
+        assert_eq!(store.journal_position().unwrap(), Some(position));
+        assert_eq!(
+            store.get_name("s3:bkt", "k").unwrap().unwrap().capsule_id,
+            id
         );
-        assert!(started.elapsed() >= LOCK_WAIT);
-        drop(held);
+        assert_eq!(
+            store.names_of(id).unwrap(),
+            [("s3:bkt".to_string(), "k".to_string())]
+        );
+        assert_eq!(store.allocate_segment_id().unwrap(), SegmentId(1));
+        drop(store);
     }
 
     #[test]
@@ -1057,7 +1053,7 @@ mod tests {
         let light = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
         let deep = UNIX_EPOCH + Duration::from_millis(1_700_000_500_456);
         {
-            let store = SledStore::open(&path).unwrap();
+            let store = RedbStore::open(&path).unwrap();
             store
                 .put_scrub_times(&[
                     (
@@ -1090,7 +1086,7 @@ mod tests {
             // A rebuild keeps the schedule: segment ids are never reused.
             store.clear_index().unwrap();
         }
-        let store = SledStore::open(&path).unwrap();
+        let store = RedbStore::open(&path).unwrap();
         let mut times = store.scrub_times().unwrap();
         times.sort_by_key(|(id, _)| id.0);
         assert_eq!(

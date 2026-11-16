@@ -1,20 +1,20 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use common::format::{CapsuleManifest, JournalRecord, StoreKey};
 use common::*;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 use crate::journal::{Journal, JournalPosition, JournalUsage};
-use crate::store::{MetadataStore, SledStore};
+use crate::store::{MetadataStore, RedbStore};
 
 mod journal;
 mod store;
 
 pub use journal::JournalCompaction;
-pub use store::Binding;
+pub use store::{Binding, StoreInUse};
 
 const DEFAULT_PAGE_SIZE: usize = 1024;
 
@@ -1139,8 +1139,51 @@ fn journal_worth_compacting(size: u64, reclaimable: u64) -> bool {
     reclaimable >= JOURNAL_MIN_RECLAIM && reclaimable.saturating_mul(4) >= size
 }
 
-/// Capsule records, names and the content index, kept in sled as an index of
-/// the capsule journal (`docs/on-disk-format.md` §7). The journal sits next
+/// Move the sled database a build before #244 left at `path` to
+/// `<path>.sled-old`, so a new index can take its place. Refused when the
+/// journal at `journal_path` is missing, since the index can only be rebuilt
+/// from it, or when something is already at the new name.
+fn move_sled_index_aside(path: &Path, journal_path: &Path) -> Result<()> {
+    if !journal_path.exists() {
+        bail!(
+            "'{}' is the index of an older build, and the capsule journal '{}' it was built \
+             from is missing. The journal records every capsule, bucket and key, so the \
+             store won't open without it, and nothing has been changed. Restore the journal \
+             from the same copy as the rest of the store.",
+            path.display(),
+            journal_path.display()
+        );
+    }
+    let mut old = path.as_os_str().to_owned();
+    old.push(".sled-old");
+    let old = PathBuf::from(old);
+    if old.exists() {
+        bail!(
+            "'{}' is the index of an older build, but '{}', where it would be moved before \
+             the index is rebuilt, already exists. Move or delete '{}' and open the store \
+             again.",
+            path.display(),
+            old.display(),
+            old.display()
+        );
+    }
+    std::fs::rename(path, &old).with_context(|| {
+        format!(
+            "can't move the older build's index '{}' to '{}'",
+            path.display(),
+            old.display()
+        )
+    })?;
+    warn!(
+        old = %old.display(),
+        "space.db was the index of an older build; moved it aside and rebuilding the index \
+         from the capsule journal. Delete the old copy once the store has opened"
+    );
+    Ok(())
+}
+
+/// Capsule records, names and the content index, kept in a redb database as
+/// an index of the capsule journal (`docs/on-disk-format.md` §7). The journal sits next
 /// to the database (`space.journal` beside `space.db`) and is the durable
 /// record: losing the database costs one replay.
 pub struct CapsuleRegistry {
@@ -1179,15 +1222,21 @@ impl CapsuleRegistry {
     /// would rebuild the index as empty, and the next reclaim would then
     /// delete every segment.
     ///
-    /// A lock on the database that clears within 1 s, as sled's own does
-    /// for a moment after a store is closed, is waited for (#246). A store
-    /// another process holds is refused with sled's `could not acquire
-    /// lock` error.
+    /// A database another process has open is refused with [`StoreInUse`].
+    ///
+    /// A `space.db` that is a directory is the sled database builds before
+    /// #244 kept. It's moved aside to `space.db.sled-old` and the index is
+    /// rebuilt from the journal into a new file. The scrub schedule, which
+    /// the journal doesn't hold, starts over. A sled database without its
+    /// journal is refused, as a used database always is.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
-        let store: Arc<dyn MetadataStore> = Arc::new(SledStore::open(&path_str)?);
         let journal_path = Journal::path_for(path);
+        if path.is_dir() {
+            move_sled_index_aside(path, &journal_path)?;
+        }
+        let store: Arc<dyn MetadataStore> = Arc::new(RedbStore::open(path)?);
         if !journal_path.exists() && store.journal_position()?.is_some() {
             bail!(
                 "the capsule journal '{}' is missing, but '{path_str}' shows this store has \

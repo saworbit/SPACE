@@ -122,7 +122,7 @@ async fn concurrent_puts_and_gets_share_the_store() {
 
     // After a restart and an index rebuild, everything still reads.
     drop((registry, view));
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
     let registry = CapsuleRegistry::open(dir.join("space.db")).unwrap();
     let log = NvramLog::open(dir.join("space.nvram")).unwrap();
     let view = S3View::new(registry, log, &key).unwrap();

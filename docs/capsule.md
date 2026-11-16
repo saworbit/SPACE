@@ -298,7 +298,7 @@ A crash before the rename leaves the old log; one after it leaves the new genera
 The registry has two parts:
 
 - **The capsule journal**, `space.journal` next to `space.db`. An append-only file of framed records: a `CAPSULE` manifest commits each write, a `DROP` commits each delete, and `NAMESPACE`, `BIND` and `UNBIND` records create namespaces and point names at capsules ([on-disk-format.md](on-disk-format.md) §5–§7). Several records can commit together as one `BATCH`. It's the durable record of which capsules and names exist.
-- **A sled index of the journal**, in `space.db`:
+- **An index of the journal**, in `space.db`, a [redb](https://www.redb.org) database file ([#244](https://github.com/saworbit/SPACE/issues/244)):
   - `Capsule` records keyed by `CapsuleId`
   - the content-hash index, `ContentHash → SegmentId`, for dedup lookup. Each hash names the lowest numbered segment that holds it and that a live dedupe capsule references, so it depends only on the live capsules, and a rebuild gives the same index ([#188](https://github.com/saworbit/SPACE/issues/188))
   - per-segment reference counts, each segment's hash and dedupe references, the segments that hold each hash, and the live dedupe capsules
@@ -306,7 +306,7 @@ The registry has two parts:
   - the journal position the index has reached
   - a counter for allocating `SegmentId`s
 
-Each journal record, or each whole `BATCH`, is applied to the index in one sled transaction that also records the new position. On open, records past that position are replayed; an index that doesn't match the journal, or a missing `space.db`, is rebuilt from it.
+Each journal record, or each whole `BATCH`, is applied to the index in one write transaction that also records the new position. On open, records past that position are replayed; an index that doesn't match the journal, or a missing `space.db`, is rebuilt from it.
 
 **Journal compaction** (`CapsuleRegistry::compact_journal()`) stops the journal growing without bound under deletes and overwrites ([on-disk-format.md](on-disk-format.md) §9.2). It writes the live capsules, namespaces and names to `space.journal.compact`, the journal's next generation, while commits carry on. Then, under the journal lock, it copies the records committed meanwhile, renames the new file over the journal, and moves the index's position to the new generation. A crash before the rename leaves the old journal, and open deletes the unfinished file. A crash after it leaves the new generation, and open rebuilds the index from it. `serve-s3`'s reclaim pass compacts the journal once a quarter of it, and at least 1 MiB, is dead, and `spacectl compact` compacts it whenever anything in it is.
 
@@ -508,7 +508,7 @@ Segments still referenced by other Capsules remain. `spacectl delete` removes an
 
 ### Race-freedom
 
-The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle runs under one async mutex. A streaming write takes it once per segment, so other writes and deletes can run between its segments. Each segment a write uses holds a reference from the moment it is stored, and garbage collection keeps every segment an open write pins, as well as those of a dropped capsule that hasn't been released yet. A second process can't open the same store at all, because sled locks `space.db`.
+The classic race is a segment reaching zero just as a new write is about to dedup-hit it. Every pipeline operation on a handle runs under one async mutex. A streaming write takes it once per segment, so other writes and deletes can run between its segments. Each segment a write uses holds a reference from the moment it is stored, and garbage collection keeps every segment an open write pins, as well as those of a dropped capsule that hasn't been released yet. A second process can't open the same store at all, because redb locks `space.db`.
 
 ---
 
@@ -591,7 +591,7 @@ common           ─ Capsule, Segment, ContentHash, Policy, scrub types, all tra
 pipeline         ─ Pipeline: the write/read/range/delete/GC implementation.
                    XtsEncryptor, NoopEncryptor.
 
-capsule-registry ─ CapsuleRegistry (sled metadata). WritePipeline and
+capsule-registry ─ CapsuleRegistry (redb index). WritePipeline and
                    RegistryPipelineHandle wrappers. ScrubExecutor.
 
 storage          ─ StorageBackend implementations: InMemory, Nvram, TokioFs, AutoFs, Cached.
@@ -642,7 +642,7 @@ There's no transaction spanning the two stores. A write commits in this order:
 1. For each new segment: append its record (descriptor and bytes) and fsync, then put its hash in the in-memory pending index.
 2. For each dedup hit: increment the segment's ref count in memory. Nothing is written.
 3. After the last segment: append the `CAPSULE` record to the journal and fsync it. This is the commit point.
-4. Apply the record to the sled index in one transaction: the capsule record, reference counts, content-index entries for its segments, and the new journal position.
+4. Apply the record to the index in one transaction: the capsule record, reference counts, content-index entries for its segments, and the new journal position.
 
 A crash before step 3 leaves no visible capsule, and nothing in the durable content index points at its segments. They come back with no references, and compaction reclaims them: at a `serve-s3` reclaim pass, or with `spacectl compact`. A crash between steps 3 and 4 is repaired on the next open, which replays the journal past the index's position. The log's in-memory ref counts are set from the index whenever a pipeline opens, so no crash leaves a count wrong.
 
@@ -856,7 +856,7 @@ never on capsule.policy
 | **Compaction can't swap in its new generation** | The rename of `{path}.compact` fails | The compaction fails and the file carries on unchanged. If reopening the old file fails too, the data log refuses reads, appends and compactions, and the journal refuses commits, replays and compactions, until the store is opened again ([#150](https://github.com/saworbit/SPACE/issues/150), [#191](https://github.com/saworbit/SPACE/issues/191)). The old file is intact: restart `serve-s3`, or run the command again. |
 | **Marker from an earlier build** | `{path}.compacting` present | Left by the in-place compaction builds before generation swap used. `open()` refuses; verify or restore the data, then delete the marker. |
 | **Crash mid-append** | `open()` finds a last record that fails its checksums, with nothing valid after it | Truncated away; it belonged to a write that never committed. Segments the interrupted write had already stored stay, with no references, until compaction ([#97](https://github.com/saworbit/SPACE/issues/97)). |
-| **Lost or corrupt `space.db`** | `space.db` missing, or sled fails to open it | Delete it and reopen: the index, S3 buckets and keys included, is rebuilt from `space.journal`. |
+| **Lost or corrupt `space.db`** | `space.db` missing, or redb fails to open it | Delete it and reopen: the index, S3 buckets and keys included, is rebuilt from `space.journal`. |
 | **Journal record cut short** | `open()` finds a last journal record that fails its checks | Truncated away; it was a commit that never completed, so its write or delete didn't happen. |
 | **Damage inside the journal** | Invalid bytes with valid journal records after them | The registry refuses to open: the capsules recorded in the damaged range can't be recovered from it. |
 | **Lost `space.journal`** | `space.journal` missing while `space.db` shows the store has been used, or a new journal meeting a data log or storage root that holds segments | The store won't open, and nothing in it changes ([#194](https://github.com/saworbit/SPACE/issues/194)). Restore the journal from the same copy as the rest of the store: without it, nothing says which segments make up which capsule. |
@@ -884,8 +884,8 @@ never on capsule.policy
 | **Deep scrub** | Background verification of MAC tags (encrypted) or content hashes (unencrypted), then of each capsule's digest. |
 | **Legacy hash hit** | A segment that verifies only under the pre-fix bare BLAKE3 hash; tracked in `ScrubReport.legacy_hash_hits`. |
 | **Backend** | An implementation of `StorageBackend` — where segment bytes physically live. |
-| **Registry** | The capsule journal and its sled index: capsules, names, content-hash index, reference counts, segment ID counter. |
-| **Capsule journal** | `space.journal`: the append-only record of capsule writes (`CAPSULE`) and deletes (`DROP`). The sled index is rebuilt from it. |
+| **Registry** | The capsule journal and its index: capsules, names, content-hash index, reference counts, segment ID counter. |
+| **Capsule journal** | `space.journal`: the append-only record of capsule writes (`CAPSULE`) and deletes (`DROP`). The index in `space.db` is rebuilt from it. |
 | **NVRAM log** | The primary durable backend. Append-only log of framed segment records. |
 | **Compaction** | Copying the live segments of an NVRAM log into its next generation, to reclaim space from GC'd segments. |
 | **PODMS** | Policy-Orchestrated Disaggregated Mesh Scaling. The distributed mode, archived in the reset. |

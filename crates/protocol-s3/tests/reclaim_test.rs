@@ -265,7 +265,7 @@ async fn compacting_the_journal_keeps_every_object() {
     };
 
     // Rebuild the index from the compacted journal.
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
     let (log, view) = nvram_store(&dir);
     assert_eq!(keys(&view), listed);
     assert_eq!(

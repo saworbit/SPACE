@@ -1029,7 +1029,7 @@ fn a_store_missing_its_journal_keeps_its_segments() {
     assert_eq!(std::fs::read(dir.join("space.nvram")).unwrap(), log);
 
     // Without space.db either, a new journal can't take over the data log.
-    std::fs::remove_dir_all(dir.join("space.db")).unwrap();
+    std::fs::remove_file(dir.join("space.db")).unwrap();
     let out = serve("over another store's segments");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");

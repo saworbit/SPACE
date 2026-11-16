@@ -116,7 +116,7 @@ async fn a_lost_index_never_reuses_a_segment_id() {
     let before = fs::read(segment_file(&root, first)).unwrap();
 
     // Lose space.db: the index, and the segment counter with it.
-    fs::remove_dir_all(dir.join("space.db")).unwrap();
+    fs::remove_file(dir.join("space.db")).unwrap();
     let (registry, mut handle) = open(&dir.join("space.db"), &root).await.unwrap();
     let id = handle
         .write_capsule(&patterned(10_000, 6), &Policy::default())
@@ -147,7 +147,7 @@ async fn a_root_whose_journal_is_missing_is_refused() {
     };
     let before = fs::read(segment_file(&root, segment)).unwrap();
 
-    fs::remove_dir_all(dir.join("space.db")).unwrap();
+    fs::remove_file(dir.join("space.db")).unwrap();
     fs::remove_file(dir.join("space.journal")).unwrap();
     let err = open(&dir.join("space.db"), &root).await.err().unwrap();
     assert!(err.to_string().contains("is new"), "{err:#}");

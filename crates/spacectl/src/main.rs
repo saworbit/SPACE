@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use capsule_registry::modular_pipeline::{self, RegistryPipelineHandle, StoreSecurity};
-use capsule_registry::CapsuleRegistry;
+use capsule_registry::{CapsuleRegistry, StoreInUse};
 
 use clap::{Parser, Subcommand};
 
@@ -111,8 +111,8 @@ enum Open {
     Existing,
 }
 
-/// sled allows one process per store, so a second spacectl (or a running
-/// serve-s3) in the same directory fails to open it.
+/// The index allows one process per store, so a second spacectl (or a
+/// running serve-s3) in the same directory fails to open it.
 fn open_registry(dir: &Path, open: Open) -> Result<CapsuleRegistry> {
     match open {
         Open::OrCreate => fs::create_dir_all(dir)
@@ -128,9 +128,7 @@ fn open_registry(dir: &Path, open: Open) -> Result<CapsuleRegistry> {
         }
     }
     CapsuleRegistry::open(dir.join(REGISTRY_DB_PATH)).map_err(|err| {
-        let locked = err
-            .chain()
-            .any(|cause| cause.to_string().contains("could not acquire lock"));
+        let locked = err.chain().any(|cause| cause.is::<StoreInUse>());
         if locked {
             anyhow!(
                 "{REGISTRY_DB_PATH} is locked by another process. Only one spacectl \
