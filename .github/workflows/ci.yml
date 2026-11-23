@@ -157,7 +157,7 @@ jobs:
       # they move with Dependabot's weekly action bump. Not pinned further, as
       # the linters below are: an old cargo-audit can fail to read a newer
       # advisory database.
-      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-audit,cargo-deny
 
@@ -191,7 +191,7 @@ jobs:
 
       # Pinned, so an install-action bump doesn't bring a new dictionary in
       # the same pull request.
-      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: typos@1.52.2
 
@@ -208,7 +208,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           # Pinned, like typos: new audits arrive in their own pull request.
           tool: shellcheck@0.11.0,zizmor@1.32.0
