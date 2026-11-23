@@ -32,7 +32,7 @@ subtle = { workspace = true }
 bytes = { workspace = true }
 # The index of the capsule journal, space.db (#244). Pinned like the other
 # on-disk formats; 4.1 is the newest on the workspace rust-version (1.89).
-redb = "=4.1.0" # 2026-11-16 sw: one file, ACID multi-table writes, no background threads
+redb = "=4.6.0" # 2026-11-16 sw: one file, ACID multi-table writes, no background threads
 pipeline = { path = "../pipeline" }
 async-trait = "0.1"
 tokio-util = { version = "^0.7.11", features = ["io"] }
